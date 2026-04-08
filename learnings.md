@@ -36,8 +36,15 @@ When the orchestrator spawns Claude Code with `cwd` set to a target repo, that r
 - Example Org-specific agents (domain-eng, design-fe, content, etc.) already exist in example-backend's `.claude/agents/`. The bot should reference them by spawning with the right `cwd`, not by copying them into junior.
 - Only agents that are *about the orchestrator itself* (bot-dev, generic build/review/frontend) belong in junior's `.claude/agents/`.
 
+### Feature docs decompose naturally along process boundaries
+When breaking a system into feature docs, the right cut points are where one process talks to another — not where code lives in the filesystem.
+- The session manager, Claude spawner, and stream parser could live in one "Claude integration" doc. But they have different failure modes, different iteration cadences, and different test strategies. Separating them made each doc's iterations small and independently testable.
+- Conversely, thread commands and agent routing could be separate docs but share the same "message arrives, pick an action" flow. They cross-reference each other instead of merging.
+- 11 feature docs emerged from 6 conceptual features. The extras (process-lifecycle, thread-commands, agent-definitions) appeared when a single doc's iteration count exceeded 5 — a signal that it was actually two features sharing a name.
+
 ## Known Gaps
 
 - No source code yet — CLAUDE.md is written against the design doc, not working code. Rules and structure sections need updating as implementation begins.
 - Open questions from the feature doc (stream-json schema, `--resume` + `--worktree` interaction, session locking) are unresolved and will affect implementation choices.
 - Agent definitions (`.claude/agents/`) not yet written — the mapping from OpenClaw agents to Claude Code agents is documented but not implemented.
+- Build order not yet determined — feature docs have cross-dependencies (session-management depends on claude-spawner depends on stream parser). Need a topological sort before starting implementation.
