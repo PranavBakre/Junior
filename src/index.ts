@@ -5,6 +5,7 @@ import { formatToolStatus } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { InMemorySessionStore } from "./session/store/memory.ts";
+import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -47,6 +48,8 @@ sessionManager.onError = (session, error) => {
 registerEventHandlers(app, (event) => {
   sessionManager.handleMessage(event);
 });
+
+setupGracefulShutdown(sessionManager, store);
 
 (async () => {
   await app.start();
