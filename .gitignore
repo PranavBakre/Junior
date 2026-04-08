@@ -5,3 +5,4 @@ logs/
 *.log
 .DS_Store
 .claude/worktrees/
+learnings.md
