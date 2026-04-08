@@ -42,6 +42,14 @@ When breaking a system into feature docs, the right cut points are where one pro
 - Conversely, thread commands and agent routing could be separate docs but share the same "message arrives, pick an action" flow. They cross-reference each other instead of merging.
 - 11 feature docs emerged from 6 conceptual features. The extras (process-lifecycle, thread-commands, agent-definitions) appeared when a single doc's iteration count exceeded 5 — a signal that it was actually two features sharing a name.
 
+### "How do you know it works?" is the real decomposition tool
+Writing test criteria for each iteration forces you to split things that look like one feature but aren't. If two things in the same iteration require different test strategies, they're different iterations.
+- Stream-json parsing and arg building were initially one iteration in claude-spawner. But parsing is tested with mock stdout data, arg building is tested by inspecting the generated command. Different inputs, different assertions — split them.
+- Session cleanup and worktree cleanup were initially one iteration. But session cleanup is tested with time-based stale detection, worktree cleanup requires checking git state. Split.
+
+### An iteration plan template prevents scope drift more than discipline does
+The ideation workflow's format (problem, full vision, iterations with test + defer, shortcuts, cut list) forced completeness that free-form writing wouldn't. Specifically: the "cut list" section names things you're NOT building, which prevents them from sneaking into iterations later. The "defers" per iteration prevent gold-plating within a single iteration. Structure > willpower for scope control.
+
 ## Known Gaps
 
 - No source code yet — CLAUDE.md is written against the design doc, not working code. Rules and structure sections need updating as implementation begins.
