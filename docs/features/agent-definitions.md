@@ -7,7 +7,7 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 **Who has this problem:** Every thread that uses an agent type.
 **What happens today:** example-backend already has 10+ agent definitions in `.claude/agents/`. They work when running Claude Code directly. But the Slack bot needs to load, compose, and inject them.
 **Painful part:** Agent definitions for Example Org repos live in THOSE repos. Junior should not duplicate them. But junior needs its own agents for: (a) generic tasks not tied to a specific repo, (b) developing the bot itself, (c) fallback when target repo has no matching agent.
-**"Finally" moment:** `/build` in a example-backend thread → loads example-backend's build.md agent. `/review` in a junior thread → loads junior's own review.md agent. No duplication. No drift.
+**"Finally" moment:** `!build` in a example-backend thread → loads example-backend's build.md agent. `!review` in a junior thread → loads junior's own review.md agent. No duplication. No drift.
 
 ## Full Vision
 

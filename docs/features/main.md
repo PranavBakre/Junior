@@ -49,10 +49,10 @@ Slack Event API (message.channels, app_mention)
              ▼
 ┌─────────────────────────────────┐
 │    Claude Code CLI Process      │
+│    (cwd: target repo worktree)  │
 │                                 │
 │  claude -p "<prompt>"           │
 │    --resume <session_id>        │
-│    --worktree <thread_id>       │
 │    --output-format stream-json  │
 │    --mcp-config <per-thread>    │
 │    --append-system-prompt "..." │
@@ -217,12 +217,12 @@ The target repo's own `.claude/agents/` definitions are available in the worktre
 Some threads don't edit code — they ask questions, review docs, or discuss architecture. These threads can run with `cwd` set to junior's own workspace (shared) or the target repo's main checkout (read-only). No worktree needed.
 
 The bot should only create worktrees when a thread will make code changes. This can be:
-- Explicit: user says `/build` or `/branch feature-x`
+- Explicit: user says `!build` or `!branch feature-x`
 - Deferred: start without a worktree, create one when Claude's first tool call is a file edit
 
 ### Worktree lifecycle
 
-- **Created** when a thread needs code isolation (first code-editing message, or explicit `/branch` command).
+- **Created** when a thread needs code isolation (first code-editing message, or explicit `!branch` command).
 - **Reused** on subsequent messages — the session stores `worktreePath` and spawns Claude with that `cwd`.
 - **Cleanup** — when the Slack thread goes stale (configurable timeout, e.g., 24h of inactivity), the bot checks for uncommitted changes. If clean, runs `git worktree remove`. If dirty, warns the thread before cleanup.
 
@@ -311,9 +311,9 @@ claude -p "msg" \
 The full spawn command for a thread with full isolation:
 
 ```bash
+# cwd set to target repo worktree (e.g., example-backend/.claude/worktrees/slack-<threadId>)
 claude -p "<prompt>" \
   --resume <session_id> \
-  --worktree "slack-${threadId}" \
   --mcp-config /path/to/thread-specific.mcp.json \
   --append-system-prompt "You are ..." \
   --allowedTools "Read,Write,Bash(git *)" \
@@ -321,6 +321,8 @@ claude -p "<prompt>" \
   --max-turns 25 \
   --output-format stream-json
 ```
+
+Note: isolation comes from `cwd` (set to a worktree in the target repo), not from `--worktree`. The bot manages worktree creation/cleanup directly via git commands.
 
 ---
 

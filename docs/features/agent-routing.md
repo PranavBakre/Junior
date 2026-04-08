@@ -7,11 +7,11 @@ Different Slack threads need different Claude Code personalities. A thread askin
 **Who has this problem:** The session manager — it needs to know which agent to use for each thread.
 **What happens today:** Nothing — all threads would get the same generic Claude.
 **Painful part:** Agent definitions live in the TARGET repo's `.claude/agents/` (not in junior). The bot needs to read them from the right repo, compose them with thread-specific context, and pass them to Claude. Also: when should the agent type change mid-thread?
-**"Finally" moment:** `/build fix the auth middleware` → Claude responds like a senior backend engineer who knows the Example Org monorepo. `/review PR #4900` → Claude responds like a thorough code reviewer who posts inline GitHub comments.
+**"Finally" moment:** `!build fix the auth middleware` → Claude responds like a senior backend engineer who knows the Example Org monorepo. `!review PR #4900` → Claude responds like a thorough code reviewer who posts inline GitHub comments.
 
 ## Full Vision
 
-- Slash command selects agent type: `/build`, `/frontend`, `/review`, `/architect`, `/pm`, `/audit`
+- Command selects agent type: `!build`, `!frontend`, `!review`, `!architect`, `!pm`, `!audit`
 - Agent definitions loaded from target repo's `.claude/agents/<type>.md`
 - Fallback to junior's own `.claude/agents/` if target repo doesn't have the agent
 - Agent definition injected via `--append-system-prompt`
@@ -56,7 +56,7 @@ The bot:
 Prove the wiring works with a hardcoded map of agent type → system prompt string.
 
 **What it adds:** Map of `{ build: "You are a backend engineer...", review: "You are a code reviewer..." }`. Session manager looks up agent type, passes prompt string to spawner's `--append-system-prompt`.
-**Test:** `/build hello` → Claude's response reflects backend engineer persona. `/review hello` → Claude's response reflects reviewer persona.
+**Test:** `!build hello` → Claude's response reflects backend engineer persona. `!review hello` → Claude's response reflects reviewer persona.
 **Defers:** Reading from files, target repo lookup, frontmatter parsing, common preamble.
 
 ### Iteration 1: File-based agent loading (~30 min)
@@ -88,16 +88,16 @@ Load and prepend the common preamble that all agents share.
 
 ### Iteration 3: Agent type from message context (~30 min)
 
-Auto-detect agent type when no slash command is given, based on message content.
+Auto-detect agent type when no `!command` is given, based on message content.
 
 **What it adds:**
-- If message mentions "PR", "review", "diff" → suggest review agent
-- If message mentions "fix", "build", "implement", "add" → suggest build agent
-- If message mentions "design", "spec", "architect" → suggest architect agent
-- Don't auto-assign — suggest with a Slack reply: "Looks like a review task. Using `/review` — say `/build` if you meant something else."
-- User can override with explicit command
+- If message mentions "PR", "review", "diff" → auto-assign review agent
+- If message mentions "fix", "build", "implement", "add" → auto-assign build agent
+- If message mentions "design", "spec", "architect" → auto-assign architect agent
+- Auto-assign silently — no "I'm using the review agent" announcement. The response style makes it obvious which agent is active.
+- User can override with explicit `!build` or `!review` command at any point
 
-**Test:** "Can you review PR #4900?" → bot suggests review agent. "Fix the auth bug" → bot suggests build agent. User sends `/build` after suggestion → overrides.
+**Test:** "Can you review PR #4900?" → review agent assigned silently, response reads like a code reviewer. "Fix the auth bug" → build agent assigned. User sends `!review` after auto-assign → overrides.
 **Defers:** ML-based classification, per-channel defaults.
 
 ### Iteration 4: MCP config per agent (~30 min)
@@ -129,5 +129,5 @@ Different agent types get different MCP server configurations.
 - Agent marketplace (install community agent definitions)
 - Agent chaining (review agent hands off to build agent in same thread)
 - Agent voting (multiple agents review, majority wins)
-- Custom agent creation via Slack (`/create-agent` → interactive form)
+- Custom agent creation via Slack (`!create-agent` → interactive form)
 - Per-user agent preferences (alice always gets verbose review, bob gets terse)

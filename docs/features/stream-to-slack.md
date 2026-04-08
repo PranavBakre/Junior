@@ -71,10 +71,10 @@ Post a single status message when Claude starts, edit it as events arrive, then 
 - Default: `normal` (tool summaries)
 - `quiet`: no status updates, only final response
 - `verbose`: includes thinking events, full tool inputs
-- Set via `/quiet`, `/verbose`, `/normal` commands
+- Set via `!quiet`, `!verbose`, `!normal` commands
 - Persist in session
 
-**Test:** `/quiet` then trigger task → no status updates. `/verbose` → see thinking steps and full tool inputs.
+**Test:** `!quiet` then trigger task → no status updates. `!verbose` → see thinking steps and full tool inputs.
 **Defers:** Per-channel defaults, per-agent-type defaults.
 
 ## Shortcuts
@@ -91,4 +91,4 @@ Post a single status message when Claude starts, edit it as events arrive, then 
 - File attachments for long responses (upload as snippet)
 - Progress bar (estimated completion %)
 - Token usage display per response
-- Thread summary on demand (`/summary` → summarize the whole thread)
+- Thread summary on demand (`!summary` → summarize the whole thread)

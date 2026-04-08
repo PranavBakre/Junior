@@ -24,7 +24,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How does worktree isolation work? | [docs/features/worktree-manager.md](docs/features/worktree-manager.md) |
 | How does agent routing work? | [docs/features/agent-routing.md](docs/features/agent-routing.md) |
 | What agent definitions exist and how are they structured? | [docs/features/agent-definitions.md](docs/features/agent-definitions.md) |
-| How do thread commands (/build, /reset, /status) work? | [docs/features/thread-commands.md](docs/features/thread-commands.md) |
+| How do thread commands (!build, !reset, !status) work? | [docs/features/thread-commands.md](docs/features/thread-commands.md) |
 | How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
 | Project setup, config, directory structure? | [docs/features/project-setup.md](docs/features/project-setup.md) |
 | Known limitations and open questions? | [docs/features/main.md](docs/features/main.md) — bottom sections |
@@ -137,6 +137,23 @@ What changes:
 - Heartbeat polling is replaced by Claude Code hooks and cron.
 - Agent dispatch uses Claude Code's `--resume` and worktrees in target repos instead of OpenClaw's agent workspace system.
 - Agent definitions live in target repos' `.claude/agents/` — don't duplicate them in junior.
+
+## Build Order
+
+Features depend on each other. Build in this order:
+
+1. **project-setup** — runtime, config, directory structure (no dependencies)
+2. **slack-event-handler** — Bolt app, event filtering (depends on: config)
+3. **claude-spawner** — spawn CLI, parse stream-json (depends on: config)
+4. **session-management** — buffer/drain state machine (depends on: slack-event-handler, claude-spawner)
+5. **stream-to-slack** — status updates from events (depends on: claude-spawner, slack-event-handler)
+6. **thread-commands** — !build, !reset, !status (depends on: session-management)
+7. **agent-routing** — load agent definitions, pick type (depends on: session-management, claude-spawner)
+8. **worktree-manager** — target repo isolation (depends on: session-management)
+9. **process-lifecycle** — timeouts, graceful shutdown, health (depends on: claude-spawner, session-management)
+10. **agent-definitions** — write the .claude/agents/ markdown files (depends on: agent-routing)
+
+Items 3-5 can partially parallelize. Items 6-9 can be built in any order once session-management is done.
 
 ## Commands
 

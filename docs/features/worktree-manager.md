@@ -18,7 +18,7 @@ When a Slack thread needs to edit code in a target repo (example-backend, exampl
 - Check worktree exists before resuming (may have been cleaned up)
 - Clean up stale worktrees: remove after 24h inactivity if clean, warn if dirty
 - Support multiple target repos (thread specifies which repo)
-- Support custom base ref per thread (`/branch staging`)
+- Support custom base ref per thread (`!branch staging`)
 
 ## Dependencies
 
@@ -77,9 +77,9 @@ Wire worktree creation into the session manager flow.
 - Worktree path stored in `session.worktreePath`
 - Claude spawner uses `session.worktreePath` as `cwd`
 - Worktree existence check before `--resume` (recreate if missing)
-- Default repo configurable, overridable with `/repo example-frontend`
+- Default repo configurable, overridable with `!repo example-frontend`
 
-**Test:** `/build fix auth` → worktree created in example-backend, Claude runs in that worktree. Second message in same thread → same worktree reused. `/repo example-frontend` then `/build` → worktree in example-frontend instead.
+**Test:** `!build fix auth` → worktree created in example-backend, Claude runs in that worktree. Second message in same thread → same worktree reused. `!repo example-frontend` then `!build` → worktree in example-frontend instead.
 **Defers:** Deferred creation, cleanup, custom base ref.
 
 ### Iteration 2: Deferred creation (~30 min)
@@ -90,9 +90,9 @@ Don't create worktrees eagerly. Only create when Claude actually needs to write 
 - Threads start without a worktree (Claude runs in target repo root, read-only effectively)
 - If Claude's first tool call is `Edit`, `Write`, or `Bash` (that modifies files) → detect this from stream events
 - On detecting write intent: pause briefly, create worktree, update session, continue
-- Actually — simpler: if thread has a `/build` or `/frontend` command, create worktree immediately. If not, don't create one. Review and question threads don't need worktrees.
+- Actually — simpler: if thread has a `!build` or `!frontend` command, create worktree immediately. If not, don't create one. Review and question threads don't need worktrees.
 
-**Test:** `/review PR #123` → no worktree created, Claude reads from repo root. `/build fix auth` → worktree created immediately.
+**Test:** `!review PR #123` → no worktree created, Claude reads from repo root. `!build fix auth` → worktree created immediately.
 **Defers:** Automatic detection of write intent (stick with command-based for now).
 
 ### Iteration 3: Cleanup and dirty detection (~30 min)
@@ -110,12 +110,12 @@ Don't create worktrees eagerly. Only create when Claude actually needs to write 
 ### Iteration 4: Custom base ref (~20 min)
 
 **What it adds:**
-- `/branch staging` command → create worktree from `origin/staging` instead of `origin/main`
-- `/branch feature/xyz` → branch from specific ref
+- `!branch staging` command → create worktree from `origin/staging` instead of `origin/main`
+- `!branch feature/xyz` → branch from specific ref
 - Validate ref exists before creating (`git rev-parse --verify`)
 - Error message if ref doesn't exist
 
-**Test:** `/branch staging` then `/build` → worktree branched from staging. `/branch nonexistent` → error message in thread.
+**Test:** `!branch staging` then `!build` → worktree branched from staging. `!branch nonexistent` → error message in thread.
 **Defers:** WorktreeCreate hook integration.
 
 ## Shortcuts

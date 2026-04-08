@@ -18,7 +18,7 @@ The bot needs to receive Slack messages and route them to the right session. A m
 - Ignore messages in threads the bot isn't part of (unless mentioned)
 - Extract thread context: who sent it, what channel, parent message
 - Pass structured prompt to session manager: `{ threadId, channel, user, text, ts }`
-- Support slash commands in messages (e.g., `/build`, `/review`, `/reset`)
+- Support slash commands in messages (e.g., `!build`, `!review`, `!reset`)
 - Acknowledge events quickly (Slack expects <3s response)
 
 ## Dependencies
@@ -57,12 +57,12 @@ Add the filtering logic so the bot only processes relevant messages.
 Parse inline commands from message text before passing to session manager.
 
 **What it adds:**
-- Parse `/build`, `/review`, `/frontend`, `/reset`, `/branch <ref>`, `/status` from message start
+- Parse `!build`, `!review`, `!frontend`, `!reset`, `!branch <ref>`, `!status` from message start
 - Strip command from text, pass both command and cleaned text to session manager
-- `/reset` handled directly — clears session (no Claude spawn needed)
-- `/status` handled directly — replies with session state
+- `!reset` handled directly — clears session (no Claude spawn needed)
+- `!status` handled directly — replies with session state
 
-**Test:** `/build fix the auth bug` → session manager receives `{ command: "build", text: "fix the auth bug" }`. `/reset` clears session and replies "Session reset." `/status` on idle thread replies "No active session."
+**Test:** `!build fix the auth bug` → session manager receives `{ command: "build", text: "fix the auth bug" }`. `!reset` clears session and replies "Session reset." `!status` on idle thread replies "No active session."
 **Defers:** Command-based agent routing (that's session manager's job).
 
 ### Iteration 3: DM support and edge cases (~30 min)

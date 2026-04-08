@@ -62,13 +62,13 @@ Build the full `claude` command args from session state.
 - `buildClaudeArgs(session, prompt)` function
 - Always: `-p`, `--output-format stream-json`, `--max-turns 25`
 - If `session.sessionId`: add `--resume <id>`
-- If `session.agentType`: load agent definition, add `--append-system-prompt`
+- If `session.systemPrompt`: add `--append-system-prompt` (prompt string is pre-composed by agent router, spawner doesn't load agents)
 - If MCP config exists: add `--mcp-config <path>`
 - If `session.worktreePath`: set `cwd` to worktree
 - If no worktree: set `cwd` to junior workspace or target repo root
 - Permission mode: `--permission-mode bypassPermissions` (bot runs unattended)
 
-**Test:** Session with sessionId → args include `--resume`. Session with agentType "build" → system prompt includes build agent definition. Session without worktree → cwd defaults to target repo root.
+**Test:** Session with sessionId → args include `--resume`. Session with systemPrompt → args include `--append-system-prompt`. Session without worktree → cwd defaults to target repo root.
 **Defers:** Allowed/disallowed tools config, MCP config generation.
 
 ### Iteration 3: Timeout and error handling (~30 min)

@@ -100,13 +100,13 @@ The core concurrency feature. Messages that arrive while Claude is busy get batc
 Sessions track which agent type and worktree to use.
 
 **What it adds:**
-- `agentType` field set from slash command (`/build` → `"build"`, `/review` → `"review"`)
+- `agentType` field set from slash command (`!build` → `"build"`, `!review` → `"review"`)
 - `targetRepo` field (default from config, overridable per thread)
 - `worktreePath` field — null initially, set when worktree manager creates one
 - Agent type persists across turns — set once, used for all subsequent `--resume` calls
-- Can be changed mid-thread with `/build` or `/review` command
+- Can be changed mid-thread with `!build` or `!review` command
 
-**Test:** `/build fix auth` → session has `agentType: "build"`. Next message in same thread → still uses build agent. `/review` in same thread → switches to review agent.
+**Test:** `!build fix auth` → session has `agentType: "build"`. Next message in same thread → still uses build agent. `!review` in same thread → switches to review agent.
 **Defers:** Actual worktree creation (that's worktree manager's job), MCP config.
 
 ### Iteration 3: Stale cleanup (~30 min)
