@@ -1,9 +1,19 @@
-import type { StreamEventToolUse } from "../claude/types.ts";
+import type { ContentBlockToolUse, StreamEventAssistant } from "../claude/types.ts";
 
-export function formatToolStatus(event: StreamEventToolUse): string {
-  const input = event.input ?? {};
+/**
+ * Extract tool_use content blocks from an assistant event and format as status lines.
+ */
+export function formatToolStatuses(event: StreamEventAssistant): string[] {
+  return event.message.content
+    .filter((c): c is ContentBlockToolUse => c.type === "tool_use")
+    .map(formatToolBlock);
+}
 
-  switch (event.tool) {
+function formatToolBlock(block: ContentBlockToolUse): string {
+  const tool = block.name ?? "Unknown";
+  const input = block.input ?? {};
+
+  switch (tool) {
     case "Bash": {
       const cmd = typeof input.command === "string" ? input.command : "";
       const short = cmd.length > 80 ? cmd.slice(0, 77) + "..." : cmd;
@@ -27,7 +37,7 @@ export function formatToolStatus(event: StreamEventToolUse): string {
       return `Searching for \`${pattern}\``;
     }
     default:
-      return `Using ${event.tool}`;
+      return `Using ${tool}`;
   }
 }
 
@@ -82,7 +92,6 @@ export function splitResponse(
         const endOfLine = remaining.indexOf("\n", closingFence);
         const splitPoint = endOfLine !== -1 ? endOfLine + 1 : closingFence + 3;
         if (splitPoint <= maxLength * 1.5) {
-          // Allow some overflow to keep code blocks intact
           chunks.push(remaining.slice(0, splitPoint).trimEnd());
           remaining = remaining.slice(splitPoint).trimStart();
           continue;

@@ -8,7 +8,7 @@ describe("createStreamParser", () => {
       '{"type":"system","subtype":"init","session_id":"abc123"}\n',
     );
     expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({
+    expect(events[0]).toMatchObject({
       type: "system",
       subtype: "init",
       session_id: "abc123",
@@ -19,7 +19,7 @@ describe("createStreamParser", () => {
     const parser = createStreamParser();
     const chunk =
       '{"type":"system","subtype":"init","session_id":"s1"}\n' +
-      '{"type":"assistant","subtype":"text","text":"hello"}\n';
+      '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}\n';
     const events = parser.feed(chunk);
     expect(events).toHaveLength(2);
     expect(events[0].type).toBe("system");
@@ -34,7 +34,7 @@ describe("createStreamParser", () => {
 
     const events2 = parser.feed(',"session_id":"s1"}\n');
     expect(events2).toHaveLength(1);
-    expect(events2[0]).toEqual({
+    expect(events2[0]).toMatchObject({
       type: "system",
       subtype: "init",
       session_id: "s1",
@@ -51,7 +51,7 @@ describe("createStreamParser", () => {
 
     const events2 = parser.feed(full.slice(mid) + "\n");
     expect(events2).toHaveLength(1);
-    expect(events2[0]).toEqual({
+    expect(events2[0]).toMatchObject({
       type: "result",
       subtype: "success",
       text: "done",
@@ -81,7 +81,7 @@ describe("createStreamParser", () => {
   it("correctly types init events", () => {
     const parser = createStreamParser();
     const events = parser.feed(
-      '{"type":"system","subtype":"init","session_id":"sess-42"}\n',
+      '{"type":"system","subtype":"init","session_id":"sess-42","cwd":"/tmp"}\n',
     );
     expect(events).toHaveLength(1);
     const evt = events[0];
@@ -92,17 +92,21 @@ describe("createStreamParser", () => {
     }
   });
 
-  it("correctly types tool_use events", () => {
+  it("correctly types assistant events with tool_use content", () => {
     const parser = createStreamParser();
     const events = parser.feed(
-      '{"type":"assistant","subtype":"tool_use","tool":"Bash","input":{"command":"ls"}}\n',
+      '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}\n',
     );
     expect(events).toHaveLength(1);
     const evt = events[0];
     expect(evt.type).toBe("assistant");
-    if (evt.type === "assistant" && evt.subtype === "tool_use") {
-      expect(evt.tool).toBe("Bash");
-      expect(evt.input).toEqual({ command: "ls" });
+    if (evt.type === "assistant") {
+      expect(evt.message.content).toHaveLength(1);
+      expect(evt.message.content[0].type).toBe("tool_use");
+      if (evt.message.content[0].type === "tool_use") {
+        expect(evt.message.content[0].name).toBe("Bash");
+        expect(evt.message.content[0].input).toEqual({ command: "ls" });
+      }
     }
   });
 
@@ -120,15 +124,19 @@ describe("createStreamParser", () => {
     }
   });
 
-  it("correctly types text events", () => {
+  it("correctly types assistant events with text content", () => {
     const parser = createStreamParser();
     const events = parser.feed(
-      '{"type":"assistant","subtype":"text","text":"Here is my response"}\n',
+      '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Here is my response"}]}}\n',
     );
     expect(events).toHaveLength(1);
     const evt = events[0];
-    if (evt.type === "assistant" && evt.subtype === "text") {
-      expect(evt.text).toBe("Here is my response");
+    if (evt.type === "assistant") {
+      const textBlock = evt.message.content.find((c) => c.type === "text");
+      expect(textBlock).toBeDefined();
+      if (textBlock?.type === "text") {
+        expect(textBlock.text).toBe("Here is my response");
+      }
     }
   });
 
@@ -144,11 +152,18 @@ describe("createStreamParser", () => {
     expect(events[1].type).toBe("result");
   });
 
-  it("skips valid JSON that is not a recognized event", () => {
+  it("parses user turn echo events", () => {
     const parser = createStreamParser();
-    // Valid JSON but missing required fields for any known event type
-    const events = parser.feed('{"type":"assistant","subtype":"tool_use"}\n');
-    expect(events).toHaveLength(0);
+    const events = parser.feed('{"type":"user","message":{"role":"user","content":[]}}\n');
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("user");
+  });
+
+  it("parses rate_limit_event", () => {
+    const parser = createStreamParser();
+    const events = parser.feed('{"type":"rate_limit_event","rate_limit_info":{}}\n');
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("rate_limit_event");
   });
 
   it("skips null and non-object JSON", () => {

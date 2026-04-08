@@ -8,16 +8,31 @@ function isStreamEvent(value: unknown): value is StreamEvent {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
 
+  // system init
   if (obj.type === "system" && obj.subtype === "init" && typeof obj.session_id === "string") {
     return true;
   }
-  if (obj.type === "assistant" && obj.subtype === "tool_use" && typeof obj.tool === "string") {
+
+  // assistant message with content blocks
+  if (obj.type === "assistant" && typeof obj.message === "object" && obj.message !== null) {
+    const msg = obj.message as Record<string, unknown>;
+    if (Array.isArray(msg.content)) {
+      return true;
+    }
+  }
+
+  // result
+  if (obj.type === "result") {
     return true;
   }
-  if (obj.type === "assistant" && obj.subtype === "text" && typeof obj.text === "string") {
+
+  // user turn echo
+  if (obj.type === "user") {
     return true;
   }
-  if (obj.type === "result" && (obj.subtype === "success" || obj.subtype === "error") && typeof obj.text === "string") {
+
+  // rate limit
+  if (obj.type === "rate_limit_event") {
     return true;
   }
 
@@ -45,12 +60,11 @@ export function createStreamParser(): StreamParser {
         try {
           const parsed: unknown = JSON.parse(line);
           if (isStreamEvent(parsed)) {
-            events.push(parsed);
-          } else {
-            console.warn("[parser] Unrecognized event shape, skipping:", line.slice(0, 200));
+            events.push(parsed as StreamEvent);
           }
+          // Silently skip unrecognized events — there may be new event types
         } catch {
-          console.warn("[parser] Failed to parse JSON line, skipping:", line.slice(0, 200));
+          // Skip malformed lines
         }
 
         newlineIdx = buffer.indexOf("\n");

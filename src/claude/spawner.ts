@@ -44,8 +44,21 @@ export function spawnClaude(
             sessionId = event.session_id;
           }
 
+          if (event.type === "assistant") {
+            // Collect text from assistant content blocks
+            for (const block of event.message.content) {
+              if (block.type === "text" && block.text) {
+                response += block.text;
+              }
+            }
+          }
+
           if (event.type === "result") {
-            response = event.text;
+            // Result may have its own text — use it if we didn't collect from assistant
+            const resultText = event.result ?? event.text ?? "";
+            if (resultText && !response) {
+              response = resultText;
+            }
           }
 
           for (const listener of listeners) {
