@@ -73,8 +73,13 @@ Sub-agents inherit the parent's permission mode but may still be blocked by per-
 - The agent-definitions agent was tasked with creating 6 markdown files in `.claude/agents/`. Both Write and Bash were denied. The agent couldn't complete any of its work and returned a permission request instead of results.
 - Fix: either pre-create the directory structure before spawning, or do file-creation tasks in the main context where permissions are already granted. Reserve sub-agents for work that uses tools they're known to have access to.
 
+### Multi-agent builds need a post-merge audit pass — typecheck alone isn't enough
+When 8 agents build 10 modules independently, they each typecheck in isolation. But the integration points (index.ts wiring, callback signatures, module A calling module B) only get tested when everything is merged. Typecheck catches type mismatches but not logic gaps.
+- 5 blockers survived typecheck: worktree manager never instantiated, timeout never applied, health/cleanup never scheduled, command responses going to console instead of Slack, bot mention not stripped from app_mention events.
+- These are all wiring gaps — each module is correct in isolation but nobody connected them. The audit found them by tracing call paths from index.ts through every module.
+- Lesson: after any multi-agent build wave, do a manual audit of the integration file (index.ts) and the hub module (session/manager.ts) before declaring done. Read every callback assignment and ask "does this actually reach the user?"
+
 ## Known Gaps
 
 - No .env with real Slack tokens — bot can't be tested end-to-end until tokens are provided.
-- No integration test — individual modules typecheck but haven't been wired and run together yet.
-- Agent routing integration with session manager hasn't been tested with real agent definition files — only typechecked.
+- No tests yet — audit caught wiring gaps that tests would have surfaced earlier.
