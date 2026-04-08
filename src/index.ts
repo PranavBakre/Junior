@@ -11,6 +11,7 @@ import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
+import { log } from "./logger.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -24,6 +25,7 @@ sessionManager.worktreeManager = worktreeManager;
 const responder = new SlackResponder(app);
 
 sessionManager.onResponse = (session, response) => {
+  log.info("response", `thread=${session.threadId} len=${response.length}`);
   responder.deleteStatus(session.channel, session.threadId);
   if (response) {
     responder.postResponse(session.channel, session.threadId, response);
@@ -31,25 +33,29 @@ sessionManager.onResponse = (session, response) => {
 };
 
 sessionManager.onEvent = (session, event) => {
+  if (event.type === "system" && event.subtype === "init") {
+    log.info("session", `thread=${session.threadId} sessionId=${session.sessionId}`);
+  }
   if (session.verbosity === "quiet") return;
   if (event.type === "assistant" && event.subtype === "tool_use") {
-    responder.updateStatus(
-      session.channel,
-      session.threadId,
-      formatToolStatus(event),
-    );
+    const status = formatToolStatus(event);
+    log.info("tool", `thread=${session.threadId} ${status}`);
+    responder.updateStatus(session.channel, session.threadId, status);
   }
 };
 
 sessionManager.onMessageBuffered = (event) => {
+  log.info("buffered", `thread=${event.threadId} user=${event.user}`);
   responder.addReaction(event.channel, event.ts, "eyes");
 };
 
 sessionManager.onCommandResponse = (event, response) => {
+  log.info("command", `thread=${event.threadId} cmd=${event.command} response=${response.slice(0, 100)}`);
   responder.postResponse(event.channel, event.threadId, response);
 };
 
 sessionManager.onError = (session, error) => {
+  log.error("error", `thread=${session.threadId} ${error ?? "Unknown error"}`);
   responder.deleteStatus(session.channel, session.threadId);
   responder.postResponse(
     session.channel,
@@ -59,6 +65,7 @@ sessionManager.onError = (session, error) => {
 };
 
 registerEventHandlers(app, (event) => {
+  log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
   sessionManager.handleMessage(event);
 }, store);
 
@@ -70,7 +77,7 @@ setupGracefulShutdown(sessionManager, store);
 setInterval(() => {
   checkOrphanedSessions(store).then((orphaned) => {
     if (orphaned.length > 0) {
-      console.log(`[health] Found ${orphaned.length} orphaned sessions:`, orphaned);
+      log.warn("health", `Found ${orphaned.length} orphaned sessions: ${orphaned.join(", ")}`);
     }
   });
 }, 60_000);
@@ -78,12 +85,12 @@ setInterval(() => {
 setInterval(() => {
   cleanupStaleSessions(store, config.session.staleTimeoutMs).then((cleaned) => {
     if (cleaned.length > 0) {
-      console.log(`[cleanup] Removed ${cleaned.length} stale sessions:`, cleaned);
+      log.info("cleanup", `Removed ${cleaned.length} stale sessions: ${cleaned.join(", ")}`);
     }
   });
 }, config.session.cleanupIntervalMs);
 
 (async () => {
   await app.start();
-  console.log("Junior is running (Socket Mode)");
+  log.info("boot", "Junior is running (Socket Mode)");
 })();

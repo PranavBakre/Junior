@@ -11,6 +11,7 @@ export function buildClaudeArgs(
     prompt,
     "--output-format",
     "stream-json",
+    "--verbose",
     "--max-turns",
     String(config.maxTurns),
   ];
