@@ -1,38 +1,12 @@
-import { App } from "@slack/bolt";
 import { loadConfig } from "./config.ts";
+import { createSlackApp } from "./slack/app.ts";
+import { registerEventHandlers } from "./slack/events.ts";
 
 const config = loadConfig();
+const app = createSlackApp(config);
 
-const app = new App({
-  token: config.slack.botToken,
-  appToken: config.slack.appToken,
-  socketMode: true,
-  signingSecret: config.slack.signingSecret || undefined,
-});
-
-// Echo bot — project-setup iteration 0
-app.event("message", async ({ event, say }) => {
-  // Ignore bot messages
-  if ("bot_id" in event) return;
-
-  const text = "text" in event ? event.text : undefined;
-  if (!text) return;
-
-  const threadTs = "thread_ts" in event ? event.thread_ts : event.ts;
-
-  await say({
-    text: `Echo: ${text}`,
-    thread_ts: threadTs,
-  });
-});
-
-app.event("app_mention", async ({ event, say }) => {
-  const threadTs = event.thread_ts ?? event.ts;
-
-  await say({
-    text: `Echo: ${event.text}`,
-    thread_ts: threadTs,
-  });
+registerEventHandlers(app, (event) => {
+  console.log("[event]", JSON.stringify(event, null, 2));
 });
 
 (async () => {
