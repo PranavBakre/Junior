@@ -85,7 +85,13 @@ The first audit (post-build) found 11 wiring gaps — features built but not con
 - The spawner cwd fallback was the best example: code worked, tests passed, but `process.cwd()` violated the control plane / data plane separation. A review agent caught it because it was checking against the architecture doc, not against functional behavior.
 - Two audit types, two classes of bugs. Run both after multi-agent builds.
 
+### Default event handler scope matters more than you think
+A Slack bot subscribed to `message` events in a channel receives every message — not just mentions. Without filtering, the bot would spawn Claude for every message in every channel it's in.
+- The initial implementation responded to all channel messages. Caught during the "how are we handling messages" discussion, not during any audit.
+- Fix: top-level channel messages → ignored (use @mention). Thread messages → only if bot has an active session. DMs → always. This is three lines of filtering but prevents the most expensive failure mode (runaway Claude spawns).
+
 ## Known Gaps
 
 - No .env with real Slack tokens — bot can't be tested end-to-end until tokens are provided.
 - 140 unit tests passing but no integration/e2e test with real Slack + Claude yet.
+- Home tab refresh is passive (renders on `app_home_opened`). Proactive refresh on session state changes not yet wired.
