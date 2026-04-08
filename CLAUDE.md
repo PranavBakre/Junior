@@ -17,12 +17,20 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | Question | Read this |
 |---|---|
 | Full system design, architecture, trade-offs? | [docs/features/main.md](docs/features/main.md) |
-| How session management works (buffer, batch, drain)? | [docs/features/main.md](docs/features/main.md) — "Buffering over interruption" |
-| Worktree isolation design? | [docs/features/main.md](docs/features/main.md) — "Worktree Isolation" |
-| MCP and skill isolation per thread? | [docs/features/main.md](docs/features/main.md) — "Skill & MCP Isolation" |
-| Streaming and status updates? | [docs/features/main.md](docs/features/main.md) — "Streaming Updates to Slack" |
+| How does Slack event handling work? | [docs/features/slack-event-handler.md](docs/features/slack-event-handler.md) |
+| How does session management work (buffer, batch, drain)? | [docs/features/session-management.md](docs/features/session-management.md) |
+| How does Claude CLI spawning work? | [docs/features/claude-spawner.md](docs/features/claude-spawner.md) |
+| How do streaming updates to Slack work? | [docs/features/stream-to-slack.md](docs/features/stream-to-slack.md) |
+| How does worktree isolation work? | [docs/features/worktree-manager.md](docs/features/worktree-manager.md) |
+| How does agent routing work? | [docs/features/agent-routing.md](docs/features/agent-routing.md) |
+| What agent definitions exist and how are they structured? | [docs/features/agent-definitions.md](docs/features/agent-definitions.md) |
+| How do thread commands (/build, /reset, /status) work? | [docs/features/thread-commands.md](docs/features/thread-commands.md) |
+| How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
+| Project setup, config, directory structure? | [docs/features/project-setup.md](docs/features/project-setup.md) |
 | Known limitations and open questions? | [docs/features/main.md](docs/features/main.md) — bottom sections |
 | Code index for a specific module? | `docs/code_index/<module>.md` (created as modules are built) |
+| Ideation and planning workflow? | [docs/workflows/ideation.md](docs/workflows/ideation.md) |
+| Building and iteration workflow? | [docs/workflows/building.md](docs/workflows/building.md) |
 
 ## Architecture
 
@@ -52,7 +60,7 @@ Slack Bot Server (Node.js / Bun)
 2. **One process per message turn.** Each Slack message spawns a short-lived `claude -p` process. The process exits after responding. No long-lived processes between messages.
 3. **`--resume` for continuity.** Use `--resume <sessionId>` to pick up conversation context. Session IDs are extracted from the first `stream-json` event on stdout.
 4. **Buffer, don't interrupt.** If Claude is mid-execution and new messages arrive, buffer them. Never kill a running process — it risks corrupted session state. Drain the buffer as a combined prompt after the current turn exits.
-5. **Worktree per thread.** Each Slack thread gets its own git worktree via `--worktree "slack-<threadId>"`. This isolates file edits across concurrent sessions.
+5. **Worktrees for target repos only.** Junior's workspace is shared across all threads (learnings accumulate). Worktrees are created in TARGET repos (example-backend, example-frontend) when threads need code isolation. Threads that only read or discuss don't need worktrees.
 6. **Stream events for status.** Parse `--output-format stream-json` events (tool_use, text, result) and post incremental Slack updates. The final `result` event is the response to post.
 7. **Session state is authoritative.** The session map (thread_id -> session) is the single source of truth for whether a thread is idle/busy, what its session ID is, and what messages are pending.
 8. **Cleanup stale threads.** Worktrees and sessions for inactive threads (24h default) must be cleaned up. Check for uncommitted changes before force-removing a worktree.
@@ -68,12 +76,51 @@ Slack Bot Server (Node.js / Bun)
 
 ```
 junior/
+  src/
+    index.ts              -- entry point: start Slack app, wire everything
+    config.ts             -- env loading, config validation
+    slack/
+      app.ts              -- Bolt app setup, Socket Mode
+      events.ts           -- event listeners, message routing
+      commands.ts         -- slash command parsing
+      formatting.ts       -- Slack message formatting
+    session/
+      manager.ts          -- session state machine (buffer/drain)
+      types.ts            -- ThreadSession interface
+      store/
+        interface.ts      -- SessionStore interface
+        memory.ts         -- InMemorySessionStore
+        redis.ts          -- RedisSessionStore (production)
+    claude/
+      spawner.ts          -- spawn claude -p, manage child process
+      args.ts             -- build CLI args from session state
+      parser.ts           -- stream-json line parser
+      types.ts            -- stream-json event types
+    worktree/
+      manager.ts          -- create/remove/check worktrees in target repos
+      types.ts            -- RepoConfig
+    agents/
+      router.ts           -- load agent definitions, pick agent type
+      loader.ts           -- read .md files, parse frontmatter
+    lifecycle/
+      timeout.ts          -- process timeout guard
+      health.ts           -- orphan detection
+      shutdown.ts         -- graceful bot shutdown
+  .claude/
+    agents/               -- agent definitions (junior's own, not target repo's)
+      common/
+        building-philosophy.md
+      build.md
+      review.md
+      frontend.md
+      architect.md
+      pm.md
   docs/
-    features/       -- feature design docs (RFC, specs)
-      main.md       -- core Slack bot -> Claude Code orchestrator design
-    code_index/     -- code indexes per module (created as code is built)
-  src/              -- source code (to be created)
-  CLAUDE.md         -- this file
+    features/             -- feature design docs with iteration plans
+    code_index/           -- code indexes per module
+    workflows/            -- ideation and building workflows
+  CLAUDE.md
+  learnings.md
 ```
 
 ## Origin: OpenClaw Agent System
@@ -88,18 +135,19 @@ This project replaces the OpenClaw-based agent workspace at PranavBakre/openclaw
 What changes:
 - OpenClaw's SOUL.md / AGENTS.md / TOOLS.md system is replaced by CLAUDE.md + `.claude/` config.
 - Heartbeat polling is replaced by Claude Code hooks and cron.
-- Agent dispatch uses Claude Code's `--worktree` and `--resume` instead of OpenClaw's agent workspace system.
+- Agent dispatch uses Claude Code's `--resume` and worktrees in target repos instead of OpenClaw's agent workspace system.
+- Agent definitions live in target repos' `.claude/agents/` — don't duplicate them in junior.
 
 ## Commands
 
 ```bash
-# Development (to be defined as code is built)
-# npm run dev                   -- Start bot server with hot reload
-# npm run build                 -- Build for production
-# npm test                      -- Run tests
+# Development
+bun run dev                     # Start bot server with hot reload (--watch)
+bun run build                   # Build for production
+bun run typecheck               # Type checking without emit
 
-# Slack bot management (to be defined)
-# npm run cleanup               -- Clean stale worktrees and sessions
+# Slack bot management
+bun run cleanup                 # Clean stale worktrees and sessions
 ```
 
 ## Documentation Workflow
