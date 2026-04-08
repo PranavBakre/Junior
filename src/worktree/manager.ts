@@ -70,8 +70,13 @@ export class WorktreeManager {
     threadId: string
   ): Promise<boolean> {
     const worktreePath = this.getWorktreePath(repoName, threadId);
-    const file = Bun.file(worktreePath);
-    return file.exists();
+    try {
+      const { stat } = await import("node:fs/promises");
+      const s = await stat(worktreePath);
+      return s.isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   /**

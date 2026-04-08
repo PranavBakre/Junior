@@ -46,7 +46,9 @@ export function registerEventHandlers(
 
     const threadId = event.thread_ts ?? event.ts;
 
-    const parsed = parseCommand(event.text);
+    // Strip bot mention from text (Slack includes <@BOTID> in app_mention events)
+    const cleanText = event.text.replace(/<@[A-Z0-9]+>\s*/g, "").trim();
+    const parsed = parseCommand(cleanText);
 
     onMessage({
       threadId,

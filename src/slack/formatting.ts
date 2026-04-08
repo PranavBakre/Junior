@@ -37,6 +37,8 @@ export function splitResponse(
   text: string,
   maxLength: number = DEFAULT_MAX_LENGTH,
 ): string[] {
+  if (!text) return [];
+
   if (text.length <= maxLength) {
     return [text];
   }

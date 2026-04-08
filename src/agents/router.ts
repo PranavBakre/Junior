@@ -50,10 +50,12 @@ export class AgentRouter {
       }
     }
 
-    // Load common preamble from fallback
-    const fallbackCommonDir = `${this.fallbackAgentsDir}/common`;
-    const fallbackFiles = await readMarkdownFiles(fallbackCommonDir);
-    preambleParts.push(...fallbackFiles);
+    // Load common preamble from fallback only if target repo didn't have any
+    if (preambleParts.length === 0) {
+      const fallbackCommonDir = `${this.fallbackAgentsDir}/common`;
+      const fallbackFiles = await readMarkdownFiles(fallbackCommonDir);
+      preambleParts.push(...fallbackFiles);
+    }
 
     const commonPreamble = preambleParts.join("\n\n");
 

@@ -4,8 +4,10 @@ import type { SlackMessageEvent } from "../slack/events.ts";
 import type { SessionStore } from "./store/interface.ts";
 import type { ThreadSession } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
+import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude } from "../claude/spawner.ts";
+import { withTimeout } from "../lifecycle/timeout.ts";
 
 export class SessionManager {
   private store: SessionStore;
@@ -13,6 +15,7 @@ export class SessionManager {
   private handles = new Map<string, SpawnHandle>();
 
   agentRouter?: AgentRouter;
+  worktreeManager?: WorktreeManager;
   onResponse?: (session: ThreadSession, response: string) => void;
   onEvent?: (session: ThreadSession, event: StreamEvent) => void;
   onMessageBuffered?: (event: SlackMessageEvent) => void;
@@ -183,33 +186,69 @@ export class SessionManager {
     session: ThreadSession,
     prompt: string,
   ): Promise<void> {
-    if (session.agentType && this.agentRouter) {
-      session.systemPrompt =
-        (await this.agentRouter.composeSystemPrompt(session)) ?? null;
-      await this.store.set(session.threadId, session);
-    }
-
-    const handle = spawnClaude(session, prompt, this.config.claude);
-    this.handles.set(session.threadId, handle);
-    session.pid = handle.pid;
-
-    handle.onEvent((event) => {
-      if (event.type === "system" && event.subtype === "init") {
-        session.sessionId = event.session_id;
+    try {
+      // Compose agent system prompt
+      if (session.agentType && this.agentRouter) {
+        session.systemPrompt =
+          (await this.agentRouter.composeSystemPrompt(session)) ?? null;
+        await this.store.set(session.threadId, session);
       }
-      this.onEvent?.(session, event);
-    });
 
-    handle.result.then(
-      (result) => this.onRunComplete(session, result),
-      (err) => this.onRunComplete(session, {
-        sessionId: null,
-        response: "",
-        events: [],
-        exitCode: null,
-        error: err instanceof Error ? err.message : String(err),
-      }),
-    );
+      // Create worktree for build/frontend agents if needed
+      if (
+        this.worktreeManager &&
+        session.targetRepo &&
+        !session.worktreePath &&
+        (session.agentType === "build" || session.agentType === "frontend")
+      ) {
+        try {
+          session.worktreePath = await this.worktreeManager.createWorktree(
+            session.targetRepo,
+            session.threadId,
+            session.baseRef ?? undefined,
+          );
+          await this.store.set(session.threadId, session);
+        } catch (err) {
+          console.error("[manager] Failed to create worktree:", err);
+          // Continue without worktree — spawner falls back to cwd
+        }
+      }
+
+      const rawHandle = spawnClaude(session, prompt, this.config.claude);
+      const handle = withTimeout(rawHandle, this.config.claude.timeoutMs, () => {
+        console.warn(`[manager] Claude timed out for thread ${session.threadId}`);
+      });
+      this.handles.set(session.threadId, handle);
+      session.pid = handle.pid;
+
+      handle.onEvent((event: StreamEvent) => {
+        if (event.type === "system" && event.subtype === "init") {
+          session.sessionId = event.session_id;
+        }
+        this.onEvent?.(session, event);
+      });
+
+      handle.result.then(
+        (result: SpawnResult) => this.onRunComplete(session, result),
+        (err: unknown) => this.onRunComplete(session, {
+          sessionId: null,
+          response: "",
+          events: [],
+          exitCode: null,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    } catch (err) {
+      // Agent prompt composition or worktree creation failed fatally
+      session.status = "idle";
+      session.lastError = {
+        type: "setup",
+        message: err instanceof Error ? err.message : String(err),
+        timestamp: Date.now(),
+      };
+      await this.store.set(session.threadId, session);
+      this.onError?.(session, session.lastError.message);
+    }
   }
 
   private async onRunComplete(
@@ -232,7 +271,9 @@ export class SessionManager {
       this.onError?.(session, result.error);
     }
 
-    this.onResponse?.(session, result.response);
+    if (result.response) {
+      this.onResponse?.(session, result.response);
+    }
 
     if (session.pendingMessages.length > 0) {
       const combined = session.pendingMessages
