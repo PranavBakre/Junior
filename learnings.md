@@ -90,6 +90,13 @@ A Slack bot subscribed to `message` events in a channel receives every message �
 - The initial implementation responded to all channel messages. Caught during the "how are we handling messages" discussion, not during any audit.
 - Fix: top-level channel messages → ignored (use @mention). Thread messages → only if bot has an active session. DMs → always. This is three lines of filtering but prevents the most expensive failure mode (runaway Claude spawns).
 
+## Technical Learnings
+
+### Claude Code CLI requires `--verbose` when using `--output-format stream-json`
+Without `--verbose`, the CLI errors: "When using --print, --output-format=stream-json requires --verbose". This isn't documented in the feature doc or architecture — discovered on first real run.
+- The error surfaced immediately on first `bun run dev` test. Zero stream events would have been parsed without this flag.
+- Added to `args.ts` alongside `-p`, `--output-format stream-json`, and `--permission-mode`.
+
 ## Known Gaps
 
 - No .env with real Slack tokens — bot can't be tested end-to-end until tokens are provided.
