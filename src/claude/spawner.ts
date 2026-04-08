@@ -7,10 +7,11 @@ import { createStreamParser } from "./parser.ts";
 export function spawnClaude(
   session: ThreadSession,
   prompt: string,
-  config: Config["claude"]
+  config: Config["claude"],
+  targetRepoCwd?: string,
 ): SpawnHandle {
   const args = buildClaudeArgs(session, prompt, config);
-  const cwd = session.worktreePath ?? process.cwd();
+  const cwd = session.worktreePath ?? targetRepoCwd ?? process.cwd();
 
   const proc = Bun.spawn(["claude", ...args], {
     cwd,

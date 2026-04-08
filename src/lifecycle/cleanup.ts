@@ -9,7 +9,7 @@ export async function cleanupStaleSessions(
 
   for (const [threadId, session] of sessions) {
     if (Date.now() - session.lastActivity > staleTimeoutMs) {
-      if (session.status === "busy") {
+      if (session.status === "busy" || session.status === "draining") {
         continue;
       }
       await store.delete(threadId);

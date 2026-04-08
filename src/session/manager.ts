@@ -6,13 +6,16 @@ import type { ThreadSession } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
-import { spawnClaude } from "../claude/spawner.ts";
+import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
+
+type SpawnClaudeFn = typeof defaultSpawnClaude;
 
 export class SessionManager {
   private store: SessionStore;
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
+  private spawnClaude: SpawnClaudeFn;
 
   agentRouter?: AgentRouter;
   worktreeManager?: WorktreeManager;
@@ -22,9 +25,10 @@ export class SessionManager {
   onError?: (session: ThreadSession, error: string | null) => void;
   onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
 
-  constructor(store: SessionStore, config: Config) {
+  constructor(store: SessionStore, config: Config, spawnClaude?: SpawnClaudeFn) {
     this.store = store;
     this.config = config;
+    this.spawnClaude = spawnClaude ?? defaultSpawnClaude;
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
@@ -214,7 +218,14 @@ export class SessionManager {
         }
       }
 
-      const rawHandle = spawnClaude(session, prompt, this.config.claude);
+      // Resolve target repo path for cwd fallback (decision 4: cwd → target repo)
+      let targetRepoCwd: string | undefined;
+      if (session.targetRepo) {
+        const repo = this.config.repos.find((r) => r.name === session.targetRepo);
+        if (repo) targetRepoCwd = repo.path;
+      }
+
+      const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd);
       const handle = withTimeout(rawHandle, this.config.claude.timeoutMs, () => {
         console.warn(`[manager] Claude timed out for thread ${session.threadId}`);
       });
@@ -282,7 +293,11 @@ export class SessionManager {
       session.pendingMessages = [];
       session.status = "draining";
       await this.store.set(session.threadId, session);
-      this.runClaudeWithAgent(session, combined);
+      this.runClaudeWithAgent(session, combined).catch((err) => {
+        console.error("[manager] Drain failed:", err);
+        session.status = "idle";
+        this.store.set(session.threadId, session);
+      });
     } else {
       session.status = "idle";
       await this.store.set(session.threadId, session);

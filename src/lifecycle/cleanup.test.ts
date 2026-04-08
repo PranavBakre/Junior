@@ -86,16 +86,16 @@ describe("cleanupStaleSessions", () => {
     expect(cleaned).toEqual([]);
   });
 
-  it("keeps stale draining sessions (not idle)", async () => {
+  it("keeps stale draining sessions", async () => {
     const store = makeStore();
     const session = createSession("thread-1", "channel-1");
     session.lastActivity = Date.now() - 100_000;
     session.status = "draining";
     await store.set("thread-1", session);
 
-    // draining is not "idle" but also not "busy", so it will be cleaned
-    // (the code only skips "busy")
+    // draining sessions are about to spawn — don't delete them
     const cleaned = await cleanupStaleSessions(store, 50_000);
-    expect(cleaned).toEqual(["thread-1"]);
+    expect(cleaned).toEqual([]);
+    expect(await store.get("thread-1")).toBeDefined();
   });
 });
