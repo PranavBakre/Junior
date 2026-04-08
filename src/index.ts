@@ -6,12 +6,15 @@ import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { InMemorySessionStore } from "./session/store/memory.ts";
 import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
+import { AgentRouter } from "./agents/router.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
 
 const store = new InMemorySessionStore();
 const sessionManager = new SessionManager(store, config);
+const agentRouter = new AgentRouter(config.repos, ".claude/agents");
+sessionManager.agentRouter = agentRouter;
 const responder = new SlackResponder(app);
 
 sessionManager.onResponse = (session, response) => {

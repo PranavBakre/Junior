@@ -3,6 +3,7 @@ import type { SpawnHandle, SpawnResult, StreamEvent } from "../claude/types.ts";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { SessionStore } from "./store/interface.ts";
 import type { ThreadSession } from "./types.ts";
+import type { AgentRouter } from "../agents/router.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude } from "../claude/spawner.ts";
 
@@ -11,6 +12,7 @@ export class SessionManager {
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
 
+  agentRouter?: AgentRouter;
   onResponse?: (session: ThreadSession, response: string) => void;
   onEvent?: (session: ThreadSession, event: StreamEvent) => void;
   onMessageBuffered?: (event: SlackMessageEvent) => void;
@@ -51,7 +53,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
-    this.runClaude(session, event.text);
+    this.runClaudeWithAgent(session, event.text);
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -177,7 +179,16 @@ export class SessionManager {
     }
   }
 
-  private runClaude(session: ThreadSession, prompt: string): void {
+  private async runClaudeWithAgent(
+    session: ThreadSession,
+    prompt: string,
+  ): Promise<void> {
+    if (session.agentType && this.agentRouter) {
+      session.systemPrompt =
+        (await this.agentRouter.composeSystemPrompt(session)) ?? null;
+      await this.store.set(session.threadId, session);
+    }
+
     const handle = spawnClaude(session, prompt, this.config.claude);
     this.handles.set(session.threadId, handle);
     session.pid = handle.pid;
@@ -230,7 +241,7 @@ export class SessionManager {
       session.pendingMessages = [];
       session.status = "draining";
       await this.store.set(session.threadId, session);
-      this.runClaude(session, combined);
+      this.runClaudeWithAgent(session, combined);
     } else {
       session.status = "idle";
       await this.store.set(session.threadId, session);
