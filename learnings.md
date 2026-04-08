@@ -56,8 +56,14 @@ A design can be internally consistent and still wrong because it violates platfo
 - The spawner doc had iteration 2 loading agent definitions — but that's the router's responsibility. The spawner should be a dumb executor that accepts a pre-composed prompt. Internal consistency (each module does one thing) caught this on review.
 - Agent routing had a "suggest with a chatty Slack reply" pattern that violated the no-narration principle already documented in SOUL.md. Cross-referencing behavioral rules against feature designs caught it.
 
+### Parallel worktree agents merge cleanly when they touch different directories
+Two agents working in isolated worktrees on non-overlapping directories (slack/ and claude/) merged into main with zero conflicts — one fast-forward, one clean 3-way merge. The precondition: scaffold the shared foundation first (types, config, directory structure), then branch.
+- Project-setup created the shared types (ThreadSession, StreamEvent, Config) that both agents imported. Neither agent needed to modify the other's types.
+- The only shared file both agents touched was index.ts — but the slack agent's change was a complete rewrite (echo bot → modular wiring), while the claude agent didn't touch it. No conflict.
+- Key: the build order (setup → independent features → integration features) naturally prevents conflicts. Features that depend on each other can't be parallelized anyway.
+
 ## Known Gaps
 
-- No source code yet — CLAUDE.md is written against the design doc, not working code. Rules and structure sections need updating as implementation begins.
-- Open questions from the feature doc (stream-json schema, `--resume` interaction with session state, session locking) are unresolved and will affect implementation choices.
-- Agent definitions (`.claude/agents/`) not yet written — the mapping from OpenClaw agents to Claude Code agents is documented but not implemented.
+- Session manager not yet built — the state machine that wires slack events to the claude spawner (buffer/drain). Next in build order.
+- Agent definitions (`.claude/agents/`) not yet written.
+- No .env with real Slack tokens — echo bot can't be tested until tokens are provided.
