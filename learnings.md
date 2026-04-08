@@ -79,7 +79,13 @@ When 8 agents build 10 modules independently, they each typecheck in isolation. 
 - These are all wiring gaps — each module is correct in isolation but nobody connected them. The audit found them by tracing call paths from index.ts through every module.
 - Lesson: after any multi-agent build wave, do a manual audit of the integration file (index.ts) and the hub module (session/manager.ts) before declaring done. Read every callback assignment and ask "does this actually reach the user?"
 
+### Architecture audits catch a different class of bugs than functional audits
+The first audit (post-build) found 11 wiring gaps — features built but not connected. The architecture audit found 7 convention violations — features connected but not following the design. Zero overlap between the two.
+- Post-build audit catches: "this module exists but nobody calls it." Architecture audit catches: "this module is called but violates decision 4 (cwd should point to target repo, not junior)."
+- The spawner cwd fallback was the best example: code worked, tests passed, but `process.cwd()` violated the control plane / data plane separation. A review agent caught it because it was checking against the architecture doc, not against functional behavior.
+- Two audit types, two classes of bugs. Run both after multi-agent builds.
+
 ## Known Gaps
 
 - No .env with real Slack tokens — bot can't be tested end-to-end until tokens are provided.
-- No tests yet — audit caught wiring gaps that tests would have surfaced earlier.
+- 140 unit tests passing but no integration/e2e test with real Slack + Claude yet.
