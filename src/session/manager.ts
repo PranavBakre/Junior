@@ -15,6 +15,7 @@ export class SessionManager {
   onEvent?: (session: ThreadSession, event: StreamEvent) => void;
   onMessageBuffered?: (event: SlackMessageEvent) => void;
   onError?: (session: ThreadSession, error: string | null) => void;
+  onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
 
   constructor(store: SessionStore, config: Config) {
     this.store = store;
@@ -27,6 +28,11 @@ export class SessionManager {
     if (!session) {
       session = createSession(event.threadId, event.channel);
       await this.store.set(event.threadId, session);
+    }
+
+    if (event.command) {
+      const handled = await this.handleCommand(session, event);
+      if (handled) return;
     }
 
     if (session.status === "busy") {
@@ -62,6 +68,113 @@ export class SessionManager {
       }
     }
     await this.store.delete(threadId);
+  }
+
+  private async handleCommand(
+    session: ThreadSession,
+    event: SlackMessageEvent,
+  ): Promise<boolean> {
+    switch (event.command) {
+      case "reset": {
+        await this.resetSession(session.threadId);
+        this.onCommandResponse?.(event, "Session reset.");
+        return true;
+      }
+
+      case "status": {
+        const ago = session.lastActivity
+          ? `${Math.round((Date.now() - session.lastActivity) / 1000)}s ago`
+          : "never";
+        const lines = [
+          `*Status:* ${session.status}`,
+          `*Agent:* ${session.agentType ?? "default"}`,
+          `*Repo:* ${session.targetRepo ?? "none"}`,
+          `*Worktree:* ${session.worktreePath ?? "none"}`,
+          `*Last activity:* ${ago}`,
+          `*Pending messages:* ${session.pendingMessages.length}`,
+        ];
+        this.onCommandResponse?.(event, lines.join("\n"));
+        return true;
+      }
+
+      case "help": {
+        const helpText = [
+          "*Commands:*",
+          "`!build` — Build agent (continues to Claude)",
+          "`!frontend` — Frontend agent (continues to Claude)",
+          "`!review` — Review agent (continues to Claude)",
+          "`!architect` — Architect agent (continues to Claude)",
+          "`!repo <name>` — Set target repository",
+          "`!branch <ref>` — Set base branch ref",
+          "`!reset` — Reset session",
+          "`!status` — Show session status",
+          "`!quiet` — Minimal output",
+          "`!normal` — Normal output",
+          "`!verbose` — Verbose output",
+          "`!help` — Show this help",
+        ].join("\n");
+        this.onCommandResponse?.(event, helpText);
+        return true;
+      }
+
+      case "quiet": {
+        session.verbosity = "quiet";
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, "Quiet mode.");
+        return true;
+      }
+
+      case "verbose": {
+        session.verbosity = "verbose";
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, "Verbose mode.");
+        return true;
+      }
+
+      case "normal": {
+        session.verbosity = "normal";
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, "Normal mode.");
+        return true;
+      }
+
+      case "build":
+      case "frontend":
+      case "review":
+      case "architect": {
+        session.agentType = event.command;
+        await this.store.set(session.threadId, session);
+        return false;
+      }
+
+      case "repo": {
+        const repoName = event.text.trim();
+        const match = this.config.repos.find((r) => r.name === repoName);
+        if (match) {
+          session.targetRepo = match.name;
+          await this.store.set(session.threadId, session);
+          this.onCommandResponse?.(event, `Repository set to *${match.name}*.`);
+        } else {
+          const available = this.config.repos.map((r) => r.name).join(", ");
+          this.onCommandResponse?.(
+            event,
+            `Unknown repo "${repoName}". Available: ${available || "none configured"}`,
+          );
+        }
+        return true;
+      }
+
+      case "branch": {
+        const ref = event.text.trim();
+        session.baseRef = ref;
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, `Base ref set to *${ref}*.`);
+        return true;
+      }
+
+      default:
+        return false;
+    }
   }
 
   private runClaude(session: ThreadSession, prompt: string): void {

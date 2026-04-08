@@ -32,6 +32,10 @@ sessionManager.onMessageBuffered = (event) => {
   responder.addReaction(event.channel, event.ts, "eyes");
 };
 
+sessionManager.onCommandResponse = (event, response) => {
+  console.log(`[command] thread=${event.threadId}`, response);
+};
+
 sessionManager.onError = (session, error) => {
   responder.postResponse(
     session.channel,

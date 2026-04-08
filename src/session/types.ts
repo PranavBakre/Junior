@@ -13,6 +13,7 @@ export interface ThreadSession {
   sessionId: string | null;
   worktreePath: string | null;
   targetRepo: string | null;
+  baseRef: string | null;
   agentType: string | null;
   systemPrompt: string | null;
   status: SessionStatus;
@@ -34,6 +35,7 @@ export function createSession(
     sessionId: null,
     worktreePath: null,
     targetRepo: null,
+    baseRef: null,
     agentType: null,
     systemPrompt: null,
     status: "idle",
