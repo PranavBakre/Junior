@@ -93,9 +93,16 @@ A Slack bot subscribed to `message` events in a channel receives every message �
 ## Technical Learnings
 
 ### Claude Code CLI requires `--verbose` when using `--output-format stream-json`
-Without `--verbose`, the CLI errors: "When using --print, --output-format=stream-json requires --verbose". This isn't documented in the feature doc or architecture — discovered on first real run.
-- The error surfaced immediately on first `bun run dev` test. Zero stream events would have been parsed without this flag.
+Without `--verbose`, the CLI errors: "When using --print, --output-format=stream-json requires --verbose". Discovered on first real run.
 - Added to `args.ts` alongside `-p`, `--output-format stream-json`, and `--permission-mode`.
+
+### Real stream-json format differs from what documentation suggests
+The actual Claude CLI stream-json output wraps assistant responses in `message.content[]` blocks, not flat `subtype`/`text` fields. Every event type we assumed was wrong except `system.init` and `result`.
+- Expected: `{"type":"assistant","subtype":"tool_use","tool":"Bash","input":{...}}`
+- Actual: `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{...}}]}}`
+- Also found: `user` echo events, `rate_limit_event` events, `thinking` content blocks — none in our original types.
+- The parser silently dropped every non-init event as "unrecognized shape". Claude was responding but the bot never saw the response. Fixed by rewriting types to match real output.
+- Lesson: when building against an undocumented protocol, capture real output first (`claude -p "test" --output-format stream-json --verbose | head`), then write types. Don't guess the schema from docs.
 
 ## Known Gaps
 
