@@ -17,12 +17,14 @@ export function spawnClaude(
     cwd,
     stdout: "pipe",
     stderr: "pipe",
+    env: { ...process.env, JUNIOR_SPAWNED: "1" },
   });
 
   const listeners: Array<(event: StreamEvent) => void> = [];
   const events: StreamEvent[] = [];
   let sessionId: string | null = null;
-  let response = "";
+  let resultText = "";
+  let lastAssistantText = "";
 
   const result = (async (): Promise<SpawnResult> => {
     const parser = createStreamParser();
@@ -45,20 +47,20 @@ export function spawnClaude(
           }
 
           if (event.type === "assistant") {
-            // Collect text from assistant content blocks
+            // Track the last assistant turn's text (not accumulated across turns)
+            let turnText = "";
             for (const block of event.message.content) {
               if (block.type === "text" && block.text) {
-                response += block.text;
+                turnText += block.text;
               }
+            }
+            if (turnText) {
+              lastAssistantText = turnText;
             }
           }
 
           if (event.type === "result") {
-            // Result may have its own text — use it if we didn't collect from assistant
-            const resultText = event.result ?? event.text ?? "";
-            if (resultText && !response) {
-              response = resultText;
-            }
+            resultText = event.result ?? event.text ?? "";
           }
 
           for (const listener of listeners) {
@@ -87,7 +89,7 @@ export function spawnClaude(
 
     return {
       sessionId,
-      response,
+      response: resultText || lastAssistantText,
       events,
       exitCode,
       error,

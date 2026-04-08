@@ -17,10 +17,11 @@ export function registerEventHandlers(
   app: App,
   onMessage: OnMessageCallback,
   store?: SessionStore,
+  selfBotId?: string,
 ): void {
   app.event("message", async ({ event }) => {
-    // Filter out bot messages
-    if ("bot_id" in event) return;
+    // Only filter our own bot messages to avoid loops; let other bots through
+    if ("bot_id" in event && selfBotId && (event as { bot_id: string }).bot_id === selfBotId) return;
 
     const text = "text" in event ? event.text : undefined;
     if (!text) return;

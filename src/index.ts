@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.ts";
 import { createSlackApp } from "./slack/app.ts";
 import { registerEventHandlers } from "./slack/events.ts";
-import { formatToolStatuses } from "./slack/formatting.ts";
+import { formatToolStatuses, extractAssistantText } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { InMemorySessionStore } from "./session/store/memory.ts";
@@ -22,6 +22,7 @@ const agentRouter = new AgentRouter(config.repos, ".claude/agents");
 const worktreeManager = new WorktreeManager(config.repos);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
+sessionManager.slackApp = app;
 const responder = new SlackResponder(app);
 
 sessionManager.onResponse = (session, response) => {
@@ -38,6 +39,13 @@ sessionManager.onEvent = (session, event) => {
   }
   if (session.verbosity === "quiet") return;
   if (event.type === "assistant") {
+    // Show text content as live status (gets overwritten each turn)
+    const text = extractAssistantText(event);
+    if (text) {
+      responder.updateStatus(session.channel, session.threadId, text);
+    }
+
+    // Show tool use as status
     const statuses = formatToolStatuses(event);
     for (const status of statuses) {
       log.info("tool", `thread=${session.threadId} ${status}`);
@@ -66,11 +74,6 @@ sessionManager.onError = (session, error) => {
   );
 };
 
-registerEventHandlers(app, (event) => {
-  log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
-  sessionManager.handleMessage(event);
-}, store);
-
 registerHomeTab(app, store);
 
 setupGracefulShutdown(sessionManager, store);
@@ -94,5 +97,27 @@ setInterval(() => {
 
 (async () => {
   await app.start();
+
+  // Resolve bot identity before registering event handlers
+  let selfBotId: string | undefined;
+  try {
+    const auth = await app.client.auth.test();
+    if (auth.user_id) {
+      sessionManager.botUserId = auth.user_id;
+      log.info("boot", `Bot user ID: ${auth.user_id}`);
+    }
+    if (auth.bot_id) {
+      selfBotId = auth.bot_id;
+      log.info("boot", `Bot ID: ${auth.bot_id}`);
+    }
+  } catch (err) {
+    log.warn("boot", `Failed to resolve bot identity: ${err}`);
+  }
+
+  registerEventHandlers(app, (event) => {
+    log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
+    sessionManager.handleMessage(event);
+  }, store, selfBotId);
+
   log.info("boot", "Junior is running (Socket Mode)");
 })();

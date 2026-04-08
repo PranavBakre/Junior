@@ -104,6 +104,31 @@ The actual Claude CLI stream-json output wraps assistant responses in `message.c
 - The parser silently dropped every non-init event as "unrecognized shape". Claude was responding but the bot never saw the response. Fixed by rewriting types to match real output.
 - Lesson: when building against an undocumented protocol, capture real output first (`claude -p "test" --output-format stream-json --verbose | head`), then write types. Don't guess the schema from docs.
 
+### Thread context must be injected server-side, not discovered by the agent
+When a Claude CLI process is spawned with `--resume`, it has its own conversation history but zero visibility into the Slack thread that triggered it. Without thread context, Claude hallucinates what the conversation was about or gives generic responses to thread-specific questions.
+- The fix is to call `conversations.replies` before spawning and prepend the formatted thread history to the prompt. This is cheaper and more reliable than giving Claude an MCP tool to query Slack itself (which adds latency and requires Claude to know which thread to look at).
+- The orchestrator already has the bot token and the thread_ts — no new auth needed.
+
+### Persona is the predecessor system's real asset — load it, don't rewrite it
+The openclaw workspace at `~/.openclaw/workspace/` has SOUL.md and IDENTITY.md with Junior's full personality, communication style, failure signals, and decision rules — refined over months of use. Hardcoding a 3-line identity string discards all of that. The right move is to load the existing persona files at startup and inject them into every Claude spawn.
+- SOUL.md alone is 130+ lines of calibrated behavioral rules. Rewriting from scratch would lose nuance that was earned through real incidents (PR reviews in Slack instead of GitHub, expletive imitation, agreement theater, etc.).
+- The bot user ID must also be injected so Claude recognizes its own messages in thread context — without it, Claude doesn't know which messages are "me" vs other users.
+
+### In multi-turn stream-json, only the last response matters — not the accumulated text
+The spawner was concatenating text from every `assistant` event across all turns. In a multi-turn conversation (Claude reasons → uses tools → reasons more → responds), early assistant events contain intermediate thinking/narration that should never reach the user. The `result` event carries the final output.
+- The bot was posting Claude's internal reasoning ("Let me pull up the thread to check", "Now let me find the right channel") as part of the Slack response, making it look like thinking leaked into the answer.
+- Fix: track only the last assistant turn's text (overwrite, don't accumulate), and prefer the `result` event text as the canonical response. Fall back to last assistant text only if result is empty.
+
+### Match identity by user_id, not by bot_id presence
+Slack's `bot_id` field is present on ALL bot messages, not just yours. Using `!!m.bot_id` to detect "self" labeled every bot (Friday, Doraemon) as "Junior (you)" in thread context — Claude then believed those messages were its own and told the user those bots hadn't said anything.
+- The correct check is `m.user === botUserId` (Junior's specific Slack user ID from `auth.test()`). Every other bot gets labeled as a regular user.
+- Same class of bug appeared in event filtering: `if ("bot_id" in event) return` blocked all bots, not just self. Both places needed the same fix — match on specific identity, not on the category "is a bot".
+
+### Slack fires both `message` and `app_mention` for @mentions in threads — deduplicate
+When a user types `@Bot text` in a thread, Slack delivers two events: a `message` event (because it's a message) and an `app_mention` event (because it mentions the bot). Both call `handleMessage`, causing the same message to be processed twice — once as the primary spawn, once buffered and drained as a duplicate.
+- Confirmed in logs: first prompt had full preamble (from `message` handler), second had raw text with no identity/context (from `app_mention`, buffered then drained). Two responses 15 seconds apart.
+- Fix: deduplicate by message `ts` (unique per Slack message) at the top of `handleMessage`. A `Set<string>` with periodic pruning.
+
 ## Known Gaps
 
 - No .env with real Slack tokens — bot can't be tested end-to-end until tokens are provided.

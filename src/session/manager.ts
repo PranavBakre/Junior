@@ -1,3 +1,4 @@
+import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
 import type { SpawnHandle, SpawnResult, StreamEvent } from "../claude/types.ts";
 import type { SlackMessageEvent } from "../slack/events.ts";
@@ -8,6 +9,8 @@ import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
+import { buildPromptPreamble } from "../slack/thread-context.ts";
+import { log } from "../logger.ts";
 
 type SpawnClaudeFn = typeof defaultSpawnClaude;
 
@@ -15,8 +18,11 @@ export class SessionManager {
   private store: SessionStore;
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
+  private seenMessages = new Set<string>();
   private spawnClaude: SpawnClaudeFn;
 
+  slackApp?: App;
+  botUserId?: string;
   agentRouter?: AgentRouter;
   worktreeManager?: WorktreeManager;
   onResponse?: (session: ThreadSession, response: string) => void;
@@ -32,6 +38,15 @@ export class SessionManager {
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
+    // Deduplicate: Slack fires both `message` and `app_mention` for @mentions
+    if (this.seenMessages.has(event.ts)) return;
+    this.seenMessages.add(event.ts);
+    // Prevent unbounded growth — old ts values are never needed again
+    if (this.seenMessages.size > 1000) {
+      const entries = [...this.seenMessages];
+      for (let i = 0; i < 500; i++) this.seenMessages.delete(entries[i]);
+    }
+
     let session = await this.store.get(event.threadId);
 
     if (!session) {
@@ -60,7 +75,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
-    this.runClaudeWithAgent(session, event.text);
+    this.runClaudeWithAgent(session, event.text, event.ts);
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -189,8 +204,21 @@ export class SessionManager {
   private async runClaudeWithAgent(
     session: ThreadSession,
     prompt: string,
+    latestTs?: string,
   ): Promise<void> {
     try {
+      // Inject identity + thread context so Claude knows who it is and what was said
+      if (this.slackApp && latestTs) {
+        const preamble = await buildPromptPreamble(
+          this.slackApp,
+          session.channel,
+          session.threadId,
+          latestTs,
+          this.botUserId,
+        );
+        prompt = `${preamble}\n\n${prompt}`;
+      }
+
       // Compose agent system prompt
       if (session.agentType && this.agentRouter) {
         session.systemPrompt =
@@ -224,6 +252,9 @@ export class SessionManager {
         const repo = this.config.repos.find((r) => r.name === session.targetRepo);
         if (repo) targetRepoCwd = repo.path;
       }
+
+      // We don't log the prompt to avoid spamming the logs. unless we are debugging it
+      // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
       const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd);
       const handle = withTimeout(rawHandle, this.config.claude.timeoutMs, () => {
