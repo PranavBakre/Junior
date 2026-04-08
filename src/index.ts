@@ -6,6 +6,7 @@ import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { InMemorySessionStore } from "./session/store/memory.ts";
 import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
+import { registerHomeTab } from "./slack/home.ts";
 import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
@@ -59,7 +60,9 @@ sessionManager.onError = (session, error) => {
 
 registerEventHandlers(app, (event) => {
   sessionManager.handleMessage(event);
-});
+}, store);
+
+registerHomeTab(app, store);
 
 setupGracefulShutdown(sessionManager, store);
 

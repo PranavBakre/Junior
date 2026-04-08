@@ -1,4 +1,5 @@
 import type { App } from "@slack/bolt";
+import type { SessionStore } from "../session/store/interface.ts";
 import { parseCommand } from "./commands.ts";
 
 export interface SlackMessageEvent {
@@ -14,7 +15,8 @@ export type OnMessageCallback = (event: SlackMessageEvent) => void;
 
 export function registerEventHandlers(
   app: App,
-  onMessage: OnMessageCallback
+  onMessage: OnMessageCallback,
+  store?: SessionStore,
 ): void {
   app.event("message", async ({ event }) => {
     // Filter out bot messages
@@ -25,6 +27,22 @@ export function registerEventHandlers(
 
     const user = "user" in event ? event.user : undefined;
     if (!user) return;
+
+    const isThread = "thread_ts" in event && !!event.thread_ts;
+    const isDM = event.channel_type === "im";
+
+    if (!isThread && !isDM) {
+      // Top-level channel message without mention — ignore.
+      // app_mention handler covers @mentions.
+      return;
+    }
+
+    if (isThread && store) {
+      // Only respond in threads where the bot has an active session
+      const threadTs = "thread_ts" in event ? event.thread_ts! : event.ts;
+      const session = await store.get(threadTs);
+      if (!session) return;
+    }
 
     const threadId =
       "thread_ts" in event && event.thread_ts ? event.thread_ts : event.ts;
