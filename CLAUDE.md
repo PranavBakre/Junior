@@ -16,7 +16,8 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 
 | Question | Read this |
 |---|---|
-| Full system design, architecture, trade-offs? | [docs/features/main.md](docs/features/main.md) |
+| System architecture, data flow, module dependencies? | [docs/architecture.md](docs/architecture.md) |
+| Full system design, original RFC, trade-offs? | [docs/features/main.md](docs/features/main.md) |
 | How does Slack event handling work? | [docs/features/slack-event-handler.md](docs/features/slack-event-handler.md) |
 | How does session management work (buffer, batch, drain)? | [docs/features/session-management.md](docs/features/session-management.md) |
 | How does Claude CLI spawning work? | [docs/features/claude-spawner.md](docs/features/claude-spawner.md) |
