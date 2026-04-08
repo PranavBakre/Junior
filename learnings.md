@@ -68,8 +68,13 @@ When multiple agents run in parallel and some modify the same file (index.ts, ty
 - Thread-commands and process-lifecycle agents committed directly to main sequentially (no conflict because they ran at different times), but this was luck — if they'd both been writing index.ts simultaneously, one would have stomped the other.
 - Lesson: for agents that touch shared files (index.ts is the main integration point), ensure the worktree branch survives until explicit merge. For agents that only create new files in new directories, direct-to-main is safe.
 
+### Sub-agent permission boundaries must be anticipated in the prompt
+Sub-agents inherit the parent's permission mode but may still be blocked by per-tool allowlists or hook-based gates. If the agent's entire job is creating files in a new directory, a Write permission denial halts it completely with no fallback.
+- The agent-definitions agent was tasked with creating 6 markdown files in `.claude/agents/`. Both Write and Bash were denied. The agent couldn't complete any of its work and returned a permission request instead of results.
+- Fix: either pre-create the directory structure before spawning, or do file-creation tasks in the main context where permissions are already granted. Reserve sub-agents for work that uses tools they're known to have access to.
+
 ## Known Gaps
 
-- Agent routing and agent definitions not yet built — last two items in the build order.
 - No .env with real Slack tokens — bot can't be tested end-to-end until tokens are provided.
 - No integration test — individual modules typecheck but haven't been wired and run together yet.
+- Agent routing integration with session manager hasn't been tested with real agent definition files — only typechecked.
