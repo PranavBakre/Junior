@@ -160,67 +160,71 @@ Multiple messages that arrive while Claude is working get batched into the next 
 
 ## Worktree Isolation
 
-### Why worktrees
+### Two-workspace model
 
-Each Slack thread may involve different tasks on the same repo. Without isolation, concurrent sessions edit the same files and collide. Git worktrees give each thread its own checkout — own branch, own working directory, shared git history.
+There are two distinct workspaces at play:
 
-### Using `-w` (built-in worktree flag)
+1. **Junior's workspace** (this repo — `junior/`) — shared across all threads. Contains CLAUDE.md, learnings, agent definitions, bot server code. Never isolated per thread.
+2. **Target repo workspace** (e.g., `example-backend/`, `example-frontend/`) — isolated per thread when threads do code work on the same repo. Without isolation, concurrent sessions edit the same files and collide.
 
-Claude Code has native worktree support since v2.1.49:
+Junior's own workspace is shared so that learnings, CLAUDE.md improvements, and memory accumulate across all threads. Conversation continuity per thread comes from `--resume <sessionId>`, not filesystem isolation.
 
-```bash
-claude -w feature-auth    # creates .claude/worktrees/feature-auth/
-claude -w bugfix-123      # creates .claude/worktrees/bugfix-123/
-```
+### Why worktrees (for target repos only)
 
-For the Slack bot, use the thread ID (or a sanitized version) as the worktree name:
+Git worktrees give each thread its own checkout of the target repo — own branch, own working directory, shared git history. Two threads working on example-backend can edit different files without collision.
 
-```bash
-claude -p "fix the auth bug" \
-  --worktree "slack-${threadId}" \
-  --output-format stream-json
-```
+### Manual worktree management
 
-This creates `.claude/worktrees/slack-<threadId>/` with its own branch `worktree-slack-<threadId>`, branching from `origin/HEAD`.
-
-### Worktree lifecycle
-
-- **Created on first message in thread** — via `--worktree` flag.
-- **Reused on subsequent messages** — `--resume <sessionId>` already remembers its working directory. But verify the worktree still exists before resuming.
-- **Cleanup** — when the Slack thread goes stale (configurable timeout, e.g., 24h of inactivity), the bot runs `git worktree remove .claude/worktrees/slack-<threadId>` and deletes the branch. If there are uncommitted changes, prompt the thread before cleanup.
-
-### Manual worktree management (alternative)
-
-If you need more control than `-w` provides (e.g., branching from a specific ref, not `origin/HEAD`):
+The bot creates worktrees in the TARGET repo (not in junior's own repo):
 
 ```typescript
 import { execSync } from "child_process";
 
-function createWorktree(threadId: string, baseRef: string = "origin/main") {
-  const worktreePath = `/path/to/repo/.claude/worktrees/slack-${threadId}`;
+function createWorktree(
+  repoPath: string,
+  threadId: string,
+  baseRef: string = "origin/main",
+) {
+  const worktreePath = `${repoPath}/.claude/worktrees/slack-${threadId}`;
   const branchName = `slack/${threadId}`;
 
   execSync(`git worktree add ${worktreePath} -b ${branchName} ${baseRef}`, {
-    cwd: "/path/to/repo",
+    cwd: repoPath,
   });
 
   return worktreePath;
 }
 
-function removeWorktree(threadId: string) {
-  const worktreePath = `/path/to/repo/.claude/worktrees/slack-${threadId}`;
+function removeWorktree(repoPath: string, threadId: string) {
+  const worktreePath = `${repoPath}/.claude/worktrees/slack-${threadId}`;
   execSync(`git worktree remove ${worktreePath} --force`, {
-    cwd: "/path/to/repo",
+    cwd: repoPath,
   });
 }
 ```
 
-Then spawn Claude with `cwd` set to the worktree path instead of using `--worktree`:
+Then spawn Claude with `cwd` set to the worktree path:
 
 ```bash
 claude -p "msg" --resume <sessionId> --output-format stream-json
-# spawned with { cwd: worktreePath }
+# spawned with { cwd: worktreePath }  ← worktree in TARGET repo
 ```
+
+The target repo's own `.claude/agents/` definitions are available in the worktree — no need to duplicate them in junior.
+
+### Threads that don't need code isolation
+
+Some threads don't edit code — they ask questions, review docs, or discuss architecture. These threads can run with `cwd` set to junior's own workspace (shared) or the target repo's main checkout (read-only). No worktree needed.
+
+The bot should only create worktrees when a thread will make code changes. This can be:
+- Explicit: user says `/build` or `/branch feature-x`
+- Deferred: start without a worktree, create one when Claude's first tool call is a file edit
+
+### Worktree lifecycle
+
+- **Created** when a thread needs code isolation (first code-editing message, or explicit `/branch` command).
+- **Reused** on subsequent messages — the session stores `worktreePath` and spawns Claude with that `cwd`.
+- **Cleanup** — when the Slack thread goes stale (configurable timeout, e.g., 24h of inactivity), the bot checks for uncommitted changes. If clean, runs `git worktree remove`. If dirty, warns the thread before cleanup.
 
 ### WorktreeCreate hook (advanced)
 
