@@ -62,8 +62,14 @@ Two agents working in isolated worktrees on non-overlapping directories (slack/ 
 - The only shared file both agents touched was index.ts — but the slack agent's change was a complete rewrite (echo bot → modular wiring), while the claude agent didn't touch it. No conflict.
 - Key: the build order (setup → independent features → integration features) naturally prevents conflicts. Features that depend on each other can't be parallelized anyway.
 
+### Agents that modify shared files need worktree isolation enforced, not optional
+When multiple agents run in parallel and some modify the same file (index.ts, types.ts), agents that commit directly to main create a race condition. In this session, some agents used worktree branches while others committed straight to main — depending on whether the worktree was auto-cleaned before or after committing.
+- The worktree-manager agent committed to its worktree branch, which got force-deleted during cleanup before being merged. Had to recover with `git cherry-pick` from the dangling commit.
+- Thread-commands and process-lifecycle agents committed directly to main sequentially (no conflict because they ran at different times), but this was luck — if they'd both been writing index.ts simultaneously, one would have stomped the other.
+- Lesson: for agents that touch shared files (index.ts is the main integration point), ensure the worktree branch survives until explicit merge. For agents that only create new files in new directories, direct-to-main is safe.
+
 ## Known Gaps
 
-- Session manager not yet built — the state machine that wires slack events to the claude spawner (buffer/drain). Next in build order.
-- Agent definitions (`.claude/agents/`) not yet written.
-- No .env with real Slack tokens — echo bot can't be tested until tokens are provided.
+- Agent routing and agent definitions not yet built — last two items in the build order.
+- No .env with real Slack tokens — bot can't be tested end-to-end until tokens are provided.
+- No integration test — individual modules typecheck but haven't been wired and run together yet.
