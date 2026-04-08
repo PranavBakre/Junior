@@ -50,9 +50,14 @@ Writing test criteria for each iteration forces you to split things that look li
 ### An iteration plan template prevents scope drift more than discipline does
 The ideation workflow's format (problem, full vision, iterations with test + defer, shortcuts, cut list) forced completeness that free-form writing wouldn't. Specifically: the "cut list" section names things you're NOT building, which prevents them from sneaking into iterations later. The "defers" per iteration prevent gold-plating within a single iteration. Structure > willpower for scope control.
 
+### Review your own docs against the platform's constraints, not just the design's logic
+A design can be internally consistent and still wrong because it violates platform constraints the author didn't check.
+- All feature docs used `/build`, `/reset`, `/status` as command syntax. Slack intercepts any message starting with `/` as a slash command — users literally cannot type `/build fix auth` in Slack. Switched to `!` prefix across 10 files.
+- The spawner doc had iteration 2 loading agent definitions — but that's the router's responsibility. The spawner should be a dumb executor that accepts a pre-composed prompt. Internal consistency (each module does one thing) caught this on review.
+- Agent routing had a "suggest with a chatty Slack reply" pattern that violated the no-narration principle already documented in SOUL.md. Cross-referencing behavioral rules against feature designs caught it.
+
 ## Known Gaps
 
 - No source code yet — CLAUDE.md is written against the design doc, not working code. Rules and structure sections need updating as implementation begins.
-- Open questions from the feature doc (stream-json schema, `--resume` + `--worktree` interaction, session locking) are unresolved and will affect implementation choices.
+- Open questions from the feature doc (stream-json schema, `--resume` interaction with session state, session locking) are unresolved and will affect implementation choices.
 - Agent definitions (`.claude/agents/`) not yet written — the mapping from OpenClaw agents to Claude Code agents is documented but not implemented.
-- Build order not yet determined — feature docs have cross-dependencies (session-management depends on claude-spawner depends on stream parser). Need a topological sort before starting implementation.
