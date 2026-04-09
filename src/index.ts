@@ -11,9 +11,11 @@ import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
+import { startMcpServer } from "./mcp/slack-server.ts";
 import { log } from "./logger.ts";
 
 const config = loadConfig();
+startMcpServer(config.slack.botToken);
 const app = createSlackApp(config);
 
 const store = new InMemorySessionStore();

@@ -9,6 +9,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@playwright/mcp": "^0.0.70",
     "@slack/bolt": "^4.3.0"
   },

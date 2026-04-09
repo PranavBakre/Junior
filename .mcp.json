@@ -3,6 +3,10 @@
     "playwright": {
       "command": "npx",
       "args": ["@playwright/mcp", "--headless"]
+    },
+    "slack-bot": {
+      "type": "http",
+      "url": "http://localhost:3456/mcp"
     }
   }
 }

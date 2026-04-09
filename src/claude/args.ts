@@ -4,7 +4,8 @@ import type { ThreadSession } from "../session/types.ts";
 export function buildClaudeArgs(
   session: ThreadSession,
   prompt: string,
-  config: Config["claude"]
+  config: Config["claude"],
+  mcpConfigPath?: string,
 ): string[] {
   const args: string[] = [
     "-p",
@@ -25,6 +26,10 @@ export function buildClaudeArgs(
   }
 
   args.push("--permission-mode", config.permissionMode);
+
+  if (mcpConfigPath) {
+    args.push("--mcp-config", mcpConfigPath);
+  }
 
   return args;
 }

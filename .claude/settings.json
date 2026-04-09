@@ -1,5 +1,7 @@
 {
-  "enabledPlugins": {
-    "slack@claude-plugins-official": true
+  "permissions": {
+    "allow": [
+      "mcp__slack-bot__*"
+    ]
   }
 }
