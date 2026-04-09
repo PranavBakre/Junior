@@ -27,9 +27,10 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | What agent definitions exist and how are they structured? | [docs/features/agent-definitions.md](docs/features/agent-definitions.md) |
 | How do thread commands (!build, !reset, !status) work? | [docs/features/thread-commands.md](docs/features/thread-commands.md) |
 | How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
+| How does the bot Slack MCP server work? | [docs/features/mcp-server.md](docs/features/mcp-server.md) |
 | Project setup, config, directory structure? | [docs/features/project-setup.md](docs/features/project-setup.md) |
 | Known limitations and open questions? | [docs/features/v2-backlog.md](docs/features/v2-backlog.md) |
-| Code index for a specific module? | `docs/code_index/<module>.md` (created as modules are built) |
+| Code index for a specific module? | `docs/code_index/<module>.md` (matches feature doc names) |
 | Ideation and planning workflow? | [docs/workflows/ideation.md](docs/workflows/ideation.md) |
 | Building and iteration workflow? | [docs/workflows/building.md](docs/workflows/building.md) |
 

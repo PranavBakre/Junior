@@ -53,7 +53,7 @@ export function loadConfig(): Config {
     session: {
       staleTimeoutMs: Number(optional("SESSION_STALE_TIMEOUT_MS", "86400000")),
       cleanupIntervalMs: Number(
-        optional("SESSION_CLEANUP_INTERVAL_MS", "900000")
+        optional("SESSION_CLEANUP_INTERVAL_MS", "900000"),
       ),
     },
     redis: process.env.REDIS_URL ? { url: process.env.REDIS_URL } : undefined,
