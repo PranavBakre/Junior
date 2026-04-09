@@ -2,6 +2,12 @@ import type { App } from "@slack/bolt";
 import type { SessionStore } from "../session/store/interface.ts";
 import { parseCommand } from "./commands.ts";
 
+export interface SlackFileAttachment {
+  url: string;
+  name: string;
+  mimetype: string;
+}
+
 export interface SlackMessageEvent {
   threadId: string;
   channel: string;
@@ -9,6 +15,7 @@ export interface SlackMessageEvent {
   text: string;
   ts: string;
   command: string | null;
+  files?: SlackFileAttachment[];
 }
 
 export type OnMessageCallback = (event: SlackMessageEvent) => void;
@@ -50,6 +57,9 @@ export function registerEventHandlers(
 
     const parsed = parseCommand(text);
 
+    // Extract file attachments if present
+    const files = extractFiles(event);
+
     onMessage({
       threadId,
       channel: event.channel,
@@ -57,6 +67,7 @@ export function registerEventHandlers(
       text: parsed.text,
       ts: event.ts,
       command: parsed.command,
+      files: files.length > 0 ? files : undefined,
     });
   });
 
@@ -69,6 +80,9 @@ export function registerEventHandlers(
     const cleanText = event.text.replace(/<@[A-Z0-9]+>\s*/g, "").trim();
     const parsed = parseCommand(cleanText);
 
+    // Extract file attachments if present
+    const files = extractFiles(event);
+
     onMessage({
       threadId,
       channel: event.channel,
@@ -76,6 +90,30 @@ export function registerEventHandlers(
       text: parsed.text,
       ts: event.ts,
       command: parsed.command,
+      files: files.length > 0 ? files : undefined,
     });
   });
+}
+
+/**
+ * Extract file attachments from a Slack event.
+ * Slack events with files have a `files` array with url_private_download, mimetype, and name.
+ * We use `unknown` and cast via intermediate object since Bolt's event types don't include `files`.
+ */
+function extractFiles(event: unknown): SlackFileAttachment[] {
+  const ev = event as { files?: unknown[] };
+  if (!Array.isArray(ev.files)) return [];
+
+  return (ev.files as Array<Record<string, unknown>>)
+    .filter(
+      (f) =>
+        typeof f.url_private_download === "string" &&
+        typeof f.mimetype === "string" &&
+        typeof f.name === "string",
+    )
+    .map((f) => ({
+      url: f.url_private_download as string,
+      name: f.name as string,
+      mimetype: f.mimetype as string,
+    }));
 }

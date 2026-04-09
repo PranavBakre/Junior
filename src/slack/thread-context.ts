@@ -6,6 +6,7 @@ interface ThreadMessage {
   text: string;
   ts: string;
   isBot: boolean;
+  fileNames: string[];
 }
 
 // Cache channel ID → name so we don't re-fetch every message
@@ -85,18 +86,34 @@ async function fetchThreadHistory(
 
     const messages: ThreadMessage[] = result.messages
       .filter((m) => m.ts !== latestTs)
-      .map((m) => ({
-        user: m.user ?? "unknown",
-        text: (m.text ?? "").replace(/<@[A-Z0-9]+>\s*/g, "").trim(),
-        ts: m.ts!,
-        isBot: !!(botUserId && m.user === botUserId),
-      }));
+      .map((m) => {
+        // Extract file names from message attachments
+        const files = (m as Record<string, unknown>).files;
+        const fileNames: string[] = Array.isArray(files)
+          ? (files as Array<Record<string, unknown>>)
+              .filter((f) => typeof f.name === "string")
+              .map((f) => f.name as string)
+          : [];
+
+        return {
+          user: m.user ?? "unknown",
+          text: (m.text ?? "").replace(/<@[A-Z0-9]+>\s*/g, "").trim(),
+          ts: m.ts!,
+          isBot: !!(botUserId && m.user === botUserId),
+          fileNames,
+        };
+      });
 
     if (messages.length === 0) return null;
 
     const lines = messages.map((m) => {
       const role = m.isBot ? "Junior (you)" : `User(${m.user})`;
-      return `${role}: ${m.text}`;
+      let line = `${role}: ${m.text}`;
+      if (m.fileNames.length > 0) {
+        const fileNotes = m.fileNames.map((f) => `[shared image: ${f}]`).join(" ");
+        line += ` ${fileNotes}`;
+      }
+      return line;
     });
 
     return [

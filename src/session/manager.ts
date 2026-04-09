@@ -1,7 +1,7 @@
 import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
 import type { SpawnHandle, SpawnResult, StreamEvent } from "../claude/types.ts";
-import type { SlackMessageEvent } from "../slack/events.ts";
+import type { SlackMessageEvent, SlackFileAttachment } from "../slack/events.ts";
 import type { SessionStore } from "./store/interface.ts";
 import type { ThreadSession } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
@@ -10,7 +10,8 @@ import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import { buildPromptPreamble } from "../slack/thread-context.ts";
-import { log } from "../logger.ts";
+import { downloadSlackFiles } from "../slack/files.ts";
+import { log as _log } from "../logger.ts";
 
 type SpawnClaudeFn = typeof defaultSpawnClaude;
 
@@ -75,7 +76,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
-    this.runClaudeWithAgent(session, event.text, event.ts);
+    this.runClaudeWithAgent(session, event.text, event.ts, event.files);
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -205,6 +206,7 @@ export class SessionManager {
     session: ThreadSession,
     prompt: string,
     latestTs?: string,
+    files?: SlackFileAttachment[],
   ): Promise<void> {
     try {
       // Inject identity + thread context so Claude knows who it is and what was said
@@ -217,6 +219,23 @@ export class SessionManager {
           this.botUserId,
         );
         prompt = `${preamble}\n\n${prompt}`;
+      }
+
+      // Download image files from Slack and append their paths to the prompt
+      if (files && files.length > 0) {
+        try {
+          const localPaths = await downloadSlackFiles(
+            files,
+            session.threadId,
+            this.config.slack.botToken,
+          );
+          if (localPaths.length > 0) {
+            const pathList = localPaths.map((p) => `- ${p}`).join("\n");
+            prompt += `\n\nThe user shared images. They are saved at these paths — use the Read tool to view them:\n${pathList}`;
+          }
+        } catch (err) {
+          console.error("[manager] Failed to download Slack files:", err);
+        }
       }
 
       // Compose agent system prompt
