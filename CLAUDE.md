@@ -17,8 +17,8 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | Question | Read this |
 |---|---|
 | System architecture, data flow, module dependencies? | [docs/architecture.md](docs/architecture.md) |
-| Full system design, original RFC, trade-offs? | [docs/features/main.md](docs/features/main.md) |
 | How does Slack event handling work? | [docs/features/slack-event-handler.md](docs/features/slack-event-handler.md) |
+| Thread context, persona, images, file upload, browser? | [docs/features/thread-context.md](docs/features/thread-context.md) |
 | How does session management work (buffer, batch, drain)? | [docs/features/session-management.md](docs/features/session-management.md) |
 | How does Claude CLI spawning work? | [docs/features/claude-spawner.md](docs/features/claude-spawner.md) |
 | How do streaming updates to Slack work? | [docs/features/stream-to-slack.md](docs/features/stream-to-slack.md) |
@@ -28,7 +28,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How do thread commands (!build, !reset, !status) work? | [docs/features/thread-commands.md](docs/features/thread-commands.md) |
 | How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
 | Project setup, config, directory structure? | [docs/features/project-setup.md](docs/features/project-setup.md) |
-| Known limitations and open questions? | [docs/features/main.md](docs/features/main.md) — bottom sections |
+| Known limitations and open questions? | [docs/features/v2-backlog.md](docs/features/v2-backlog.md) |
 | Code index for a specific module? | `docs/code_index/<module>.md` (created as modules are built) |
 | Ideation and planning workflow? | [docs/workflows/ideation.md](docs/workflows/ideation.md) |
 | Building and iteration workflow? | [docs/workflows/building.md](docs/workflows/building.md) |
