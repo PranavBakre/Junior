@@ -9,6 +9,7 @@ export function spawnClaude(
   prompt: string,
   config: Config["claude"],
   targetRepoCwd?: string,
+  botToken?: string,
 ): SpawnHandle {
   const args = buildClaudeArgs(session, prompt, config);
   const cwd = session.worktreePath ?? targetRepoCwd ?? process.cwd();
@@ -17,7 +18,13 @@ export function spawnClaude(
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, JUNIOR_SPAWNED: "1" },
+    env: {
+      ...process.env,
+      JUNIOR_SPAWNED: "1",
+      SLACK_CHANNEL: session.channel,
+      SLACK_THREAD_TS: session.threadId,
+      ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
+    },
   });
 
   const listeners: Array<(event: StreamEvent) => void> = [];

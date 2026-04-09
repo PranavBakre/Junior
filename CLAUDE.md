@@ -166,6 +166,9 @@ bun run typecheck               # Type checking without emit
 
 # Slack bot management
 bun run cleanup                 # Clean stale worktrees and sessions
+
+# Upload files/screenshots to the current Slack thread
+bin/slack-upload.sh <file-path> [comment]  # Uses SLACK_BOT_TOKEN, SLACK_CHANNEL, SLACK_THREAD_TS env vars (auto-set)
 ```
 
 ## Documentation Workflow
