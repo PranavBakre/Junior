@@ -1,23 +1,21 @@
 # Code Index: Worktree Manager
 
-## Files
+Creates, removes, and checks git worktrees in target repos for per-thread code isolation.
 
-| File | Purpose |
-|---|---|
-| `src/worktree/manager.ts` | Creates, removes, and checks git worktrees in target repos |
+## Code Index
 
-## Key Exports
+### src/worktree
 
-### `src/worktree/manager.ts`
-- `WorktreeManager` class:
-  - `constructor(repos: RepoConfig[])` — takes repo configs with `{ name, path, defaultBase }`
-  - `create(repoName, threadId): Promise<string>` — creates worktree at `{repoPath}/.worktrees/slack-{threadId}` on branch `slack/{threadId}` from `defaultBase`. Returns worktree path.
-  - `remove(worktreePath): Promise<void>` — force-removes worktree and prunes
-  - `exists(worktreePath): Promise<boolean>` — checks if worktree directory exists
-  - `isDirty(worktreePath): Promise<boolean>` — runs `git status --porcelain` to check for uncommitted changes
-  - `getRepo(repoName): RepoConfig | undefined` — looks up repo by name
+| Function | File | Purpose |
+|----------|------|---------|
+| `WorktreeManager(repos)` | `manager.ts` | Constructor: takes `RepoConfig[]` with `{ name, path, defaultBase }` |
+| `WorktreeManager.create(repoName, threadId)` | `manager.ts` | Creates worktree, returns path |
+| `WorktreeManager.remove(worktreePath)` | `manager.ts` | Force-removes worktree and prunes |
+| `WorktreeManager.exists(worktreePath)` | `manager.ts` | Checks if worktree directory exists |
+| `WorktreeManager.isDirty(worktreePath)` | `manager.ts` | `git status --porcelain` — checks for uncommitted changes |
+| `WorktreeManager.getRepo(repoName)` | `manager.ts` | Looks up repo config by name |
 
-## Worktree Layout
+## Layout
 
 ```
 target-repo/
@@ -28,10 +26,15 @@ target-repo/
   └── ...
 ```
 
-Branch naming: `slack/{threadId}` (e.g., `slack/1234567890.123456`)
+Branch naming: `slack/{threadId}` off `defaultBase` (e.g., `main`).
 
-## Integration
+## Key Concepts
 
-Created by `SessionManager` when a `!build` or similar command targets a repo. The worktree path is stored in `session.worktreePath` and passed to `spawnClaude()` as the `cwd`.
+### Cleanup Safety
 
-Cleanup: `cleanupStaleSessions()` should check `isDirty()` before `remove()` — dirty worktrees with uncommitted work should warn, not silently delete.
+`isDirty()` should be checked before `remove()` — dirty worktrees with uncommitted work should warn the user, not silently delete. `cleanupStaleSessions()` in lifecycle handles this.
+
+## Dependencies
+
+- **Uses**: `config` (RepoConfig), git CLI (via Bun.spawn)
+- **Used by**: `SessionManager` (creates on `!build`, stores path in `session.worktreePath`)

@@ -1,38 +1,67 @@
 # Code Index: Session Management
 
-## Files
+Core orchestrator: routes Slack messages to Claude, manages the buffer/drain state machine, composes prompts with context, and tracks session state per thread.
 
-| File | Purpose |
-|---|---|
-| `src/session/manager.ts` | Core orchestrator: routes messages, manages state machine, composes prompts |
-| `src/session/types.ts` | Session data types and factory |
-| `src/session/store/interface.ts` | Storage interface (get/set/delete/getAll) |
-| `src/session/store/memory.ts` | In-memory Map implementation |
+## Code Index
 
-## Key Exports
+### src/session
 
-### `src/session/manager.ts`
-- `SessionManager` class:
-  - `handleMessage(event: SlackMessageEvent)` — main entry: creates/looks up session, handles commands, buffers or spawns
-  - `getSession(threadId): ThreadSession | undefined`
-  - `resetSession(threadId)` — clears session state for `!reset`
-  - `agentRouter` — set externally, routes agent type to system prompt
-  - `worktreeManager` — set externally, creates/checks worktrees
-  - `slackApp` — set externally, used for thread context building
-  - `botUserId` — set externally, used for identity in prompt preamble
-  - Callbacks: `onResponse`, `onEvent`, `onMessageBuffered`, `onCommandResponse`, `onError`
+| Function | File | Purpose |
+|----------|------|---------|
+| `SessionManager.handleMessage(event)` | `manager.ts` | Main entry: creates/looks up session, handles commands, buffers or spawns |
+| `SessionManager.getSession(threadId)` | `manager.ts` | Returns session or undefined |
+| `SessionManager.resetSession(threadId)` | `manager.ts` | Clears session state for `!reset` |
+| `createSession(threadId, channel)` | `types.ts` | Factory with idle defaults |
+| `SessionStore.get(id)` | `store/interface.ts` | Read session by thread ID |
+| `SessionStore.set(id, session)` | `store/interface.ts` | Write session |
+| `SessionStore.delete(id)` | `store/interface.ts` | Remove session |
+| `SessionStore.getAll()` | `store/interface.ts` | List all sessions (for health/cleanup) |
+| `InMemorySessionStore` | `store/memory.ts` | Map-based implementation |
 
-### `src/session/types.ts`
-- `ThreadSession` — `{ threadId, channel, sessionId, worktreePath, targetRepo, agentType, status, pendingMessages, systemPrompt, verbosity, lastActivity, createdAt, errorCount, lastError, pid }`
-- `SessionStatus` — `"idle" | "busy" | "draining"`
-- `PendingMessage` — `{ user, text, ts, command? }`
-- `createSession(threadId, channel): ThreadSession` — factory with defaults
+### SessionManager Callbacks
 
-### `src/session/store/interface.ts`
-- `SessionStore` interface: `get(id)`, `set(id, session)`, `delete(id)`, `getAll()`, `updateActivity(id)`
+Set externally in `index.ts`:
 
-### `src/session/store/memory.ts`
-- `InMemorySessionStore` — wraps `Map<string, ThreadSession>`
+| Callback | When |
+|----------|------|
+| `onResponse(session, text)` | Claude turn completes with response |
+| `onEvent(session, event)` | Each stream-json event (for live status) |
+| `onMessageBuffered(event)` | Message buffered while busy |
+| `onCommandResponse(event, text)` | Command like `!status` returns text |
+| `onError(session, error)` | Spawn fails or times out |
+
+### SessionManager Dependencies
+
+Set externally in `index.ts`:
+
+| Property | Type | Purpose |
+|----------|------|---------|
+| `agentRouter` | `AgentRouter` | Routes agent type → system prompt |
+| `worktreeManager` | `WorktreeManager` | Creates worktrees for code threads |
+| `slackApp` | `App` | Used for thread context building |
+| `botUserId` | `string` | Identity in prompt preamble |
+
+### Data Model
+
+```typescript
+interface ThreadSession {
+  threadId: string;
+  channel: string;
+  sessionId: string | null;        // from Claude's init event
+  worktreePath: string | null;
+  targetRepo: string | null;
+  agentType: string | null;
+  status: "idle" | "busy" | "draining";
+  pendingMessages: PendingMessage[];
+  systemPrompt: string | null;
+  verbosity: "normal" | "quiet";
+  lastActivity: number;
+  createdAt: number;
+  errorCount: number;
+  lastError: string | null;
+  pid: number | null;
+}
+```
 
 ## State Machine
 
@@ -44,11 +73,22 @@ idle ──[message]──► busy ──[exit, no pending]──► idle
                       └──[exit, has pending]──► draining ──[spawn combined]──► busy
 ```
 
-## Prompt Composition
+## Key Concepts
 
-When spawning Claude, `SessionManager.handleMessage()` builds the prompt:
+### Prompt Composition
+
+When spawning Claude, `handleMessage()` builds the prompt in order:
 
 1. `buildPromptPreamble()` — persona + channel metadata + thread history
 2. Image paths from `downloadSlackFiles()` appended as `[image: /tmp/junior-files/...]`
 3. User message text
 4. If draining: combined pending messages as `[user]: text` format
+
+### Buffer Drain
+
+When Claude exits and `pendingMessages.length > 0`, all buffered messages are combined into a single prompt with attribution: `"Multiple messages arrived:\n[alice]: fix the tests\n[bob]: also check the linting"`.
+
+## Dependencies
+
+- **Uses**: `claude/spawner` (spawn), `slack/thread-context` (preamble), `slack/files` (downloads), `agents/router` (system prompts), `worktree/manager` (isolation), `lifecycle/timeout` (guard)
+- **Used by**: `index.ts` (event handler callback), `lifecycle/shutdown` (graceful kill), `lifecycle/cleanup` (stale removal)

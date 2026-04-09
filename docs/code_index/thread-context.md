@@ -1,38 +1,30 @@
 # Code Index: Thread Context
 
-## Files
+Builds the prompt preamble that gives spawned Claude processes identity, channel awareness, and conversation history.
 
-| File | Purpose |
-|---|---|
-| `src/slack/thread-context.ts` | Builds prompt preamble with persona, channel info, and thread history |
-| `src/persona.ts` | Loads Junior's identity from openclaw workspace files |
-| `src/slack/files.ts` | Downloads Slack image attachments to local filesystem |
+## Code Index
 
-## Key Exports
+### src/slack + src/persona
 
-### `src/slack/thread-context.ts`
-- `buildPromptPreamble(app, channel, threadTs, latestTs, botUserId?): string`
-  - Fetches persona, channel name, and thread history in parallel
-  - Builds XML-tagged sections: `<identity>`, `<slack-context>`, `<thread-context>`
-  - Excludes the current message (`latestTs`) from history
-  - Strips @mentions from message text
-  - Labels bot messages as "Junior (you)" and user messages as "User(userId)"
+| Function | File | Purpose |
+|----------|------|---------|
+| `buildPromptPreamble(app, channel, threadTs, latestTs, botUserId?)` | `slack/thread-context.ts` | Composes identity + channel + history preamble |
+| `resolveChannelName(app, channelId)` | `slack/thread-context.ts` | Cached `conversations.info` lookup |
+| `fetchThreadHistory(app, channel, threadTs, latestTs, botUserId?)` | `slack/thread-context.ts` | Fetches thread via `conversations.replies`, formats as labeled messages |
+| `loadPersona()` | `persona.ts` | Reads `~/.openclaw/workspace/IDENTITY.md` + `SOUL.md`, caches |
+| `downloadSlackFiles(files, threadId, botToken)` | `slack/files.ts` | Downloads image attachments to `/tmp/junior-files/{threadId}/` |
 
-### `src/persona.ts`
-- `loadPersona(): Promise<string>` — reads `~/.openclaw/workspace/IDENTITY.md` and `SOUL.md`, caches result
+### Types
 
-### `src/slack/files.ts`
-- `downloadSlackFiles(files, threadId, botToken): Promise<SlackFile[]>`
-  - Downloads to `/tmp/junior-files/{threadId}/`
-  - Returns `{ localPath, name, mimetype }` for each file
-  - Only downloads image types (png, jpg, gif, webp)
+| Type | File | Purpose |
+|------|------|---------|
+| `SlackFile` | `slack/files.ts` | `{ localPath, name, mimetype }` |
 
 ## Preamble Structure
 
 ```xml
 <identity>
 {persona from SOUL.md + IDENTITY.md}
-
 Your Slack user ID is {botUserId}. Messages from this user ID are yours.
 </identity>
 
@@ -44,15 +36,27 @@ Do NOT use Slack search or read tools to find this thread.
 </slack-context>
 
 <thread-context>
-The following is the Slack thread history leading up to the current message.
-Use this to understand the conversation so far. Respond ONLY to the current message below.
-
 Junior (you): previous response
 User(U123): their message [shared image: screenshot.png]
 </thread-context>
 ```
 
-## Caching
+## Key Concepts
 
-- Channel name cache: `Map<channelId, channelName>` — avoids re-fetching `conversations.info` per message
-- Persona cache: loaded once on first call, reused for all subsequent calls
+### Caching
+
+- **Channel names**: `Map<channelId, name>` — avoids re-fetching `conversations.info` per message
+- **Persona**: loaded once on first call, reused for all sessions
+
+### Image Handling
+
+`downloadSlackFiles()` only downloads image types (png, jpg, gif, webp). Files are saved to `/tmp/junior-files/{threadId}/` and paths are injected into the prompt so Claude can read them natively.
+
+### Thread History Filtering
+
+The current message (`latestTs`) is excluded from history — it's the prompt itself. Bot messages are labeled "Junior (you)", user messages as "User(userId)". @mentions are stripped.
+
+## Dependencies
+
+- **Uses**: `@slack/bolt` (conversations.replies, conversations.info), filesystem (persona files, image downloads)
+- **Used by**: `SessionManager.handleMessage()` (composes prompt before spawning)

@@ -1,26 +1,20 @@
 # Code Index: Bot Slack MCP Server
 
-## Files
+Shared HTTP MCP server running inside Junior's process. All spawned Claude instances connect to it for Slack operations using the bot token.
 
-| File | Purpose |
-|---|---|
-| `src/mcp/slack-server.ts` | Shared HTTP MCP server with Slack tools using bot token |
+## Code Index
 
-## Key Exports
+### src/mcp
 
-### `src/mcp/slack-server.ts`
-- `startMcpServer(botToken: string): void` — starts HTTP server on `MCP_PORT` (default 3456), called once from `index.ts`
+| Function | File | Purpose |
+|----------|------|---------|
+| `startMcpServer(botToken)` | `slack-server.ts` | Starts HTTP server on `MCP_PORT`, called once from `index.ts` |
+| `registerTools(server)` | `slack-server.ts` | Registers all 6 tools on an McpServer instance |
 
-## Internal Structure
-
-- `registerTools(server: McpServer)` — registers all 6 tools on an McpServer instance
-- `slack: WebClient` — module-level client initialized with bot token in `startMcpServer()`
-- Each HTTP request creates a fresh `McpServer` + `StreamableHTTPServerTransport` (stateless mode, no sessions)
-
-## Tools
+### Tools
 
 | Tool | Slack API | Required params | Optional params |
-|---|---|---|---|
+|------|-----------|-----------------|-----------------|
 | `slack_send_message` | `chat.postMessage` | `text`, `channel_id` | `thread_ts`, `reply_broadcast` |
 | `slack_read_channel` | `conversations.history` | `channel_id` | `limit`, `oldest`, `latest` |
 | `slack_read_thread` | `conversations.replies` | `channel_id`, `thread_ts` | `limit` |
@@ -28,16 +22,25 @@
 | `slack_search_users` | `users.list` (filtered) | `query` | — |
 | `slack_upload_file` | `files.getUploadURLExternal` | `file_path`, `channel_id` | `thread_ts`, `comment` |
 
-## Configuration
+### Configuration
 
 | File | What |
-|---|---|
-| `.mcp.json` | `slack-bot` server: `{ "type": "http", "url": "http://localhost:3456/mcp" }` |
+|------|------|
+| `.mcp.json` | `{ "type": "http", "url": "http://localhost:3456/mcp" }` |
 | `.claude/settings.json` | `permissions.allow: ["mcp__slack-bot__*"]` |
-| `src/claude/spawner.ts` | Passes `--mcp-config` for worktree spawns (points to project `.mcp.json`) |
+| `src/claude/spawner.ts` | Passes `--mcp-config` for worktree spawns |
+
+## Key Concepts
+
+### Stateless Per-Request
+
+Each HTTP request creates a fresh `McpServer` + `StreamableHTTPServerTransport`. No sessions, no state between requests. All instances share the same `WebClient` (module-level singleton).
+
+### Identity Model
+
+Messages sent via `slack_send_message` carry Junior's `bot_id`. The event handler at `events.ts:31` filters by `selfBotId`, preventing loops. This is why this server replaces the Slack plugin (which sent as the user's OAuth identity).
 
 ## Dependencies
 
-- `@modelcontextprotocol/sdk` — `McpServer`, `StreamableHTTPServerTransport`
-- `@slack/web-api` — `WebClient` (transitive from `@slack/bolt`)
-- `zod` — tool input schemas (transitive from MCP SDK)
+- **Uses**: `@modelcontextprotocol/sdk` (McpServer, StreamableHTTPServerTransport), `@slack/web-api` (WebClient), `zod` (input schemas)
+- **Used by**: spawned Claude instances (via HTTP), `index.ts` (startup)

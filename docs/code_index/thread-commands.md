@@ -1,47 +1,44 @@
 # Code Index: Thread Commands
 
-## Files
+Parses `!command` prefixes and dispatches them to session actions.
 
-| File | Purpose |
-|---|---|
-| `src/slack/commands.ts` | Parses `!command` prefix from message text |
-| `src/session/manager.ts` | Handles parsed commands in `handleMessage()` |
+## Code Index
 
-## Key Exports
+### src/slack + src/session
 
-### `src/slack/commands.ts`
-- `parseCommand(text): ParsedCommand` — `{ command: string | null, text: string }`
-  - `"!build fix auth"` → `{ command: "build", text: "fix auth" }`
-  - `"hello world"` → `{ command: null, text: "hello world" }`
+| Function | File | Purpose |
+|----------|------|---------|
+| `parseCommand(text)` | `slack/commands.ts` | Splits `!build fix auth` → `{ command: "build", text: "fix auth" }` |
+| `SessionManager.handleMessage(event)` | `session/manager.ts` | Dispatches based on `event.command` |
 
-## Supported Commands
-
-Commands are parsed in `events.ts` and handled in `SessionManager.handleMessage()`:
+### Supported Commands
 
 | Command | Effect |
-|---|---|
+|---------|--------|
 | `!build <text>` | Sets `agentType: "build"`, creates worktree if needed, spawns Claude |
-| `!frontend <text>` | Sets `agentType: "frontend"`, creates worktree if needed |
+| `!frontend <text>` | Sets `agentType: "frontend"`, creates worktree |
 | `!review <text>` | Sets `agentType: "review"` (read-only agent) |
 | `!architect <text>` | Sets `agentType: "architect"` |
 | `!repo <name>` | Sets `targetRepo` for the session |
 | `!reset` | Clears session state (sessionId, worktree, agent type) |
-| `!status` | Returns session info (status, agent, worktree, message count) |
+| `!status` | Returns session info via `onCommandResponse` |
 | `!quiet` / `!verbose` | Toggles status update verbosity |
 
 ## Command Flow
 
 ```
-Slack message: "!build fix the auth bug"
+"!build fix the auth bug"
   │
-  ├── events.ts: parseCommand() → { command: "build", text: "fix the auth bug" }
+  ├── parseCommand() → { command: "build", text: "fix the auth bug" }
   │
-  └── SessionManager.handleMessage(event)
-        ├── event.command === "build"
-        ├── Set session.agentType = "build"
-        ├── AgentRouter.getSystemPrompt("build", targetRepo) → system prompt
-        ├── Set session.systemPrompt
-        ├── WorktreeManager.create(repo, threadId) → worktree path
-        ├── Set session.worktreePath
-        └── Spawn Claude with "fix the auth bug" + system prompt + worktree cwd
+  └── SessionManager.handleMessage()
+        ├── agentType = "build"
+        ├── AgentRouter.getSystemPrompt("build", targetRepo)
+        ├── WorktreeManager.create(repo, threadId)
+        └── spawnClaude("fix the auth bug", { systemPrompt, worktreePath })
 ```
+
+## Dependencies
+
+- **Uses**: `agents/router` (system prompt), `worktree/manager` (isolation)
+- **Used by**: `SessionManager` (command dispatch in handleMessage)

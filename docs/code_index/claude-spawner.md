@@ -1,40 +1,31 @@
 # Code Index: Claude CLI Spawner
 
-## Files
+Spawns `claude -p` as a child process, parses stream-json output, and collects structured results.
 
-| File | Purpose |
-|---|---|
-| `src/claude/spawner.ts` | Spawns `claude -p` as child process, streams events, collects result |
-| `src/claude/args.ts` | Builds CLI argument array from session state |
-| `src/claude/parser.ts` | Newline-delimited JSON stream parser |
-| `src/claude/types.ts` | Type definitions for stream events and spawn handles |
+## Code Index
 
-## Key Exports
+### src/claude
 
-### `src/claude/spawner.ts`
-- `spawnClaude(session, prompt, config, targetRepoCwd?, botToken?): SpawnHandle`
-  - Spawns `claude` with args from `buildClaudeArgs()`
-  - Sets cwd to worktree or target repo or project root
-  - Passes env vars: `JUNIOR_SPAWNED`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `SLACK_BOT_TOKEN`
-  - Passes `--mcp-config` pointing to project `.mcp.json` when cwd differs from project root
-  - Returns `SpawnHandle` with `result` promise, `onEvent` callback, `kill()`, and `pid`
+| Function | File | Purpose |
+|----------|------|---------|
+| `spawnClaude(session, prompt, config, targetRepoCwd?, botToken?)` | `spawner.ts` | Spawns CLI process, streams events, returns `SpawnHandle` |
+| `buildClaudeArgs(session, prompt, config, mcpConfigPath?)` | `args.ts` | Builds CLI arg array from session state |
+| `createStreamParser()` | `parser.ts` | Returns `{ feed(chunk): StreamEvent[] }` — buffers partial lines, validates JSON |
 
-### `src/claude/args.ts`
-- `buildClaudeArgs(session, prompt, config, mcpConfigPath?): string[]`
-  - Always: `-p`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode`
-  - Conditional: `--resume` (if sessionId), `--append-system-prompt` (if systemPrompt), `--mcp-config` (if path provided)
+### Types
 
-### `src/claude/parser.ts`
-- `createStreamParser(): StreamParser` — returns `{ feed(chunk): StreamEvent[] }`
-  - Buffers partial lines across chunks
-  - Parses each complete line as JSON
-  - Validates against known event types: `system`, `assistant`, `user`, `result`
+| Type | File | Purpose |
+|------|------|---------|
+| `StreamEvent` | `types.ts` | Union: `StreamEventInit \| StreamEventAssistant \| StreamEventResult \| StreamEventUser \| StreamEventRateLimit` |
+| `SpawnResult` | `types.ts` | `{ sessionId, response, events[], exitCode, error }` |
+| `SpawnHandle` | `types.ts` | `{ result: Promise<SpawnResult>, onEvent(cb), kill(), pid }` |
+| `ContentBlock` | `types.ts` | Union: `ContentBlockText \| ContentBlockToolUse \| ContentBlockThinking` |
 
-### `src/claude/types.ts`
-- `StreamEvent` — union: `StreamEventInit | StreamEventAssistant | StreamEventResult | StreamEventUser | StreamEventRateLimit`
-- `SpawnResult` — `{ sessionId, response, events[], exitCode, error }`
-- `SpawnHandle` — `{ result: Promise<SpawnResult>, onEvent(cb), kill(), pid }`
-- `ContentBlock` — union: `ContentBlockText | ContentBlockToolUse | ContentBlockThinking`
+### Constants
+
+| Constant | File | Purpose |
+|----------|------|---------|
+| `PROJECT_MCP_CONFIG` | `spawner.ts` | Resolved path to project `.mcp.json` (used for worktree spawns) |
 
 ## Data Flow
 
@@ -45,14 +36,36 @@ buildClaudeArgs(session, prompt, config)
 Bun.spawn(["claude", ...args], { cwd, env })
   │
   ├── stdout ──► StreamParser.feed(chunk) ──► StreamEvent[]
-  │                                              │
-  │     ┌── init event ──► extract sessionId     │
-  │     ├── assistant event ──► onEvent listeners │
-  │     └── result event ──► extract response     │
-  │                                               │
+  │     ├── init event ──► extract sessionId
+  │     ├── assistant event ──► onEvent listeners
+  │     └── result event ──► extract response
+  │
   └── proc.exited ──► SpawnResult { sessionId, response, events, exitCode, error }
 ```
 
-## Constants
+## Key Concepts
 
-- `PROJECT_MCP_CONFIG` — resolved path to project `.mcp.json` (used for worktree spawns)
+### Environment Variables Passed to Claude
+
+`spawner.ts` sets these env vars on every spawned process:
+
+| Var | Purpose |
+|-----|---------|
+| `JUNIOR_SPAWNED` | `"1"` — lets hooks/agents detect they're inside Junior |
+| `SLACK_CHANNEL` | Current thread's channel ID |
+| `SLACK_THREAD_TS` | Current thread's timestamp |
+| `SLACK_BOT_TOKEN` | Bot token for `bin/slack-upload.sh` |
+
+### MCP Config Injection
+
+When `cwd` differs from project root (worktree/target repo), `spawner.ts` passes `--mcp-config` pointing to Junior's `.mcp.json`. This ensures the slack-bot MCP server is reachable regardless of working directory.
+
+### CLI Flags
+
+Always: `-p`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode bypassPermissions`.
+Conditional: `--resume` (if sessionId), `--append-system-prompt` (if systemPrompt), `--mcp-config` (if worktree).
+
+## Dependencies
+
+- **Uses**: Bun.spawn, `session/types` (ThreadSession), `config` (Claude settings)
+- **Used by**: `SessionManager.handleMessage()`, wrapped by `lifecycle/timeout.ts`

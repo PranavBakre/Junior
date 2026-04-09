@@ -1,44 +1,36 @@
 # Code Index: Slack Event Handler
 
-## Files
+Slack Bolt app setup, event filtering, command parsing, message formatting, response posting, and Home tab rendering.
 
-| File | Purpose |
-|---|---|
-| `src/slack/app.ts` | Factory: creates Bolt app with socket mode |
-| `src/slack/events.ts` | Registers `message` and `app_mention` handlers, filters events, routes to callback |
-| `src/slack/commands.ts` | Parses `!command` prefix from message text |
-| `src/slack/formatting.ts` | Formats tool statuses and chunks long responses for Slack |
-| `src/slack/responder.ts` | Posts, updates, deletes Slack messages with debounced status updates |
-| `src/slack/home.ts` | Publishes Home tab with active session stats |
+## Code Index
 
-## Key Exports
+### src/slack
 
-### `src/slack/app.ts`
-- `createSlackApp(config: Config): App` — creates Bolt app with `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN`
+Event handling, formatting, and Slack API interaction.
 
-### `src/slack/events.ts`
-- `registerEventHandlers(app, onMessage, store?, selfBotId?)` — wires `message` + `app_mention` events
-- `SlackMessageEvent` — normalized event type: `{ threadId, channel, user, text, ts, command, files? }`
-- `SlackFileAttachment` — `{ url, name, mimetype }`
+| Function | File | Purpose |
+|----------|------|---------|
+| `createSlackApp(config)` | `app.ts` | Factory: creates Bolt app with socket mode |
+| `registerEventHandlers(app, onMessage, store?, selfBotId?)` | `events.ts` | Wires `message` + `app_mention` handlers with filtering |
+| `extractFiles(event)` | `events.ts` | Pulls `url_private_download`, `name`, `mimetype` from event attachments |
+| `parseCommand(text)` | `commands.ts` | Splits `!build fix auth` → `{ command: "build", text: "fix auth" }` |
+| `formatToolStatuses(event)` | `formatting.ts` | Extracts tool names from assistant content blocks |
+| `extractAssistantText(event)` | `formatting.ts` | Concatenates text content blocks from assistant events |
+| `splitResponse(text, maxLen?)` | `formatting.ts` | Chunks by paragraph/line/code block boundaries (default 3000 chars) |
+| `SlackResponder.postResponse(channel, threadTs, text)` | `responder.ts` | Posts response, auto-splits if >3000 chars |
+| `SlackResponder.updateStatus(channel, threadTs, text)` | `responder.ts` | Debounced status message (1s min interval) |
+| `SlackResponder.deleteStatus(channel, threadTs)` | `responder.ts` | Removes status message when turn completes |
+| `SlackResponder.addReaction(channel, ts, emoji)` | `responder.ts` | Adds emoji reaction (e.g., eyes for buffered messages) |
+| `registerHomeTab(app, store)` | `home.ts` | Registers `app_home_opened` event |
+| `publishHomeTab(app, userId, store)` | `home.ts` | Builds home view with session stats |
 
-### `src/slack/commands.ts`
-- `parseCommand(text): ParsedCommand` — splits `!build fix auth` into `{ command: "build", text: "fix auth" }`
+### Types
 
-### `src/slack/formatting.ts`
-- `formatToolStatuses(event): string[]` — extracts tool names from assistant events
-- `extractAssistantText(event): string | null` — pulls text content blocks
-- `splitResponse(text, maxLen): string[]` — chunks by paragraph/line/code block boundaries
-
-### `src/slack/responder.ts`
-- `SlackResponder` class:
-  - `postResponse(channel, threadTs, text)` — posts (auto-splits if >3000 chars)
-  - `updateStatus(channel, threadTs, text)` — debounced status message (1s min interval)
-  - `deleteStatus(channel, threadTs)` — removes status message
-  - `addReaction(channel, ts, emoji)` — adds emoji reaction
-
-### `src/slack/home.ts`
-- `registerHomeTab(app, store)` — registers `app_home_opened` event
-- `publishHomeTab(app, userId, store)` — builds and publishes home view
+| Type | File | Purpose |
+|------|------|---------|
+| `SlackMessageEvent` | `events.ts` | `{ threadId, channel, user, text, ts, command, files? }` |
+| `SlackFileAttachment` | `events.ts` | `{ url, name, mimetype }` |
+| `ParsedCommand` | `commands.ts` | `{ command: string | null, text: string }` |
 
 ## Event Flow
 
@@ -50,19 +42,29 @@ Slack WebSocket (Socket Mode)
   │     ├── filter: must have text + user
   │     ├── filter: must be thread reply OR DM
   │     ├── filter: thread must have active session in store
-  │     ├── parse command (parseCommand)
-  │     ├── extract files (extractFiles)
+  │     ├── parseCommand() → extract !command
+  │     ├── extractFiles() → SlackFileAttachment[]
   │     └── onMessage(SlackMessageEvent)
   │
   └── app_mention event
         ├── strip <@BOTID> from text
-        ├── parse command
-        ├── extract files
+        ├── parseCommand() + extractFiles()
         └── onMessage(SlackMessageEvent)
 ```
 
-## Loop Prevention
+## Key Concepts
+
+### Loop Prevention
 
 `events.ts:31` — `if ("bot_id" in event && selfBotId && event.bot_id === selfBotId) return;`
 
-This is why the bot MCP server (sends as bot) works but the Slack plugin (sends as user) caused loops.
+Messages from the bot MCP server carry Junior's `bot_id` and get filtered. The old Slack plugin sent as the user's OAuth identity (no `bot_id`), bypassing this filter.
+
+### Status Debouncing
+
+`SlackResponder` tracks `lastStatusTime` per thread. Updates within 1s of the last are skipped. This prevents Slack rate limits during rapid tool_use events.
+
+## Dependencies
+
+- **Uses**: `@slack/bolt` (Bolt app, Socket Mode), session store (for thread filtering)
+- **Used by**: `SessionManager` (receives `SlackMessageEvent` via callback), `index.ts` (wiring)
