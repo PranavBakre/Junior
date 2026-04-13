@@ -100,6 +100,24 @@ export class SessionManager {
     event: SlackMessageEvent,
   ): Promise<boolean> {
     switch (event.command) {
+      case "cancel": {
+        if (session.status !== "busy") {
+          this.onCommandResponse?.(event, "Nothing running.");
+          return true;
+        }
+        const handle = this.handles.get(session.threadId);
+        if (handle) {
+          handle.kill();
+          this.handles.delete(session.threadId);
+        }
+        session.status = "idle";
+        session.pid = null;
+        session.pendingMessages = [];
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, "Cancelled.");
+        return true;
+      }
+
       case "reset": {
         await this.resetSession(session.threadId);
         this.onCommandResponse?.(event, "Session reset.");
@@ -131,6 +149,7 @@ export class SessionManager {
           "`!architect` — Architect agent (continues to Claude)",
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
+          "`!cancel` — Kill running process, keep session",
           "`!reset` — Reset session",
           "`!status` — Show session status",
           "`!quiet` — Minimal output",

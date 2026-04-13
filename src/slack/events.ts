@@ -55,7 +55,11 @@ export function registerEventHandlers(
     const threadId =
       "thread_ts" in event && event.thread_ts ? event.thread_ts : event.ts;
 
-    const parsed = parseCommand(text);
+    // Strip bot mention so commands are recognized even from the message event
+    const cleanText = selfBotId
+      ? text.replace(/<@[A-Z0-9]+>\s*/g, "").trim()
+      : text;
+    const parsed = parseCommand(cleanText);
 
     // Extract file attachments if present
     const files = extractFiles(event);

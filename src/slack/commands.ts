@@ -3,6 +3,7 @@ const KNOWN_COMMANDS = new Set([
   "frontend",
   "review",
   "architect",
+  "cancel",
   "reset",
   "status",
   "repo",
