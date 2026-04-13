@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { mkdirSync } from "node:fs";
 import type { Config } from "../config.ts";
 import type { ThreadSession } from "../session/types.ts";
 import type { SpawnHandle, SpawnResult, StreamEvent } from "./types.ts";
@@ -16,6 +17,7 @@ export function spawnClaude(
   botToken?: string,
 ): SpawnHandle {
   const cwd = session.cwd ?? session.worktreePath ?? targetRepoCwd ?? process.cwd();
+  if (session.cwd) mkdirSync(session.cwd, { recursive: true });
   // Pass MCP config path when cwd differs from project root (worktree/target repo)
   const mcpConfigPath = cwd !== process.cwd() ? PROJECT_MCP_CONFIG : undefined;
   const args = buildClaudeArgs(session, prompt, config, mcpConfigPath);
