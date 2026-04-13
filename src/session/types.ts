@@ -20,6 +20,7 @@ export interface ThreadSession {
   pendingMessages: PendingMessage[];
   verbosity: "quiet" | "normal" | "verbose";
   model: string | null;
+  cwd: string | null;
   pid: number | null;
   lastActivity: number;
   lastError: { type: string; message: string; timestamp: number } | null;
@@ -43,6 +44,7 @@ export function createSession(
     pendingMessages: [],
     verbosity: "normal",
     model: null,
+    cwd: null,
     pid: null,
     lastActivity: Date.now(),
     lastError: null,

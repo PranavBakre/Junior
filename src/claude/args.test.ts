@@ -17,6 +17,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     pendingMessages: [],
     verbosity: "normal",
     model: null,
+    cwd: null,
     pid: null,
     lastActivity: Date.now(),
     lastError: null,

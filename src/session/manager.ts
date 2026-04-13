@@ -218,6 +218,7 @@ export class SessionManager {
         }
 
         session.model = "haiku";
+        session.cwd = process.env.HOME ?? "/tmp";
         await this.store.set(session.threadId, session);
         const dateStr = targetDate.toISOString().split("T")[0];
         const fromThread = !itemText;

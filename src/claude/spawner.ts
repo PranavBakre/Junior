@@ -15,7 +15,7 @@ export function spawnClaude(
   targetRepoCwd?: string,
   botToken?: string,
 ): SpawnHandle {
-  const cwd = session.worktreePath ?? targetRepoCwd ?? process.cwd();
+  const cwd = session.cwd ?? session.worktreePath ?? targetRepoCwd ?? process.cwd();
   // Pass MCP config path when cwd differs from project root (worktree/target repo)
   const mcpConfigPath = cwd !== process.cwd() ? PROJECT_MCP_CONFIG : undefined;
   const args = buildClaudeArgs(session, prompt, config, mcpConfigPath);

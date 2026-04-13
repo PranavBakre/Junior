@@ -87,6 +87,7 @@ describe("createSession", () => {
       "baseRef",
       "channel",
       "createdAt",
+      "cwd",
       "lastActivity",
       "lastError",
       "model",
