@@ -7,7 +7,7 @@ import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
 
 // Junior's .mcp.json — pass to spawned processes so they find the slack-bot server
-const PROJECT_MCP_CONFIG = resolve(import.meta.dirname ?? ".", "../.mcp.json");
+const PROJECT_MCP_CONFIG = resolve(import.meta.dirname ?? ".", "../../.mcp.json");
 
 export function spawnClaude(
   session: ThreadSession,
@@ -18,8 +18,10 @@ export function spawnClaude(
 ): SpawnHandle {
   const cwd = session.cwd ?? session.worktreePath ?? targetRepoCwd ?? process.cwd();
   if (session.cwd) mkdirSync(session.cwd, { recursive: true });
-  // Pass MCP config path when cwd differs from project root (worktree/target repo)
-  const mcpConfigPath = cwd !== process.cwd() ? PROJECT_MCP_CONFIG : undefined;
+  // Pass MCP config for worktree/target repo so they find the slack-bot server.
+  // Skip for session.cwd overrides (utility commands) — they need cloud integrations, not local MCP.
+  const needsMcpConfig = !session.cwd && cwd !== process.cwd();
+  const mcpConfigPath = needsMcpConfig ? PROJECT_MCP_CONFIG : undefined;
   const args = buildClaudeArgs(session, prompt, config, mcpConfigPath);
 
   const proc = Bun.spawn(["claude", ...args], {
