@@ -230,16 +230,16 @@ export class SessionManager {
           : `Append a new bullet to the description: "- [${itemType.toUpperCase()}] ${itemText}"`;
 
         event.text = [
-          `Add a ${itemType} item to the Google Calendar event titled "Bugs, Ad-hocs & PR reviews overflow" on ${dateStr}.`,
+          `TASK: Add a ${itemType} item to Google Calendar. Do NOT read any code files. Only use Google Calendar tools.`,
           ``,
+          `Event: "Bugs, Ad-hocs & PR reviews overflow" on ${dateStr}`,
           itemInstruction,
           ``,
           `Steps:`,
-          `1. Use gcal_list_events to find the event on ${dateStr} (search q="Bugs, Ad-hocs & PR reviews overflow", set timeMin="${dateStr}T00:00:00", timeMax="${dateStr}T23:59:59").`,
-          `2. Use gcal_get_event to read the current description.`,
-          `3. ${bulletInstruction}`,
-          `4. Use gcal_update_event to save the updated description. Only update the description field — do not change other fields. Set sendUpdates to "none".`,
-          `5. Reply with a brief confirmation: what was added and to which date's event.`,
+          `1. gcal_list_events: q="Bugs, Ad-hocs & PR reviews overflow", timeMin="${dateStr}T00:00:00", timeMax="${dateStr}T23:59:59"`,
+          `2. gcal_get_event: read current description`,
+          `3. gcal_update_event: ${bulletInstruction}. Only update description. sendUpdates="none"`,
+          `4. Reply with a one-line confirmation.`,
         ].join("\n");
         return false;
       }
