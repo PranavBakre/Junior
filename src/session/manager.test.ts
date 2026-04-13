@@ -235,7 +235,7 @@ describe("SessionManager", () => {
       await manager.handleMessage(makeEvent({ text: "Work on this" }));
 
       // Now reset
-      const resetEvent = makeEvent({ command: "reset", text: "" });
+      const resetEvent = makeEvent({ command: "reset", text: "", ts: "ts-reset" });
       await manager.handleMessage(resetEvent);
 
       // Session should be deleted
@@ -260,7 +260,7 @@ describe("SessionManager", () => {
       await manager.handleMessage(makeEvent({ text: "Start" }));
 
       // Check status
-      const statusEvent = makeEvent({ command: "status", text: "" });
+      const statusEvent = makeEvent({ command: "status", text: "", ts: "ts-status" });
       await manager.handleMessage(statusEvent);
 
       expect(onCmd).toHaveBeenCalledTimes(1);
@@ -326,7 +326,7 @@ describe("SessionManager", () => {
       await new Promise((r) => setTimeout(r, 10));
 
       await manager.handleMessage(
-        makeEvent({ command: "quiet", text: "" }),
+        makeEvent({ command: "quiet", text: "", ts: "ts-quiet" }),
       );
 
       const session = await store.get("thread-1");
@@ -346,7 +346,7 @@ describe("SessionManager", () => {
       await new Promise((r) => setTimeout(r, 10));
 
       await manager.handleMessage(
-        makeEvent({ command: "verbose", text: "" }),
+        makeEvent({ command: "verbose", text: "", ts: "ts-verbose" }),
       );
 
       const session = await store.get("thread-1");
@@ -367,10 +367,10 @@ describe("SessionManager", () => {
 
       // Set to quiet first, then back to normal
       await manager.handleMessage(
-        makeEvent({ command: "quiet", text: "" }),
+        makeEvent({ command: "quiet", text: "", ts: "ts-quiet2" }),
       );
       await manager.handleMessage(
-        makeEvent({ command: "normal", text: "" }),
+        makeEvent({ command: "normal", text: "", ts: "ts-normal" }),
       );
 
       const session = await store.get("thread-1");
@@ -389,7 +389,7 @@ describe("SessionManager", () => {
       await new Promise((r) => setTimeout(r, 10));
 
       await manager.handleMessage(
-        makeEvent({ command: "repo", text: "junior" }),
+        makeEvent({ command: "repo", text: "junior", ts: "ts-repo" }),
       );
 
       const session = await store.get("thread-1");
@@ -406,7 +406,7 @@ describe("SessionManager", () => {
       await new Promise((r) => setTimeout(r, 10));
 
       await manager.handleMessage(
-        makeEvent({ command: "repo", text: "nonexistent-repo" }),
+        makeEvent({ command: "repo", text: "nonexistent-repo", ts: "ts-repo-bad" }),
       );
 
       const response = onCmd.mock.calls[0][1] as string;
@@ -426,7 +426,7 @@ describe("SessionManager", () => {
       await new Promise((r) => setTimeout(r, 10));
 
       await manager.handleMessage(
-        makeEvent({ command: "branch", text: "feature/new-thing" }),
+        makeEvent({ command: "branch", text: "feature/new-thing", ts: "ts-branch" }),
       );
 
       const session = await store.get("thread-1");
@@ -445,7 +445,7 @@ describe("SessionManager", () => {
       await new Promise((r) => setTimeout(r, 10));
 
       await manager.handleMessage(
-        makeEvent({ command: "help", text: "" }),
+        makeEvent({ command: "help", text: "", ts: "ts-help" }),
       );
 
       expect(onCmd).toHaveBeenCalled();
