@@ -89,6 +89,7 @@ describe("createSession", () => {
       "createdAt",
       "lastActivity",
       "lastError",
+      "model",
       "pendingMessages",
       "pid",
       "sessionId",

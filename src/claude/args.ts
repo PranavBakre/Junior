@@ -25,6 +25,10 @@ export function buildClaudeArgs(
     args.push("--append-system-prompt", session.systemPrompt);
   }
 
+  if (session.model) {
+    args.push("--model", session.model);
+  }
+
   args.push("--permission-mode", config.permissionMode);
 
   if (mcpConfigPath) {

@@ -11,6 +11,8 @@ const KNOWN_COMMANDS = new Set([
   "verbose",
   "normal",
   "help",
+  "adhoc",
+  "bugs",
 ]);
 
 export interface ParsedCommand {

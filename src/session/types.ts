@@ -19,6 +19,7 @@ export interface ThreadSession {
   status: SessionStatus;
   pendingMessages: PendingMessage[];
   verbosity: "quiet" | "normal" | "verbose";
+  model: string | null;
   pid: number | null;
   lastActivity: number;
   lastError: { type: string; message: string; timestamp: number } | null;
@@ -41,6 +42,7 @@ export function createSession(
     status: "idle",
     pendingMessages: [],
     verbosity: "normal",
+    model: null,
     pid: null,
     lastActivity: Date.now(),
     lastError: null,
