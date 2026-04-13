@@ -202,31 +202,45 @@ export class SessionManager {
       case "adhoc":
       case "bugs": {
         const itemType = event.command === "bugs" ? "bug" : "ad-hoc";
-        const itemText = event.text.trim();
+        let itemText = event.text.trim();
         if (!itemText) {
-          this.onCommandResponse?.(event, `Usage: \`!${event.command} <description>\``);
+          this.onCommandResponse?.(event, `Usage: \`!${event.command} [today|tomorrow] <description>\``);
           return true;
         }
-        session.model = "haiku";
-        await this.store.set(session.threadId, session);
+
+        // Parse optional "today"/"tomorrow" prefix as date qualifier
         const today = new Date();
         const tomorrow = new Date(today);
         tomorrow.setDate(tomorrow.getDate() + 1);
-        const todayStr = today.toISOString().split("T")[0];
-        const tomorrowStr = tomorrow.toISOString().split("T")[0];
+        let targetDate: Date;
+        if (/^tomorrow\b/i.test(itemText)) {
+          targetDate = tomorrow;
+          itemText = itemText.replace(/^tomorrow\s*/i, "").trim();
+        } else {
+          targetDate = today;
+          itemText = itemText.replace(/^today\s*/i, "").trim();
+        }
+
+        if (!itemText) {
+          this.onCommandResponse?.(event, `Usage: \`!${event.command} [today|tomorrow] <description>\``);
+          return true;
+        }
+
+        session.model = "haiku";
+        await this.store.set(session.threadId, session);
+        const dateStr = targetDate.toISOString().split("T")[0];
 
         event.text = [
-          `Add a ${itemType} item to the Google Calendar event titled "Bugs, Ad-hocs & PR reviews overflow".`,
+          `Add a ${itemType} item to the Google Calendar event titled "Bugs, Ad-hocs & PR reviews overflow" on ${dateStr}.`,
           ``,
           `Item to add: ${itemText}`,
           ``,
           `Steps:`,
-          `1. Determine from the item text whether this is for today (${todayStr}) or tomorrow (${tomorrowStr}). If the text mentions "tomorrow", use tomorrow's date. Otherwise default to today.`,
-          `2. Use gcal_list_events to find the event on that date (search q="Bugs, Ad-hocs & PR reviews overflow", set timeMin/timeMax to cover that day).`,
-          `3. Use gcal_get_event to read the current description.`,
-          `4. Append a new bullet to the description: "- [${itemType.toUpperCase()}] ${itemText}"`,
-          `5. Use gcal_update_event to save the updated description. Only update the description field — do not change other fields. Set sendUpdates to "none".`,
-          `6. Reply with a brief confirmation: what was added and to which date's event.`,
+          `1. Use gcal_list_events to find the event on ${dateStr} (search q="Bugs, Ad-hocs & PR reviews overflow", set timeMin="${dateStr}T00:00:00", timeMax="${dateStr}T23:59:59").`,
+          `2. Use gcal_get_event to read the current description.`,
+          `3. Append a new bullet to the description: "- [${itemType.toUpperCase()}] ${itemText}"`,
+          `4. Use gcal_update_event to save the updated description. Only update the description field — do not change other fields. Set sendUpdates to "none".`,
+          `5. Reply with a brief confirmation: what was added and to which date's event.`,
         ].join("\n");
         return false;
       }
