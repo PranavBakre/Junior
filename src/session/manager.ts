@@ -203,10 +203,6 @@ export class SessionManager {
       case "bugs": {
         const itemType = event.command === "bugs" ? "bug" : "ad-hoc";
         let itemText = event.text.trim();
-        if (!itemText) {
-          this.onCommandResponse?.(event, `Usage: \`!${event.command} [today|tomorrow] <description>\``);
-          return true;
-        }
 
         // Parse optional "today"/"tomorrow" prefix as date qualifier
         const today = new Date();
@@ -221,24 +217,27 @@ export class SessionManager {
           itemText = itemText.replace(/^today\s*/i, "").trim();
         }
 
-        if (!itemText) {
-          this.onCommandResponse?.(event, `Usage: \`!${event.command} [today|tomorrow] <description>\``);
-          return true;
-        }
-
         session.model = "haiku";
         await this.store.set(session.threadId, session);
         const dateStr = targetDate.toISOString().split("T")[0];
+        const fromThread = !itemText;
+
+        const itemInstruction = fromThread
+          ? `Summarize the thread conversation above into a concise one-line ${itemType} description.`
+          : `Item to add: ${itemText}`;
+        const bulletInstruction = fromThread
+          ? `Append a new bullet to the description with your summary: "- [${itemType.toUpperCase()}] <your one-line summary>"`
+          : `Append a new bullet to the description: "- [${itemType.toUpperCase()}] ${itemText}"`;
 
         event.text = [
           `Add a ${itemType} item to the Google Calendar event titled "Bugs, Ad-hocs & PR reviews overflow" on ${dateStr}.`,
           ``,
-          `Item to add: ${itemText}`,
+          itemInstruction,
           ``,
           `Steps:`,
           `1. Use gcal_list_events to find the event on ${dateStr} (search q="Bugs, Ad-hocs & PR reviews overflow", set timeMin="${dateStr}T00:00:00", timeMax="${dateStr}T23:59:59").`,
           `2. Use gcal_get_event to read the current description.`,
-          `3. Append a new bullet to the description: "- [${itemType.toUpperCase()}] ${itemText}"`,
+          `3. ${bulletInstruction}`,
           `4. Use gcal_update_event to save the updated description. Only update the description field — do not change other fields. Set sendUpdates to "none".`,
           `5. Reply with a brief confirmation: what was added and to which date's event.`,
         ].join("\n");
