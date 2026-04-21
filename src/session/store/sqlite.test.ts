@@ -1,0 +1,141 @@
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { SqliteSessionStore } from "./sqlite.ts";
+import { createSession } from "../types.ts";
+
+describe("SqliteSessionStore", () => {
+  let tmpDir: string;
+  let store: SqliteSessionStore;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "junior-sqlite-"));
+    store = new SqliteSessionStore(join(tmpDir, "test.db"));
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("get returns undefined for unknown threadId", async () => {
+    const result = await store.get("nonexistent");
+    expect(result).toBeUndefined();
+  });
+
+  it("set then get round-trips all fields", async () => {
+    const session = createSession("thread-1", "channel-1");
+    session.sessionId = "sess-abc";
+    session.agentType = "build";
+    session.worktreePath = "/tmp/wt";
+    session.status = "busy";
+    session.pendingMessages = [
+      { user: "U1", text: "hi", ts: "1.2" },
+    ];
+    await store.set("thread-1", session);
+
+    const retrieved = await store.get("thread-1");
+    expect(retrieved).toEqual(session);
+  });
+
+  it("set on existing threadId upserts", async () => {
+    const s1 = createSession("thread-1", "channel-1");
+    await store.set("thread-1", s1);
+
+    const s2 = createSession("thread-1", "channel-2");
+    s2.status = "busy";
+    await store.set("thread-1", s2);
+
+    const retrieved = await store.get("thread-1");
+    expect(retrieved!.channel).toBe("channel-2");
+    expect(retrieved!.status).toBe("busy");
+  });
+
+  it("delete removes the session", async () => {
+    const session = createSession("thread-1", "channel-1");
+    await store.set("thread-1", session);
+    await store.delete("thread-1");
+
+    const result = await store.get("thread-1");
+    expect(result).toBeUndefined();
+  });
+
+  it("delete on nonexistent key does not throw", async () => {
+    expect(store.delete("nonexistent")).resolves.toBeUndefined();
+  });
+
+  it("getAll returns all sessions", async () => {
+    await store.set("t1", createSession("t1", "c1"));
+    await store.set("t2", createSession("t2", "c2"));
+    await store.set("t3", createSession("t3", "c1"));
+
+    const all = await store.getAll();
+    expect(all.size).toBe(3);
+    expect(all.get("t1")?.threadId).toBe("t1");
+    expect(all.get("t2")?.threadId).toBe("t2");
+    expect(all.get("t3")?.threadId).toBe("t3");
+  });
+
+  it("getAll returns empty map when store is empty", async () => {
+    const all = await store.getAll();
+    expect(all.size).toBe(0);
+  });
+
+  it("getRecent filters by lastActivity", async () => {
+    const now = Date.now();
+
+    const fresh = createSession("fresh", "c1");
+    fresh.lastActivity = now - 1000;
+    await store.set("fresh", fresh);
+
+    const stale = createSession("stale", "c1");
+    stale.lastActivity = now - 10 * 24 * 60 * 60 * 1000; // 10 days ago
+    await store.set("stale", stale);
+
+    const recent = await store.getRecent(2 * 24 * 60 * 60 * 1000); // 2 days
+    expect(recent.size).toBe(1);
+    expect(recent.has("fresh")).toBe(true);
+    expect(recent.has("stale")).toBe(false);
+  });
+
+  it("getRecent includes rows at the exact cutoff", async () => {
+    const session = createSession("edge", "c1");
+    session.lastActivity = Date.now() - 1000;
+    await store.set("edge", session);
+
+    const recent = await store.getRecent(60_000);
+    expect(recent.has("edge")).toBe(true);
+  });
+
+  it("updateActivity updates lastActivity timestamp", async () => {
+    const session = createSession("thread-1", "channel-1");
+    const originalActivity = session.lastActivity;
+    await store.set("thread-1", session);
+
+    await new Promise((r) => setTimeout(r, 10));
+    await store.updateActivity("thread-1");
+
+    const updated = await store.get("thread-1");
+    expect(updated!.lastActivity).toBeGreaterThan(originalActivity);
+  });
+
+  it("updateActivity on nonexistent key does not throw", async () => {
+    expect(store.updateActivity("nonexistent")).resolves.toBeUndefined();
+  });
+
+  it("sessions persist across store instances (same db file)", async () => {
+    const dbPath = join(tmpDir, "persist.db");
+    const s1 = new SqliteSessionStore(dbPath);
+    const session = createSession("thread-1", "channel-1");
+    session.sessionId = "sess-xyz";
+    await s1.set("thread-1", session);
+    s1.close();
+
+    const s2 = new SqliteSessionStore(dbPath);
+    const retrieved = await s2.get("thread-1");
+    expect(retrieved).toBeDefined();
+    expect(retrieved!.sessionId).toBe("sess-xyz");
+    s2.close();
+  });
+});

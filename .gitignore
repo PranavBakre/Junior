@@ -6,3 +6,8 @@ logs/
 .DS_Store
 .claude/worktrees/
 learnings.md
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

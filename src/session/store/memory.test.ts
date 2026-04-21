@@ -88,4 +88,19 @@ describe("InMemorySessionStore", () => {
   it("updateActivity on nonexistent key does not throw", async () => {
     await expect(store.updateActivity("nonexistent")).resolves.toBeUndefined();
   });
+
+  it("getRecent filters by lastActivity", async () => {
+    const now = Date.now();
+    const fresh = createSession("fresh", "c1");
+    fresh.lastActivity = now - 1000;
+    const stale = createSession("stale", "c1");
+    stale.lastActivity = now - 10 * 24 * 60 * 60 * 1000;
+    await store.set("fresh", fresh);
+    await store.set("stale", stale);
+
+    const recent = await store.getRecent(2 * 24 * 60 * 60 * 1000);
+    expect(recent.size).toBe(1);
+    expect(recent.has("fresh")).toBe(true);
+    expect(recent.has("stale")).toBe(false);
+  });
 });

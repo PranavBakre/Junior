@@ -4,6 +4,8 @@ export interface RepoConfig {
   defaultBase: string;
 }
 
+export type SessionStoreKind = "memory" | "sqlite";
+
 export interface Config {
   slack: {
     botToken: string;
@@ -20,9 +22,9 @@ export interface Config {
   session: {
     staleTimeoutMs: number;
     cleanupIntervalMs: number;
-  };
-  redis?: {
-    url: string;
+    store: SessionStoreKind;
+    sqlitePath: string;
+    homeWindowMs: number;
   };
 }
 
@@ -57,7 +59,14 @@ export function loadConfig(): Config {
       cleanupIntervalMs: Number(
         optional("SESSION_CLEANUP_INTERVAL_MS", "900000"),
       ),
+      store: parseStoreKind(optional("SESSION_STORE", "sqlite")),
+      sqlitePath: optional("SESSION_DB_PATH", "data/sessions.db"),
+      homeWindowMs: Number(optional("HOME_WINDOW_MS", "172800000")),
     },
-    redis: process.env.REDIS_URL ? { url: process.env.REDIS_URL } : undefined,
   };
+}
+
+function parseStoreKind(value: string): SessionStoreKind {
+  if (value === "memory" || value === "sqlite") return value;
+  throw new Error(`Invalid SESSION_STORE: ${value} (expected memory|sqlite)`);
 }

@@ -88,7 +88,13 @@ const testConfig: Config = {
     { name: "junior", path: "/tmp/junior", defaultBase: "main" },
     { name: "frontend", path: "/tmp/frontend", defaultBase: "main" },
   ],
-  session: { staleTimeoutMs: 86400000, cleanupIntervalMs: 900000 },
+  session: {
+    staleTimeoutMs: 86400000,
+    cleanupIntervalMs: 900000,
+    store: "sqlite",
+    sqlitePath: "data/sessions.db",
+    homeWindowMs: 172800000,
+  },
 };
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {

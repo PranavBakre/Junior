@@ -5,5 +5,6 @@ export interface SessionStore {
   set(threadId: string, session: ThreadSession): Promise<void>;
   delete(threadId: string): Promise<void>;
   getAll(): Promise<Map<string, ThreadSession>>;
+  getRecent(sinceMs: number): Promise<Map<string, ThreadSession>>;
   updateActivity(threadId: string): Promise<void>;
 }

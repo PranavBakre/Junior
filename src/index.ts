@@ -4,7 +4,7 @@ import { registerEventHandlers } from "./slack/events.ts";
 import { formatToolStatuses, extractAssistantText } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
-import { InMemorySessionStore } from "./session/store/memory.ts";
+import { createSessionStore } from "./session/store/factory.ts";
 import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
 import { registerHomeTab } from "./slack/home.ts";
 import { checkOrphanedSessions } from "./lifecycle/health.ts";
@@ -18,7 +18,8 @@ const config = loadConfig();
 startMcpServer(config.slack.botToken);
 const app = createSlackApp(config);
 
-const store = new InMemorySessionStore();
+const store = createSessionStore(config);
+log.info("boot", `Session store: ${config.session.store}`);
 const sessionManager = new SessionManager(store, config);
 const agentRouter = new AgentRouter(config.repos, ".claude/agents");
 const worktreeManager = new WorktreeManager(config.repos);
@@ -76,7 +77,7 @@ sessionManager.onError = (session, error) => {
   );
 };
 
-registerHomeTab(app, store);
+registerHomeTab(app, store, config.session.homeWindowMs);
 
 setupGracefulShutdown(sessionManager, store);
 

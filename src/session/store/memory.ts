@@ -20,6 +20,17 @@ export class InMemorySessionStore implements SessionStore {
     return new Map(this.sessions);
   }
 
+  async getRecent(sinceMs: number): Promise<Map<string, ThreadSession>> {
+    const cutoff = Date.now() - sinceMs;
+    const recent = new Map<string, ThreadSession>();
+    for (const [threadId, session] of this.sessions) {
+      if (session.lastActivity >= cutoff) {
+        recent.set(threadId, session);
+      }
+    }
+    return recent;
+  }
+
   async updateActivity(threadId: string): Promise<void> {
     const session = this.sessions.get(threadId);
     if (session) {

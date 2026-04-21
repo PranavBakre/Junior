@@ -68,7 +68,7 @@ Slack Bot Server (Node.js / Bun)
 8. **Cleanup stale threads.** Worktrees and sessions for inactive threads (24h default) must be cleaned up. Check for uncommitted changes before force-removing a worktree.
 9. **MCP config is per-thread.** Pass `--mcp-config <path>` to scope each thread's available tools. Global MCP servers are NOT loaded when this flag is present.
 10. **No `--input-format stream-json` in production.** The bidirectional streaming flag exists but is undocumented and unstable. Use `--resume` for multi-turn until the protocol is specified.
-11. **Redis for production persistence.** In-memory Map is fine for MVP. Production needs Redis with TTL-based session storage to survive restarts. Pending messages don't need persistence — if the bot restarts, the Claude process dies with it.
+11. **SQLite for persistence.** Sessions persist in a SQLite file via `bun:sqlite` (`data/sessions.db` by default, `SESSION_DB_PATH` to override). Single-writer, no extra service, survives restarts. `SESSION_STORE=memory` switches to the in-memory store for tests/dev. The home tab shows only sessions active in the last `HOME_WINDOW_MS` (2 days default); cleanup and health still scan all rows. Pending messages are persisted but treated as stale on restart — the Claude process they were queued behind is dead.
 12. **Always handle zombie processes.** Set a timeout guard (5 min default). Kill with SIGINT on timeout. Handle process errors. Clear the timeout on exit.
 13. **Design for swappability.** When adding infrastructure that could have multiple implementations (persistence, message queue, notification), use a provider/factory pattern. Each provider gets its own file, a factory selects the right one.
 14. **Pure functions over framework ceremony.** If a library's core value is bypassed, replace it with the simplest implementation. A 20-line function beats a dependency you're working around.
@@ -91,8 +91,9 @@ junior/
       types.ts            -- ThreadSession interface
       store/
         interface.ts      -- SessionStore interface
-        memory.ts         -- InMemorySessionStore
-        redis.ts          -- RedisSessionStore (production)
+        factory.ts        -- createSessionStore(config)
+        memory.ts         -- InMemorySessionStore (tests, dev)
+        sqlite.ts         -- SqliteSessionStore (production)
     claude/
       spawner.ts          -- spawn claude -p, manage child process
       args.ts             -- build CLI args from session state

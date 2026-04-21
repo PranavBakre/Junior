@@ -2,9 +2,13 @@ import type { App } from "@slack/bolt";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { ThreadSession } from "../session/types.ts";
 
-export function registerHomeTab(app: App, store: SessionStore): void {
+export function registerHomeTab(
+  app: App,
+  store: SessionStore,
+  windowMs: number,
+): void {
   app.event("app_home_opened", async ({ event }) => {
-    await publishHomeTab(app, event.user, store);
+    await publishHomeTab(app, event.user, store, windowMs);
   });
 }
 
@@ -12,8 +16,9 @@ export async function publishHomeTab(
   app: App,
   userId: string,
   store: SessionStore,
+  windowMs: number,
 ): Promise<void> {
-  const sessions = await store.getAll();
+  const sessions = await store.getRecent(windowMs);
   const permalinks = await resolvePermalinks(app, sessions);
   const blocks = buildHomeBlocks(sessions, permalinks);
 
