@@ -31,6 +31,7 @@ function makeConfig(overrides: Partial<Config["claude"]> = {}): Config["claude"]
     maxTurns: 25,
     timeoutMs: 300000,
     permissionMode: "bypassPermissions",
+    defaultModel: null,
     ...overrides,
   };
 }
@@ -98,6 +99,27 @@ describe("buildClaudeArgs", () => {
     expect(args).toContain("sess-xyz");
     expect(args).toContain("--append-system-prompt");
     expect(args).toContain("Be concise.");
+  });
+
+  it("uses config.defaultModel when session.model is null", () => {
+    const config = makeConfig({ defaultModel: "claude-opus-4-6[1M]" });
+    const args = buildClaudeArgs(makeSession(), "test", config);
+    expect(args).toContain("--model");
+    expect(args).toContain("claude-opus-4-6[1M]");
+  });
+
+  it("prefers session.model over config.defaultModel", () => {
+    const config = makeConfig({ defaultModel: "claude-opus-4-6[1M]" });
+    const session = makeSession({ model: "haiku" });
+    const args = buildClaudeArgs(session, "test", config);
+    expect(args).toContain("--model");
+    expect(args).toContain("haiku");
+    expect(args).not.toContain("claude-opus-4-6[1M]");
+  });
+
+  it("omits --model when neither session nor config provides one", () => {
+    const args = buildClaudeArgs(makeSession(), "test", makeConfig());
+    expect(args).not.toContain("--model");
   });
 
   it("places prompt immediately after -p", () => {

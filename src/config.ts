@@ -14,6 +14,7 @@ export interface Config {
     maxTurns: number;
     timeoutMs: number;
     permissionMode: string;
+    defaultModel: string | null;
   };
   repos: RepoConfig[];
   session: {
@@ -48,6 +49,7 @@ export function loadConfig(): Config {
       maxTurns: Number(optional("CLAUDE_MAX_TURNS", "25")),
       timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "300000")),
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
+      defaultModel: process.env.CLAUDE_MODEL ?? null,
     },
     repos: JSON.parse(optional("REPOS", "[]")) as RepoConfig[],
     session: {

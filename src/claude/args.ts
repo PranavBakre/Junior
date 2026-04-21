@@ -25,8 +25,9 @@ export function buildClaudeArgs(
     args.push("--append-system-prompt", session.systemPrompt);
   }
 
-  if (session.model) {
-    args.push("--model", session.model);
+  const model = session.model ?? config.defaultModel;
+  if (model) {
+    args.push("--model", model);
   }
 
   args.push("--permission-mode", config.permissionMode);

@@ -83,7 +83,7 @@ import { InMemorySessionStore } from "./store/memory.ts";
 
 const testConfig: Config = {
   slack: { botToken: "xoxb-test", appToken: "xapp-test", signingSecret: "s" },
-  claude: { maxTurns: 25, timeoutMs: 300000, permissionMode: "bypassPermissions" },
+  claude: { maxTurns: 25, timeoutMs: 300000, permissionMode: "bypassPermissions", defaultModel: null },
   repos: [
     { name: "junior", path: "/tmp/junior", defaultBase: "main" },
     { name: "frontend", path: "/tmp/frontend", defaultBase: "main" },

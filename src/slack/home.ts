@@ -14,7 +14,8 @@ export async function publishHomeTab(
   store: SessionStore,
 ): Promise<void> {
   const sessions = await store.getAll();
-  const blocks = buildHomeBlocks(sessions);
+  const permalinks = await resolvePermalinks(app, sessions);
+  const blocks = buildHomeBlocks(sessions, permalinks);
 
   try {
     await app.client.views.publish({
@@ -30,8 +31,29 @@ export async function publishHomeTab(
   }
 }
 
+async function resolvePermalinks(
+  app: App,
+  sessions: Map<string, ThreadSession>,
+): Promise<Map<string, string>> {
+  const entries = await Promise.all(
+    Array.from(sessions.values()).map(async (s) => {
+      try {
+        const res = await app.client.chat.getPermalink({
+          channel: s.channel,
+          message_ts: s.threadId,
+        });
+        return [s.threadId, res.permalink ?? ""] as const;
+      } catch {
+        return [s.threadId, ""] as const;
+      }
+    }),
+  );
+  return new Map(entries.filter(([, url]) => url !== ""));
+}
+
 function buildHomeBlocks(
   sessions: Map<string, ThreadSession>,
+  permalinks: Map<string, string>,
 ): Array<Record<string, unknown>> {
   const blocks: Array<Record<string, unknown>> = [];
 
@@ -67,7 +89,7 @@ function buildHomeBlocks(
     });
 
     for (const session of busySessions) {
-      blocks.push(sessionBlock(session));
+      blocks.push(sessionBlock(session, permalinks.get(session.threadId)));
     }
   }
 
@@ -85,7 +107,7 @@ function buildHomeBlocks(
     });
 
     for (const session of idleSessions) {
-      blocks.push(sessionBlock(session));
+      blocks.push(sessionBlock(session, permalinks.get(session.threadId)));
     }
   }
 
@@ -104,11 +126,15 @@ function buildHomeBlocks(
 
     for (const session of errorSessions) {
       const ago = timeAgo(session.lastError!.timestamp);
+      const url = permalinks.get(session.threadId);
+      const title = url
+        ? `<${url}|*${session.threadId}*>`
+        : `*${session.threadId}*`;
       blocks.push({
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `*${session.threadId}*\n${session.lastError!.type}: ${session.lastError!.message}\n_${ago}_`,
+          text: `${title}\n${session.lastError!.type}: ${session.lastError!.message}\n_${ago}_`,
         },
       });
     }
@@ -127,7 +153,10 @@ function buildHomeBlocks(
   return blocks;
 }
 
-function sessionBlock(session: ThreadSession): Record<string, unknown> {
+function sessionBlock(
+  session: ThreadSession,
+  permalink: string | undefined,
+): Record<string, unknown> {
   const status =
     session.status === "busy"
       ? ":large_blue_circle: Busy"
@@ -140,13 +169,20 @@ function sessionBlock(session: ThreadSession): Record<string, unknown> {
   const ago = timeAgo(session.lastActivity);
   const pending = session.pendingMessages.length;
 
-  let text = `*${session.threadId}*\n${status}  |  Agent: ${agent}  |  Repo: ${repo}\nLast activity: ${ago}`;
+  const title = permalink
+    ? `<${permalink}|*${session.threadId}*>`
+    : `*${session.threadId}*`;
+
+  let text = `${title}\n${status}  |  Agent: ${agent}  |  Repo: ${repo}\nLast activity: ${ago}`;
 
   if (pending > 0) {
     text += `  |  Pending: ${pending}`;
   }
   if (session.worktreePath) {
     text += `\nWorktree: \`${session.worktreePath}\``;
+  }
+  if (session.sessionId) {
+    text += `\nResume: \`claude --resume ${session.sessionId}\``;
   }
 
   return {
