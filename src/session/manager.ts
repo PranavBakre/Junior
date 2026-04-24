@@ -9,7 +9,10 @@ import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
-import { buildPromptPreamble } from "../slack/thread-context.ts";
+import {
+  buildPromptPreamble,
+  resolveSlackMentions,
+} from "../slack/thread-context.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 
@@ -51,7 +54,11 @@ export class SessionManager {
     let session = await this.store.get(event.threadId);
 
     if (!session) {
-      session = createSession(event.threadId, event.channel);
+      session = createSession(
+        event.threadId,
+        event.channel,
+        this.config.session.defaultVerbosity,
+      );
       await this.store.set(event.threadId, session);
     }
 
@@ -278,14 +285,17 @@ export class SessionManager {
     try {
       // Inject identity + thread context so Claude knows who it is and what was said
       if (this.slackApp && latestTs) {
-        const preamble = await buildPromptPreamble(
-          this.slackApp,
-          session.channel,
-          session.threadId,
-          latestTs,
-          this.botUserId,
-        );
-        prompt = `${preamble}\n\n${prompt}`;
+        const [preamble, readablePrompt] = await Promise.all([
+          buildPromptPreamble(
+            this.slackApp,
+            session.channel,
+            session.threadId,
+            latestTs,
+            this.botUserId,
+          ),
+          resolveSlackMentions(this.slackApp, prompt),
+        ]);
+        prompt = `${preamble}\n\n${readablePrompt}`;
       }
 
       // Download image files from Slack and append their paths to the prompt

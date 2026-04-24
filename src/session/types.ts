@@ -6,6 +6,7 @@ export interface PendingMessage {
 }
 
 export type SessionStatus = "idle" | "busy" | "draining";
+export type SessionVerbosity = "quiet" | "normal" | "verbose";
 
 export interface ThreadSession {
   threadId: string;
@@ -18,7 +19,7 @@ export interface ThreadSession {
   systemPrompt: string | null;
   status: SessionStatus;
   pendingMessages: PendingMessage[];
-  verbosity: "quiet" | "normal" | "verbose";
+  verbosity: SessionVerbosity;
   model: string | null;
   cwd: string | null;
   pid: number | null;
@@ -29,7 +30,8 @@ export interface ThreadSession {
 
 export function createSession(
   threadId: string,
-  channel: string
+  channel: string,
+  defaultVerbosity: SessionVerbosity = "quiet",
 ): ThreadSession {
   return {
     threadId,
@@ -42,7 +44,7 @@ export function createSession(
     systemPrompt: null,
     status: "idle",
     pendingMessages: [],
-    verbosity: "normal",
+    verbosity: defaultVerbosity,
     model: null,
     cwd: null,
     pid: null,

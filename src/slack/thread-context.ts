@@ -3,14 +3,15 @@ import { loadPersona } from "../persona.ts";
 
 interface ThreadMessage {
   user: string;
+  userName: string;
   text: string;
   ts: string;
   isBot: boolean;
   fileNames: string[];
 }
 
-// Cache channel ID → name so we don't re-fetch every message
 const channelNameCache = new Map<string, string>();
+const userNameCache = new Map<string, string>();
 
 async function resolveChannelName(app: App, channelId: string): Promise<string> {
   const cached = channelNameCache.get(channelId);
@@ -24,6 +25,48 @@ async function resolveChannelName(app: App, channelId: string): Promise<string> 
   } catch {
     return channelId;
   }
+}
+
+async function resolveUserName(app: App, userId: string): Promise<string> {
+  const cached = userNameCache.get(userId);
+  if (cached) return cached;
+
+  try {
+    const info = await app.client.users.info({ user: userId });
+    const user = info.user as
+      | {
+          name?: string;
+          real_name?: string;
+          profile?: { display_name?: string; real_name?: string };
+        }
+      | undefined;
+    const name =
+      user?.profile?.display_name ||
+      user?.profile?.real_name ||
+      user?.real_name ||
+      user?.name ||
+      userId;
+    userNameCache.set(userId, name);
+    return name;
+  } catch {
+    return userId;
+  }
+}
+
+export async function resolveSlackMentions(
+  app: App,
+  text: string,
+): Promise<string> {
+  const mentionPattern = /<@([A-Z0-9]+)>/g;
+  const matches = [...text.matchAll(mentionPattern)];
+  if (matches.length === 0) return text;
+
+  let resolved = text;
+  for (const match of matches) {
+    const name = await resolveUserName(app, match[1]);
+    resolved = resolved.replace(match[0], `@${name}`);
+  }
+  return resolved;
 }
 
 /**
@@ -84,10 +127,9 @@ async function fetchThreadHistory(
       return null;
     }
 
-    const messages: ThreadMessage[] = result.messages
+    const messages: ThreadMessage[] = await Promise.all(result.messages
       .filter((m) => m.ts !== latestTs)
-      .map((m) => {
-        // Extract file names from message attachments
+      .map(async (m) => {
         const files = (m as Record<string, unknown>).files;
         const fileNames: string[] = Array.isArray(files)
           ? (files as Array<Record<string, unknown>>)
@@ -95,19 +137,22 @@ async function fetchThreadHistory(
               .map((f) => f.name as string)
           : [];
 
+        const user = m.user ?? "unknown";
+
         return {
-          user: m.user ?? "unknown",
-          text: (m.text ?? "").replace(/<@[A-Z0-9]+>\s*/g, "").trim(),
+          user,
+          userName: user === "unknown" ? user : await resolveUserName(app, user),
+          text: (await resolveSlackMentions(app, m.text ?? "")).trim(),
           ts: m.ts!,
           isBot: !!(botUserId && m.user === botUserId),
           fileNames,
         };
-      });
+      }));
 
     if (messages.length === 0) return null;
 
     const lines = messages.map((m) => {
-      const role = m.isBot ? "Junior (you)" : `User(${m.user})`;
+      const role = m.isBot ? "Junior (you)" : `User(${m.userName})`;
       let line = `${role}: ${m.text}`;
       if (m.fileNames.length > 0) {
         const fileNotes = m.fileNames.map((f) => `[shared image: ${f}]`).join(" ");

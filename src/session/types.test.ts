@@ -58,9 +58,14 @@ describe("createSession", () => {
     expect(session.pendingMessages).toEqual([]);
   });
 
-  it("has verbosity set to normal", () => {
+  it("has verbosity set to quiet by default", () => {
     const session = createSession("t1", "C01");
-    expect(session.verbosity).toBe("normal");
+    expect(session.verbosity).toBe("quiet");
+  });
+
+  it("uses provided default verbosity", () => {
+    const session = createSession("t1", "C01", "verbose");
+    expect(session.verbosity).toBe("verbose");
   });
 
   it("has lastActivity as a recent timestamp", () => {
