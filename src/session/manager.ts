@@ -1,7 +1,10 @@
 import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
 import type { SpawnHandle, SpawnResult, StreamEvent } from "../claude/types.ts";
-import type { SlackMessageEvent, SlackFileAttachment } from "../slack/events.ts";
+import type {
+  SlackMessageEvent,
+  SlackFileAttachment,
+} from "../slack/events.ts";
 import type { SessionStore } from "./store/interface.ts";
 import type { ThreadSession } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
@@ -35,7 +38,11 @@ export class SessionManager {
   onError?: (session: ThreadSession, error: string | null) => void;
   onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
 
-  constructor(store: SessionStore, config: Config, spawnClaude?: SpawnClaudeFn) {
+  constructor(
+    store: SessionStore,
+    config: Config,
+    spawnClaude?: SpawnClaudeFn,
+  ) {
     this.store = store;
     this.config = config;
     this.spawnClaude = spawnClaude ?? defaultSpawnClaude;
@@ -59,6 +66,11 @@ export class SessionManager {
         event.channel,
         this.config.session.defaultVerbosity,
       );
+      // Apply channel-level default agent type (e.g. #bugs-backlog → support-lead)
+      const channelDefault = this.config.channelDefaults[event.channel];
+      if (channelDefault) {
+        session.agentType = channelDefault.agentType;
+      }
       await this.store.set(event.threadId, session);
     }
 
@@ -194,7 +206,8 @@ export class SessionManager {
       case "build":
       case "frontend":
       case "review":
-      case "architect": {
+      case "architect":
+      case "support-lead": {
         session.agentType = event.command;
         await this.store.set(session.threadId, session);
         return false;
@@ -345,17 +358,31 @@ export class SessionManager {
       // Resolve target repo path for cwd fallback (decision 4: cwd → target repo)
       let targetRepoCwd: string | undefined;
       if (session.targetRepo) {
-        const repo = this.config.repos.find((r) => r.name === session.targetRepo);
+        const repo = this.config.repos.find(
+          (r) => r.name === session.targetRepo,
+        );
         if (repo) targetRepoCwd = repo.path;
       }
 
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it
       // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
-      const rawHandle = this.spawnClaude(session, prompt, this.config.claude, targetRepoCwd, this.config.slack.botToken);
-      const handle = withTimeout(rawHandle, this.config.claude.timeoutMs, () => {
-        console.warn(`[manager] Claude timed out for thread ${session.threadId}`);
-      });
+      const rawHandle = this.spawnClaude(
+        session,
+        prompt,
+        this.config.claude,
+        targetRepoCwd,
+        this.config.slack.botToken,
+      );
+      const handle = withTimeout(
+        rawHandle,
+        this.config.claude.timeoutMs,
+        () => {
+          console.warn(
+            `[manager] Claude timed out for thread ${session.threadId}`,
+          );
+        },
+      );
       this.handles.set(session.threadId, handle);
       session.pid = handle.pid;
 
@@ -368,13 +395,14 @@ export class SessionManager {
 
       handle.result.then(
         (result: SpawnResult) => this.onRunComplete(session, result),
-        (err: unknown) => this.onRunComplete(session, {
-          sessionId: null,
-          response: "",
-          events: [],
-          exitCode: null,
-          error: err instanceof Error ? err.message : String(err),
-        }),
+        (err: unknown) =>
+          this.onRunComplete(session, {
+            sessionId: null,
+            response: "",
+            events: [],
+            exitCode: null,
+            error: err instanceof Error ? err.message : String(err),
+          }),
       );
     } catch (err) {
       // Agent prompt composition or worktree creation failed fatally

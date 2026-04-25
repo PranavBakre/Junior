@@ -29,6 +29,7 @@ export interface Config {
     homeWindowMs: number;
     defaultVerbosity: SessionVerbosity;
   };
+  channelDefaults: Record<string, { agentType: string }>;
 }
 
 function required(name: string): string {
@@ -68,6 +69,9 @@ export function loadConfig(): Config {
       defaultVerbosity: parseVerbosity(
         optional("SESSION_DEFAULT_VERBOSITY", "normal"),
       ),
+    },
+    channelDefaults: {
+      'C05557KKV37': { agentType: 'support-lead' },  // #bugs-backlog
     },
   };
 }
