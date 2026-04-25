@@ -42,11 +42,13 @@ sessionManager.onEvent = (session, event) => {
   }
   if (session.verbosity === "quiet") return;
   if (event.type === "assistant") {
+    // Show text content as live status (gets overwritten each turn)
     const text = extractAssistantText(event);
     if (text) {
       responder.updateStatus(session.channel, session.threadId, text);
     }
 
+    // Show tool use as status
     const statuses = formatToolStatuses(event);
     for (const status of statuses) {
       log.info("tool", `thread=${session.threadId} ${status}`);

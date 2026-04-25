@@ -10,6 +10,7 @@ interface ThreadMessage {
   fileNames: string[];
 }
 
+// Cache channel ID → name and user ID → display name so we don't re-fetch every message
 const channelNameCache = new Map<string, string>();
 const userNameCache = new Map<string, string>();
 
@@ -131,6 +132,7 @@ async function fetchThreadHistory(
     const messages: ThreadMessage[] = await Promise.all(result.messages
       .filter((m) => m.ts !== latestTs)
       .map(async (m) => {
+        // Extract file names from message attachments
         const files = (m as Record<string, unknown>).files;
         const fileNames: string[] = Array.isArray(files)
           ? (files as Array<Record<string, unknown>>)

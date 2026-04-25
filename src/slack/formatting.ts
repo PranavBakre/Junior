@@ -9,6 +9,9 @@ export function formatToolStatuses(event: StreamEventAssistant): string[] {
     .map(formatToolBlock);
 }
 
+/**
+ * Extract text content from an assistant event, if any.
+ */
 export function extractAssistantText(event: StreamEventAssistant): string | null {
   const texts = event.message.content
     .filter((c): c is ContentBlockText => c.type === "text" && !!c.text)
