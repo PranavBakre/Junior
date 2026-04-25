@@ -19,6 +19,15 @@ export function extractAssistantText(event: StreamEventAssistant): string | null
   return texts.length > 0 ? texts.join("") : null;
 }
 
+const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
+
+export function shouldPostResponseToSlack(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  if (normalized === NO_SLACK_MESSAGE) return false;
+  return true;
+}
+
 function formatToolBlock(block: ContentBlockToolUse): string {
   const tool = block.name ?? "Unknown";
   const input = block.input ?? {};

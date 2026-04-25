@@ -19,6 +19,14 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 - Real-time or polling? EventSource/WebSocket from the bot server, or periodic API calls?
 - Auth? If web UI, who can see the dashboard? Pranav only, or whole team?
 
+## Batch User Resolution in Thread Context
+
+**Problem:** `fetchThreadHistory()` resolves user names inside a `Promise.all` over all thread messages. Each message fires `resolveUserName()` and `resolveSlackMentions()` concurrently. The user name cache prevents duplicate API calls for the same user, but on first encounter with a large thread with many unique participants, this can burst many `users.info` calls and risk hitting Slack's Tier 2 rate limit (~20 req/min).
+
+**Fix:** Pre-collect all unique user IDs from the thread (message authors + mentioned users), resolve them in a single batch before building message objects, then read from cache.
+
+**Priority:** Low — current thread sizes are small. Becomes relevant when threads regularly exceed ~20 unique participants.
+
 ## Image & Media Support from Slack
 
 **Problem:** Users send screenshots, diagrams, error images, and file uploads in Slack threads. The bot currently ignores them — only `event.text` is passed to Claude. Claude Code can read images, so the capability is there but not wired.

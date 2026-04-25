@@ -16,8 +16,10 @@ Before every Claude spawn, the session manager builds a prompt preamble with:
 2. **Bot user ID** — so Claude recognizes its own messages in thread history
 3. **Channel & thread metadata** — channel name, thread_ts, with instruction not to search Slack
 4. **Thread history** — all prior messages fetched via `conversations.replies`, labeled by role
-5. **Image attachments** — downloaded to `/tmp/junior-files/<threadId>/`, paths appended to prompt
-6. **Historical file annotations** — `[shared image: filename.png]` in thread history
+5. **Mention resolution** — `<@U123>` tokens in thread history and incoming prompts are resolved to display names via `users.info` (cached per user ID)
+6. **Smart mention stripping** — only the bot's own @mention is stripped from incoming messages; other user mentions are preserved as readable `@displayname`
+7. **Image attachments** — downloaded to `/tmp/junior-files/<threadId>/`, paths appended to prompt
+8. **Historical file annotations** — `[shared image: filename.png]` in thread history
 
 ## Architecture
 
@@ -30,6 +32,7 @@ SessionManager.handleMessage()
     ├── buildPromptPreamble()          ← thread-context.ts
     │     ├── loadPersona()            ← persona.ts (cached after first load)
     │     ├── resolveChannelName()     ← cached per channel
+    │     ├── resolveSlackMentions()   ← resolves <@U123> → @displayname
     │     └── fetchThreadHistory()     ← conversations.replies API
     │
     ├── downloadSlackFiles()           ← files.ts (images only)
@@ -83,9 +86,9 @@ Do NOT use Slack search or read tools to find this thread.
 </slack-context>
 
 <thread-context>
-User(U678): can you review the auth middleware?
+User(Pranav Bakre): can you review the auth middleware?
 Junior (you): Sure, I'll take a look.
-User(U901): [shared image: screenshot.png] here's what I see
+User(Pranav Bakre): hey @Scotty check this too [shared image: screenshot.png]
 </thread-context>
 
 The user shared images. They are saved at these paths — use the Read tool to view them:
@@ -102,8 +105,8 @@ SOUL.md has 130+ lines of calibrated behavioral rules refined over months. Loadi
 ### Thread context fetched server-side, not via MCP
 The orchestrator already has the bot token and thread_ts. Fetching via `conversations.replies` is one API call. Giving Claude a Slack MCP tool would add latency (Claude has to search for the thread) and token waste (20+ MCP calls observed in testing).
 
-### Channel name cached
-`resolveChannelName()` caches channel ID → name to avoid repeated API calls for messages in the same channel.
+### Channel and user name cached
+`resolveChannelName()` and `resolveUserName()` cache their results in module-level Maps to avoid repeated API calls. User names resolve display_name → real_name → name → raw user ID as fallback.
 
 ### Identity matching by user_id only
 Slack's `bot_id` field is on ALL bot messages, not just ours. Only `m.user === botUserId` correctly identifies Junior's messages. Other bots (Friday, Doraemon) show as regular users in thread context.
