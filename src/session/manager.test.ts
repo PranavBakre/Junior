@@ -95,6 +95,7 @@ const testConfig: Config = {
     sqlitePath: "data/sessions.db",
     homeWindowMs: 172800000,
   },
+  channelDefaults: {},
 };
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {

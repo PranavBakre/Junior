@@ -52,6 +52,11 @@ export class SessionManager {
 
     if (!session) {
       session = createSession(event.threadId, event.channel);
+      // Apply channel-level default agent type (e.g. #bugs-backlog → support-lead)
+      const channelDefault = this.config.channelDefaults[event.channel];
+      if (channelDefault) {
+        session.agentType = channelDefault.agentType;
+      }
       await this.store.set(event.threadId, session);
     }
 
@@ -187,7 +192,8 @@ export class SessionManager {
       case "build":
       case "frontend":
       case "review":
-      case "architect": {
+      case "architect":
+      case "support-lead": {
         session.agentType = event.command;
         await this.store.set(session.threadId, session);
         return false;

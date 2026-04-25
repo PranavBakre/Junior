@@ -11,3 +11,11 @@ data/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Support lead runtime artifacts
+support/agents/*/logs/*.md
+!support/agents/*/logs/.gitkeep
+support/agents/*/prompt-snapshots/*.md
+!support/agents/*/prompt-snapshots/.gitkeep
+support/bugs/*/
+!support/bugs/_template/

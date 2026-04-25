@@ -26,6 +26,7 @@ export interface Config {
     sqlitePath: string;
     homeWindowMs: number;
   };
+  channelDefaults: Record<string, { agentType: string }>;
 }
 
 function required(name: string): string {
@@ -62,6 +63,9 @@ export function loadConfig(): Config {
       store: parseStoreKind(optional("SESSION_STORE", "sqlite")),
       sqlitePath: optional("SESSION_DB_PATH", "data/sessions.db"),
       homeWindowMs: Number(optional("HOME_WINDOW_MS", "172800000")),
+    },
+    channelDefaults: {
+      'C05557KKV37': { agentType: 'support-lead' },  // #bugs-backlog
     },
   };
 }
