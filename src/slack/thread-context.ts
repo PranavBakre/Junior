@@ -127,6 +127,7 @@ async function fetchThreadHistory(
       return null;
     }
 
+    // TODO: pre-collect unique user IDs and batch-resolve to avoid Slack rate limits on large threads
     const messages: ThreadMessage[] = await Promise.all(result.messages
       .filter((m) => m.ts !== latestTs)
       .map(async (m) => {

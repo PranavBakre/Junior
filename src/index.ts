@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.ts";
 import { createSlackApp } from "./slack/app.ts";
 import { registerEventHandlers } from "./slack/events.ts";
-import { formatToolStatuses, shouldPostResponseToSlack } from "./slack/formatting.ts";
+import { formatToolStatuses, extractAssistantText, shouldPostResponseToSlack } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { createSessionStore } from "./session/store/factory.ts";
@@ -42,6 +42,11 @@ sessionManager.onEvent = (session, event) => {
   }
   if (session.verbosity === "quiet") return;
   if (event.type === "assistant") {
+    const text = extractAssistantText(event);
+    if (text) {
+      responder.updateStatus(session.channel, session.threadId, text);
+    }
+
     const statuses = formatToolStatuses(event);
     for (const status of statuses) {
       log.info("tool", `thread=${session.threadId} ${status}`);

@@ -58,9 +58,9 @@ describe("createSession", () => {
     expect(session.pendingMessages).toEqual([]);
   });
 
-  it("has verbosity set to quiet by default", () => {
+  it("has verbosity set to normal by default", () => {
     const session = createSession("t1", "C01");
-    expect(session.verbosity).toBe("quiet");
+    expect(session.verbosity).toBe("normal");
   });
 
   it("uses provided default verbosity", () => {

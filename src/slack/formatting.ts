@@ -1,4 +1,4 @@
-import type { ContentBlockToolUse, StreamEventAssistant } from "../claude/types.ts";
+import type { ContentBlockToolUse, ContentBlockText, StreamEventAssistant } from "../claude/types.ts";
 
 /**
  * Extract tool_use content blocks from an assistant event and format as status lines.
@@ -7,6 +7,13 @@ export function formatToolStatuses(event: StreamEventAssistant): string[] {
   return event.message.content
     .filter((c): c is ContentBlockToolUse => c.type === "tool_use")
     .map(formatToolBlock);
+}
+
+export function extractAssistantText(event: StreamEventAssistant): string | null {
+  const texts = event.message.content
+    .filter((c): c is ContentBlockText => c.type === "text" && !!c.text)
+    .map((c) => c.text);
+  return texts.length > 0 ? texts.join("") : null;
 }
 
 const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";

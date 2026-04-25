@@ -31,7 +31,7 @@ export interface ThreadSession {
 export function createSession(
   threadId: string,
   channel: string,
-  defaultVerbosity: SessionVerbosity = "quiet",
+  defaultVerbosity: SessionVerbosity = "normal",
 ): ThreadSession {
   return {
     threadId,
