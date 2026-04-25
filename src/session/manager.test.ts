@@ -94,6 +94,7 @@ const testConfig: Config = {
     store: "sqlite",
     sqlitePath: "data/sessions.db",
     homeWindowMs: 172800000,
+    defaultVerbosity: "quiet",
   },
   channelDefaults: {},
 };

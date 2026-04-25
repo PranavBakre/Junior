@@ -1,3 +1,5 @@
+import type { SessionVerbosity } from "./session/types.ts";
+
 export interface RepoConfig {
   name: string;
   path: string;
@@ -25,6 +27,7 @@ export interface Config {
     store: SessionStoreKind;
     sqlitePath: string;
     homeWindowMs: number;
+    defaultVerbosity: SessionVerbosity;
   };
   channelDefaults: Record<string, { agentType: string }>;
 }
@@ -63,6 +66,9 @@ export function loadConfig(): Config {
       store: parseStoreKind(optional("SESSION_STORE", "sqlite")),
       sqlitePath: optional("SESSION_DB_PATH", "data/sessions.db"),
       homeWindowMs: Number(optional("HOME_WINDOW_MS", "172800000")),
+      defaultVerbosity: parseVerbosity(
+        optional("SESSION_DEFAULT_VERBOSITY", "normal"),
+      ),
     },
     channelDefaults: {
       'C05557KKV37': { agentType: 'support-lead' },  // #bugs-backlog
@@ -73,4 +79,13 @@ export function loadConfig(): Config {
 function parseStoreKind(value: string): SessionStoreKind {
   if (value === "memory" || value === "sqlite") return value;
   throw new Error(`Invalid SESSION_STORE: ${value} (expected memory|sqlite)`);
+}
+
+function parseVerbosity(value: string): SessionVerbosity {
+  if (value === "quiet" || value === "normal" || value === "verbose") {
+    return value;
+  }
+  throw new Error(
+    `Invalid SESSION_DEFAULT_VERBOSITY: ${value} (expected quiet|normal|verbose)`,
+  );
 }

@@ -25,6 +25,7 @@ export function registerEventHandlers(
   onMessage: OnMessageCallback,
   store?: SessionStore,
   selfBotId?: string,
+  selfUserId?: string,
 ): void {
   app.event("message", async ({ event }) => {
     // Only filter our own bot messages to avoid loops; let other bots through
@@ -55,10 +56,7 @@ export function registerEventHandlers(
     const threadId =
       "thread_ts" in event && event.thread_ts ? event.thread_ts : event.ts;
 
-    // Strip bot mention so commands are recognized even from the message event
-    const cleanText = selfBotId
-      ? text.replace(/<@[A-Z0-9]+>\s*/g, "").trim()
-      : text;
+    const cleanText = stripOwnMention(text, selfUserId);
     const parsed = parseCommand(cleanText);
 
     // Extract file attachments if present
@@ -80,8 +78,7 @@ export function registerEventHandlers(
 
     const threadId = event.thread_ts ?? event.ts;
 
-    // Strip bot mention from text (Slack includes <@BOTID> in app_mention events)
-    const cleanText = event.text.replace(/<@[A-Z0-9]+>\s*/g, "").trim();
+    const cleanText = stripOwnMention(event.text, selfUserId);
     const parsed = parseCommand(cleanText);
 
     // Extract file attachments if present
@@ -97,6 +94,19 @@ export function registerEventHandlers(
       files: files.length > 0 ? files : undefined,
     });
   });
+}
+
+function stripOwnMention(text: string, selfUserId?: string): string {
+  if (selfUserId) {
+    return text
+      .replace(new RegExp(`<@${escapeRegExp(selfUserId)}>\\s*`, "g"), "")
+      .trim();
+  }
+  return text.replace(/^<@[A-Z0-9_]+>\s*/g, "").trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
