@@ -1,0 +1,3 @@
+[submodule "identity"]
+	path = identity
+	url = git@github.com:PranavBakre/junior-identity.git

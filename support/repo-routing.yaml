@@ -1,0 +1,186 @@
+# repo routing map
+#
+# the classifier reads this + the bug report's text context to decide which
+# repos research + scoper-coder should look at. the message context can override
+# a path match (someone might post a bug from any URL).
+#
+# adding a new product = a diff-able PR. never a prompt change.
+#
+# repo locations on disk (work clones live under ~/Projects/):
+#   gx-client-next       — github.com/growthx-club/gx-client-next       (member frontend, Next.js)
+#   gx-admin-client      — github.com/growthx-club/gx-admin-client      (admin frontend, Next.js)
+#   gx-community         — github.com/growthx-club/gx-community         (community web app, RR7)
+#   gx-backend           — github.com/growthx-club/gx-backend           (monolith backend, node)
+#
+# note: gx-client-next-aiwk and gx-backend-aiwk are alternate worktrees of the
+# *same* github repos — not separate products. always work in the canonical clones.
+
+# ────────────────────────────────────────────────────────────────────────────
+# member frontend — gx-client-next
+# ────────────────────────────────────────────────────────────────────────────
+
+routes:
+  # auth / onboarding
+  - match: [/login/*, /oauth/*, /membership-token/*, /application/*, /claim/*, /talent-signup/*, /deferral/*]
+    product: auth-onboarding
+    repos: { frontend: gx-client-next, backend: gx-backend }
+    sensitive: true   # auth surfaces — flag P0/P1 quickly
+
+  # events
+  - match: [/events/*]
+    product: events
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # learn (current + legacy path)
+  - match: [/learn/*, /learn-new/*]
+    product: learn
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # elevate
+  - match: [/elevate/*]
+    product: elevate
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # circle
+  - match: [/circle/*]
+    product: circle
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # perks / privileges / surprise drops
+  - match: [/privileges/*, /surprisedrops/*, /store/*]
+    product: perks
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # talent / jobs
+  - match: [/jobs/*]
+    product: talent
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # profile / account / settings
+  - match: [/profile/*, /account/*, /settings/*]
+    product: profile-account
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # buildathons (events sub-product, but distinct surface)
+  - match: [/ai-weekender-buildathon/*, /opencode-buildathon/*]
+    product: buildathons
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # offsites
+  - match: [/offsite/*]
+    product: offsites
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # projects / outcomes / proof-of-work / crafts
+  - match: [/projects/*, /personal-projects/*, /old-projects/*, /outcomes/*, /proof-of-work/*, /crafts/*]
+    product: projects-outcomes
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # notes / docs
+  - match: [/notes/*, /docs/*]
+    product: notes-docs
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # referrals / promotions / surprise links
+  - match: [/ref/*, /promotions/*]
+    product: referrals
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # linkedin enrichment / chrome extension
+  - match: [/linkedin/*, /gx-extension/*, /twitter/*]
+    product: enrichment
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # public / static / terms
+  - match: [/public/*, /terms/*, /f/*]
+    product: public
+    repos: { frontend: gx-client-next, backend: gx-backend }
+
+  # ────────────────────────────────────────────────────────────────────────
+  # admin frontend — gx-admin-client (gxt-admin / staff only)
+  # ────────────────────────────────────────────────────────────────────────
+
+  - match: [/community/*]
+    product: admin-community
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+
+  - match: [/coupons/*]
+    product: admin-coupons
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+    sensitive: true   # touches money
+
+  - match: [/gpt/*]
+    product: admin-gpt
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+
+  - match: [/learning/*]
+    product: admin-learning
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+
+  - match: [/page-metadata/*]
+    product: admin-page-metadata
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+
+  - match: [/payouts/*]
+    product: admin-payouts
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+    sensitive: true   # touches money
+
+  - match: [/platform/*]
+    product: admin-platform
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+
+  - match: [/referrals/*]
+    product: admin-referrals
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+
+  - match: [/segmentation/*]
+    product: admin-segmentation
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+
+  - match: [/talent/*]
+    product: admin-talent
+    repos: { frontend: gx-admin-client, backend: gx-backend }
+    audience: admin
+
+  # ────────────────────────────────────────────────────────────────────────
+  # community web app — gx-community (RR7 + Convex)
+  # ────────────────────────────────────────────────────────────────────────
+  # surface clue: the URL points at community.growthx.club, OR the report
+  # mentions posts / DMs / member-connect / bookmarks / community feed.
+  # this is NOT the gx-admin-client /community/* admin surface.
+
+  - match: [/home, /post/*, /community/*, /member-connect, /messages, /notifications, /bookmarks, /profile/*]
+    product: community
+    repos: { frontend: gx-community, backend: gx-community }   # convex backend lives in-repo
+    domain_hint: community.growthx.club
+
+# fallback if no path matches — classifier uses message text only
+default:
+  product: unknown
+  repos: { frontend: gx-client-next, backend: gx-backend }
+  owner: udayan
+
+# routing rules the classifier applies
+rules:
+  - "URL path is the strongest signal. message context can override (member says 'on the events page' even though URL is /home)."
+  - "if both apply, pick the one the message context confirms and note the rejected candidate in classifier.md."
+  - "/profile/* exists on both gx-client-next and gx-community. disambiguate by domain (community.growthx.club → community; growthx.club → member frontend)."
+  - "/community/* on gx-admin-client is the staff admin surface, NOT community.growthx.club. disambiguate by reporter audience (member vs staff)."
+
+# approvers for human gates
+approvers:
+  scoping: [udayan]
+  email: [udayan]
+
+# pr assignment (per ud's standing rule)
+pr_reviewer: gxt-admin

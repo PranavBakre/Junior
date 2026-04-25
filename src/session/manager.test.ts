@@ -96,6 +96,7 @@ const testConfig: Config = {
     homeWindowMs: 172800000,
     defaultVerbosity: "quiet",
   },
+  channelDefaults: {},
 };
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
