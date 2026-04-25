@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.ts";
 import { createSlackApp } from "./slack/app.ts";
 import { registerEventHandlers } from "./slack/events.ts";
-import { formatToolStatuses, extractAssistantText } from "./slack/formatting.ts";
+import { formatToolStatuses, extractAssistantText, shouldPostResponseToSlack } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { createSessionStore } from "./session/store/factory.ts";
@@ -31,7 +31,7 @@ const responder = new SlackResponder(app);
 sessionManager.onResponse = (session, response) => {
   log.info("response", `thread=${session.threadId} len=${response.length}`);
   responder.deleteStatus(session.channel, session.threadId);
-  if (response) {
+  if (shouldPostResponseToSlack(response)) {
     responder.postResponse(session.channel, session.threadId, response);
   }
 };
@@ -120,7 +120,7 @@ setInterval(() => {
   registerEventHandlers(app, (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
     sessionManager.handleMessage(event);
-  }, store, selfBotId);
+  }, store, selfBotId, sessionManager.botUserId);
 
   log.info("boot", "Junior is running (Socket Mode)");
 })();
