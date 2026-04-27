@@ -1,5 +1,6 @@
 import type { App } from "@slack/bolt";
 import { loadPersona } from "../persona.ts";
+import { NO_SLACK_MESSAGE } from "./formatting.ts";
 
 interface ThreadMessage {
   user: string;
@@ -99,6 +100,8 @@ export async function buildPromptPreamble(
     `Thread: ${threadTs}`,
     `You are responding in this thread. You already have the full thread history below.`,
     `Do NOT use Slack search or read tools to find this thread — you already have all the context you need.`,
+    ``,
+    `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
     `</slack-context>`,
   ];
 

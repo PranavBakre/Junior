@@ -44,7 +44,7 @@ sessionManager.onEvent = (session, event) => {
   if (event.type === "assistant") {
     // Show text content as live status (gets overwritten each turn)
     const text = extractAssistantText(event);
-    if (text) {
+    if (text && shouldPostResponseToSlack(text)) {
       responder.updateStatus(session.channel, session.threadId, text);
     }
 
