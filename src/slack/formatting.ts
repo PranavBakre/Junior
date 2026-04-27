@@ -19,7 +19,7 @@ export function extractAssistantText(event: StreamEventAssistant): string | null
   return texts.length > 0 ? texts.join("") : null;
 }
 
-const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
+export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
 
 export function shouldPostResponseToSlack(text: string): boolean {
   const normalized = text.trim();
