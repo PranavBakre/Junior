@@ -29,10 +29,19 @@ sessionManager.slackApp = app;
 const responder = new SlackResponder(app);
 
 sessionManager.onResponse = (session, response) => {
-  log.info("response", `thread=${session.threadId} len=${response.length}`);
+  const willPost = shouldPostResponseToSlack(response);
+  log.info(
+    "response",
+    `thread=${session.threadId} len=${response.length} willPost=${willPost}`,
+  );
   responder.deleteStatus(session.channel, session.threadId);
-  if (shouldPostResponseToSlack(response)) {
+  if (willPost) {
     responder.postResponse(session.channel, session.threadId, response);
+  } else {
+    log.info(
+      "response",
+      `thread=${session.threadId} suppressed reason=${response.trim() ? "sentinel" : "empty"}`,
+    );
   }
 };
 
@@ -44,6 +53,12 @@ sessionManager.onEvent = (session, event) => {
   if (event.type === "assistant") {
     // Show text content as live status (gets overwritten each turn)
     const text = extractAssistantText(event);
+    if (text && !shouldPostResponseToSlack(text)) {
+      log.info(
+        "response",
+        `thread=${session.threadId} status.suppressed reason=${text.trim() ? "sentinel" : "empty"}`,
+      );
+    }
     if (text && shouldPostResponseToSlack(text)) {
       responder.updateStatus(session.channel, session.threadId, text);
     }

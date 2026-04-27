@@ -1,6 +1,19 @@
 import type { App } from "@slack/bolt";
 import type { SessionStore } from "../session/store/interface.ts";
 import { parseCommand } from "./commands.ts";
+import { log } from "../logger.ts";
+
+function logDrop(
+  reason: string,
+  ev: { channel?: string; ts?: string; subtype?: string; thread_ts?: string },
+): void {
+  const parts = [`dropped reason=${reason}`];
+  if (ev.channel) parts.push(`channel=${ev.channel}`);
+  if (ev.ts) parts.push(`ts=${ev.ts}`);
+  if (ev.thread_ts) parts.push(`thread=${ev.thread_ts}`);
+  if (ev.subtype) parts.push(`subtype=${ev.subtype}`);
+  log.info("event", parts.join(" "));
+}
 
 export interface SlackFileAttachment {
   url: string;
@@ -29,11 +42,24 @@ export function registerEventHandlers(
   autoTriggerChannels?: Set<string>,
 ): void {
   app.event("message", async ({ event }) => {
+    const evMeta = {
+      channel: event.channel,
+      ts: "ts" in event ? event.ts : undefined,
+      subtype: (event as { subtype?: string }).subtype,
+      thread_ts: "thread_ts" in event ? event.thread_ts : undefined,
+    };
+
     // Only filter our own bot messages to avoid loops; let other bots through
-    if ("bot_id" in event && selfBotId && (event as { bot_id: string }).bot_id === selfBotId) return;
+    if ("bot_id" in event && selfBotId && (event as { bot_id: string }).bot_id === selfBotId) {
+      logDrop("self-bot", evMeta);
+      return;
+    }
 
     const text = "text" in event ? event.text : undefined;
-    if (!text) return;
+    if (!text) {
+      logDrop("no-text", evMeta);
+      return;
+    }
 
     const isAutoTrigger = !!autoTriggerChannels?.has(event.channel);
 
@@ -43,14 +69,17 @@ export function registerEventHandlers(
     if (!user && isAutoTrigger && "bot_id" in event) {
       user = (event as { bot_id?: string }).bot_id;
     }
-    if (!user) return;
+    if (!user) {
+      logDrop("no-user", evMeta);
+      return;
+    }
 
     const isThread = "thread_ts" in event && !!event.thread_ts;
     const isDM = event.channel_type === "im";
 
     if (!isThread && !isDM && !isAutoTrigger) {
-      // Top-level channel message without mention — ignore.
-      // app_mention handler covers @mentions.
+      // Top-level channel message without mention — app_mention handler covers @mentions.
+      logDrop("top-level-no-mention", evMeta);
       return;
     }
 
@@ -58,7 +87,10 @@ export function registerEventHandlers(
       // Only respond in threads where the bot has an active session
       const threadTs = "thread_ts" in event ? event.thread_ts! : event.ts;
       const session = await store.get(threadTs);
-      if (!session) return;
+      if (!session) {
+        logDrop("no-session", { ...evMeta, thread_ts: threadTs });
+        return;
+      }
     }
 
     const threadId =
