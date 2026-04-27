@@ -98,6 +98,10 @@ export class WorktreeManager {
     return `${repo.path}/.claude/worktrees/slack-${threadId}`;
   }
 
+  getBranchName(threadId: string): string {
+    return `slack/${threadId}`;
+  }
+
   /**
    * Find a repo config by name.
    */
