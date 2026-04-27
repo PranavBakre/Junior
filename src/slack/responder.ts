@@ -1,9 +1,15 @@
 import type { App } from "@slack/bolt";
 import { splitResponse } from "./formatting.ts";
+import { log } from "../logger.ts";
 
 interface StatusEntry {
   messageTs: string;
   lastUpdateTime: number;
+}
+
+function preview(text: string, n = 80): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > n ? `${flat.slice(0, n)}…` : flat;
 }
 
 export class SlackResponder {
@@ -20,15 +26,27 @@ export class SlackResponder {
     text: string,
   ): Promise<void> {
     const chunks = splitResponse(text);
-    for (const chunk of chunks) {
+    log.info(
+      "responder",
+      `post.start thread=${threadTs} channel=${channel} chunks=${chunks.length} len=${text.length}`,
+    );
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
       try {
-        await this.app.client.chat.postMessage({
+        const result = await this.app.client.chat.postMessage({
           channel,
           thread_ts: threadTs,
           text: chunk,
         });
+        log.info(
+          "responder",
+          `post.ok thread=${threadTs} chunk=${i + 1}/${chunks.length} ts=${result.ts ?? "?"} preview="${preview(chunk)}"`,
+        );
       } catch (err) {
-        console.error("[responder] Failed to post message:", err);
+        log.error(
+          "responder",
+          `post.fail thread=${threadTs} chunk=${i + 1}/${chunks.length} err=${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }
@@ -53,9 +71,16 @@ export class SlackResponder {
             messageTs: result.ts,
             lastUpdateTime: Date.now(),
           });
+          log.info(
+            "responder",
+            `status.post thread=${threadTs} ts=${result.ts} preview="${preview(text)}"`,
+          );
         }
       } catch (err) {
-        console.error("[responder] Failed to post status:", err);
+        log.error(
+          "responder",
+          `status.post.fail thread=${threadTs} err=${err instanceof Error ? err.message : String(err)}`,
+        );
       }
       return;
     }
@@ -63,6 +88,10 @@ export class SlackResponder {
     // Debounce: skip if less than 1 second since last update
     const now = Date.now();
     if (now - existing.lastUpdateTime < 1000) {
+      log.info(
+        "responder",
+        `status.debounce thread=${threadTs} ts=${existing.messageTs}`,
+      );
       return;
     }
 
@@ -73,22 +102,39 @@ export class SlackResponder {
         text,
       });
       existing.lastUpdateTime = now;
+      log.info(
+        "responder",
+        `status.update thread=${threadTs} ts=${existing.messageTs} preview="${preview(text)}"`,
+      );
     } catch (err) {
-      console.error("[responder] Failed to update status:", err);
+      log.error(
+        "responder",
+        `status.update.fail thread=${threadTs} ts=${existing.messageTs} err=${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
   async deleteStatus(channel: string, threadTs: string): Promise<void> {
     const existing = this.statusMessages.get(threadTs);
-    if (!existing) return;
+    if (!existing) {
+      log.info("responder", `status.delete.noop thread=${threadTs}`);
+      return;
+    }
 
     try {
       await this.app.client.chat.delete({
         channel,
         ts: existing.messageTs,
       });
+      log.info(
+        "responder",
+        `status.delete thread=${threadTs} ts=${existing.messageTs}`,
+      );
     } catch (err) {
-      console.error("[responder] Failed to delete status:", err);
+      log.error(
+        "responder",
+        `status.delete.fail thread=${threadTs} ts=${existing.messageTs} err=${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     this.statusMessages.delete(threadTs);
@@ -105,8 +151,15 @@ export class SlackResponder {
         timestamp: messageTs,
         name: emoji,
       });
+      log.info(
+        "responder",
+        `reaction.add channel=${channel} ts=${messageTs} emoji=${emoji}`,
+      );
     } catch (err) {
-      console.error("[responder] Failed to add reaction:", err);
+      log.error(
+        "responder",
+        `reaction.add.fail channel=${channel} ts=${messageTs} emoji=${emoji} err=${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 }
