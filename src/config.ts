@@ -70,15 +70,50 @@ export function loadConfig(): Config {
         optional("SESSION_DEFAULT_VERBOSITY", "normal"),
       ),
     },
-    channelDefaults: {
-      'C05557KKV37': { agentType: 'support-lead' },  // #bugs-backlog
-    },
+    channelDefaults: parseChannelDefaults(
+      optional(
+        "CHANNEL_DEFAULTS",
+        '{"C05557KKV37":{"agentType":"support-lead"}}',
+      ),
+    ),
   };
 }
 
 function parseStoreKind(value: string): SessionStoreKind {
   if (value === "memory" || value === "sqlite") return value;
   throw new Error(`Invalid SESSION_STORE: ${value} (expected memory|sqlite)`);
+}
+
+function parseChannelDefaults(
+  value: string,
+): Record<string, { agentType: string }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (err) {
+    throw new Error(`Invalid CHANNEL_DEFAULTS JSON: ${(err as Error).message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `Invalid CHANNEL_DEFAULTS: expected object of {channelId: {agentType}}`,
+    );
+  }
+  const out: Record<string, { agentType: string }> = {};
+  for (const [channelId, entry] of Object.entries(
+    parsed as Record<string, unknown>,
+  )) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      typeof (entry as { agentType?: unknown }).agentType !== "string"
+    ) {
+      throw new Error(
+        `Invalid CHANNEL_DEFAULTS entry for ${channelId}: expected {agentType: string}`,
+      );
+    }
+    out[channelId] = { agentType: (entry as { agentType: string }).agentType };
+  }
+  return out;
 }
 
 function parseVerbosity(value: string): SessionVerbosity {
