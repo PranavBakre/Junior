@@ -71,6 +71,13 @@ export async function resolveSlackMentions(
   return resolved;
 }
 
+export interface WorkspaceContext {
+  worktreePath: string;
+  repoName: string;
+  repoPath: string;
+  branchName: string;
+}
+
 /**
  * Build the identity + thread context preamble for Claude.
  * Always includes Junior's persona, channel/thread coordinates, and thread history.
@@ -81,6 +88,7 @@ export async function buildPromptPreamble(
   threadTs: string,
   latestTs: string,
   botUserId?: string,
+  workspace?: WorkspaceContext | null,
 ): Promise<string> {
   const [persona, channelName, threadContext] = await Promise.all([
     loadPersona(),
@@ -104,6 +112,25 @@ export async function buildPromptPreamble(
     `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
     `</slack-context>`,
   ];
+
+  if (workspace) {
+    parts.push(
+      ``,
+      `<workspace>`,
+      `Target repo: ${workspace.repoName}`,
+      `Worktree (your sandbox): ${workspace.worktreePath}`,
+      `Worktree branch: ${workspace.branchName}`,
+      `Original repo path (OFF-LIMITS for writes): ${workspace.repoPath}`,
+      ``,
+      `RULES — non-negotiable:`,
+      `1. ALL reads, writes, edits, and shell commands for this task MUST happen inside the worktree at ${workspace.worktreePath}. Your cwd is already set there.`,
+      `2. NEVER write, edit, or commit files at ${workspace.repoPath} directly. That path is the shared origin repo and must not be modified — it is shared across all threads.`,
+      `3. NEVER \`cd\` out of the worktree to do work. If you need to read a file from another repo for reference only, use an absolute Read path — but do not Edit or Write outside the worktree.`,
+      `4. When the task is done, commit on branch \`${workspace.branchName}\` from inside the worktree, push, and open a PR. Never push directly to main.`,
+      `5. If you violated any of the above by mistake, stop and report it instead of trying to "clean up" by modifying more files.`,
+      `</workspace>`,
+    );
+  }
 
   if (threadContext) {
     parts.push("", threadContext);

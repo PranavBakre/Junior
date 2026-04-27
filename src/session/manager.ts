@@ -15,6 +15,7 @@ import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
   resolveSlackMentions,
+  type WorkspaceContext,
 } from "../slack/thread-context.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
@@ -296,6 +297,53 @@ export class SessionManager {
     files?: SlackFileAttachment[],
   ): Promise<void> {
     try {
+      // Resolve target repo before building the preamble so workspace info can be injected.
+      let targetRepo: { name: string; path: string } | undefined;
+      if (session.targetRepo) {
+        const repo = this.config.repos.find(
+          (r) => r.name === session.targetRepo,
+        );
+        if (repo) targetRepo = { name: repo.name, path: repo.path };
+      }
+
+      // Always create a worktree when a target repo is set — Junior must never
+      // edit the shared origin repo path directly. (Previously this was gated on
+      // agentType === "build" || "frontend", which let other agents cwd into the
+      // real repo and modify it.)
+      if (
+        this.worktreeManager &&
+        targetRepo &&
+        !session.worktreePath
+      ) {
+        try {
+          session.worktreePath = await this.worktreeManager.createWorktree(
+            targetRepo.name,
+            session.threadId,
+            session.baseRef ?? undefined,
+          );
+          await this.store.set(session.threadId, session);
+        } catch (err) {
+          _log.warn(
+            "manager",
+            `worktree.create.fail thread=${session.threadId} repo=${targetRepo.name} err=${err instanceof Error ? err.message : String(err)}`,
+          );
+          // Don't silently cwd into the real repo — clear targetRepo for this run
+          // so the spawner falls back to junior's project root instead.
+          targetRepo = undefined;
+        }
+      }
+
+      // Build workspace context for the preamble if we have a worktree.
+      const workspace: WorkspaceContext | null =
+        session.worktreePath && targetRepo && this.worktreeManager
+          ? {
+              worktreePath: session.worktreePath,
+              repoName: targetRepo.name,
+              repoPath: targetRepo.path,
+              branchName: this.worktreeManager.getBranchName(session.threadId),
+            }
+          : null;
+
       // Inject identity + thread context so Claude knows who it is and what was said
       if (this.slackApp && latestTs) {
         const [preamble, readablePrompt] = await Promise.all([
@@ -305,6 +353,7 @@ export class SessionManager {
             session.threadId,
             latestTs,
             this.botUserId,
+            workspace,
           ),
           resolveSlackMentions(this.slackApp, prompt),
         ]);
@@ -335,34 +384,12 @@ export class SessionManager {
         await this.store.set(session.threadId, session);
       }
 
-      // Create worktree for build/frontend agents if needed
-      if (
-        this.worktreeManager &&
-        session.targetRepo &&
-        !session.worktreePath &&
-        (session.agentType === "build" || session.agentType === "frontend")
-      ) {
-        try {
-          session.worktreePath = await this.worktreeManager.createWorktree(
-            session.targetRepo,
-            session.threadId,
-            session.baseRef ?? undefined,
-          );
-          await this.store.set(session.threadId, session);
-        } catch (err) {
-          console.error("[manager] Failed to create worktree:", err);
-          // Continue without worktree — spawner falls back to cwd
-        }
-      }
-
-      // Resolve target repo path for cwd fallback (decision 4: cwd → target repo)
-      let targetRepoCwd: string | undefined;
-      if (session.targetRepo) {
-        const repo = this.config.repos.find(
-          (r) => r.name === session.targetRepo,
-        );
-        if (repo) targetRepoCwd = repo.path;
-      }
+      // cwd fallback: only used when no worktree exists. With the always-worktree
+      // policy above, this only fires for read-only/discussion threads with no
+      // targetRepo — never inside the shared origin repo.
+      const targetRepoCwd: string | undefined = session.worktreePath
+        ? undefined
+        : targetRepo?.path;
 
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it
       // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
