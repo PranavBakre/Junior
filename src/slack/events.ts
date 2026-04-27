@@ -26,6 +26,7 @@ export function registerEventHandlers(
   store?: SessionStore,
   selfBotId?: string,
   selfUserId?: string,
+  autoTriggerChannels?: Set<string>,
 ): void {
   app.event("message", async ({ event }) => {
     // Only filter our own bot messages to avoid loops; let other bots through
@@ -34,19 +35,26 @@ export function registerEventHandlers(
     const text = "text" in event ? event.text : undefined;
     if (!text) return;
 
-    const user = "user" in event ? event.user : undefined;
+    const isAutoTrigger = !!autoTriggerChannels?.has(event.channel);
+
+    // Auto-trigger channels (e.g. #bugs-backlog) accept messages from other bots
+    // like growthx-bug-reporter that have no `user` field — fall back to bot_id.
+    let user = "user" in event ? event.user : undefined;
+    if (!user && isAutoTrigger && "bot_id" in event) {
+      user = (event as { bot_id?: string }).bot_id;
+    }
     if (!user) return;
 
     const isThread = "thread_ts" in event && !!event.thread_ts;
     const isDM = event.channel_type === "im";
 
-    if (!isThread && !isDM) {
+    if (!isThread && !isDM && !isAutoTrigger) {
       // Top-level channel message without mention — ignore.
       // app_mention handler covers @mentions.
       return;
     }
 
-    if (isThread && store) {
+    if (isThread && !isAutoTrigger && store) {
       // Only respond in threads where the bot has an active session
       const threadTs = "thread_ts" in event ? event.thread_ts! : event.ts;
       const session = await store.get(threadTs);

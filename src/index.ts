@@ -117,10 +117,12 @@ setInterval(() => {
     log.warn("boot", `Failed to resolve bot identity: ${err}`);
   }
 
+  const autoTriggerChannels = new Set(Object.keys(config.channelDefaults));
+
   registerEventHandlers(app, (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
     sessionManager.handleMessage(event);
-  }, store, selfBotId, sessionManager.botUserId);
+  }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
 
   log.info("boot", "Junior is running (Socket Mode)");
 })();
