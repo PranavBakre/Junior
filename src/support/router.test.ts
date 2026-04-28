@@ -154,6 +154,58 @@ describe("SupportRouter", () => {
     );
   });
 
+  it("dispatches !<persistent-agent> directives in non-support channels too", async () => {
+    // The unified dispatcher fires for any channel — `!review` in #junior should
+    // spawn a persistent review session, same as in #bugs-backlog.
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new SupportRouter(
+      managerMock as unknown as SessionManager,
+      new Set(["CBUGS"]), // CBUGS is the only support channel; CJUNIOR is not
+    );
+
+    await router.handleMessage(
+      makeEvent({
+        channel: "CJUNIOR", // non-support channel
+        text: "!review PR #4900 details",
+      }),
+    );
+
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "PR #4900 details" }),
+      "review",
+    );
+  });
+
+  it("falls through to single-session manager for non-support channels with no directives", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new SupportRouter(
+      managerMock as unknown as SessionManager,
+      new Set(["CBUGS"]),
+    );
+
+    await router.handleMessage(
+      makeEvent({
+        channel: "CJUNIOR",
+        text: "fix the auth middleware",
+      }),
+    );
+
+    // Routed to manager.handleMessage, but WITHOUT a `${ts}:lead` dedupeKey
+    // (that's a support-channel-only thing — non-support has no lead).
+    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+    const call = managerMock.handleMessage.mock.calls[0][0];
+    expect(call.dedupeKey).toBeUndefined();
+  });
+
   it("drops self-bot posts with unknown username (no usable identity)", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),

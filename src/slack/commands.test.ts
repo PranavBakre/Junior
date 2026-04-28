@@ -16,10 +16,10 @@ describe("parseCommand", () => {
     });
   });
 
-  it("parses !review with no text", () => {
+  it("does NOT parse !review as a command (review is a persistent-agent directive)", () => {
     expect(parseCommand("!review")).toEqual({
-      command: "review",
-      text: "",
+      command: null,
+      text: "!review",
     });
   });
 
@@ -51,11 +51,10 @@ describe("parseCommand", () => {
     });
   });
 
-  describe("recognizes all 12 known commands", () => {
+  describe("recognizes all known commands", () => {
     const knownCommands = [
       "build",
       "frontend",
-      "review",
       "architect",
       "reset",
       "status",
@@ -79,10 +78,6 @@ describe("parseCommand", () => {
         expect(result.text).toBe("some argument");
       });
     }
-
-    it("has exactly 12 known commands", () => {
-      expect(knownCommands).toHaveLength(12);
-    });
   });
 
   it("trims trailing text", () => {

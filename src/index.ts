@@ -154,11 +154,9 @@ setInterval(() => {
 
   registerEventHandlers(app, (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
-    if (supportRouter.shouldRoute(event)) {
-      supportRouter.handleMessage(event);
-    } else {
-      sessionManager.handleMessage(event);
-    }
+    // Universal dispatch: AgentDispatcher decides whether to dispatch a persistent
+    // agent (any channel) or fall through to the single-session manager.
+    supportRouter.handleMessage(event);
   }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
 
   log.info("boot", "Junior is running (Socket Mode)");
