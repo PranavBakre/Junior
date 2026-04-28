@@ -20,4 +20,5 @@ support/agents/*/prompt-snapshots/*.md
 support/bugs/*/
 !support/bugs/_template/
 support/repo-routing.yaml
+support/admin-credentials.yaml
 .playwright-mcp/
