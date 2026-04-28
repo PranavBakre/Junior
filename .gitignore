@@ -12,13 +12,7 @@ data/
 *.db-wal
 *.db-shm
 
-# Support lead runtime artifacts
-support/agents/*/logs/*.md
-!support/agents/*/logs/.gitkeep
-support/agents/*/prompt-snapshots/*.md
-!support/agents/*/prompt-snapshots/.gitkeep
-support/bugs/*/
-!support/bugs/_template/
+# Support config (operator-specific, never tracked)
 support/repo-routing.yaml
 support/admin-credentials.yaml
 .playwright-mcp/
