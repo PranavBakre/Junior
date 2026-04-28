@@ -81,7 +81,7 @@ describe("SupportRouter", () => {
 
     await router.handleMessage(
       makeEvent({
-        text: "!scoper do this",
+        text: "!thinker do this",
         isSelfBot: true,
         botUsername: "Reproducer",
       }),

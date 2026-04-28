@@ -3,9 +3,8 @@ import type { AgentIdentity } from "../session/types.ts";
 export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   lead: { username: "Junior", iconEmoji: ":cowboy:" },
   reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
-  scoper: { username: "Scoper", iconEmoji: ":wrench:" },
-  reviewer: { username: "Reviewer", iconEmoji: ":eyes:" },
-  validator: { username: "Validator", iconEmoji: ":white_check_mark:" },
+  thinker: { username: "Thinker", iconEmoji: ":wrench:" },
+  review: { username: "Reviewer", iconEmoji: ":eyes:" },
   echo: { username: "Echo", iconEmoji: ":speech_balloon:" },
 };
 

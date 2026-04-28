@@ -6,13 +6,13 @@
 
 When a bug is reported in `#bugs-backlog`, Junior needs to triage it: pull observability data (New Relic logs, Sentry exceptions, Vercel deploy state), reproduce the failure, scope a fix, ship it, validate, and email the user. The previous attempt collapsed the entire pipeline into a single `support-lead` Claude session that spawned sub-agents internally via the Task tool. Three problems with that shape:
 
-1. **Bottleneck.** Every cross-agent message went through the lead. A scoper re-querying research = lead reads workspace, lead re-prompts research, research writes back, lead reads, lead re-prompts scoper. Two lead turns per inter-agent exchange.
+1. **Bottleneck.** Every cross-agent message went through the lead. A thinker re-querying research = lead reads workspace, lead re-prompts research, research writes back, lead reads, lead re-prompts thinker. Two lead turns per inter-agent exchange.
 2. **Context loss.** Each Task spawn started cold. Three re-query rounds = three full cold reloads of workspace.md + classifier.md + original-report.md.
-3. **Opacity.** Humans only saw Junior's summaries. They couldn't see what research actually found, where the scoper pushed back, or what reasoning produced the chosen fix. The full picture was buried in workspace.md files on disk.
+3. **Opacity.** Humans only saw Junior's summaries. They couldn't see what research actually found, where the thinker pushed back, or what reasoning produced the chosen fix. The full picture was buried in workspace.md files on disk.
 
 **Who has this problem:** Pranav (operator), and any human watching `#bugs-backlog` for what Junior is doing on a bug.
 **What happens today:** Nothing — the previous pipeline is wiped. Bug threads in `#bugs-backlog` get auto-triggered via `events.ts` but currently have no agent to handle them.
-**Painful part:** A bug pipeline is fundamentally a **multi-actor parallel system** dressed up to look sequential. Observability fetchers (NR, Sentry, Vercel) are independent and can race. The reproducer needs their output as context. Re-queries between scoper and research happen multiple times. Forcing this into a single Claude session loses parallelism and observability.
+**Painful part:** A bug pipeline is fundamentally a **multi-actor parallel system** dressed up to look sequential. Observability fetchers (NR, Sentry, Vercel) are independent and can race. The reproducer needs their output as context. Re-queries between thinker and research happen multiple times. Forcing this into a single Claude session loses parallelism and observability.
 **"Finally" moment:** A bug arrives in `#bugs-backlog`. The thread shows distinct messages from Lead, Research, Sentry, Vercel, Reproducer — each with their own identity, posting as they finish work, in parallel where it makes sense. Humans can `!research <follow-up>` directly. The full investigation reads top-to-bottom in the thread:
 
 ```
@@ -28,8 +28,16 @@ When a bug is reported in `#bugs-backlog`, Junior needs to triage it: pull obser
                 !reproducer GET /api/v1/events?past_events=true returning 500 for priya@growthx.club
 [Reproducer]    reproduced — blank page on /events, 500 on GET /api/v1/events    by reproducer
 [Junior]        scope this fix.
-                !scoper scoping phase
-[Scoper]        scoping-done — stale cache key after deploy a3f2c1, fix in events-service.ts:142    by scoper
+                !thinker reproduction shows stale cache, NRQL points at events-service.ts deploy a3f2c1
+[Thinker]       Hypotheses: (1) cache key collision (2) cache TTL miss (3) stale read after deploy.
+                Verified each — going with #3: deploy a3f2c1 changed cache key format, old keys still in flight.
+                Fix lives in events-service.ts:142.    by thinker
+[Junior]        thinker is going with hypothesis #3. approve / reject / push back with new context?
+[Pranav]        approve
+[Junior]        !thinker proceed
+[Thinker]       scoping done — invalidate old cache keys on read miss after deploy.
+                file: events-service.ts:142, risk: low, test: unit + manual repro.
+                scoping.md    by thinker
 [Junior]        scope posted. @udayan approve / reject?
 [Pranav]        approve
 ```
@@ -38,20 +46,20 @@ Every orchestration decision is visible. Humans can see exactly what the lead as
 
 ## Full Vision
 
-- **Two tiers of agents**: **persistent** (lead, reproducer, scoper, reviewer, validator) and **sub-agent / Task tool** (nr-research, sentry-fetch, vercel-status, email-drafter).
+- **Two tiers of agents**: **persistent** (lead, reproducer, thinker, review) and **sub-agent / Task tool** (nr-research, sentry-fetch, vercel-status, email-drafter). Reproducer is two-phase — `reproduction` at the top and `validation` at the bottom — using `--resume` to retain test setup across phases.
 - **Persistent agents** have their own Claude Code session per bug thread, post to Slack with their own username + icon, and resume across turns via `--resume`. They participate in the human-readable conversation.
 - **Sub-agents** are stateless tool calls invoked by persistent agents via the Task tool. They never post to Slack directly — output goes to bug-folder files (`research.md`, `sentry.md`, `vercel.md`, `email.md`). The calling persistent agent synthesizes findings for the human.
 - Lead orchestrates by emitting `!<agent> <prompt>` lines in normal Slack messages. Router parses those lines and dispatches to persistent agents only. Sub-agents are never invoked via `!<agent>` — only via Task tool, and only by persistent agents.
-- Lead is the *only* role that can emit `!<agent>` directives. Workers can use the Task tool for stateless data fetches but cannot trigger more persistent work.
+- Lead is the _only_ role that can emit `!<agent>` directives. Workers can use the Task tool for stateless data fetches but cannot trigger more persistent work.
 - Lead is awoken on every event in the thread (human messages and worker responses) and can choose silence (via `NO_SLACK_MESSAGE` or by posting commentary with no directives) — silence breaks the cycle.
 - Observability fan-out: lead issues parallel Task calls to nr-research / sentry-fetch / vercel-status in **one turn**. All three run concurrently. Once all return, lead reads their files, synthesizes findings into a single Slack message, then dispatches `!reproducer` with that context.
-- Reproducer runs *after* observability completes — it needs failing endpoints, exception classes, deploy state as context.
+- Reproducer runs _after_ observability completes — it needs failing endpoints, exception classes, deploy state as context.
 - Re-queries go through lead. Round caps (research max 3, review max 2) live in the lead's prompt as semantic guardrails, not in the router.
 - Live progress is signaled via a **status pill** that streams `tool_use` events (one pill per active agent session). Humans see "calling nr-research, sentry-fetch, vercel-status (3 in progress)" → "1 done, 2 in progress" → cleared. `tool_result` content stays internal.
 
 ## Invariants (architectural commitments)
 
-1. **Observability ALWAYS precedes UI verification.** Both for reproduction phase and validation phase. The reproducer/validator runs with observability context, never cold.
+1. **Observability ALWAYS precedes UI verification.** Both for reproduction phase and validation phase. The reproducer runs both phases with observability context, never cold.
 2. **Lead is the only role that emits `!<agent>` directives.** Workers can post any commentary, but they cannot trigger more work.
 3. **The Slack thread IS the message bus.** No internal-dispatch-plus-audit-log split. Every cross-agent call goes through Slack events. One source of truth, full audit trail by construction.
 4. **Silence is a first-class action.** Cycle-break by composition, not enforcement. No router-level retry counters.
@@ -84,10 +92,10 @@ interface ThreadSession {
 // Sub-agents (nr-research, sentry-fetch, etc.) are Task-tool calls
 // from inside a persistent agent's session — no AgentSession entry.
 interface AgentSession {
-  agentName: string;            // "reproducer", "scoper", "reviewer", "validator"
-  sessionId: string | null;     // Claude Code session ID for --resume
+  agentName: string; // "reproducer", "thinker", "review"
+  sessionId: string | null; // Claude Code session ID for --resume
   status: "idle" | "busy" | "done" | "failed";
-  pendingMessages: PendingMessage[];  // buffer for in-flight !<agent> while busy
+  pendingMessages: PendingMessage[]; // buffer for in-flight !<agent> while busy
   lastActivity: number;
   pid: number | null;
 }
@@ -96,21 +104,23 @@ interface AgentSession {
 Agent identities for Slack posting (persistent agents only — sub-agents never post):
 
 ```typescript
-const AGENT_IDENTITIES: Record<string, { username: string; iconEmoji: string }> = {
-  'lead':       { username: 'Junior',     iconEmoji: ':cowboy:' },
-  'reproducer': { username: 'Reproducer', iconEmoji: ':mag:' },
-  'scoper':     { username: 'Scoper',     iconEmoji: ':wrench:' },
-  'reviewer':   { username: 'Reviewer',   iconEmoji: ':eyes:' },
-  'validator':  { username: 'Validator',  iconEmoji: ':white_check_mark:' },
+const AGENT_IDENTITIES: Record<
+  string,
+  { username: string; iconEmoji: string }
+> = {
+  lead: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
+  reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
+  thinker: { username: "Thinker", iconEmoji: ":wrench:" },
+  review: { username: "Reviewer", iconEmoji: ":eyes:" },
 };
 ```
 
 ### Persistent agents vs sub-agents
 
-| Tier | Agents | Properties |
-|------|--------|------------|
-| **Persistent** | lead, reproducer, scoper, reviewer, validator | Own Claude session per bug thread, resumed via `--resume`. Posts to Slack with own identity. Addressable via `!<agent>`. Multi-turn / stateful. Has an `AgentSession` entry. |
-| **Sub-agent (Task tool)** | nr-research, sentry-fetch, vercel-status, email-drafter | Stateless. Spawned via Task tool from inside a persistent agent's session. Output goes to bug-folder files (`research.md`, `sentry.md`, `vercel.md`, `email.md`). Never posts to Slack. Never addressed via `!<agent>`. No `AgentSession` entry. |
+| Tier                      | Agents                                                  | Properties                                                                                                                                                                                                                                                                                               |
+| ------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Persistent**            | lead, reproducer, thinker, review                       | Own Claude session per bug thread, resumed via `--resume`. Posts to Slack with own identity. Addressable via `!<agent>`. Multi-turn / stateful. Has an `AgentSession` entry. **Reproducer is two-phase** — phase=reproduction (top) and phase=validation (bottom, on the local fix branch before merge). |
+| **Sub-agent (Task tool)** | nr-research, sentry-fetch, vercel-status, email-drafter | Stateless. Spawned via Task tool from inside a persistent agent's session. Output goes to bug-folder files (`research.md`, `sentry.md`, `vercel.md`, `email.md`). Never posts to Slack. Never addressed via `!<agent>`. No `AgentSession` entry.                                                         |
 
 Sub-agents are tools, not participants. The persistent agent that calls them references the file path + key findings in its Slack message. This keeps the channel a clean human-↔-persistent-agent conversation while preserving full audit trails on disk.
 
@@ -120,14 +130,15 @@ All agents run under the same Slack bot user ID. Bot messages from `chat.postMes
 
 Every Slack message in a `#bugs-backlog` thread goes through the router. Four cases, one path:
 
-| Source     | Prefix          | Routes to                                  |
-|------------|-----------------|--------------------------------------------|
-| Human      | (no prefix)     | lead                                       |
-| Human      | `!<agent>`      | that agent                                 |
-| Bot (us)   | `!<agent>`      | that agent — **only lead emits these**     |
-| Bot (us)   | (no prefix)     | lead (lead reads agent responses; can stay silent) |
+| Source   | Prefix      | Routes to                                          |
+| -------- | ----------- | -------------------------------------------------- |
+| Human    | (no prefix) | lead                                               |
+| Human    | `!<agent>`  | that agent                                         |
+| Bot (us) | `!<agent>`  | that agent — **only lead emits these**             |
+| Bot (us) | (no prefix) | lead (lead reads agent responses; can stay silent) |
 
 Notes:
+
 - "Bot (us)" = our bot's user ID. Other bots in the workspace (Friday, Doraemon) are ignored at event ingestion.
 - Multi-directive dispatch: one Slack message can contain multiple `!<agent>` lines. Each line is a separate dispatch; commentary between/around them is allowed.
 - Buffer per agent: if a `!<agent>` arrives while that agent is `busy`, buffer in `agentSessions[name].pendingMessages`. Drain when the agent's process exits, same buffer/drain pattern Junior already uses per thread, scoped per agent.
@@ -150,11 +161,11 @@ Sub-agents do not post to Slack at all (see "Sub-agent invocation" below). Their
 
 ### Multi-directive dispatch (parallel persistent-agent fan-out)
 
-For dispatching multiple **persistent** agents in one turn (rare — most pipelines are sequential past the observability fan-out, since reproducer/scoper/reviewer/validator depend on each other):
+For dispatching multiple **persistent** agents in one turn (rare — most pipelines are sequential past the observability fan-out, since reproducer/thinker/review depend on each other):
 
 ```
 !reproducer reproduce: <user story>
-!validator <something parallel>
+!review <something parallel>
 ```
 
 Router rule: every line matching `^!<agent> ` in the message is a separate dispatch. Each persistent agent gets its own Claude process. Commentary lines are ignored by the router (humans still see them).
@@ -238,6 +249,7 @@ The lead's `.claude/agents/lead.md` (replaces the old `support-lead.md`) teaches
 Multi-session thread model + router + agent identities. No real agents yet — test with a fake `!echo` agent.
 
 **What it adds:**
+
 - `AgentSession` type
 - `agentSessions: Map<string, AgentSession>` on `ThreadSession`
 - SQLite `agent_sessions` table + persistence
@@ -248,6 +260,7 @@ Multi-session thread model + router + agent identities. No real agents yet — t
 - `NO_SLACK_MESSAGE` already works at the post boundary — verify it doesn't fire any events from the suppression path
 
 **Test:**
+
 - Create a `lead` session in a test thread. Post a message manually as the bot containing `!echo hello`. Verify a fresh `echo` agent session is created, posts back as "Echo" identity. Verify lead's session is unaffected.
 - Post `!echo first\n!echo second` — verify only one echo session exists; second message buffered.
 - Post `!echo` while echo is busy — verify it buffers and drains after the first turn.
@@ -260,6 +273,7 @@ Multi-session thread model + router + agent identities. No real agents yet — t
 Validates the sub-agent (Task tool) tier end-to-end. nr-research is invoked from within a Claude session (initially the operator's, later the lead's), runs an NRQL query, writes findings to `$BUG_DIR/research.md`, returns a one-line summary, and exits. No Slack identity, no AgentSession entry.
 
 **What it adds:**
+
 - `support/agents/nr-research/prompt.md` (Claude Code sub-agent definition with `subagent_type: nr-research`)
 - Tools: `newrelic` CLI as primary, NR MCP fallback
 - Output contract: writes `$BUG_DIR/research.md` with the structured findings; returns a one-line summary like `"DONE: 1,247 errors across 860 users — see research.md"` as the Task tool result
@@ -274,6 +288,7 @@ Validates the sub-agent (Task tool) tier end-to-end. nr-research is invoked from
 Prove parallel Task-tool fan-out.
 
 **What it adds:**
+
 - `support/agents/sentry-fetch/prompt.md` (sub-agent, `sentry-cli` as the tool, writes `$BUG_DIR/sentry.md`)
 - `support/agents/vercel-status/prompt.md` (sub-agent, vercel MCP, writes `$BUG_DIR/vercel.md`)
 - Status pill rollup: `formatToolStatuses` handles N parallel Task calls in one assistant event by rendering one combined string (`"Calling nr-research, sentry-fetch, vercel-status (3 in progress)"`) — no per-call updates clobbering each other.
@@ -287,6 +302,7 @@ Prove parallel Task-tool fan-out.
 The first real persistent agent on top of the substrate. Single-concern UI walker. Runs after observability completes.
 
 **What it adds:**
+
 - `.claude/agents/reproducer.md` (Claude Code persistent agent definition, addressable via `!reproducer`)
 - `AGENT_IDENTITIES` entry for `reproducer`
 - `support/agents/reproducer/prompt.md` rewritten from the restored baseline
@@ -298,13 +314,14 @@ The first real persistent agent on top of the substrate. Single-concern UI walke
 
 **Test:** Real bug thread with observability files already in the bug folder. Post `!reproducer reproduce: <user story>`. Verify Reproducer session created, reads observability files, walks UI, posts trace under `Reproducer` identity. Resume by posting `!reproducer what about the cache header?` — verify same session resumed (preamble-skip after first turn). Test all 4 outcomes including `mismatch`.
 
-**Defers:** Lead-driven orchestration (still manual), scoper/reviewer/validator/email-drafter.
+**Defers:** Lead-driven orchestration (still manual), thinker/review/email-drafter, reproducer phase=validation.
 
 ### Iteration 4: Lead orchestration prompt (~3h)
 
 Lead actually orchestrates the pipeline instead of being manually invoked.
 
 **What it adds:**
+
 - `.claude/agents/lead.md` (the lead's persistent-agent definition)
 - Auto-assign `#bugs-backlog` threads to `lead` agent type (already wired via `channelDefaults`)
 - Lead's prompt teaches:
@@ -319,6 +336,7 @@ Lead actually orchestrates the pipeline instead of being manually invoked.
 - `state.json` template restored with `rounds.{reproducer,research,review}` counters
 
 **Test:** End-to-end. Post a real bug in `#bugs-backlog`. Verify:
+
 - Lead creates the bug folder
 - Lead's first turn does parallel Task calls; status pill shows `Calling nr-research, sentry-fetch, vercel-status (3 in progress)` and updates as each completes
 - Lead posts a single synthesis message after all three return, referencing the three files
@@ -326,18 +344,18 @@ Lead actually orchestrates the pipeline instead of being manually invoked.
 - On mismatch outcome, lead doesn't dispatch the next stage on the wrong failure
 - On `not-reproduced`, lead escalates to human (no auto-retry)
 
-**Defers:** Scoper, reviewer, validator (other persistent agents, next iterations); email-drafter (sub-agent, later iteration).
+**Defers:** Thinker, review (other persistent agents, next iterations); reproducer phase=validation (after thinker writes a fix branch); email-drafter (sub-agent, later iteration).
 
 ## Shortcuts
 
-| Shortcut | Replaced in |
-|---|---|
-| Observability fan-in waits forever (no timeout) | Post-MVP if it bites |
-| Round caps in lead's prompt only (no router enforcement) | Post-MVP if lead misbehaves |
-| Slack-events latency for lead→agent dispatch (1-3s/hop) | Post-MVP (could add stream-handler interception if it ever feels slow) |
-| Manual operator dispatch in iters 1-3 (lead doesn't orchestrate) | Iteration 4 |
-| One `lead` agent type, no swap to alternate orchestrators | Post-MVP |
-| No reaction-based "I'm collapsed/waiting" UX | Post-MVP |
+| Shortcut                                                         | Replaced in                                                            |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Observability fan-in waits forever (no timeout)                  | Post-MVP if it bites                                                   |
+| Round caps in lead's prompt only (no router enforcement)         | Post-MVP if lead misbehaves                                            |
+| Slack-events latency for lead→agent dispatch (1-3s/hop)          | Post-MVP (could add stream-handler interception if it ever feels slow) |
+| Manual operator dispatch in iters 1-3 (lead doesn't orchestrate) | Iteration 4                                                            |
+| One `lead` agent type, no swap to alternate orchestrators        | Post-MVP                                                               |
+| No reaction-based "I'm collapsed/waiting" UX                     | Post-MVP                                                               |
 
 ## Cut List (true v2)
 
@@ -349,4 +367,4 @@ Lead actually orchestrates the pipeline instead of being manually invoked.
 - **DAG-based pipeline** — dependency graph, lead resolves parallelism automatically.
 - **Token budget tracking** — per-agent per-bug cost vs the one-shot baseline.
 - **Agent self-activation** — agents watch state.json for triggers and wake themselves.
-- **Scoper, reviewer, validator, email-drafter** — agents downstream of reproducer. Their iteration plans live in their own feature docs once we get there.
+- **Thinker, review, email-drafter, reproducer phase=validation** — agents/phases downstream of reproducer-phase-1. Their iteration plans live in their own feature docs once we get there. Note: validation is reproducer's _second_ phase, not a separate agent — reuses the same persistent session.

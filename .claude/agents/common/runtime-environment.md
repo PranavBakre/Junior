@@ -10,6 +10,14 @@ For the typical `growthx` product:
 - Frontend: `~/openclaw-projects/growthx/gx-client-next` (Next.js)
 - Backend: `~/openclaw-projects/growthx/gx-backend` (Node)
 
+**Always read each repo's `CLAUDE.md` before working in it.** Each product repo has its own conventions (naming, patterns, deprecated paths, test/build commands, gotchas). Without reading it you will miss them and produce code or analysis that conflicts with how the team actually works. Do this at the start of any turn that reads or edits code in that repo:
+
+```sh
+cat ~/openclaw-projects/<repo>/CLAUDE.md
+```
+
+The repo's `CLAUDE.md` overrides anything generic — if it says "use X pattern," use X even if your default would have been Y.
+
 ## Local dev servers + FE↔BE wiring
 
 Fixed ports — do NOT `lsof`/`ps`/`curl`-loop to discover them:
@@ -55,10 +63,10 @@ support/bugs/<product>/<bug-id>/
 ├── research.md         # nr-research output (Task)
 ├── sentry.md           # sentry-fetch output (Task)
 ├── vercel.md           # vercel-status output (Task)
-├── reproduction.md     # reproducer output (after !reproducer)
-├── scoping.md          # scoper output (after !scoper)
-├── review.md           # reviewer output (after !reviewer)
-├── validation.md       # validator output (after !validator)
+├── reproduction.md     # reproducer phase=reproduction (top of pipeline)
+├── scoping.md          # thinker output (after !thinker)
+├── review.md           # review output (after !review) — verdict summary; inline comments live on the GitHub PR
+├── validation.md       # reproducer phase=validation (against local fix branch, before merge)
 └── email.md            # email-drafter output (Task, optional)
 ```
 
