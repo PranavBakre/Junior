@@ -175,6 +175,67 @@ describe("SessionManager", () => {
     expect(onBuffered).toHaveBeenCalledTimes(1);
   });
 
+  it("creates an independent persistent agent session", async () => {
+    const responses: Array<{ agentName?: string; username?: string; response: string }> = [];
+    manager.onResponse = (session, response) => {
+      responses.push({
+        agentName: session.activeAgentName,
+        username: session.slackIdentity?.username,
+        response,
+      });
+    };
+
+    await manager.handleAgentMessage(makeEvent({ text: "hello echo" }), "echo");
+
+    let session = await store.get("thread-1");
+    expect(session!.status).toBe("idle");
+    expect(session!.agentSessions.echo.status).toBe("busy");
+
+    const runSession = mockSpawnFn.mock.calls[0][0] as { activeAgentName?: string; slackIdentity?: { username: string } };
+    expect(runSession.activeAgentName).toBe("echo");
+    expect(runSession.slackIdentity?.username).toBe("Echo");
+
+    currentHandle._complete("echo response", "echo-session-1");
+    await new Promise((r) => setTimeout(r, 10));
+
+    session = await store.get("thread-1");
+    expect(session!.agentSessions.echo.sessionId).toBe("echo-session-1");
+    expect(session!.agentSessions.echo.status).toBe("done");
+    expect(session!.sessionId).toBeNull();
+    expect(responses).toEqual([
+      { agentName: "echo", username: "Echo", response: "echo response" },
+    ]);
+  });
+
+  it("buffers per-agent messages while that agent is busy and drains them", async () => {
+    await manager.handleAgentMessage(makeEvent({ text: "first echo" }), "echo");
+    await manager.handleAgentMessage(
+      makeEvent({ text: "second echo", ts: "ts-2" }),
+      "echo",
+    );
+
+    let session = await store.get("thread-1");
+    expect(session!.agentSessions.echo.pendingMessages).toHaveLength(1);
+    expect(session!.agentSessions.echo.pendingMessages[0].text).toBe("second echo");
+
+    const drainHandle = createMockHandle();
+    mockSpawnFn = mock(() => drainHandle);
+
+    currentHandle._complete("first response", "echo-session-1");
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
+    const drainPrompt = mockSpawnFn.mock.calls[0][1] as string;
+    expect(drainPrompt).toContain("[U123]: second echo");
+
+    drainHandle._complete("second response", "echo-session-1");
+    await new Promise((r) => setTimeout(r, 10));
+
+    session = await store.get("thread-1");
+    expect(session!.agentSessions.echo.pendingMessages).toHaveLength(0);
+    expect(session!.agentSessions.echo.status).toBe("done");
+  });
+
   // --- Completion and response ---
 
   it("fires onResponse and sets status to idle after Claude completes", async () => {

@@ -14,7 +14,6 @@ const KNOWN_COMMANDS = new Set([
   "help",
   "adhoc",
   "bugs",
-  "support-lead",
 ]);
 
 export interface ParsedCommand {
