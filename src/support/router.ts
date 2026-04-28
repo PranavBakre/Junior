@@ -29,7 +29,21 @@ export function parseAgentDirectives(text: string): AgentDirective[] {
   return directives;
 }
 
-export class SupportRouter {
+/**
+ * Universal entry point for Slack messages, used in any channel:
+ *
+ * - If the message contains `!<persistent-agent>` directives (or parseCommand
+ *   already consumed one into event.command), dispatch to those persistent
+ *   agents. Works in any channel — `!review` in #junior creates a review
+ *   persistent-agent session in that thread, same as in #bugs-backlog.
+ * - If no directives, fall through to the existing single-session manager.
+ *   In support channels (channelDefaults.agentType === "lead"), lead is the
+ *   default recipient; non-support channels keep their existing behavior.
+ *
+ * The lead-only-dispatch invariant + self-loop break + worker-can't-dispatch
+ * guards apply only when the channel is a support channel (where lead exists).
+ */
+export class AgentDispatcher {
   private manager: SessionManager;
   private supportChannels: Set<string>;
 
@@ -38,20 +52,16 @@ export class SupportRouter {
     this.supportChannels = supportChannels;
   }
 
-  shouldRoute(event: SlackMessageEvent): boolean {
-    return this.supportChannels.has(event.channel);
+  isSupportChannel(channel: string): boolean {
+    return this.supportChannels.has(channel);
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
-    // parseCommand (commands.ts) runs in events.ts before we see this event.
-    // It strips a leading !<token> if <token> is in KNOWN_COMMANDS — and `review`
-    // overlaps between KNOWN_COMMANDS (the slash-command set) and AGENT_IDENTITIES
-    // (the persistent-agent set). When that happens, the prefix is gone from
-    // event.text before parseAgentDirectives runs, so `!review ...` posts get
-    // silently dropped.
-    //
-    // Reconstruct: if event.command is a persistent-agent name, prepend it as
-    // the first directive with the stripped text as its prompt.
+    const isSupport = this.supportChannels.has(event.channel);
+
+    // parseCommand (commands.ts) may have stripped a leading !<token> if <token>
+    // is in KNOWN_COMMANDS. Reconstruct the directive when the command is also
+    // a persistent-agent name (e.g., `review` was in both sets).
     const directives = parseAgentDirectives(event.text);
     if (event.command && isPersistentAgent(event.command)) {
       directives.unshift({
@@ -66,37 +76,51 @@ export class SupportRouter {
       : null;
 
     if (directives.length === 0) {
-      // Lead reading its own commentary would trigger an infinite wake-loop.
-      // Drop self-bot+no-directives where source is lead or unknown.
-      if (event.isSelfBot && sourceAgent !== null && sourceAgent !== "lead") {
-        // Worker response — forward to lead so it can decide next step.
+      // Drop self-bot loops in support channels (lead reading its own posts).
+      // In non-support channels, drop self-bot too — bots shouldn't trigger
+      // new turns on their own posts regardless of channel.
+      if (event.isSelfBot && (sourceAgent === "lead" || sourceAgent === null)) {
+        return;
+      }
+      // Worker self-bot (non-lead) without directives: forward to lead in
+      // support channels so it can decide next step. In non-support channels
+      // there's no lead — fall through to the regular session manager.
+      if (event.isSelfBot && isSupport) {
         await this.manager.handleMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
         });
         return;
       }
-      if (event.isSelfBot) {
-        // Lead's own message or unknown self-bot — drop.
-        return;
+      // Human (or non-self-bot) with no directives.
+      if (isSupport) {
+        await this.manager.handleMessage({
+          ...event,
+          dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
+        });
+      } else {
+        await this.manager.handleMessage(event);
       }
-      await this.manager.handleMessage({
-        ...event,
-        dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
-      });
       return;
     }
 
+    // Has directives.
+    // In support channels, only lead may emit them; workers/unknown self-bots
+    // get the directives stripped (re-routed to lead as plain text).
+    // In non-support channels there's no lead-only invariant — humans drive.
+    // Self-bot directives in non-support channels are weird (single-session
+    // bots don't typically dispatch); drop them too rather than risk loops.
     if (event.isSelfBot && sourceAgent !== "lead") {
-      // Only lead can emit !<agent> directives. Worker or unknown — drop the
-      // directives, route the message text to lead so it sees what was said.
-      await this.manager.handleMessage({
-        ...event,
-        dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
-      });
+      if (isSupport) {
+        await this.manager.handleMessage({
+          ...event,
+          dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
+        });
+      }
       return;
     }
 
+    // Dispatch each directive (works in any channel).
     const byAgent = new Map<string, Array<{ directive: AgentDirective; index: number }>>();
     directives.forEach((directive, index) => {
       const entries = byAgent.get(directive.agentName) ?? [];
@@ -121,3 +145,6 @@ export class SupportRouter {
     );
   }
 }
+
+// Back-compat export name for callers that haven't been updated yet.
+export const SupportRouter = AgentDispatcher;
