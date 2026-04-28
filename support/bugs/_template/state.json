@@ -33,10 +33,12 @@
   ],
 
   "rounds": {
+    "reproducer": 0,
     "research": 0,
     "review": 0
   },
   "_round_caps": {
+    "reproducer": 2,
     "research": 3,
     "review": 2
   },

@@ -36,6 +36,18 @@ agents own:
    **summary:** bug folder created at bugs/<product>/<bug-id>, spawning classifier next
    ```
 
+## stage-transition messaging (REQUIRED for every spawn)
+
+**every stage transition must be a NEW message in the Slack thread, never an edit of an existing one.** humans watching the thread need to see the pipeline progress as a stream of distinct messages.
+
+before spawning each sub-agent, post a short stage-start message via the `slack_send_message` MCP tool:
+- one line: `<stage>: <one-sentence intent>` (e.g. `research: pulling NR logs + checking data validity for priya@growthx.club`).
+
+after the agent returns, post a short stage-end message via `slack_send_message`:
+- one line: `<stage> done: <one-sentence outcome>` (e.g. `reproducer done: mismatch — observed 500 on /events but report says blank screen on /past`).
+
+each call to `slack_send_message` produces a NEW slack message. do NOT use any path that edits an existing message for stage transitions. (in-flight progress within a single agent's run is the agent's own business — but the lead's stage transitions are always new messages.)
+
 ## the spawn protocol (use this every time you spawn a sub-agent)
 
 every sub-agent spawn follows the same 5 steps:
@@ -78,7 +90,11 @@ spawn with `agents/reproducer/prompt.md`. tries to reproduce the bug.
 
 - `status: reproduced` → continue.
 - `status: partial` → continue with that context.
-- `status: not-reproduced` → tag a human. do NOT close.
+- `status: mismatch` → the reproducer triggered *a* failure but it does not match the report. **do NOT continue to research with the mismatched failure** — that locks the pipeline onto the wrong issue. options:
+  - re-spawn the reproducer with a workspace note pointing at what the report actually described (different URL, different action, different symptom). prompt it to dig on the user's stated path specifically, not the first thing that broke.
+  - if the report itself is ambiguous → tag a human, set state.status = `needs-human` with a short description of what was found vs what was reported.
+  - increment `state.rounds.reproducer`; cap at 2. on second mismatch, tag a human.
+- `status: not-reproduced` → tag a human. do NOT close. this is a legitimate, valuable outcome — not a failure. an honest "couldn't reproduce" routed to a human is correct; do NOT pressure the agent into a forced reproduction by re-spawning it generically. only re-spawn if you have specific new context to add (e.g. the original report had ambiguous repro steps and the user clarified them since).
 
 ### 3. research
 spawn with `agents/research/prompt.md`. it pulls new relic logs + reads routed repos. writes `research.md` and posts a summary.
@@ -135,6 +151,7 @@ after the agent returns with `status: draft-ready` → **HUMAN GATE 2**:
 - classifier says `invalid` → state.status = `invalid`
 - classifier flags `P0` (page first, then human go-ahead before continuing)
 - reproducer (top) says `not-reproduced`
+- reproducer (top) says `mismatch` twice in a row (rounds.reproducer cap = 2)
 - scoper ↔ research hits 3 rounds with an open blocker
 - reviewer ↔ coder hits 2 rounds with an open blocker
 - validator says `still-broken`
@@ -148,3 +165,5 @@ after the agent returns with `status: draft-ready` → **HUMAN GATE 2**:
 - do not increment a round counter without checking the cap first.
 - do not modify state.json or executive-summary.md from inside a sub-agent prompt — those are yours.
 - do not spawn an agent just because the pipeline says so. if there's nothing to do (e.g. email-worthy=no), skip and note in workspace.
+- do not edit an existing slack message to communicate a stage transition. always post a new one via `slack_send_message`.
+- do not treat the first reproduced failure as the bug if it does not match the report. handle `mismatch` before continuing.

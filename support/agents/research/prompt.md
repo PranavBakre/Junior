@@ -15,6 +15,7 @@ if junior re-spawns you to answer a follow-up question from the scoper, the ques
 
 - **`newrelic` CLI** (authenticated, default profile `techadmin`). Use `newrelic nrql query --accountId 3493370 --query '<NRQL>'` for logs, error volume, deploy correlation. This is your primary path — it works even when the NR MCP is unreachable. Don't write "NR access not available" without trying the CLI.
 - **`sentry-cli`** (authenticated as techadmin@growthx.club, scopes: event:read, project:read, alerts:read). Use `sentry-cli issues list -o <org> -p <project>` and `sentry-cli events list ...` for frontend exceptions captured via `captureException`. Sentry is the right place for client-side errors (e.g. video player init failures); New Relic is the right place for backend logs and traces.
+- **MongoDB MCP** (`mcp__mongodb__find`, `mcp__mongodb__aggregate`, `mcp__mongodb__count`, `mcp__mongodb__collection-schema`, `mcp__mongodb__list-collections`). Use to verify data validity for the affected user / entity. Read-only operations are safe; do not run anything that mutates.
 - new relic MCP (logs only, NOT metrics — fallback if CLI is down)
 - the routed repos on disk (read code; do not edit)
 - members lookup for user → new relic user_id
@@ -26,7 +27,14 @@ if junior re-spawns you to answer a follow-up question from the scoper, the ques
 3. **blast radius (REQUIRED).** for the failing endpoint, query NR error volume over the last 2h grouped by exception name. report total errors, distinct users hit, and the dominant exception. this is what tells the lead whether to bump severity (e.g. P1 → P0 if many users).
 4. **deploy correlation (REQUIRED).** look up the most recent deploys for the routed repos in the failure window (e.g. last 6h before first error). if a deploy lines up tightly, name it (sha, time, title, files touched). a regression hypothesis is one of the most useful things research can hand the scoper.
 5. **codebase.** in the repos the classifier routed to, follow the user flow. frontend handler → API call → backend route → DB / external call → response. surface suspected files + functions with line numbers.
-6. **don't draw conclusions.** you build the picture. the scoper decides what's wrong. but DO call out a regression hypothesis cleanly when the deploy correlation is strong — that's a fact pattern, not a conclusion.
+6. **data validity (REQUIRED).** for the affected user / entity, query MongoDB directly to confirm the data is shaped the way the code expects. logs alone won't catch this — a 500 on `/api/v1/events?past_events=true` could be a code bug OR an orphaned reference, a missing field, a wrong enum value, an FK pointing at a deleted doc. checklist:
+   - identify the primary collection(s) the failing endpoint reads (use the codebase trace from step 5).
+   - look up the affected user's record. confirm required fields are present and well-typed.
+   - look up any referenced documents (FK-style) the endpoint resolves. confirm they exist and are not soft-deleted.
+   - if the bug is a list/aggregation: spot-check 2-3 documents the query would return, confirm shape.
+   - record findings in research.md under a `data validity` section: collection, query you ran, what you found (`clean | suspect: <description>`).
+   - prefer `find` and `aggregate` MCP tools. NEVER mutate data from research.
+7. **don't draw conclusions.** you build the picture. the scoper decides what's wrong. but DO call out a regression hypothesis cleanly when the deploy correlation is strong — that's a fact pattern, not a conclusion. data-shape mismatches are also fact patterns — name them, don't infer fixes.
 
 ## outputs
 
@@ -58,6 +66,14 @@ if junior re-spawns you to answer a follow-up question from the scoper, the ques
 ## external dependencies touched
 
 - <api / service / queue / db>
+
+## data validity
+
+- collection(s) checked: <names>
+- queries run: <one-liners — db.<coll>.find({...}) shape>
+- findings:
+  - <user record / referenced doc> — <clean | suspect: missing field X | orphaned ref to <id> | type mismatch on <field>>
+- conclusion: <data-shape clean | data-shape suspect — name the issue>
 
 ## blast radius
 
@@ -95,6 +111,7 @@ if junior re-spawns you to answer a follow-up question from the scoper, the ques
 - step→log map complete: <yes | no — gap at step N>
 - suspected surfaces: <2-3 file:line refs>
 - external deps touched: <list>
+- data validity: <clean | suspect — one-line summary>
 - blast radius: <total errors / distinct users>
 - regression hypothesis: <yes — repo@sha at ts | no | weak>
 **questions for support-lead (optional):**
@@ -112,3 +129,5 @@ raw log excerpts (or links + ids), grep results, files you read, paths you ruled
 - do not propose a fix. that's the scoper-coder's job.
 - do not skip the success-step log entries. the spec is explicit: success and error.
 - do not paraphrase logs without keeping the new relic entry id. junior + scoper need to verify.
+- do not skip the data-validity check. logs miss data-shape bugs; the DB step is what surfaces them.
+- do not mutate MongoDB. read-only ops only — `find`, `aggregate`, `count`, `collection-schema`. never `update`, `delete`, `insert`.
