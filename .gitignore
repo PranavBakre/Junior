@@ -19,4 +19,5 @@ support/agents/*/prompt-snapshots/*.md
 !support/agents/*/prompt-snapshots/.gitkeep
 support/bugs/*/
 !support/bugs/_template/
+support/repo-routing.yaml
 .playwright-mcp/
