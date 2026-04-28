@@ -10,6 +10,7 @@ import { registerHomeTab } from "./slack/home.ts";
 import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
+import { SupportRouter } from "./support/router.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
 import { startMcpServer } from "./mcp/slack-server.ts";
 import { log } from "./logger.ts";
@@ -27,16 +28,32 @@ sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
 sessionManager.slackApp = app;
 const responder = new SlackResponder(app);
+const autoTriggerChannels = new Set(Object.keys(config.channelDefaults));
+// Only channels whose default agent is "lead" go through the support router —
+// other auto-trigger channels (e.g., a build channel default) keep the
+// existing single-session path.
+const supportChannels = new Set(
+  Object.entries(config.channelDefaults)
+    .filter(([, def]) => def.agentType === "lead")
+    .map(([channel]) => channel),
+);
+const supportRouter = new SupportRouter(sessionManager, supportChannels);
 
 sessionManager.onResponse = (session, response) => {
   const willPost = shouldPostResponseToSlack(response);
+  const agentName = session.activeAgentName ?? "lead";
   log.info(
     "response",
-    `thread=${session.threadId} len=${response.length} willPost=${willPost}`,
+    `thread=${session.threadId} agent=${agentName} len=${response.length} willPost=${willPost}`,
   );
-  responder.deleteStatus(session.channel, session.threadId);
+  responder.deleteStatus(session.channel, session.threadId, agentName);
   if (willPost) {
-    responder.postResponse(session.channel, session.threadId, response);
+    responder.postResponse(
+      session.channel,
+      session.threadId,
+      response,
+      session.slackIdentity,
+    );
   } else {
     log.info(
       "response",
@@ -46,8 +63,9 @@ sessionManager.onResponse = (session, response) => {
 };
 
 sessionManager.onEvent = (session, event) => {
+  const agentName = session.activeAgentName ?? "lead";
   if (event.type === "system" && event.subtype === "init") {
-    log.info("session", `thread=${session.threadId} sessionId=${session.sessionId}`);
+    log.info("session", `thread=${session.threadId} agent=${agentName} sessionId=${session.sessionId}`);
   }
   if (session.verbosity === "quiet") return;
   if (event.type === "assistant") {
@@ -60,14 +78,14 @@ sessionManager.onEvent = (session, event) => {
       );
     }
     if (text && shouldPostResponseToSlack(text)) {
-      responder.updateStatus(session.channel, session.threadId, text);
+      responder.updateStatus(session.channel, session.threadId, text, agentName);
     }
 
     // Show tool use as status
     const statuses = formatToolStatuses(event);
     for (const status of statuses) {
       log.info("tool", `thread=${session.threadId} ${status}`);
-      responder.updateStatus(session.channel, session.threadId, status);
+      responder.updateStatus(session.channel, session.threadId, status, agentName);
     }
   }
 };
@@ -83,12 +101,14 @@ sessionManager.onCommandResponse = (event, response) => {
 };
 
 sessionManager.onError = (session, error) => {
-  log.error("error", `thread=${session.threadId} ${error ?? "Unknown error"}`);
-  responder.deleteStatus(session.channel, session.threadId);
+  const agentName = session.activeAgentName ?? "lead";
+  log.error("error", `thread=${session.threadId} agent=${agentName} ${error ?? "Unknown error"}`);
+  responder.deleteStatus(session.channel, session.threadId, agentName);
   responder.postResponse(
     session.channel,
     session.threadId,
     `Error: ${error ?? "Unknown error"}`,
+    session.slackIdentity,
   );
 };
 
@@ -132,11 +152,13 @@ setInterval(() => {
     log.warn("boot", `Failed to resolve bot identity: ${err}`);
   }
 
-  const autoTriggerChannels = new Set(Object.keys(config.channelDefaults));
-
   registerEventHandlers(app, (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
-    sessionManager.handleMessage(event);
+    if (supportRouter.shouldRoute(event)) {
+      supportRouter.handleMessage(event);
+    } else {
+      sessionManager.handleMessage(event);
+    }
   }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
 
   log.info("boot", "Junior is running (Socket Mode)");
