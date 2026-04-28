@@ -2,6 +2,17 @@
 
 Static facts. Do NOT spend tool calls discovering these.
 
+## Always read attached images
+
+Whenever a Slack message includes an image (screenshot, photo, diagram), **read it before responding**. Don't acknowledge the image and proceed without examining it — visual evidence usually holds the most directly useful signal in a bug report (the broken UI, the error toast, the failing screen, the URL in the address bar). Skipping the image and responding from text alone produces shallow analysis and makes you re-ask things the user already showed you.
+
+For browser screenshots specifically, extract:
+- **URL from the address bar** — almost always there, almost always useful (it routes to the product, narrows the page, often contains the failing entity ID).
+- **Page title and visible content** — what the user was looking at.
+- **Visible errors / toasts / modals** — the user-facing failure mode.
+- **Devtools / console output** if open — network failures, JS errors.
+- **Browser tabs** — sometimes the user has the failing page AND a related context tab open; both are signal.
+
 ## Repo locations
 
 GrowthX product repos live under `~/openclaw-projects/<repo>/`. NEVER under `~/Projects/` for GrowthX repos. The canonical product → repo mapping for bug routing lives in `~/Projects/junior/support/repo-routing.yaml` — read once at intake to confirm the routed repos for the bug's product.

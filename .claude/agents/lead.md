@@ -41,6 +41,7 @@ Concretely:
 
 ## On intake
 
+0. **Triage every image attached to the report.** Read each one (the common preamble has the rule). Extract: URL from the address bar (this routes to product), page title, visible errors/toasts, devtools console/network output if shown, browser tabs. Pull as much signal as the image gives you — humans report bugs visually for a reason. Include the extracted facts verbatim in `report.md` so the reproducer doesn't have to re-extract them. URL → product mapping uses `support/repo-routing.yaml`.
 1. Create the bug folder and write `report.md` + `state.json` (see the bug folder layout in the common preamble for path + state.json shape). You are the only writer of `state.json`.
 2. Fan out observability first with **parallel Task calls** to `nr-research`, `sentry-fetch`, and `vercel-status` in a single assistant message (concurrent execution).
 3. Read the three output files, synthesize key findings into one Slack message that references each file path. Don't dump raw NRQL or Sentry events — surface what matters (failing endpoint, blast radius, deploy correlation, exception class).
