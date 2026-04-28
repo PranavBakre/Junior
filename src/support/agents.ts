@@ -1,7 +1,7 @@
 import type { AgentIdentity } from "../session/types.ts";
 
 export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
-  lead: { username: "Junior", iconEmoji: ":cowboy:" },
+  lead: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
   reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
   thinker: { username: "Thinker", iconEmoji: ":wrench:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
