@@ -14,6 +14,7 @@ import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
+  buildWorkspaceBlock,
   resolveSlackMentions,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
@@ -344,20 +345,30 @@ export class SessionManager {
             }
           : null;
 
-      // Inject identity + thread context so Claude knows who it is and what was said
+      // Build the prompt. On the first turn (no sessionId yet), inject the full
+      // preamble (identity, slack-context, workspace, thread history). On resumed
+      // turns, --resume already carries identity/context/history — sending them
+      // again duplicates tokens and pollutes the conversation. Keep just the
+      // workspace block (cheap insurance for the worktree safety rule).
       if (this.slackApp && latestTs) {
-        const [preamble, readablePrompt] = await Promise.all([
-          buildPromptPreamble(
+        const isFirstTurn = !session.sessionId;
+        const readablePrompt = await resolveSlackMentions(this.slackApp, prompt);
+        if (isFirstTurn) {
+          const preamble = await buildPromptPreamble(
             this.slackApp,
             session.channel,
             session.threadId,
             latestTs,
             this.botUserId,
             workspace,
-          ),
-          resolveSlackMentions(this.slackApp, prompt),
-        ]);
-        prompt = `${preamble}\n\n${readablePrompt}`;
+          );
+          prompt = `${preamble}\n\n${readablePrompt}`;
+        } else {
+          const workspaceBlock = buildWorkspaceBlock(workspace);
+          prompt = workspaceBlock
+            ? `${workspaceBlock}\n\n${readablePrompt}`
+            : readablePrompt;
+        }
       }
 
       // Download image files from Slack and append their paths to the prompt
