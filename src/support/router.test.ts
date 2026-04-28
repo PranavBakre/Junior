@@ -129,6 +129,31 @@ describe("SupportRouter", () => {
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 
+  it("dispatches when parseCommand consumed a !<persistent-agent> token into event.command", async () => {
+    // Simulates the case where commands.ts parseCommand runs first and turns
+    // `!review PR #732 details...` into { command: "review", text: "PR #732 details..." }.
+    // The router must reconstruct the directive — otherwise the dispatch silently drops.
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text: "PR #732 details about the change",
+        command: "review",
+      }),
+    );
+
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "PR #732 details about the change" }),
+      "review",
+    );
+  });
+
   it("drops self-bot posts with unknown username (no usable identity)", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),

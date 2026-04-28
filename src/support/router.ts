@@ -43,7 +43,24 @@ export class SupportRouter {
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
+    // parseCommand (commands.ts) runs in events.ts before we see this event.
+    // It strips a leading !<token> if <token> is in KNOWN_COMMANDS — and `review`
+    // overlaps between KNOWN_COMMANDS (the slash-command set) and AGENT_IDENTITIES
+    // (the persistent-agent set). When that happens, the prefix is gone from
+    // event.text before parseAgentDirectives runs, so `!review ...` posts get
+    // silently dropped.
+    //
+    // Reconstruct: if event.command is a persistent-agent name, prepend it as
+    // the first directive with the stripped text as its prompt.
     const directives = parseAgentDirectives(event.text);
+    if (event.command && isPersistentAgent(event.command)) {
+      directives.unshift({
+        agentName: event.command,
+        prompt: event.text.trim(),
+        line: `!${event.command} ${event.text}`,
+      });
+    }
+
     const sourceAgent = event.isSelfBot
       ? agentForUsername(event.botUsername)
       : null;
