@@ -39,6 +39,25 @@ describe("SqliteSessionStore", () => {
     expect(retrieved).toEqual(session);
   });
 
+  it("persists agent sessions in the agent_sessions table", async () => {
+    const session = createSession("thread-1", "channel-1");
+    session.agentSessions.echo = {
+      agentName: "echo",
+      sessionId: "echo-session",
+      status: "busy",
+      pendingMessages: [{ user: "U1", text: "next", ts: "2.3" }],
+      lastActivity: 12345,
+      pid: 987,
+    };
+
+    await store.set("thread-1", session);
+
+    const retrieved = await store.get("thread-1");
+    expect(retrieved!.agentSessions.echo).toEqual(
+      session.agentSessions.echo,
+    );
+  });
+
   it("set on existing threadId upserts", async () => {
     const s1 = createSession("thread-1", "channel-1");
     await store.set("thread-1", s1);

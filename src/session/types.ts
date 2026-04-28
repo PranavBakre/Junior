@@ -3,6 +3,23 @@ export interface PendingMessage {
   text: string;
   ts: string;
   command?: string;
+  dedupeKey?: string;
+}
+
+export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";
+
+export interface AgentSession {
+  agentName: string;
+  sessionId: string | null;
+  status: AgentSessionStatus;
+  pendingMessages: PendingMessage[];
+  lastActivity: number;
+  pid: number | null;
+}
+
+export interface AgentIdentity {
+  username: string;
+  iconEmoji: string;
 }
 
 export type SessionStatus = "idle" | "busy" | "draining";
@@ -12,11 +29,15 @@ export interface ThreadSession {
   threadId: string;
   channel: string;
   sessionId: string | null;
+  leadSessionId: string | null;
+  agentSessions: Record<string, AgentSession>;
   worktreePath: string | null;
   targetRepo: string | null;
   baseRef: string | null;
   agentType: string | null;
   systemPrompt: string | null;
+  activeAgentName?: string;
+  slackIdentity?: AgentIdentity;
   status: SessionStatus;
   pendingMessages: PendingMessage[];
   verbosity: SessionVerbosity;
@@ -37,6 +58,8 @@ export function createSession(
     threadId,
     channel,
     sessionId: null,
+    leadSessionId: null,
+    agentSessions: {},
     worktreePath: null,
     targetRepo: null,
     baseRef: null,

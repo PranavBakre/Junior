@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
-import type { ThreadSession } from "../types.ts";
+import type { AgentSession, ThreadSession } from "../types.ts";
 import type { SessionStore } from "./interface.ts";
 
 export class SqliteSessionStore implements SessionStore {
@@ -26,6 +26,17 @@ export class SqliteSessionStore implements SessionStore {
     this.db.run(
       "CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
     );
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS agent_sessions (
+        thread_id TEXT NOT NULL,
+        agent_name TEXT NOT NULL,
+        session_id TEXT,
+        status TEXT DEFAULT 'idle',
+        last_activity INTEGER,
+        PRIMARY KEY (thread_id, agent_name),
+        FOREIGN KEY (thread_id) REFERENCES sessions(thread_id)
+      )
+    `);
   }
 
   close(): void {
@@ -38,10 +49,14 @@ export class SqliteSessionStore implements SessionStore {
         "SELECT json FROM sessions WHERE thread_id = ?",
       )
       .get(threadId);
-    return row ? (JSON.parse(row.json) as ThreadSession) : undefined;
+    if (!row) return undefined;
+    const session = normalizeSession(JSON.parse(row.json) as ThreadSession);
+    this.loadAgentSessions(session);
+    return session;
   }
 
   async set(threadId: string, session: ThreadSession): Promise<void> {
+    session = normalizeSession(session);
     this.db
       .query(
         `INSERT INTO sessions (thread_id, json, last_activity, status)
@@ -52,9 +67,13 @@ export class SqliteSessionStore implements SessionStore {
            status = excluded.status`,
       )
       .run(threadId, JSON.stringify(session), session.lastActivity, session.status);
+    this.syncAgentSessions(threadId, session.agentSessions);
   }
 
   async delete(threadId: string): Promise<void> {
+    this.db
+      .query("DELETE FROM agent_sessions WHERE thread_id = ?")
+      .run(threadId);
     this.db
       .query("DELETE FROM sessions WHERE thread_id = ?")
       .run(threadId);
@@ -68,7 +87,9 @@ export class SqliteSessionStore implements SessionStore {
       .all();
     const out = new Map<string, ThreadSession>();
     for (const row of rows) {
-      out.set(row.thread_id, JSON.parse(row.json) as ThreadSession);
+      const session = normalizeSession(JSON.parse(row.json) as ThreadSession);
+      this.loadAgentSessions(session);
+      out.set(row.thread_id, session);
     }
     return out;
   }
@@ -82,7 +103,9 @@ export class SqliteSessionStore implements SessionStore {
       .all(cutoff);
     const out = new Map<string, ThreadSession>();
     for (const row of rows) {
-      out.set(row.thread_id, JSON.parse(row.json) as ThreadSession);
+      const session = normalizeSession(JSON.parse(row.json) as ThreadSession);
+      this.loadAgentSessions(session);
+      out.set(row.thread_id, session);
     }
     return out;
   }
@@ -103,4 +126,68 @@ export class SqliteSessionStore implements SessionStore {
       )
       .run(JSON.stringify(session), now, threadId);
   }
+
+  private loadAgentSessions(session: ThreadSession): void {
+    const rows = this.db
+      .query<
+        {
+          agent_name: string;
+          session_id: string | null;
+          status: AgentSession["status"];
+          last_activity: number | null;
+        },
+        [string]
+      >(
+        "SELECT agent_name, session_id, status, last_activity FROM agent_sessions WHERE thread_id = ?",
+      )
+      .all(session.threadId);
+
+    session.agentSessions ??= {};
+    for (const row of rows) {
+      const existing = session.agentSessions[row.agent_name];
+      session.agentSessions[row.agent_name] = {
+        agentName: row.agent_name,
+        sessionId: row.session_id,
+        status: row.status,
+        pendingMessages: existing?.pendingMessages ?? [],
+        lastActivity: row.last_activity ?? existing?.lastActivity ?? Date.now(),
+        pid: existing?.pid ?? null,
+      };
+    }
+  }
+
+  private syncAgentSessions(
+    threadId: string,
+    agentSessions: Record<string, AgentSession>,
+  ): void {
+    const del = this.db.query(
+      "DELETE FROM agent_sessions WHERE thread_id = ?",
+    );
+    const insert = this.db.query(
+      `INSERT INTO agent_sessions
+       (thread_id, agent_name, session_id, status, last_activity)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+
+    const txn = this.db.transaction((sessions: AgentSession[]) => {
+      del.run(threadId);
+      for (const agentSession of sessions) {
+        insert.run(
+          threadId,
+          agentSession.agentName,
+          agentSession.sessionId,
+          agentSession.status,
+          agentSession.lastActivity,
+        );
+      }
+    });
+
+    txn(Object.values(agentSessions));
+  }
+}
+
+function normalizeSession(session: ThreadSession): ThreadSession {
+  session.leadSessionId ??= session.sessionId;
+  session.agentSessions ??= {};
+  return session;
 }
