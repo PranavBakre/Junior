@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { mkdirSync } from "node:fs";
 import type { Config } from "../config.ts";
-import type { ThreadSession } from "../session/types.ts";
+import type { AgentIdentity, ThreadSession } from "../session/types.ts";
 import type { SpawnHandle, SpawnResult, StreamEvent } from "./types.ts";
 import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
@@ -15,6 +15,7 @@ export function spawnClaude(
   config: Config["claude"],
   targetRepoCwd?: string,
   botToken?: string,
+  agentIdentity?: AgentIdentity,
 ): SpawnHandle {
   const cwd = session.cwd ?? session.worktreePath ?? targetRepoCwd ?? process.cwd();
   if (session.cwd) mkdirSync(session.cwd, { recursive: true });
@@ -33,6 +34,13 @@ export function spawnClaude(
       JUNIOR_SPAWNED: "1",
       SLACK_CHANNEL: session.channel,
       SLACK_THREAD_TS: session.threadId,
+      JUNIOR_AGENT_NAME: session.activeAgentName ?? "lead",
+      ...(agentIdentity
+        ? {
+            JUNIOR_SLACK_USERNAME: agentIdentity.username,
+            JUNIOR_SLACK_ICON_EMOJI: agentIdentity.iconEmoji,
+          }
+        : {}),
       ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
     },
   });

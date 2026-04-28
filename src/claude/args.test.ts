@@ -8,6 +8,8 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     threadId: "t1",
     channel: "C01",
     sessionId: null,
+    leadSessionId: null,
+    agentSessions: {},
     worktreePath: null,
     targetRepo: null,
     baseRef: null,

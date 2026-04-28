@@ -73,7 +73,7 @@ export function loadConfig(): Config {
     channelDefaults: parseChannelDefaults(
       optional(
         "CHANNEL_DEFAULTS",
-        '{"C05557KKV37":{"agentType":"support-lead"}}',
+        '{"C05557KKV37":{"agentType":"lead"}}',
       ),
     ),
   };

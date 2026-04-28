@@ -30,14 +30,20 @@ function registerTools(server: McpServer) {
         channel_id: z.string().describe("Channel ID to post in"),
         thread_ts: z.string().optional().describe("Thread timestamp to reply to"),
         reply_broadcast: z.boolean().optional().describe("Also post to the channel (for thread replies)"),
+        username: z.string().optional().describe("Optional display name for this bot message"),
+        icon_emoji: z.string().optional().describe("Optional emoji icon for this bot message"),
       },
     },
-    async ({ text, channel_id, thread_ts, reply_broadcast }) => {
+    async ({ text, channel_id, thread_ts, reply_broadcast, username, icon_emoji }) => {
+      const identity = {
+        ...(username ? { username } : {}),
+        ...(icon_emoji ? { icon_emoji } : {}),
+      };
       const result = reply_broadcast && thread_ts
-        ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, reply_broadcast: true })
+        ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, reply_broadcast: true, ...identity })
         : thread_ts
-          ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts })
-          : await slack.chat.postMessage({ channel: channel_id, text });
+          ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, ...identity })
+          : await slack.chat.postMessage({ channel: channel_id, text, ...identity });
       return {
         content: [{ type: "text" as const, text: `Message sent (ts: ${result.ts})` }],
       };
