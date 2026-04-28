@@ -79,6 +79,32 @@ export interface WorkspaceContext {
 }
 
 /**
+ * Build the standalone workspace-rules block. Used in the full preamble on the
+ * first turn AND on resumed turns (cheap insurance — keeps the safety rule
+ * present even when --resume carries the rest of the context).
+ */
+export function buildWorkspaceBlock(
+  workspace: WorkspaceContext | null | undefined,
+): string | null {
+  if (!workspace) return null;
+  return [
+    `<workspace>`,
+    `Target repo: ${workspace.repoName}`,
+    `Worktree (your sandbox): ${workspace.worktreePath}`,
+    `Worktree branch: ${workspace.branchName}`,
+    `Original repo path (OFF-LIMITS for writes): ${workspace.repoPath}`,
+    ``,
+    `RULES — non-negotiable:`,
+    `1. ALL reads, writes, edits, and shell commands for this task MUST happen inside the worktree at ${workspace.worktreePath}. Your cwd is already set there.`,
+    `2. NEVER write, edit, or commit files at ${workspace.repoPath} directly. That path is the shared origin repo and must not be modified — it is shared across all threads.`,
+    `3. NEVER \`cd\` out of the worktree to do work. If you need to read a file from another repo for reference only, use an absolute Read path — but do not Edit or Write outside the worktree.`,
+    `4. When the task is done, commit on branch \`${workspace.branchName}\` from inside the worktree, push, and open a PR. Never push directly to main.`,
+    `5. If you violated any of the above by mistake, stop and report it instead of trying to "clean up" by modifying more files.`,
+    `</workspace>`,
+  ].join("\n");
+}
+
+/**
  * Build the identity + thread context preamble for Claude.
  * Always includes Junior's persona, channel/thread coordinates, and thread history.
  */
@@ -113,23 +139,9 @@ export async function buildPromptPreamble(
     `</slack-context>`,
   ];
 
-  if (workspace) {
-    parts.push(
-      ``,
-      `<workspace>`,
-      `Target repo: ${workspace.repoName}`,
-      `Worktree (your sandbox): ${workspace.worktreePath}`,
-      `Worktree branch: ${workspace.branchName}`,
-      `Original repo path (OFF-LIMITS for writes): ${workspace.repoPath}`,
-      ``,
-      `RULES — non-negotiable:`,
-      `1. ALL reads, writes, edits, and shell commands for this task MUST happen inside the worktree at ${workspace.worktreePath}. Your cwd is already set there.`,
-      `2. NEVER write, edit, or commit files at ${workspace.repoPath} directly. That path is the shared origin repo and must not be modified — it is shared across all threads.`,
-      `3. NEVER \`cd\` out of the worktree to do work. If you need to read a file from another repo for reference only, use an absolute Read path — but do not Edit or Write outside the worktree.`,
-      `4. When the task is done, commit on branch \`${workspace.branchName}\` from inside the worktree, push, and open a PR. Never push directly to main.`,
-      `5. If you violated any of the above by mistake, stop and report it instead of trying to "clean up" by modifying more files.`,
-      `</workspace>`,
-    );
+  const workspaceBlock = buildWorkspaceBlock(workspace);
+  if (workspaceBlock) {
+    parts.push(``, workspaceBlock);
   }
 
   if (threadContext) {
