@@ -18,6 +18,16 @@ describe("createSession", () => {
     expect(session.sessionId).toBeNull();
   });
 
+  it("has leadSessionId as null", () => {
+    const session = createSession("t1", "C01");
+    expect(session.leadSessionId).toBeNull();
+  });
+
+  it("has agentSessions as an empty object", () => {
+    const session = createSession("t1", "C01");
+    expect(session.agentSessions).toEqual({});
+  });
+
   it("has worktreePath as null", () => {
     const session = createSession("t1", "C01");
     expect(session.worktreePath).toBeNull();
@@ -88,6 +98,7 @@ describe("createSession", () => {
     const session = createSession("t1", "C01");
     const keys = Object.keys(session).sort();
     expect(keys).toEqual([
+      "agentSessions",
       "agentType",
       "baseRef",
       "channel",
@@ -95,6 +106,7 @@ describe("createSession", () => {
       "cwd",
       "lastActivity",
       "lastError",
+      "leadSessionId",
       "model",
       "pendingMessages",
       "pid",
