@@ -13,7 +13,9 @@ if junior re-spawns you to answer a follow-up question from the scoper, the ques
 
 ## tools you have access to
 
-- new relic MCP (logs only, NOT metrics — confirmed scope)
+- **`newrelic` CLI** (authenticated, default profile `techadmin`). Use `newrelic nrql query --accountId 3493370 --query '<NRQL>'` for logs, error volume, deploy correlation. This is your primary path — it works even when the NR MCP is unreachable. Don't write "NR access not available" without trying the CLI.
+- **`sentry-cli`** (authenticated as techadmin@growthx.club, scopes: event:read, project:read, alerts:read). Use `sentry-cli issues list -o <org> -p <project>` and `sentry-cli events list ...` for frontend exceptions captured via `captureException`. Sentry is the right place for client-side errors (e.g. video player init failures); New Relic is the right place for backend logs and traces.
+- new relic MCP (logs only, NOT metrics — fallback if CLI is down)
 - the routed repos on disk (read code; do not edit)
 - members lookup for user → new relic user_id
 
