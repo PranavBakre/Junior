@@ -29,6 +29,9 @@ export interface SlackMessageEvent {
   ts: string;
   command: string | null;
   files?: SlackFileAttachment[];
+  isSelfBot?: boolean;
+  botUsername?: string;
+  dedupeKey?: string;
 }
 
 export type OnMessageCallback = (event: SlackMessageEvent) => void;
@@ -49,8 +52,15 @@ export function registerEventHandlers(
       thread_ts: "thread_ts" in event ? event.thread_ts : undefined,
     };
 
-    // Only filter our own bot messages to avoid loops; let other bots through
-    if ("bot_id" in event && selfBotId && (event as { bot_id: string }).bot_id === selfBotId) {
+    const isSelfBot =
+      "bot_id" in event &&
+      selfBotId &&
+      (event as { bot_id: string }).bot_id === selfBotId;
+    const isAutoTrigger = !!autoTriggerChannels?.has(event.channel);
+
+    // Only support auto-trigger channels route our own bot messages; other
+    // channels keep the legacy self-filter to avoid ordinary response loops.
+    if (isSelfBot && !isAutoTrigger) {
       logDrop("self-bot", evMeta);
       return;
     }
@@ -61,11 +71,12 @@ export function registerEventHandlers(
       return;
     }
 
-    const isAutoTrigger = !!autoTriggerChannels?.has(event.channel);
-
     // Auto-trigger channels (e.g. #bugs-backlog) accept messages from other bots
     // like growthx-bug-reporter that have no `user` field — fall back to bot_id.
     let user = "user" in event ? event.user : undefined;
+    if (!user && isSelfBot && selfUserId) {
+      user = selfUserId;
+    }
     if (!user && isAutoTrigger && "bot_id" in event) {
       user = (event as { bot_id?: string }).bot_id;
     }
@@ -110,6 +121,11 @@ export function registerEventHandlers(
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
+      isSelfBot: !!isSelfBot,
+      botUsername:
+        typeof (event as { username?: unknown }).username === "string"
+          ? (event as { username: string }).username
+          : undefined,
     });
   });
 
