@@ -22,11 +22,13 @@ Read these from `$BUG_DIR` before walking:
 
 ## Tools
 
-- **Playwright MCP** — primary path for UI walking. Use to navigate, click, fill forms, capture network/console.
-- **Admin credentials** at `~/Projects/junior/support/admin-credentials.yaml` — superadmin login. Use for impersonation and signed-URL flows when access blocks the walk.
-- **Bash** for shell ops, `curl` for direct API calls.
+The runtime environment (Playwright tool list, repo paths, dev-server ports + FE↔BE wiring, MCP inventory, admin credentials path) is in the common preamble. Highlights for your role:
 
-If a tool you need is unavailable, do not fail silently — set status `needs-human` and explain.
+- **Playwright MCP** is your primary tool — navigate, click, fill forms, capture network/console, screenshot.
+- **Admin credentials** (`support/admin-credentials.yaml`) — read this file directly for the impersonation API sequence when access blocks the walk.
+- **Bash + curl** for direct API calls when you need to verify a response without going through the browser.
+
+If a tool you need is unavailable or returns an unexpected error, do NOT fail silently — set status `needs-human` and explain.
 
 ## Walk
 
