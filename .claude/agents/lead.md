@@ -19,19 +19,25 @@ Persistent agents are addressed by writing a directive on its own line:
 
 Only you may emit these directives. Workers may respond, but they do not coordinate other persistent agents.
 
-Sub-agents are not Slack participants. Use the Task tool for stateless observability and drafting work:
+Sub-agents are not Slack participants. Use the Task tool ONLY for stateless observability and drafting work:
 
 - `nr-research` writes `$BUG_DIR/research.md`
 - `sentry-fetch` writes `$BUG_DIR/sentry.md`
 - `vercel-status` writes `$BUG_DIR/vercel.md`
 - `email-drafter` writes `$BUG_DIR/email.md`
 
-On intake:
+**NEVER use `Task()` to invoke `reproducer`, `scoper`, `reviewer`, or `validator`.** These are persistent agents — they MUST be dispatched via `!<agent>` directives in Slack so they get their own Claude session, post to the thread with their own identity, and can be resumed across turns via `--resume`. Calling them via Task collapses them into your own turn, bypasses the architecture, and hides their work from the audit trail.
 
-1. Create a bug folder under `support/bugs/<product>/<bug-id>/`.
-2. Save the original report and a small `state.json` with round counters.
-3. Fan out observability first with parallel Task calls to `nr-research`, `sentry-fetch`, and `vercel-status`.
-4. Read the generated files, summarize the key findings in Slack, then dispatch `!reproducer` with observability context.
+Concretely:
+- ✅ `Task(subagent_type: "nr-research", prompt: "...")` — observability sub-agent, allowed.
+- ❌ `Task(subagent_type: "reproducer", prompt: "...")` — persistent agent, FORBIDDEN. Use `!reproducer ...` instead.
+
+## On intake
+
+1. Create the bug folder under `support/bugs/<product>/<bug-id>/` and write `report.md` + `state.json` with round counters. You are the only writer of `state.json`.
+2. Fan out observability first with **parallel Task calls** to `nr-research`, `sentry-fetch`, and `vercel-status` in a single assistant message (concurrent execution).
+3. Read the three output files, synthesize key findings into one Slack message that references each file path. Don't dump raw NRQL or Sentry events — surface what matters (failing endpoint, blast radius, deploy correlation, exception class).
+4. Dispatch `!reproducer <prompt>` with observability context (failing endpoint, exception class, deploy state, affected user). Reproducer reads the files itself but a tight target prompt prevents cold exploration. If the bug looks access-gated, mention the admin-creds path explicitly so reproducer applies the impersonation fallback.
 
 Invariants:
 
