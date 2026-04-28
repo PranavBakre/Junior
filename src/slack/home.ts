@@ -169,7 +169,7 @@ function sessionBlock(
         ? ":hourglass: Draining"
         : ":white_circle: Idle";
 
-  const agent = session.agentType ?? "default";
+  const leadAgent = session.agentType ?? "default";
   const repo = session.targetRepo ?? "none";
   const ago = timeAgo(session.lastActivity);
   const pending = session.pendingMessages.length;
@@ -178,7 +178,8 @@ function sessionBlock(
     ? `<${permalink}|*${session.threadId}*>`
     : `*${session.threadId}*`;
 
-  let text = `${title}\n${status}  |  Agent: ${agent}  |  Repo: ${repo}\nLast activity: ${ago}`;
+  // Lead/primary session line
+  let text = `${title}\n${status}  |  Agent: \`${leadAgent}\`  |  Repo: ${repo}\nLast activity: ${ago}`;
 
   if (pending > 0) {
     text += `  |  Pending: ${pending}`;
@@ -188,6 +189,33 @@ function sessionBlock(
   }
   if (session.sessionId) {
     text += `\nResume: \`claude --resume ${session.sessionId}\``;
+  }
+
+  // Persistent agent sub-sessions (multi-agent threads — bug pipeline, etc.)
+  const agentEntries = Object.values(session.agentSessions ?? {}).filter(
+    (a) => a.sessionId !== null,
+  );
+  if (agentEntries.length > 0) {
+    const agentLines = agentEntries
+      .sort((a, b) => b.lastActivity - a.lastActivity)
+      .map((a) => {
+        const agentStatus =
+          a.status === "busy"
+            ? ":large_blue_circle:"
+            : a.status === "failed"
+              ? ":x:"
+              : a.status === "done"
+                ? ":white_check_mark:"
+                : ":white_circle:";
+        const agentPending = a.pendingMessages?.length ?? 0;
+        const agentAgo = timeAgo(a.lastActivity);
+        let line = `  ${agentStatus} \`${a.agentName}\` — ${a.status}, last ${agentAgo}`;
+        if (agentPending > 0) line += `, pending ${agentPending}`;
+        if (a.sessionId) line += `\n     Resume: \`claude --resume ${a.sessionId}\``;
+        return line;
+      })
+      .join("\n");
+    text += `\n_Agents in this thread:_\n${agentLines}`;
   }
 
   return {
