@@ -1,0 +1,61 @@
+# repo routing map (EXAMPLE — copy to repo-routing.yaml and fill in for your org)
+#
+# the classifier reads this + the bug report's text context to decide which
+# repos research + scoper-coder should look at. the message context can override
+# a path match (someone might post a bug from any URL).
+#
+# adding a new product = a diff-able PR. never a prompt change.
+#
+# the live `repo-routing.yaml` is gitignored because it encodes your org's
+# product map, repo names, and approvers — none of which belong in a public repo.
+
+routes:
+  # one entry per surface. `match` is the URL path patterns (globs) the
+  # classifier should treat as this product. `repos` is which repos research
+  # and scoper-coder should look at when this surface is hit.
+
+  - match: [/login/*, /signup/*]
+    product: auth
+    repos: { frontend: <your-frontend-repo>, backend: <your-backend-repo> }
+    sensitive: true # flag P0/P1 quickly on auth surfaces
+
+  - match: [/billing/*, /checkout/*]
+    product: billing
+    repos: { frontend: <your-frontend-repo>, backend: <your-backend-repo> }
+    sensitive: true # touches money
+
+  - match: [/dashboard/*]
+    product: dashboard
+    repos: { frontend: <your-frontend-repo>, backend: <your-backend-repo> }
+
+  # admin / staff surfaces — usually a separate frontend repo
+  - match: [/admin/*]
+    product: admin
+    repos: { frontend: <your-admin-repo>, backend: <your-backend-repo> }
+    audience: admin
+
+  # secondary apps — disambiguate by domain when paths overlap
+  - match: [/profile/*]
+    product: community
+    repos: { frontend: <your-community-repo>, backend: <your-community-repo> }
+    domain_hint: community.example.com
+
+# fallback if no path matches — classifier uses message text only
+default:
+  product: unknown
+  repos: { frontend: <your-frontend-repo>, backend: <your-backend-repo> }
+  owner: <fallback-owner-handle>
+
+# routing rules the classifier applies (free-form natural language)
+rules:
+  - "URL path is the strongest signal. message context can override."
+  - "if two routes match, pick the one the message context confirms and note the rejected candidate in classifier.md."
+  - "disambiguate overlapping paths by domain or reporter audience (member vs staff)."
+
+# approvers for human gates
+approvers:
+  scoping: [<approver-handle>]
+  email: [<approver-handle>]
+
+# pr assignment
+pr_reviewer: <reviewer-handle>
