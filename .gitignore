@@ -15,4 +15,6 @@ data/
 # Support config (operator-specific, never tracked)
 support/repo-routing.yaml
 support/admin-credentials.yaml
+# Bug pipeline runtime artifacts — contain real user data (emails, member IDs)
+support/bugs/
 .playwright-mcp/
