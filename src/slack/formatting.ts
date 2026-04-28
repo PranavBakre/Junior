@@ -4,9 +4,22 @@ import type { ContentBlockToolUse, ContentBlockText, StreamEventAssistant } from
  * Extract tool_use content blocks from an assistant event and format as status lines.
  */
 export function formatToolStatuses(event: StreamEventAssistant): string[] {
-  return event.message.content
-    .filter((c): c is ContentBlockToolUse => c.type === "tool_use")
-    .map(formatToolBlock);
+  const toolBlocks = event.message.content.filter(
+    (c): c is ContentBlockToolUse => c.type === "tool_use",
+  );
+  const taskBlocks = toolBlocks.filter((block) => block.name === "Task");
+  const otherBlocks = toolBlocks.filter((block) => block.name !== "Task");
+
+  const statuses: string[] = [];
+  if (taskBlocks.length > 1) {
+    const names = taskBlocks.map(getTaskSubagentName);
+    statuses.push(`Calling ${names.join(", ")} (${names.length} in progress)`);
+  } else if (taskBlocks.length === 1) {
+    statuses.push(formatToolBlock(taskBlocks[0]));
+  }
+
+  statuses.push(...otherBlocks.map(formatToolBlock));
+  return statuses;
 }
 
 /**
@@ -33,6 +46,9 @@ function formatToolBlock(block: ContentBlockToolUse): string {
   const input = block.input ?? {};
 
   switch (tool) {
+    case "Task": {
+      return `Calling ${getTaskSubagentName(block)}`;
+    }
     case "Bash": {
       const cmd = typeof input.command === "string" ? input.command : "";
       const short = cmd.length > 80 ? cmd.slice(0, 77) + "..." : cmd;
@@ -58,6 +74,11 @@ function formatToolBlock(block: ContentBlockToolUse): string {
     default:
       return `Using ${tool}`;
   }
+}
+
+function getTaskSubagentName(block: ContentBlockToolUse): string {
+  const input = block.input ?? {};
+  return typeof input.subagent_type === "string" ? input.subagent_type : "agent";
 }
 
 const DEFAULT_MAX_LENGTH = 4000;

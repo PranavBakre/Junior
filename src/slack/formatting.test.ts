@@ -66,6 +66,24 @@ describe("formatToolStatuses", () => {
     expect(result).toEqual(["Using WebSearch"]);
   });
 
+  it("formats Task with subagent_type", () => {
+    const result = formatToolStatuses(makeAssistantEvent([
+      { name: "Task", input: { subagent_type: "nr-research" } },
+    ]));
+    expect(result).toEqual(["Calling nr-research"]);
+  });
+
+  it("rolls up parallel Task calls", () => {
+    const result = formatToolStatuses(makeAssistantEvent([
+      { name: "Task", input: { subagent_type: "nr-research" } },
+      { name: "Task", input: { subagent_type: "sentry-fetch" } },
+      { name: "Task", input: { subagent_type: "vercel-status" } },
+    ]));
+    expect(result).toEqual([
+      "Calling nr-research, sentry-fetch, vercel-status (3 in progress)",
+    ]);
+  });
+
   it("handles missing input", () => {
     const result = formatToolStatuses(makeAssistantEvent([{ name: "Bash" }]));
     expect(result).toEqual(["Running: ``"]);
