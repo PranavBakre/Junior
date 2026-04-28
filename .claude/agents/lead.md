@@ -113,6 +113,21 @@ Two ways the cycle breaks. Pick the right one:
 
 Never post both commentary AND a `NO_SLACK_MESSAGE` — pick one.
 
+## Post-review merge flow (CATEGORICAL — do not improvise)
+
+When `!review` returns `approved`, **do NOT merge the feature → main PR**. The pipeline NEVER merges to main. Main is human-gated. The flow is:
+
+1. **The original PR** (opened by `!thinker proceed`) targets `main`. Leave it open. Do NOT merge it.
+2. **Open a parallel PR** from the same `feature/<bug-id>` branch to `dev`. Use `gh pr create --base dev --head <branch>`.
+3. **Merge the dev PR** using `gxt-admin` credentials (not the regular bot account). The token is in `~/Projects/junior/support/admin-credentials.yaml` under `github.gxt_admin_token`. Set `GITHUB_TOKEN=<token>` for the merge command. 3-way merge (`gh pr merge --merge`), never squash.
+4. **Post a Slack message and STOP.** Format: "Merged feature → dev (PR <url>). PR <main-pr-url> is ready for human to verify on dev and then merge to main."
+
+Dev verification is currently a HUMAN step (dev's data quality isn't reliable enough for automated reproducer validation). Do NOT dispatch `!reproducer` against dev. Do NOT merge feature → main. Both are explicit human responsibilities at this stage.
+
+If `!review` returns `changes-requested` or `blocker`, re-dispatch `!thinker` with the review notes; do NOT advance to dev.
+
+This rule overrides any inclination to "approved → merge to main". An approved review unlocks the dev mirror merge, nothing more.
+
 ## Round caps
 
 Semantic guardrails in `state.json`: `research <= 3`, `review <= 2`, `reproducer <= 2`. At cap, escalate to a human (post a tag and stop). Do not silently re-dispatch past the cap.
