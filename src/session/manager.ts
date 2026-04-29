@@ -57,7 +57,11 @@ export class SessionManager {
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
-    await this.handleLeadMessage(event);
+    await this.runSingleSession(event, "default");
+  }
+
+  async handleLeadMessage(event: SlackMessageEvent): Promise<void> {
+    await this.runSingleSession(event, "lead");
   }
 
   async handleAgentMessage(
@@ -65,7 +69,11 @@ export class SessionManager {
     agentName: string,
   ): Promise<void> {
     if (agentName === "lead") {
-      await this.handleLeadMessage(event);
+      await this.runSingleSession(event, "lead");
+      return;
+    }
+    if (agentName === "default") {
+      await this.runSingleSession(event, "default");
       return;
     }
 
@@ -91,7 +99,16 @@ export class SessionManager {
     this.runClaudeWithAgent(session, event.text, event.ts, event.files, agentName);
   }
 
-  private async handleLeadMessage(event: SlackMessageEvent): Promise<void> {
+  // Generic single-session path for "default" (any-channel @mentions) and the
+  // bug-pipeline "lead" agent. Both run at the top level of the thread session
+  // (using session.status / session.sessionId / session.pendingMessages) rather
+  // than per-agent state. The only differences are the slack identity, the
+  // composed system prompt, and the persistent-agent state block — all keyed
+  // off agentName downstream.
+  private async runSingleSession(
+    event: SlackMessageEvent,
+    agentName: "lead" | "default",
+  ): Promise<void> {
     // Deduplicate: Slack fires both `message` and `app_mention` for @mentions
     const dedupeKey = event.dedupeKey ?? event.ts;
     if (this.seenMessages.has(dedupeKey)) return;
@@ -117,7 +134,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
-    this.runClaudeWithAgent(session, event.text, event.ts, event.files, "lead");
+    this.runClaudeWithAgent(session, event.text, event.ts, event.files, agentName);
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -319,13 +336,13 @@ export class SessionManager {
   private async runClaudeWithAgent(
     session: ThreadSession,
     prompt: string,
-    latestTs?: string,
-    files?: SlackFileAttachment[],
-    agentName: string = "lead",
+    latestTs: string | undefined,
+    files: SlackFileAttachment[] | undefined,
+    agentName: string,
   ): Promise<void> {
+    const isTopLevel = agentName === "lead" || agentName === "default";
     try {
-      const isLead = agentName === "lead";
-      const agentSession = isLead
+      const agentSession = isTopLevel
         ? null
         : this.getOrCreateAgentSession(session, agentName);
       const agentIdentity = identityForAgent(agentName);
@@ -430,7 +447,7 @@ export class SessionManager {
           agentName,
           agentIdentity,
         );
-        if (isLead) {
+        if (isTopLevel) {
           session.systemPrompt = runSession.systemPrompt;
         }
         await this.store.set(session.threadId, session);
@@ -470,7 +487,7 @@ export class SessionManager {
       );
       const handleKey = this.handleKey(session.threadId, agentName);
       this.handles.set(handleKey, handle);
-      if (isLead) {
+      if (isTopLevel) {
         session.pid = handle.pid;
       } else if (agentSession) {
         agentSession.pid = handle.pid;
@@ -478,7 +495,7 @@ export class SessionManager {
 
       handle.onEvent((event: StreamEvent) => {
         if (event.type === "system" && event.subtype === "init") {
-          if (isLead) {
+          if (isTopLevel) {
             session.sessionId = event.session_id;
             session.leadSessionId = event.session_id;
           } else if (agentSession) {
@@ -501,7 +518,7 @@ export class SessionManager {
       );
     } catch (err) {
       // Agent prompt composition or worktree creation failed fatally
-      if (agentName === "lead") {
+      if (isTopLevel) {
         session.status = "idle";
       } else {
         const agentSession = this.getOrCreateAgentSession(session, agentName);
@@ -524,9 +541,9 @@ export class SessionManager {
   private async onRunComplete(
     session: ThreadSession,
     result: SpawnResult,
-    agentName: string = "lead",
+    agentName: string,
   ): Promise<void> {
-    const isLead = agentName === "lead";
+    const isTopLevel = agentName === "lead" || agentName === "default";
     const agentIdentity = identityForAgent(agentName);
     this.handles.delete(this.handleKey(session.threadId, agentName));
 
@@ -536,18 +553,18 @@ export class SessionManager {
     // thread while this one was running. Fall back to the snapshot only if the
     // row was deleted (e.g. !reset during the run).
     const fresh = (await this.store.get(session.threadId)) ?? session;
-    const agentSession = isLead
+    const agentSession = isTopLevel
       ? null
       : this.getOrCreateAgentSession(fresh, agentName);
 
-    if (isLead) {
+    if (isTopLevel) {
       fresh.pid = null;
     } else if (agentSession) {
       agentSession.pid = null;
     }
 
     if (result.sessionId) {
-      if (isLead) {
+      if (isTopLevel) {
         fresh.sessionId = result.sessionId;
         fresh.leadSessionId = result.sessionId;
       } else if (agentSession) {
@@ -575,7 +592,7 @@ export class SessionManager {
       );
     }
 
-    const pendingMessages = isLead
+    const pendingMessages = isTopLevel
       ? fresh.pendingMessages
       : (agentSession?.pendingMessages ?? []);
 
@@ -583,7 +600,7 @@ export class SessionManager {
       const combined = pendingMessages
         .map((m) => `[${m.user}]: ${m.text}`)
         .join("\n");
-      if (isLead) {
+      if (isTopLevel) {
         fresh.pendingMessages = [];
         fresh.status = "draining";
       } else if (agentSession) {
@@ -596,7 +613,7 @@ export class SessionManager {
         // Refetch again — the failed drain may have run minutes after the
         // initial drain persist, and other agents may have updated the row.
         const drainFresh = (await this.store.get(fresh.threadId)) ?? fresh;
-        if (isLead) {
+        if (isTopLevel) {
           drainFresh.status = "idle";
         } else {
           const drainAgent = this.getOrCreateAgentSession(drainFresh, agentName);
@@ -605,7 +622,7 @@ export class SessionManager {
         await this.store.set(drainFresh.threadId, drainFresh);
       });
     } else {
-      if (isLead) {
+      if (isTopLevel) {
         fresh.status = "idle";
       } else if (agentSession) {
         agentSession.status = result.error ? "failed" : "done";
@@ -660,11 +677,11 @@ export class SessionManager {
     agentName: string,
     agentIdentity?: AgentIdentity,
   ): ThreadSession {
-    if (agentName === "lead") {
+    if (agentName === "lead" || agentName === "default") {
       return {
         ...session,
         sessionId: session.leadSessionId ?? session.sessionId,
-        activeAgentName: "lead",
+        activeAgentName: agentName,
         slackIdentity: agentIdentity,
       };
     }

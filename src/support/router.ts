@@ -86,7 +86,7 @@ export class AgentDispatcher {
       // support channels so it can decide next step. In non-support channels
       // there's no lead — fall through to the regular session manager.
       if (event.isSelfBot && isSupport) {
-        await this.manager.handleMessage({
+        await this.manager.handleLeadMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
         });
@@ -94,11 +94,13 @@ export class AgentDispatcher {
       }
       // Human (or non-self-bot) with no directives.
       if (isSupport) {
-        await this.manager.handleMessage({
+        await this.manager.handleLeadMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
         });
       } else {
+        // Non-support channel: generic single-session Claude (no lead identity,
+        // no persistent-agent state block, no orchestrator system prompt).
         await this.manager.handleMessage(event);
       }
       return;
@@ -112,7 +114,7 @@ export class AgentDispatcher {
     // bots don't typically dispatch); drop them too rather than risk loops.
     if (event.isSelfBot && sourceAgent !== "lead") {
       if (isSupport) {
-        await this.manager.handleMessage({
+        await this.manager.handleLeadMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
         });

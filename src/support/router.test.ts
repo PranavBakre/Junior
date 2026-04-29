@@ -34,19 +34,22 @@ describe("SupportRouter", () => {
   it("routes unprefixed support-channel messages to lead", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
 
     await router.handleMessage(makeEvent({ text: "plain bug" }));
 
-    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 
   it("dispatches each recognized directive to its agent", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
@@ -75,6 +78,7 @@ describe("SupportRouter", () => {
   it("does not let worker-authored bot messages dispatch agents", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
@@ -87,13 +91,16 @@ describe("SupportRouter", () => {
       }),
     );
 
-    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
+    // Worker self-bot directives get re-routed to lead as plain text.
+    expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 
   it("drops lead's own no-directive commentary to break the wake-loop", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
@@ -113,6 +120,7 @@ describe("SupportRouter", () => {
   it("forwards worker no-directive responses to lead", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
@@ -125,7 +133,8 @@ describe("SupportRouter", () => {
       }),
     );
 
-    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 
@@ -135,6 +144,7 @@ describe("SupportRouter", () => {
     // The router must reconstruct the directive — otherwise the dispatch silently drops.
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
@@ -159,6 +169,7 @@ describe("SupportRouter", () => {
     // spawn a persistent review session, same as in #bugs-backlog.
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(
@@ -184,6 +195,7 @@ describe("SupportRouter", () => {
   it("falls through to single-session manager for non-support channels with no directives", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(
@@ -209,6 +221,7 @@ describe("SupportRouter", () => {
   it("drops self-bot posts with unknown username (no usable identity)", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
