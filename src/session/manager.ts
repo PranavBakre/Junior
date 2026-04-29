@@ -528,47 +528,55 @@ export class SessionManager {
   ): Promise<void> {
     const isLead = agentName === "lead";
     const agentIdentity = identityForAgent(agentName);
+    this.handles.delete(this.handleKey(session.threadId, agentName));
+
+    // Refetch the authoritative session before mutating. The `session` we hold
+    // is a snapshot from spawn time — long-running agents can be minutes stale.
+    // Persisting it whole would clobber writes made by other agents on the same
+    // thread while this one was running. Fall back to the snapshot only if the
+    // row was deleted (e.g. !reset during the run).
+    const fresh = (await this.store.get(session.threadId)) ?? session;
     const agentSession = isLead
       ? null
-      : this.getOrCreateAgentSession(session, agentName);
-    this.handles.delete(this.handleKey(session.threadId, agentName));
+      : this.getOrCreateAgentSession(fresh, agentName);
+
     if (isLead) {
-      session.pid = null;
+      fresh.pid = null;
     } else if (agentSession) {
       agentSession.pid = null;
     }
 
     if (result.sessionId) {
       if (isLead) {
-        session.sessionId = result.sessionId;
-        session.leadSessionId = result.sessionId;
+        fresh.sessionId = result.sessionId;
+        fresh.leadSessionId = result.sessionId;
       } else if (agentSession) {
         agentSession.sessionId = result.sessionId;
       }
     }
 
     if (result.error) {
-      session.lastError = {
+      fresh.lastError = {
         type: "spawn",
         message: result.error,
         timestamp: Date.now(),
       };
       if (agentSession) agentSession.status = "failed";
       this.onError?.(
-        this.buildRunSession(session, agentName, agentIdentity),
+        this.buildRunSession(fresh, agentName, agentIdentity),
         result.error,
       );
     }
 
     if (result.response) {
       this.onResponse?.(
-        this.buildRunSession(session, agentName, agentIdentity),
+        this.buildRunSession(fresh, agentName, agentIdentity),
         result.response,
       );
     }
 
     const pendingMessages = isLead
-      ? session.pendingMessages
+      ? fresh.pendingMessages
       : (agentSession?.pendingMessages ?? []);
 
     if (pendingMessages.length > 0) {
@@ -576,30 +584,34 @@ export class SessionManager {
         .map((m) => `[${m.user}]: ${m.text}`)
         .join("\n");
       if (isLead) {
-        session.pendingMessages = [];
-        session.status = "draining";
+        fresh.pendingMessages = [];
+        fresh.status = "draining";
       } else if (agentSession) {
         agentSession.pendingMessages = [];
         agentSession.status = "busy";
       }
-      await this.store.set(session.threadId, session);
-      this.runClaudeWithAgent(session, combined, undefined, undefined, agentName).catch((err) => {
+      await this.store.set(fresh.threadId, fresh);
+      this.runClaudeWithAgent(fresh, combined, undefined, undefined, agentName).catch(async (err) => {
         console.error("[manager] Drain failed:", err);
+        // Refetch again — the failed drain may have run minutes after the
+        // initial drain persist, and other agents may have updated the row.
+        const drainFresh = (await this.store.get(fresh.threadId)) ?? fresh;
         if (isLead) {
-          session.status = "idle";
-        } else if (agentSession) {
-          agentSession.status = "failed";
+          drainFresh.status = "idle";
+        } else {
+          const drainAgent = this.getOrCreateAgentSession(drainFresh, agentName);
+          drainAgent.status = "failed";
         }
-        this.store.set(session.threadId, session);
+        await this.store.set(drainFresh.threadId, drainFresh);
       });
     } else {
       if (isLead) {
-        session.status = "idle";
+        fresh.status = "idle";
       } else if (agentSession) {
         agentSession.status = result.error ? "failed" : "done";
         agentSession.lastActivity = Date.now();
       }
-      await this.store.set(session.threadId, session);
+      await this.store.set(fresh.threadId, fresh);
     }
   }
 
