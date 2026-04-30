@@ -11,6 +11,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     leadSessionId: null,
     agentSessions: {},
     worktreePath: null,
+    worktreePaths: {},
     targetRepo: null,
     baseRef: null,
     agentType: null,

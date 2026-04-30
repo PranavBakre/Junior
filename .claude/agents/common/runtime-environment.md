@@ -15,19 +15,13 @@ For browser screenshots specifically, extract:
 
 ## Repo locations
 
-GrowthX product repos live under `~/openclaw-projects/<repo>/`. NEVER under `~/Projects/` for GrowthX repos. The canonical product → repo mapping for bug routing lives in `~/Projects/junior/support/repo-routing.yaml` — read once at intake to confirm the routed repos for the bug's product.
+**Repo paths for this thread are dynamic — read the `<workspace>` block at the top of your prompt.** When present, it lists each routed repo's per-thread worktree path, branch, and base. Use those paths for ALL reads, edits, and git commands.
 
-For the typical `growthx` product:
-- Frontend: `~/openclaw-projects/growthx/gx-client-next` (Next.js)
-- Backend: `~/openclaw-projects/growthx/gx-backend` (Node)
+**NEVER use `~/openclaw-projects/<repo>/` directly.** Those bare repos are the human developer's working trees — touching them corrupts active branches. The canonical product → repo mapping lives in `~/Projects/junior/support/repo-routing.yaml` (reference only — don't cd into the paths it lists).
 
-**Always read each repo's `CLAUDE.md` before working in it.** Each product repo has its own conventions (naming, patterns, deprecated paths, test/build commands, gotchas). Without reading it you will miss them and produce code or analysis that conflicts with how the team actually works. Do this at the start of any turn that reads or edits code in that repo:
+If you need to touch a repo and there's no entry for it in your `<workspace>` block, STOP and post a Slack note instead of improvising. The lead is responsible for registering the worktrees you need; if one is missing, that's a state error to flag, not a reason to fall back to the bare repo.
 
-```sh
-cat ~/openclaw-projects/<repo>/CLAUDE.md
-```
-
-The repo's `CLAUDE.md` overrides anything generic — if it says "use X pattern," use X even if your default would have been Y.
+**Always read each repo's `CLAUDE.md` before working in it.** Each product repo has its own conventions (naming, patterns, deprecated paths, test/build commands, gotchas). Read it from the worktree path in the workspace block, not the bare repo. The repo's `CLAUDE.md` overrides anything generic — if it says "use X pattern," use X even if your default would have been Y.
 
 ## Local dev servers + FE↔BE wiring
 

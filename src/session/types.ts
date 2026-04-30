@@ -32,6 +32,8 @@ export interface ThreadSession {
   leadSessionId: string | null;
   agentSessions: Record<string, AgentSession>;
   worktreePath: string | null;
+  /** Per-repo worktree paths for bug-pipeline threads. Keys are repo names (from RepoConfig.name). */
+  worktreePaths: Record<string, string>;
   targetRepo: string | null;
   baseRef: string | null;
   agentType: string | null;
@@ -61,6 +63,7 @@ export function createSession(
     leadSessionId: null,
     agentSessions: {},
     worktreePath: null,
+    worktreePaths: {},
     targetRepo: null,
     baseRef: null,
     agentType: null,

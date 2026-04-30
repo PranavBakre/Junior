@@ -25,14 +25,27 @@ export class WorktreeManager {
     const branchName = `slack/${threadId}`;
     const base = baseRef ?? repo.defaultBase;
 
-    // Fetch latest from origin so the base ref is fresh
-    await this.runGit(["fetch", "origin"], repo.path);
+    if (repo.worktreeSetupCommand) {
+      // Delegate to the repo's own setup script: `<repo.path>/<command> <worktreePath> <branch>`
+      // Resolve the command relative to repo.path so paths like "bin/setup-worktree.sh"
+      // work without requiring the script to be on PATH.
+      const setupCmd = repo.worktreeSetupCommand.startsWith("/")
+        ? repo.worktreeSetupCommand
+        : `${repo.path}/${repo.worktreeSetupCommand}`;
+      await this.runCommand(
+        [setupCmd, worktreePath, branchName],
+        repo.path,
+      );
+    } else {
+      // Fetch latest from origin so the base ref is fresh
+      await this.runGit(["fetch", "origin"], repo.path);
 
-    // Create the worktree with a new branch off the base ref
-    await this.runGit(
-      ["worktree", "add", worktreePath, "-b", branchName, base],
-      repo.path
-    );
+      // Create the worktree with a new branch off the base ref
+      await this.runGit(
+        ["worktree", "add", worktreePath, "-b", branchName, base],
+        repo.path,
+      );
+    }
 
     return worktreePath;
   }
@@ -122,6 +135,25 @@ export class WorktreeManager {
     if (exitCode !== 0) {
       const stderr = await new Response(proc.stderr).text();
       throw new Error(`git ${args[0]} failed: ${stderr.trim()}`);
+    }
+    return await new Response(proc.stdout).text();
+  }
+
+  /**
+   * Run an arbitrary command (e.g. a worktreeSetupCommand script) in `cwd`.
+   * The first element is the command; remaining elements are args.
+   * Throws on non-zero exit.
+   */
+  private async runCommand(args: string[], cwd: string): Promise<string> {
+    const proc = Bun.spawn(args, {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`command ${args[0]} failed: ${stderr.trim()}`);
     }
     return await new Response(proc.stdout).text();
   }
