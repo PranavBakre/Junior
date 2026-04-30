@@ -6,11 +6,17 @@ import type {
   SlackFileAttachment,
 } from "../slack/events.ts";
 import type { SessionStore } from "./store/interface.ts";
-import type { ThreadSession } from "./types.ts";
+import type {
+  AgentIdentity,
+  AgentSession,
+  PendingMessage,
+  ThreadSession,
+} from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
+import { identityForAgent } from "../support/agents.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
@@ -51,30 +57,64 @@ export class SessionManager {
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
+    await this.runSingleSession(event, "default");
+  }
+
+  async handleLeadMessage(event: SlackMessageEvent): Promise<void> {
+    await this.runSingleSession(event, "lead");
+  }
+
+  async handleAgentMessage(
+    event: SlackMessageEvent,
+    agentName: string,
+  ): Promise<void> {
+    if (agentName === "lead") {
+      await this.runSingleSession(event, "lead");
+      return;
+    }
+    if (agentName === "default") {
+      await this.runSingleSession(event, "default");
+      return;
+    }
+
+    const dedupeKey = event.dedupeKey ?? `${event.ts}:${agentName}`;
+    if (this.seenMessages.has(dedupeKey)) return;
+    this.rememberSeenMessage(dedupeKey);
+
+    const session = await this.getOrCreateSession(event);
+    const agentSession = this.getOrCreateAgentSession(session, agentName);
+
+    if (agentSession.status === "busy") {
+      agentSession.pendingMessages.push(this.toPendingMessage(event));
+      await this.store.set(session.threadId, session);
+      this.onMessageBuffered?.(event);
+      return;
+    }
+
+    agentSession.status = "busy";
+    agentSession.lastActivity = Date.now();
+    session.lastActivity = agentSession.lastActivity;
+    await this.store.set(session.threadId, session);
+
+    this.runClaudeWithAgent(session, event.text, event.ts, event.files, agentName);
+  }
+
+  // Generic single-session path for "default" (any-channel @mentions) and the
+  // bug-pipeline "lead" agent. Both run at the top level of the thread session
+  // (using session.status / session.sessionId / session.pendingMessages) rather
+  // than per-agent state. The only differences are the slack identity, the
+  // composed system prompt, and the persistent-agent state block — all keyed
+  // off agentName downstream.
+  private async runSingleSession(
+    event: SlackMessageEvent,
+    agentName: "lead" | "default",
+  ): Promise<void> {
     // Deduplicate: Slack fires both `message` and `app_mention` for @mentions
-    if (this.seenMessages.has(event.ts)) return;
-    this.seenMessages.add(event.ts);
-    // Prevent unbounded growth — old ts values are never needed again
-    if (this.seenMessages.size > 1000) {
-      const entries = [...this.seenMessages];
-      for (let i = 0; i < 500; i++) this.seenMessages.delete(entries[i]);
-    }
+    const dedupeKey = event.dedupeKey ?? event.ts;
+    if (this.seenMessages.has(dedupeKey)) return;
+    this.rememberSeenMessage(dedupeKey);
 
-    let session = await this.store.get(event.threadId);
-
-    if (!session) {
-      session = createSession(
-        event.threadId,
-        event.channel,
-        this.config.session.defaultVerbosity,
-      );
-      // Apply channel-level default agent type (e.g. #bugs-backlog → support-lead)
-      const channelDefault = this.config.channelDefaults[event.channel];
-      if (channelDefault) {
-        session.agentType = channelDefault.agentType;
-      }
-      await this.store.set(event.threadId, session);
-    }
+    const session = await this.getOrCreateSession(event);
 
     if (event.command) {
       const handled = await this.handleCommand(session, event);
@@ -83,10 +123,7 @@ export class SessionManager {
 
     if (session.status === "busy") {
       session.pendingMessages.push({
-        user: event.user,
-        text: event.text,
-        ts: event.ts,
-        command: event.command ?? undefined,
+        ...this.toPendingMessage(event),
       });
       await this.store.set(session.threadId, session);
       this.onMessageBuffered?.(event);
@@ -97,7 +134,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
-    this.runClaudeWithAgent(session, event.text, event.ts, event.files);
+    this.runClaudeWithAgent(session, event.text, event.ts, event.files, agentName);
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -106,11 +143,11 @@ export class SessionManager {
 
   async resetSession(threadId: string): Promise<void> {
     const session = await this.store.get(threadId);
-    if (session && session.status === "busy") {
-      const handle = this.handles.get(threadId);
-      if (handle) {
+    if (session) {
+      for (const [key, handle] of this.handles) {
+        if (!key.startsWith(`${threadId}:`)) continue;
         handle.kill();
-        this.handles.delete(threadId);
+        this.handles.delete(key);
       }
     }
     await this.store.delete(threadId);
@@ -122,20 +159,26 @@ export class SessionManager {
   ): Promise<boolean> {
     switch (event.command) {
       case "cancel": {
-        if (session.status !== "busy") {
-          this.onCommandResponse?.(event, "Nothing running.");
-          return true;
-        }
-        const handle = this.handles.get(session.threadId);
-        if (handle) {
+        let killed = 0;
+        for (const [key, handle] of this.handles) {
+          if (!key.startsWith(`${session.threadId}:`)) continue;
           handle.kill();
-          this.handles.delete(session.threadId);
+          this.handles.delete(key);
+          killed++;
         }
         session.status = "idle";
         session.pid = null;
         session.pendingMessages = [];
+        for (const agentSession of Object.values(session.agentSessions ?? {})) {
+          agentSession.status = "idle";
+          agentSession.pid = null;
+          agentSession.pendingMessages = [];
+        }
         await this.store.set(session.threadId, session);
-        this.onCommandResponse?.(event, "Cancelled.");
+        this.onCommandResponse?.(
+          event,
+          killed === 0 ? "Nothing running." : `Cancelled (${killed} process${killed === 1 ? "" : "es"}).`,
+        );
         return true;
       }
 
@@ -207,9 +250,7 @@ export class SessionManager {
 
       case "build":
       case "frontend":
-      case "review":
-      case "architect":
-      case "support-lead": {
+      case "architect": {
         session.agentType = event.command;
         await this.store.set(session.threadId, session);
         return false;
@@ -294,10 +335,18 @@ export class SessionManager {
   private async runClaudeWithAgent(
     session: ThreadSession,
     prompt: string,
-    latestTs?: string,
-    files?: SlackFileAttachment[],
+    latestTs: string | undefined,
+    files: SlackFileAttachment[] | undefined,
+    agentName: string,
   ): Promise<void> {
+    const isTopLevel = agentName === "lead" || agentName === "default";
     try {
+      const agentSession = isTopLevel
+        ? null
+        : this.getOrCreateAgentSession(session, agentName);
+      const agentIdentity = identityForAgent(agentName);
+      const runSession = this.buildRunSession(session, agentName, agentIdentity);
+
       // Resolve target repo before building the preamble so workspace info can be injected.
       let targetRepo: { name: string; path: string } | undefined;
       if (session.targetRepo) {
@@ -345,13 +394,19 @@ export class SessionManager {
             }
           : null;
 
+      // For bug-pipeline threads, worktreePaths (multi-repo) takes precedence.
+      const worktreePaths =
+        session.worktreePaths && Object.keys(session.worktreePaths).length > 0
+          ? session.worktreePaths
+          : undefined;
+
       // Build the prompt. On the first turn (no sessionId yet), inject the full
       // preamble (identity, slack-context, workspace, thread history). On resumed
       // turns, --resume already carries identity/context/history — sending them
       // again duplicates tokens and pollutes the conversation. Keep just the
       // workspace block (cheap insurance for the worktree safety rule).
       if (this.slackApp && latestTs) {
-        const isFirstTurn = !session.sessionId;
+        const isFirstTurn = !runSession.sessionId;
         const readablePrompt = await resolveSlackMentions(this.slackApp, prompt);
         if (isFirstTurn) {
           const preamble = await buildPromptPreamble(
@@ -361,10 +416,17 @@ export class SessionManager {
             latestTs,
             this.botUserId,
             workspace,
+            worktreePaths,
+            this.config.repos,
           );
           prompt = `${preamble}\n\n${readablePrompt}`;
         } else {
-          const workspaceBlock = buildWorkspaceBlock(workspace);
+          const workspaceBlock = buildWorkspaceBlock(
+            workspace,
+            worktreePaths,
+            this.config.repos,
+            session.threadId,
+          );
           prompt = workspaceBlock
             ? `${workspaceBlock}\n\n${readablePrompt}`
             : readablePrompt;
@@ -389,9 +451,17 @@ export class SessionManager {
       }
 
       // Compose agent system prompt
-      if (session.agentType && this.agentRouter) {
-        session.systemPrompt =
-          (await this.agentRouter.composeSystemPrompt(session)) ?? null;
+      if (runSession.agentType && this.agentRouter) {
+        const composed =
+          (await this.agentRouter.composeSystemPrompt(runSession)) ?? null;
+        runSession.systemPrompt = this.withAgentIdentityPrompt(
+          composed,
+          agentName,
+          agentIdentity,
+        );
+        if (isTopLevel) {
+          session.systemPrompt = runSession.systemPrompt;
+        }
         await this.store.set(session.threadId, session);
       }
 
@@ -402,15 +472,21 @@ export class SessionManager {
         ? undefined
         : targetRepo?.path;
 
+      const agentStateBlock = this.buildAgentStateBlock(session);
+      if (agentStateBlock) {
+        prompt = `${agentStateBlock}\n\n${prompt}`;
+      }
+
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it
       // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
       const rawHandle = this.spawnClaude(
-        session,
+        runSession,
         prompt,
         this.config.claude,
         targetRepoCwd,
         this.config.slack.botToken,
+        agentIdentity,
       );
       const handle = withTimeout(
         rawHandle,
@@ -421,18 +497,28 @@ export class SessionManager {
           );
         },
       );
-      this.handles.set(session.threadId, handle);
-      session.pid = handle.pid;
+      const handleKey = this.handleKey(session.threadId, agentName);
+      this.handles.set(handleKey, handle);
+      if (isTopLevel) {
+        session.pid = handle.pid;
+      } else if (agentSession) {
+        agentSession.pid = handle.pid;
+      }
 
       handle.onEvent((event: StreamEvent) => {
         if (event.type === "system" && event.subtype === "init") {
-          session.sessionId = event.session_id;
+          if (isTopLevel) {
+            session.sessionId = event.session_id;
+            session.leadSessionId = event.session_id;
+          } else if (agentSession) {
+            agentSession.sessionId = event.session_id;
+          }
         }
-        this.onEvent?.(session, event);
+        this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
       });
 
       handle.result.then(
-        (result: SpawnResult) => this.onRunComplete(session, result),
+        (result: SpawnResult) => this.onRunComplete(session, result, agentName),
         (err: unknown) =>
           this.onRunComplete(session, {
             sessionId: null,
@@ -440,60 +526,248 @@ export class SessionManager {
             events: [],
             exitCode: null,
             error: err instanceof Error ? err.message : String(err),
-          }),
+          }, agentName),
       );
     } catch (err) {
       // Agent prompt composition or worktree creation failed fatally
-      session.status = "idle";
+      if (isTopLevel) {
+        session.status = "idle";
+      } else {
+        const agentSession = this.getOrCreateAgentSession(session, agentName);
+        agentSession.status = "failed";
+        agentSession.pid = null;
+      }
       session.lastError = {
         type: "setup",
         message: err instanceof Error ? err.message : String(err),
         timestamp: Date.now(),
       };
       await this.store.set(session.threadId, session);
-      this.onError?.(session, session.lastError.message);
+      this.onError?.(
+        this.buildRunSession(session, agentName, identityForAgent(agentName)),
+        session.lastError.message,
+      );
     }
   }
 
   private async onRunComplete(
     session: ThreadSession,
     result: SpawnResult,
+    agentName: string,
   ): Promise<void> {
-    this.handles.delete(session.threadId);
-    session.pid = null;
+    const isTopLevel = agentName === "lead" || agentName === "default";
+    const agentIdentity = identityForAgent(agentName);
+    this.handles.delete(this.handleKey(session.threadId, agentName));
+
+    // Refetch the authoritative session before mutating. The `session` we hold
+    // is a snapshot from spawn time — long-running agents can be minutes stale.
+    // Persisting it whole would clobber writes made by other agents on the same
+    // thread while this one was running. Fall back to the snapshot only if the
+    // row was deleted (e.g. !reset during the run).
+    const fresh = (await this.store.get(session.threadId)) ?? session;
+    const agentSession = isTopLevel
+      ? null
+      : this.getOrCreateAgentSession(fresh, agentName);
+
+    if (isTopLevel) {
+      fresh.pid = null;
+    } else if (agentSession) {
+      agentSession.pid = null;
+    }
 
     if (result.sessionId) {
-      session.sessionId = result.sessionId;
+      if (isTopLevel) {
+        fresh.sessionId = result.sessionId;
+        fresh.leadSessionId = result.sessionId;
+      } else if (agentSession) {
+        agentSession.sessionId = result.sessionId;
+      }
     }
 
     if (result.error) {
-      session.lastError = {
+      fresh.lastError = {
         type: "spawn",
         message: result.error,
         timestamp: Date.now(),
       };
-      this.onError?.(session, result.error);
+      if (agentSession) agentSession.status = "failed";
+      this.onError?.(
+        this.buildRunSession(fresh, agentName, agentIdentity),
+        result.error,
+      );
     }
 
     if (result.response) {
-      this.onResponse?.(session, result.response);
+      this.onResponse?.(
+        this.buildRunSession(fresh, agentName, agentIdentity),
+        result.response,
+      );
     }
 
-    if (session.pendingMessages.length > 0) {
-      const combined = session.pendingMessages
+    const pendingMessages = isTopLevel
+      ? fresh.pendingMessages
+      : (agentSession?.pendingMessages ?? []);
+
+    if (pendingMessages.length > 0) {
+      const combined = pendingMessages
         .map((m) => `[${m.user}]: ${m.text}`)
         .join("\n");
-      session.pendingMessages = [];
-      session.status = "draining";
-      await this.store.set(session.threadId, session);
-      this.runClaudeWithAgent(session, combined).catch((err) => {
+      if (isTopLevel) {
+        fresh.pendingMessages = [];
+        fresh.status = "draining";
+      } else if (agentSession) {
+        agentSession.pendingMessages = [];
+        agentSession.status = "busy";
+      }
+      await this.store.set(fresh.threadId, fresh);
+      this.runClaudeWithAgent(fresh, combined, undefined, undefined, agentName).catch(async (err) => {
         console.error("[manager] Drain failed:", err);
-        session.status = "idle";
-        this.store.set(session.threadId, session);
+        // Refetch again — the failed drain may have run minutes after the
+        // initial drain persist, and other agents may have updated the row.
+        const drainFresh = (await this.store.get(fresh.threadId)) ?? fresh;
+        if (isTopLevel) {
+          drainFresh.status = "idle";
+        } else {
+          const drainAgent = this.getOrCreateAgentSession(drainFresh, agentName);
+          drainAgent.status = "failed";
+        }
+        await this.store.set(drainFresh.threadId, drainFresh);
       });
     } else {
-      session.status = "idle";
-      await this.store.set(session.threadId, session);
+      if (isTopLevel) {
+        fresh.status = "idle";
+      } else if (agentSession) {
+        agentSession.status = result.error ? "failed" : "done";
+        agentSession.lastActivity = Date.now();
+      }
+      await this.store.set(fresh.threadId, fresh);
     }
+  }
+
+  private async getOrCreateSession(
+    event: SlackMessageEvent,
+  ): Promise<ThreadSession> {
+    let session = await this.store.get(event.threadId);
+
+    if (!session) {
+      session = createSession(
+        event.threadId,
+        event.channel,
+        this.config.session.defaultVerbosity,
+      );
+      // Apply channel-level default agent type (e.g. #bugs-backlog → lead)
+      const channelDefault = this.config.channelDefaults[event.channel];
+      if (channelDefault) {
+        session.agentType = channelDefault.agentType;
+      }
+      await this.store.set(event.threadId, session);
+    }
+
+    session.leadSessionId ??= session.sessionId;
+    session.agentSessions ??= {};
+    return session;
+  }
+
+  private getOrCreateAgentSession(
+    session: ThreadSession,
+    agentName: string,
+  ): AgentSession {
+    session.agentSessions ??= {};
+    session.agentSessions[agentName] ??= {
+      agentName,
+      sessionId: null,
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    return session.agentSessions[agentName];
+  }
+
+  private buildRunSession(
+    session: ThreadSession,
+    agentName: string,
+    agentIdentity?: AgentIdentity,
+  ): ThreadSession {
+    if (agentName === "lead" || agentName === "default") {
+      return {
+        ...session,
+        sessionId: session.leadSessionId ?? session.sessionId,
+        activeAgentName: agentName,
+        slackIdentity: agentIdentity,
+      };
+    }
+
+    const agentSession = this.getOrCreateAgentSession(session, agentName);
+    return {
+      ...session,
+      sessionId: agentSession.sessionId,
+      agentType: agentName,
+      systemPrompt: null,
+      status: agentSession.status === "busy" ? "busy" : "idle",
+      pendingMessages: agentSession.pendingMessages,
+      pid: agentSession.pid,
+      lastActivity: agentSession.lastActivity,
+      activeAgentName: agentName,
+      slackIdentity: agentIdentity,
+    };
+  }
+
+  private withAgentIdentityPrompt(
+    systemPrompt: string | null,
+    agentName: string,
+    identity?: AgentIdentity,
+  ): string | null {
+    if (!identity) return systemPrompt;
+    const identityPrompt = [
+      `You are the persistent "${agentName}" agent in this Slack thread.`,
+      `When posting through slack_send_message, pass username="${identity.username}" and icon_emoji="${identity.iconEmoji}".`,
+      agentName === "lead"
+        ? "Do not append an attribution suffix to your Slack messages."
+        : `End every Slack message with "by ${agentName}".`,
+    ].join("\n");
+    return systemPrompt ? `${systemPrompt}\n\n${identityPrompt}` : identityPrompt;
+  }
+
+  private toPendingMessage(event: SlackMessageEvent): PendingMessage {
+    return {
+      user: event.user,
+      text: event.text,
+      ts: event.ts,
+      command: event.command ?? undefined,
+      dedupeKey: event.dedupeKey,
+    };
+  }
+
+  private buildAgentStateBlock(session: ThreadSession): string | null {
+    const agentSessions = Object.values(session.agentSessions ?? {});
+    if (agentSessions.length === 0) return null;
+
+    const lines = agentSessions
+      .sort((a, b) => a.agentName.localeCompare(b.agentName))
+      .map((agentSession) => {
+        const pending = agentSession.pendingMessages.length;
+        return `- ${agentSession.agentName}: ${agentSession.status}, pending=${pending}`;
+      });
+
+    return [
+      "<persistent-agent-state>",
+      "Current persistent agent sessions for this thread:",
+      ...lines,
+      "</persistent-agent-state>",
+    ].join("\n");
+  }
+
+  private rememberSeenMessage(key: string): void {
+    this.seenMessages.add(key);
+    // Prevent unbounded growth — old ts values are never needed again
+    if (this.seenMessages.size > 1000) {
+      const entries = [...this.seenMessages];
+      for (let i = 0; i < 500; i++) this.seenMessages.delete(entries[i]);
+    }
+  }
+
+  private handleKey(threadId: string, agentName: string): string {
+    return `${threadId}:${agentName}`;
   }
 }

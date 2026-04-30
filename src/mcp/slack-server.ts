@@ -15,10 +15,14 @@ import { WebClient } from "@slack/web-api";
 import { z } from "zod";
 import { readFile } from "fs/promises";
 import { log } from "../logger.ts";
+import type { SessionStore } from "../session/store/interface.ts";
+import type { WorktreeManager } from "../worktree/manager.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 
 let slack: WebClient;
+let sessionStore: SessionStore | undefined;
+let worktreeManager: WorktreeManager | undefined;
 
 function registerTools(server: McpServer) {
   server.registerTool(
@@ -30,14 +34,20 @@ function registerTools(server: McpServer) {
         channel_id: z.string().describe("Channel ID to post in"),
         thread_ts: z.string().optional().describe("Thread timestamp to reply to"),
         reply_broadcast: z.boolean().optional().describe("Also post to the channel (for thread replies)"),
+        username: z.string().optional().describe("Optional display name for this bot message"),
+        icon_emoji: z.string().optional().describe("Optional emoji icon for this bot message"),
       },
     },
-    async ({ text, channel_id, thread_ts, reply_broadcast }) => {
+    async ({ text, channel_id, thread_ts, reply_broadcast, username, icon_emoji }) => {
+      const identity = {
+        ...(username ? { username } : {}),
+        ...(icon_emoji ? { icon_emoji } : {}),
+      };
       const result = reply_broadcast && thread_ts
-        ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, reply_broadcast: true })
+        ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, reply_broadcast: true, ...identity })
         : thread_ts
-          ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts })
-          : await slack.chat.postMessage({ channel: channel_id, text });
+          ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, ...identity })
+          : await slack.chat.postMessage({ channel: channel_id, text, ...identity });
       return {
         content: [{ type: "text" as const, text: `Message sent (ts: ${result.ts})` }],
       };
@@ -223,13 +233,94 @@ function registerTools(server: McpServer) {
       return { content: [{ type: "text" as const, text: `Uploaded ${filename}` }] };
     },
   );
+
+  server.registerTool(
+    "register_worktree",
+    {
+      description:
+        "Create a per-thread git worktree for a repo and persist its path in the session. " +
+        "Call this on intake for each routed repo after writing state.json. " +
+        "Returns the worktree path and branch name.",
+      inputSchema: {
+        thread_id: z.string().describe("Slack thread timestamp (the session key)"),
+        repo: z.string().describe("Repo name as configured in REPOS (e.g. 'gx-backend')"),
+        branch: z.string().optional().describe("Branch name override. Defaults to slack/<thread_id>"),
+      },
+    },
+    async ({ thread_id, repo: repoName, branch }) => {
+      if (!sessionStore) {
+        return { content: [{ type: "text" as const, text: "Error: session store not available" }] };
+      }
+      if (!worktreeManager) {
+        return { content: [{ type: "text" as const, text: "Error: worktree manager not available" }] };
+      }
+
+      const repoConfig = worktreeManager.getRepo(repoName);
+      if (!repoConfig) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: unknown repo "${repoName}". Check REPOS config for valid names.`,
+            },
+          ],
+        };
+      }
+
+      let worktreePath: string;
+      try {
+        // `branch` from the MCP schema is a branch-name override (the new
+        // worktree's branch name), NOT a base ref. Pass it as the 4th arg.
+        worktreePath = await worktreeManager.createWorktree(
+          repoName,
+          thread_id,
+          undefined,
+          branch,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Error: worktree creation failed — ${msg}` }] };
+      }
+
+      // Refetch-then-mutate to avoid clobbering concurrent session writes.
+      const session = await sessionStore.get(thread_id);
+      if (!session) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: no session found for thread ${thread_id}. Was it created?`,
+            },
+          ],
+        };
+      }
+      session.worktreePaths = { ...session.worktreePaths, [repoName]: worktreePath };
+      await sessionStore.set(thread_id, session);
+
+      const resolvedBranch = branch ?? worktreeManager.getBranchName(thread_id);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ path: worktreePath, branch: resolvedBranch }),
+          },
+        ],
+      };
+    },
+  );
 }
 
 /**
  * Start the shared MCP server. Call once from Junior's main process.
  */
-export function startMcpServer(botToken: string): void {
+export function startMcpServer(
+  botToken: string,
+  store?: SessionStore,
+  wtManager?: WorktreeManager,
+): void {
   slack = new WebClient(botToken);
+  sessionStore = store;
+  worktreeManager = wtManager;
 
   const httpServer = createServer(async (req, res) => {
     // Each request gets its own transport (stateless mode).
