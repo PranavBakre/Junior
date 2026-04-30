@@ -30,6 +30,12 @@ beforeAll(async () => {
   writeFileSync(join(repoRoot, "README.md"), "hello\n");
   await run(["git", "add", "."]);
   await run(["git", "commit", "-q", "-m", "init"]);
+  // Add a second commit on a different ref so we can test baseRef forwarding.
+  await run(["git", "checkout", "-q", "-b", "feature/seeded"]);
+  writeFileSync(join(repoRoot, "FEATURE.md"), "feature only\n");
+  await run(["git", "add", "."]);
+  await run(["git", "commit", "-q", "-m", "feature only"]);
+  await run(["git", "checkout", "-q", "main"]);
   // Set up a fake `origin` remote pointing at ourselves so `git fetch origin` succeeds.
   await run(["git", "remote", "add", "origin", repoRoot]);
   await run(["git", "fetch", "-q", "origin"]);
@@ -114,5 +120,72 @@ describe("WorktreeManager.createWorktree", () => {
     await expect(wm.createWorktree("fail-flow", "fail-thread")).rejects.toThrow(
       /fail-setup\.sh failed/,
     );
+  });
+
+  it("forwards baseRef as the worktree's starting point (not as branch name)", async () => {
+    const repos: RepoConfig[] = [
+      { name: "baseref-flow", path: repoRoot, defaultBase: "origin/main" },
+    ];
+    const wm = new WorktreeManager(repos);
+
+    const wtPath = await wm.createWorktree(
+      "baseref-flow",
+      "baseref-thread",
+      "feature/seeded",
+    );
+
+    // Worktree should have started from the seeded feature branch, so
+    // FEATURE.md (only on feature/seeded) is present.
+    expect(existsSync(join(wtPath, "FEATURE.md"))).toBe(true);
+
+    // But the new branch is still the default thread-keyed name.
+    const branchProc = Bun.spawn(["git", "branch", "--show-current"], {
+      cwd: wtPath,
+      stdout: "pipe",
+    });
+    await branchProc.exited;
+    const currentBranch = (await new Response(branchProc.stdout).text()).trim();
+    expect(currentBranch).toBe("slack/baseref-thread");
+
+    await wm.removeWorktree("baseref-flow", "baseref-thread");
+  });
+
+  it("uses branchOverride for the new branch name (independent of baseRef)", async () => {
+    const repos: RepoConfig[] = [
+      { name: "branch-override-flow", path: repoRoot, defaultBase: "origin/main" },
+    ];
+    const wm = new WorktreeManager(repos);
+
+    const wtPath = await wm.createWorktree(
+      "branch-override-flow",
+      "override-thread",
+      undefined, // baseRef defaults to repo.defaultBase (origin/main)
+      "fix/custom-name", // branchOverride
+    );
+
+    const branchProc = Bun.spawn(["git", "branch", "--show-current"], {
+      cwd: wtPath,
+      stdout: "pipe",
+    });
+    await branchProc.exited;
+    const currentBranch = (await new Response(branchProc.stdout).text()).trim();
+    expect(currentBranch).toBe("fix/custom-name");
+
+    // From origin/main: README.md present, FEATURE.md absent.
+    expect(existsSync(join(wtPath, "README.md"))).toBe(true);
+    expect(existsSync(join(wtPath, "FEATURE.md"))).toBe(false);
+
+    // removeWorktree must read the actual branch name and clean it up,
+    // not assume `slack/<threadId>`.
+    await wm.removeWorktree("branch-override-flow", "override-thread");
+
+    // Verify the override branch is gone.
+    const listProc = Bun.spawn(["git", "branch", "--list", "fix/custom-name"], {
+      cwd: repoRoot,
+      stdout: "pipe",
+    });
+    await listProc.exited;
+    const listed = (await new Response(listProc.stdout).text()).trim();
+    expect(listed).toBe("");
   });
 });
