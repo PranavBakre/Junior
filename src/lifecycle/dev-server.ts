@@ -45,18 +45,51 @@ const IDLE_SWEEP_INTERVAL_MS = 60_000;
 /** Grace period for SIGINT before escalating to SIGKILL (ms). */
 const SIGINT_GRACE_MS = 5_000;
 
+export interface DevServerManagerOptions {
+  /** Override the 20-min idle TTL. Tests use this to drive the sweeper. */
+  idleTtlMs?: number;
+  /** Override the 60s sweep interval. Tests use this to drive the sweeper. */
+  sweepIntervalMs?: number;
+}
+
 export class DevServerManager {
   private repos: RepoConfig[];
   private worktreeManager: WorktreeManager;
   private state = new Map<string, DevServerState>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private idleTtlMs: number;
+  private sweepIntervalMs: number;
 
-  constructor(repos: RepoConfig[], worktreeManager?: WorktreeManager) {
+  constructor(
+    repos: RepoConfig[],
+    worktreeManager?: WorktreeManager,
+    opts: DevServerManagerOptions = {},
+  ) {
     this.repos = repos;
     // Allow callers to inject a WorktreeManager (tests do this). When running
     // in production the manager is always passed from index.ts.
     this.worktreeManager = worktreeManager ?? new WorktreeManager(repos);
+    this.idleTtlMs = opts.idleTtlMs ?? IDLE_TTL_MS;
+    this.sweepIntervalMs = opts.sweepIntervalMs ?? IDLE_SWEEP_INTERVAL_MS;
     this.startIdleTtlSweeper();
+  }
+
+  /**
+   * Run the idle-TTL sweep synchronously, once. Test hook so the
+   * detection logic in the sweeper body is exercisable without driving
+   * a 1-minute interval timer. Returns the names of repos whose dev
+   * servers were killed by this sweep.
+   */
+  async sweepNow(): Promise<string[]> {
+    const now = Date.now();
+    const killed: string[] = [];
+    for (const [repoName, s] of this.state) {
+      if (s.pid != null && now - s.lastUsedAt > this.idleTtlMs) {
+        killed.push(repoName);
+        await this.kill(repoName);
+      }
+    }
+    return killed;
   }
 
   /**
@@ -66,6 +99,18 @@ export class DevServerManager {
    *   process (if any) and start a fresh one.
    * - If the server is already running on the correct branch (and the PID is
    *   alive), bump `lastUsedAt` and return immediately.
+   *
+   * **RE-ENTRANCY PRECONDITION** — callers must serialize `ensure()` per repo.
+   * Two concurrent `ensure(repo, branch)` calls both miss the reuse branch,
+   * both run `git reset --hard`, and both call `Bun.spawn`. The second
+   * `state.set` orphans the first PID — it stays bound to the port forever
+   * with no in-memory handle to kill. Today the only caller is the (yet to
+   * land) Scope-2b lockfile path, which already serializes via
+   * `proper-lockfile`. If you add a second caller before the lock is wired,
+   * you MUST add per-repo serialization at the call site, OR build it into
+   * this method (an in-memory `Map<repoName, Promise<DevServerInfo>>` of
+   * in-flight calls would be the minimal fix). Do not assume callers are
+   * single-threaded just because nothing visibly races today.
    */
   async ensure(repoName: string, branch: string): Promise<DevServerInfo> {
     const repo = this.getRepoOrThrow(repoName);
@@ -252,14 +297,14 @@ export class DevServerManager {
     this.sweepTimer = setInterval(() => {
       const now = Date.now();
       for (const [repoName, s] of this.state) {
-        if (s.pid != null && now - s.lastUsedAt > IDLE_TTL_MS) {
+        if (s.pid != null && now - s.lastUsedAt > this.idleTtlMs) {
           log.info("dev-server", `idle TTL expired for repo=${repoName}; killing`);
           this.kill(repoName).catch((err) => {
             log.error("dev-server", `idle kill failed for repo=${repoName}: ${err}`);
           });
         }
       }
-    }, IDLE_SWEEP_INTERVAL_MS);
+    }, this.sweepIntervalMs);
 
     // Don't block process exit on the sweeper.
     if (this.sweepTimer.unref) {
@@ -330,7 +375,7 @@ export class DevServerManager {
 // Module-level helpers (no class dependency)
 // ---------------------------------------------------------------------------
 
-function resolveReadyUrl(repo: RepoConfig): string {
+export function resolveReadyUrl(repo: RepoConfig): string {
   if (repo.readyUrl) return repo.readyUrl;
   return `http://localhost:${repo.devPort}`;
 }

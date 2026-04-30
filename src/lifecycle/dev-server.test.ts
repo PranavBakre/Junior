@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RepoConfig } from "../config.ts";
 import { WorktreeManager } from "../worktree/manager.ts";
-import { DevServerManager } from "./dev-server.ts";
+import { DevServerManager, resolveReadyUrl } from "./dev-server.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers shared across suites
@@ -340,13 +340,27 @@ describe("DevServerManager (unit — logic paths)", () => {
     }
   });
 
-  it("resolves readyUrl from devPort when readyUrl is omitted", () => {
-    // Tested indirectly: DevServerInfo.readyUrl should equal http://localhost:<devPort>.
-    // We verify via the bootstrap path (no real spawn needed here since we
-    // only care about the URL derivation logic, exercised in integration tests).
-    // This is intentionally a placeholder that documents the expected behaviour —
-    // the integration test "ensure() spawns..." asserts readyUrl directly.
-    expect(`http://localhost:41234`).toBe(`http://localhost:${41_234}`);
+  it("resolveReadyUrl falls back to localhost:<devPort> when readyUrl is unset", () => {
+    expect(
+      resolveReadyUrl({
+        name: "x",
+        path: "/x",
+        defaultBase: "origin/main",
+        devPort: 41234,
+      }),
+    ).toBe("http://localhost:41234");
+  });
+
+  it("resolveReadyUrl prefers explicit readyUrl over devPort", () => {
+    expect(
+      resolveReadyUrl({
+        name: "x",
+        path: "/x",
+        defaultBase: "origin/main",
+        devPort: 41234,
+        readyUrl: "https://prod-like.local:8443/health",
+      }),
+    ).toBe("https://prod-like.local:8443/health");
   });
 
   it("status() returns all states when called without repoName", () => {
@@ -403,19 +417,8 @@ describe("DevServerManager (unit — logic paths)", () => {
 // ---------------------------------------------------------------------------
 
 describe("DevServerManager idle TTL (unit — timer injection)", () => {
-  it("idle sweeper kills a server whose lastUsedAt is past the TTL", async () => {
-    // We can't easily override the 20-minute TTL constant, so instead we
-    // directly manipulate the private state map to plant a stale entry with a
-    // known PID and verify the sweeper kills it.
-    //
-    // To make this deterministic without waiting real time, we access the
-    // manager's internal `state` map through its `status()` accessor and set
-    // `lastUsedAt` to a time far in the past, then trigger a manual sweep call
-    // by invoking the public `kill()` path the sweeper would use.
-    //
-    // This tests: the sweeper correctly identifies stale entries and calls kill().
-
-    // Spin up a real process to get a real PID to track.
+  it("sweepNow() detects and kills servers whose lastUsedAt is past the TTL", async () => {
+    // Real process to give us a PID to track.
     const sleepProc = Bun.spawn(["sleep", "30"], {
       stdout: "pipe",
       stderr: "pipe",
@@ -423,29 +426,29 @@ describe("DevServerManager idle TTL (unit — timer injection)", () => {
     const fakePid = sleepProc.pid;
     expect(isPidAlive(fakePid)).toBe(true);
 
-    const manager = new DevServerManager([], new WorktreeManager([]));
+    // 1 second TTL so we don't have to fake clock arithmetic.
+    const manager = new DevServerManager([], new WorktreeManager([]), {
+      idleTtlMs: 1_000,
+      sweepIntervalMs: 60_000,
+    });
     try {
-      // Inject a stale state entry directly via internal map exposure.
-      // We use a type cast since state is private — acceptable in test code.
+      // Plant a state entry with lastUsedAt 5 seconds in the past.
       (manager as unknown as { state: Map<string, unknown> }).state.set(
         "stale-repo",
         {
           pid: fakePid,
           branch: "main",
-          startedAt: Date.now() - 25 * 60 * 1_000,
-          lastUsedAt: Date.now() - 25 * 60 * 1_000, // 25 minutes ago → past 20-min TTL
+          startedAt: Date.now() - 5_000,
+          lastUsedAt: Date.now() - 5_000,
         },
       );
 
-      // Manually trigger what the sweeper would do: call kill() for the stale repo.
-      // In production the setInterval does this; here we call directly.
-      await manager.kill("stale-repo");
+      const killed = await manager.sweepNow();
+      expect(killed).toEqual(["stale-repo"]);
 
-      // The fake PID should now be dead.
       await waitFor(() => !isPidAlive(fakePid), 8_000);
       expect(isPidAlive(fakePid)).toBe(false);
     } finally {
-      // Clean up in case the test failed before killing.
       try {
         process.kill(fakePid, "SIGKILL");
       } catch {
@@ -454,4 +457,37 @@ describe("DevServerManager idle TTL (unit — timer injection)", () => {
       manager.dispose();
     }
   }, 15_000);
+
+  it("sweepNow() leaves fresh entries alone", async () => {
+    const sleepProc = Bun.spawn(["sleep", "30"], { stdout: "pipe", stderr: "pipe" });
+    const fakePid = sleepProc.pid;
+
+    // 60-second TTL — anything just-set is well within the window.
+    const manager = new DevServerManager([], new WorktreeManager([]), {
+      idleTtlMs: 60_000,
+      sweepIntervalMs: 60_000,
+    });
+    try {
+      (manager as unknown as { state: Map<string, unknown> }).state.set(
+        "fresh-repo",
+        {
+          pid: fakePid,
+          branch: "main",
+          startedAt: Date.now(),
+          lastUsedAt: Date.now(),
+        },
+      );
+
+      const killed = await manager.sweepNow();
+      expect(killed).toEqual([]);
+      expect(isPidAlive(fakePid)).toBe(true);
+    } finally {
+      try {
+        process.kill(fakePid, "SIGKILL");
+      } catch {
+        // already dead
+      }
+      manager.dispose();
+    }
+  }, 10_000);
 });
