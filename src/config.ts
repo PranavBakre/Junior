@@ -6,6 +6,22 @@ export interface RepoConfig {
   defaultBase: string;
   /** Optional setup script for worktree creation. Run as `<repo.path>/<command> <worktreePath> <branch>`. */
   worktreeSetupCommand?: string;
+  /**
+   * Command to start the dev server (e.g. "pnpm dev", "npm run dev").
+   * Split on whitespace and passed directly to Bun.spawn — no shell.
+   * Leave unset for repos that don't run a dev server.
+   */
+  devCommand?: string;
+  /**
+   * Port the dev server listens on (e.g. 3000, 8000).
+   * Used for readiness probing and external-listener conflict detection.
+   */
+  devPort?: number;
+  /**
+   * URL junior curls to confirm the dev server is ready (expects HTTP 200).
+   * Defaults to http://localhost:<devPort> when unset.
+   */
+  readyUrl?: string;
 }
 
 export type SessionStoreKind = "memory" | "sqlite";

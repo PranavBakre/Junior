@@ -12,6 +12,7 @@ import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
 import { SupportRouter } from "./support/router.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
+import { DevServerManager } from "./lifecycle/dev-server.ts";
 import { startMcpServer } from "./mcp/slack-server.ts";
 import { log } from "./logger.ts";
 
@@ -23,6 +24,7 @@ log.info("boot", `Session store: ${config.session.store}`);
 const sessionManager = new SessionManager(store, config);
 const agentRouter = new AgentRouter(config.repos, ".claude/agents");
 const worktreeManager = new WorktreeManager(config.repos);
+const devServerManager = new DevServerManager(config.repos, worktreeManager);
 startMcpServer(config.slack.botToken, store, worktreeManager);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
@@ -114,7 +116,7 @@ sessionManager.onError = (session, error) => {
 
 registerHomeTab(app, store, config.session.homeWindowMs);
 
-setupGracefulShutdown(sessionManager, store);
+setupGracefulShutdown(sessionManager, store, devServerManager);
 
 // Periodic health checks
 setInterval(() => {
@@ -134,6 +136,19 @@ setInterval(() => {
 }, config.session.cleanupIntervalMs);
 
 (async () => {
+  // Bootstrap dev-server worktrees and check for external port conflicts before
+  // accepting any Slack events. Failure here is non-fatal — log loudly and
+  // continue so other features keep working even if a single repo's worktree
+  // setup is broken (missing remote, dirty state, etc.).
+  try {
+    await devServerManager.bootstrap();
+  } catch (err) {
+    log.error(
+      "boot",
+      `dev-server bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   await app.start();
 
   // Resolve bot identity before registering event handlers
