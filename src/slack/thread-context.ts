@@ -136,6 +136,8 @@ export async function buildPromptPreamble(
     `Do NOT use Slack search or read tools to find this thread — you already have all the context you need.`,
     ``,
     `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
+    ``,
+    `CRITICAL — no double-posting: if you used \`slack_send_message\` (or any other Slack post tool) during this turn, that tool call IS your reply. Your final response in this turn MUST be exactly \`${NO_SLACK_MESSAGE}\`. Do NOT also return a recap, summary, or "Posted X..." narration — the human already saw what you posted, and a second message restating it is a duplicate. Pick one channel: either post via the tool and return \`${NO_SLACK_MESSAGE}\`, or skip the tool and return prose as your reply. Never both.`,
     `</slack-context>`,
   ];
 
