@@ -20,7 +20,8 @@ export interface AgentDirective {
 export type DevserverDirective =
   | { kind: "acquire"; branch: string; repos: string[] }
   | { kind: "status" }
-  | { kind: "kill"; repo: string };
+  | { kind: "kill"; repo: string }
+  | { kind: "malformed"; reason: string };
 
 /**
  * Parse a `!devserver` directive from a single text line.
@@ -47,6 +48,13 @@ export function parseDevserverDirective(line: string): DevserverDirective | null
   const killMatch = rest.match(/^kill\s+(\S+)$/);
   if (killMatch) {
     return { kind: "kill", repo: killMatch[1] };
+  }
+  // Bare `kill` with no repo — explicit malformed so the handler can post a
+  // usage hint. Without this guard, the token-split below would parse it as
+  // an acquire for branch "kill", which silently spawns a dev server on a
+  // branch named after a reserved sub-command.
+  if (rest === "kill" || /^kill(\s|$)/.test(rest)) {
+    return { kind: "malformed", reason: "Usage: !devserver kill <repo>" };
   }
 
   // !devserver <branch> [repo]
@@ -244,6 +252,11 @@ export class AgentDispatcher {
   ): Promise<void> {
     if (!this.slackClient) {
       log.warn("devserver", "!devserver directive received but no slackClient configured; dropping");
+      return;
+    }
+
+    if (directive.kind === "malformed") {
+      await this.postSlack(event, directive.reason);
       return;
     }
 

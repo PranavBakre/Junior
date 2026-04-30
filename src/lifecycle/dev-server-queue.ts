@@ -116,9 +116,39 @@ export class DevServerQueue {
 
     try {
       // Step 2: acquire the filesystem lock. Retries forever with jitter.
+      //
+      // `onCompromised` fires from inside proper-lockfile's `setTimeout`-driven
+      // update loop when our lockfile mtime is no longer ours (i.e. another
+      // process took over after deciding our lock was stale). The default is
+      // `(err) => { throw err }` — but throwing from a setTimeout callback is
+      // an uncatchable uncaught exception that kills the entire bot process.
+      // We override with a fire-and-forget handler that runs `stealStale`
+      // (kills any orphan dev-server PID we left bound to the port) so the
+      // takeover actually recovers, and marks our local state as released so
+      // the user-facing release function below is a no-op. NOTE: proper-lockfile
+      // does not await the handler — keep it synchronous; do NOT make it async.
       releaseLockFile = await lockFile(lockDir, {
         stale: slotTimeoutMs,
         retries: { forever: true, minTimeout: 1_000, maxTimeout: 5_000 },
+        onCompromised: (err) => {
+          log.warn(
+            "dev-server-queue",
+            `lock compromised thread=${threadId} repo=${repoName}: ${err.message}; running stealStale`,
+          );
+          // Fire and forget — proper-lockfile won't await us.
+          this.stealStale(repoName).catch((killErr) => {
+            log.warn(
+              "dev-server-queue",
+              `stealStale after compromise failed repo=${repoName}: ${killErr instanceof Error ? killErr.message : String(killErr)}`,
+            );
+          });
+          released = true;
+          try {
+            removeFromQueue(lockDir, threadId);
+          } catch {
+            /* best-effort cleanup */
+          }
+        },
       });
     } catch (err) {
       // Failed to acquire — remove ourselves from the queue and rethrow.
