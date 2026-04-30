@@ -19,6 +19,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     status: "idle",
     pendingMessages: [],
     verbosity: "normal",
+    muted: false,
     model: null,
     cwd: null,
     pid: null,
