@@ -191,5 +191,6 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   session.agentSessions ??= {};
   // Migration: existing sessions before worktreePaths was added default to {}
   session.worktreePaths ??= {};
+  session.muted ??= false;
   return session;
 }
