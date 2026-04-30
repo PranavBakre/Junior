@@ -82,6 +82,9 @@ export class SessionManager {
     this.rememberSeenMessage(dedupeKey);
 
     const session = await this.getOrCreateSession(event);
+
+    if (session.muted) return;
+
     const agentSession = this.getOrCreateAgentSession(session, agentName);
 
     if (agentSession.status === "busy") {
@@ -120,6 +123,8 @@ export class SessionManager {
       const handled = await this.handleCommand(session, event);
       if (handled) return;
     }
+
+    if (session.muted) return;
 
     if (session.status === "busy") {
       session.pendingMessages.push({
@@ -194,6 +199,7 @@ export class SessionManager {
           : "never";
         const lines = [
           `*Status:* ${session.status}`,
+          `*Muted:* ${session.muted ? "yes" : "no"}`,
           `*Agent:* ${session.agentType ?? "default"}`,
           `*Repo:* ${session.targetRepo ?? "none"}`,
           `*Worktree:* ${session.worktreePath ?? "none"}`,
@@ -221,6 +227,8 @@ export class SessionManager {
           "`!verbose` — Verbose output",
           "`!adhoc <text>` — Add ad-hoc item to calendar",
           "`!bugs <text>` — Add bug item to calendar",
+          "`!mute` — Stop responding until !unmute",
+          "`!unmute` — Resume responding",
           "`!help` — Show this help",
         ].join("\n");
         this.onCommandResponse?.(event, helpText);
@@ -325,6 +333,20 @@ export class SessionManager {
           `4. Reply with a one-line confirmation.`,
         ].join("\n");
         return false;
+      }
+
+      case "mute": {
+        session.muted = true;
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, "Muted. I'll stop responding until you `!unmute`.");
+        return true;
+      }
+
+      case "unmute": {
+        session.muted = false;
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, "Unmuted.");
+        return true;
       }
 
       default:
@@ -608,7 +630,17 @@ export class SessionManager {
       ? fresh.pendingMessages
       : (agentSession?.pendingMessages ?? []);
 
-    if (pendingMessages.length > 0) {
+    if (pendingMessages.length > 0 && fresh.muted) {
+      // Thread was muted mid-turn — discard buffered messages, don't drain.
+      if (isTopLevel) {
+        fresh.pendingMessages = [];
+        fresh.status = "idle";
+      } else if (agentSession) {
+        agentSession.pendingMessages = [];
+        agentSession.status = "idle";
+      }
+      await this.store.set(fresh.threadId, fresh);
+    } else if (pendingMessages.length > 0) {
       const combined = pendingMessages
         .map((m) => `[${m.user}]: ${m.text}`)
         .join("\n");

@@ -43,6 +43,7 @@ export interface ThreadSession {
   status: SessionStatus;
   pendingMessages: PendingMessage[];
   verbosity: SessionVerbosity;
+  muted: boolean;
   model: string | null;
   cwd: string | null;
   pid: number | null;
@@ -71,6 +72,7 @@ export function createSession(
     status: "idle",
     pendingMessages: [],
     verbosity: defaultVerbosity,
+    muted: false,
     model: null,
     cwd: null,
     pid: null,
