@@ -123,6 +123,19 @@ Two ways the cycle breaks. Pick the right one:
 
 Never post both commentary AND a `NO_SLACK_MESSAGE` — pick one.
 
+## Validation phase: gate `!reproducer validate` on a `!devserver` ready reply
+
+When the thinker has opened a fix PR and you're ready to validate, the dev server must be running on the fix branch BEFORE you dispatch the reproducer. Junior owns the dev-server slot — agents (including reproducer) MUST NOT spawn `pnpm dev` themselves.
+
+The flow:
+
+1. Dispatch `!devserver <branch>` (omit `<repo>` to target every routed repo for this bug, OR specify `<repo>` for a single one). This goes through junior's per-repo lockfile queue — junior posts `queued behind N others` while waiting, then `ready @ localhost:<port> for <repo>` once acquired.
+2. Wait for junior's `ready` reply for every targeted repo before proceeding. If junior posts `failed: <reason>` or `port held by external listener`, escalate to a human and stop.
+3. Then dispatch `!reproducer validate the fix on branch <branch>`. Reproducer reads junior's ready reply from the thread and walks against the warm dev server.
+4. If the slot times out mid-walk (10 min default), junior posts an auto-release note and reproducer stops. Re-dispatch `!devserver <branch>` and `!reproducer validate` to retry.
+
+Same-branch reuse is automatic: if junior's dev server is already on `<branch>` from a prior request, the `ready` reply is fast (no restart). Different branch triggers a kill+checkout+restart. You don't have to track which case it is — just dispatch and wait.
+
 ## Post-review merge flow (CATEGORICAL — do not improvise)
 
 When `!review` returns `approved`, **do NOT merge the feature → main PR**. The pipeline NEVER merges to main. Main is human-gated. The flow is:

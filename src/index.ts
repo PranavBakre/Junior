@@ -13,6 +13,7 @@ import { AgentRouter } from "./agents/router.ts";
 import { SupportRouter } from "./support/router.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
 import { DevServerManager } from "./lifecycle/dev-server.ts";
+import { DevServerQueue } from "./lifecycle/dev-server-queue.ts";
 import { startMcpServer } from "./mcp/slack-server.ts";
 import { log } from "./logger.ts";
 
@@ -25,6 +26,7 @@ const sessionManager = new SessionManager(store, config);
 const agentRouter = new AgentRouter(config.repos, ".claude/agents");
 const worktreeManager = new WorktreeManager(config.repos);
 const devServerManager = new DevServerManager(config.repos, worktreeManager);
+const devServerQueue = new DevServerQueue(devServerManager, config.repos);
 startMcpServer(config.slack.botToken, store, worktreeManager);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
@@ -39,7 +41,12 @@ const supportChannels = new Set(
     .filter(([, def]) => def.agentType === "lead")
     .map(([channel]) => channel),
 );
-const supportRouter = new SupportRouter(sessionManager, supportChannels);
+const supportRouter = new SupportRouter(sessionManager, supportChannels, {
+  devServerQueue,
+  sessionStore: store,
+  slackClient: app.client,
+  repos: config.repos,
+});
 
 sessionManager.onResponse = (session, response) => {
   const willPost = shouldPostResponseToSlack(response);

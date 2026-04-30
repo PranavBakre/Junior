@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { SessionManager } from "../session/manager.ts";
-import { parseAgentDirectives, SupportRouter } from "./router.ts";
+import { parseAgentDirectives, parseDevserverDirective, SupportRouter } from "./router.ts";
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
   return {
@@ -235,6 +235,107 @@ describe("SupportRouter", () => {
     );
 
     expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseDevserverDirective — covered more exhaustively in dev-server-queue.test.ts,
+// but a few smoke checks here to ensure the router import path is wired.
+// ---------------------------------------------------------------------------
+
+describe("parseDevserverDirective (router smoke)", () => {
+  it("parses !devserver status", () => {
+    expect(parseDevserverDirective("!devserver status")).toEqual({ kind: "status" });
+  });
+
+  it("parses !devserver kill <repo>", () => {
+    expect(parseDevserverDirective("!devserver kill gx-backend")).toEqual({
+      kind: "kill",
+      repo: "gx-backend",
+    });
+  });
+
+  it("returns null for non-devserver input", () => {
+    expect(parseDevserverDirective("hello world")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// !devserver directive interception in AgentDispatcher
+// ---------------------------------------------------------------------------
+
+describe("AgentDispatcher !devserver interception", () => {
+  it("intercepts !devserver and does NOT dispatch to any agent", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+
+    // Minimal devServerQueue stub — acquire resolves immediately.
+    const queueMock = {
+      acquire: mock(async () => ({
+        release: async () => {},
+        info: { pid: 1, port: 3000, readyUrl: "http://localhost:3000" },
+      })),
+      readQueueDepth: mock(async () => ({ holder: null, waiters: [] })),
+    };
+
+    const slackClientMock = {
+      chat: {
+        postMessage: mock(async () => ({ ts: "123.456" })),
+      },
+    };
+
+    const router = new SupportRouter(
+      managerMock as unknown as SessionManager,
+      new Set(["CBUGS"]),
+      {
+        devServerQueue: queueMock as unknown as import("../lifecycle/dev-server-queue.ts").DevServerQueue,
+        slackClient: slackClientMock as unknown as import("@slack/web-api").WebClient,
+        repos: [
+          {
+            name: "gx-backend",
+            path: "/tmp/gx-backend",
+            defaultBase: "origin/main",
+            devCommand: "echo dev",
+            devPort: 8000,
+          },
+        ],
+      },
+    );
+
+    // !devserver status — should be handled inline.
+    await router.handleMessage(
+      makeEvent({ channel: "CBUGS", text: "!devserver status" }),
+    );
+
+    // No agent should have been dispatched.
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+
+    // Slack client should have been called to post the status reply.
+    expect(slackClientMock.chat.postMessage).toHaveBeenCalled();
+  });
+
+  it("falls through to normal routing when no !devserver directive is present", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+
+    const router = new SupportRouter(
+      managerMock as unknown as SessionManager,
+      new Set(["CBUGS"]),
+    );
+
+    await router.handleMessage(makeEvent({ channel: "CBUGS", text: "plain bug message" }));
+
+    // Routed to lead (support channel, no directive).
+    expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 });
