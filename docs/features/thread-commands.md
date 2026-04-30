@@ -20,6 +20,8 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 - `!repo <name>` — Switch target repo for this thread
 - `!branch <ref>` — Set worktree base ref (next worktree creation uses this)
 - `!quiet` / `!normal` / `!verbose` — Set verbosity
+- `!mute` — Stop seeing or replying to any messages until `!unmute`
+- `!unmute` — Resume normal operation
 - `!help` — List available commands
 
 ## Design Decision: `!` prefix, not Slack slash commands
