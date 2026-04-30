@@ -269,7 +269,14 @@ function registerTools(server: McpServer) {
 
       let worktreePath: string;
       try {
-        worktreePath = await worktreeManager.createWorktree(repoName, thread_id, branch);
+        // `branch` from the MCP schema is a branch-name override (the new
+        // worktree's branch name), NOT a base ref. Pass it as the 4th arg.
+        worktreePath = await worktreeManager.createWorktree(
+          repoName,
+          thread_id,
+          undefined,
+          branch,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { content: [{ type: "text" as const, text: `Error: worktree creation failed — ${msg}` }] };
