@@ -1,4 +1,5 @@
 import type { App } from "@slack/bolt";
+import type { RepoConfig } from "../config.ts";
 import { loadPersona } from "../persona.ts";
 import { NO_SLACK_MESSAGE } from "./formatting.ts";
 
@@ -82,10 +83,44 @@ export interface WorkspaceContext {
  * Build the standalone workspace-rules block. Used in the full preamble on the
  * first turn AND on resumed turns (cheap insurance — keeps the safety rule
  * present even when --resume carries the rest of the context).
+ *
+ * When `worktreePaths` is provided and non-empty, renders the multi-repo format
+ * for bug-pipeline threads. Otherwise falls through to the single-repo format
+ * using `workspace`.
  */
 export function buildWorkspaceBlock(
   workspace: WorkspaceContext | null | undefined,
+  worktreePaths?: Record<string, string>,
+  repos?: RepoConfig[],
+  threadId?: string,
 ): string | null {
+  // Multi-repo format for bug-pipeline threads.
+  if (worktreePaths && Object.keys(worktreePaths).length > 0) {
+    const repoBlocks = Object.entries(worktreePaths).map(([repoName, wPath]) => {
+      const repoConfig = repos?.find((r) => r.name === repoName);
+      const branch = threadId ? `slack/${threadId}` : "slack/<thread>";
+      const base = repoConfig?.defaultBase ?? "origin/main";
+      return [
+        `repo: ${repoName}`,
+        `  worktree: ${wPath}`,
+        `  branch:   ${branch}`,
+        `  base:     ${base}`,
+      ].join("\n");
+    });
+
+    return [
+      `<workspace>`,
+      `You have isolated git worktrees for this thread. ALWAYS use these paths`,
+      `for reading code, editing files, and running git commands. NEVER touch`,
+      `the bare repos under ~/openclaw-projects/. NEVER run dev servers`,
+      `yourself — post \`!devserver <branch>\` instead.`,
+      ``,
+      ...repoBlocks.flatMap((block, i) => (i < repoBlocks.length - 1 ? [block, ""] : [block])),
+      `</workspace>`,
+    ].join("\n");
+  }
+
+  // Single-repo format (existing !repo flow).
   if (!workspace) return null;
   return [
     `<workspace>`,
@@ -107,6 +142,9 @@ export function buildWorkspaceBlock(
 /**
  * Build the identity + thread context preamble for Claude.
  * Always includes Junior's persona, channel/thread coordinates, and thread history.
+ *
+ * Pass `worktreePaths` + `repos` for bug-pipeline threads to render the multi-repo
+ * workspace block instead of the single-repo format.
  */
 export async function buildPromptPreamble(
   app: App,
@@ -115,6 +153,8 @@ export async function buildPromptPreamble(
   latestTs: string,
   botUserId?: string,
   workspace?: WorkspaceContext | null,
+  worktreePaths?: Record<string, string>,
+  repos?: RepoConfig[],
 ): Promise<string> {
   const [persona, channelName, threadContext] = await Promise.all([
     loadPersona(),
@@ -141,7 +181,7 @@ export async function buildPromptPreamble(
     `</slack-context>`,
   ];
 
-  const workspaceBlock = buildWorkspaceBlock(workspace);
+  const workspaceBlock = buildWorkspaceBlock(workspace, worktreePaths, repos, threadTs);
   if (workspaceBlock) {
     parts.push(``, workspaceBlock);
   }

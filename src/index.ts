@@ -16,7 +16,6 @@ import { startMcpServer } from "./mcp/slack-server.ts";
 import { log } from "./logger.ts";
 
 const config = loadConfig();
-startMcpServer(config.slack.botToken);
 const app = createSlackApp(config);
 
 const store = createSessionStore(config);
@@ -24,6 +23,7 @@ log.info("boot", `Session store: ${config.session.store}`);
 const sessionManager = new SessionManager(store, config);
 const agentRouter = new AgentRouter(config.repos, ".claude/agents");
 const worktreeManager = new WorktreeManager(config.repos);
+startMcpServer(config.slack.botToken, store, worktreeManager);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
 sessionManager.slackApp = app;

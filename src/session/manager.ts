@@ -395,6 +395,12 @@ export class SessionManager {
             }
           : null;
 
+      // For bug-pipeline threads, worktreePaths (multi-repo) takes precedence.
+      const worktreePaths =
+        session.worktreePaths && Object.keys(session.worktreePaths).length > 0
+          ? session.worktreePaths
+          : undefined;
+
       // Build the prompt. On the first turn (no sessionId yet), inject the full
       // preamble (identity, slack-context, workspace, thread history). On resumed
       // turns, --resume already carries identity/context/history — sending them
@@ -411,10 +417,17 @@ export class SessionManager {
             latestTs,
             this.botUserId,
             workspace,
+            worktreePaths,
+            this.config.repos,
           );
           prompt = `${preamble}\n\n${readablePrompt}`;
         } else {
-          const workspaceBlock = buildWorkspaceBlock(workspace);
+          const workspaceBlock = buildWorkspaceBlock(
+            workspace,
+            worktreePaths,
+            this.config.repos,
+            session.threadId,
+          );
           prompt = workspaceBlock
             ? `${workspaceBlock}\n\n${readablePrompt}`
             : readablePrompt;
