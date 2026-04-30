@@ -189,5 +189,7 @@ export class SqliteSessionStore implements SessionStore {
 function normalizeSession(session: ThreadSession): ThreadSession {
   session.leadSessionId ??= session.sessionId;
   session.agentSessions ??= {};
+  // Migration: existing sessions before worktreePaths was added default to {}
+  session.worktreePaths ??= {};
   return session;
 }
