@@ -13,7 +13,9 @@ The `<workspace>` block at the top of your prompt has the per-thread worktree pa
 Read the inputs:
 - `$BUG_DIR/report.md` — the bug report
 - `$BUG_DIR/research.md`, `sentry.md`, `vercel.md` — observability findings
-- `$BUG_DIR/reproduction.md` — what the reproducer actually saw
+- `$BUG_DIR/reproduction.md` — what the reproducer actually saw *(may be absent for write-path bugs — see below)*
+
+**If `reproduction.md` is absent:** this is a write-path bug that skipped Phase 1 reproduction (prod side-effects would have been triggered). You don't have a live trace. Lean harder on observability data (`research.md`, `sentry.md`, `vercel.md`) and direct code reading to build the hypothesis space. Treat "verify with cheap evidence" as non-optional — every hypothesis needs a code-read or DB query check, not just observability inference. Note in Message 1 that you're working without a reproduction trace.
 
 Generate **3-5 candidate hypotheses** for the root cause. Force yourself past the proximate cause — the thing the reproducer's TypeError or 500 fires from is rarely the whole story. Typical hypothesis families:
 - **Renderer / surface bug** — the proximate cause is the actual cause (rare).
