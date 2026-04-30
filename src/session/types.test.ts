@@ -117,6 +117,7 @@ describe("createSession", () => {
       "threadId",
       "verbosity",
       "worktreePath",
+      "worktreePaths",
     ]);
   });
 });

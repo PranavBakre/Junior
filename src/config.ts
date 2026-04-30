@@ -4,6 +4,8 @@ export interface RepoConfig {
   name: string;
   path: string;
   defaultBase: string;
+  /** Optional setup script for worktree creation. Run as `<repo.path>/<command> <worktreePath> <branch>`. */
+  worktreeSetupCommand?: string;
 }
 
 export type SessionStoreKind = "memory" | "sqlite";
