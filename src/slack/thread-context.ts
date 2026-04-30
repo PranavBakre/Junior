@@ -64,12 +64,20 @@ export async function resolveSlackMentions(
   const matches = [...text.matchAll(mentionPattern)];
   if (matches.length === 0) return text;
 
-  let resolved = text;
-  for (const match of matches) {
-    const name = await resolveUserName(app, match[1]);
-    resolved = resolved.replace(match[0], `@${name}`);
-  }
-  return resolved;
+  // Pre-resolve unique IDs in parallel, then replace in one pass.
+  // Single-pass replace (regex + callback) avoids re-matching inside prior
+  // replacements when the same user is mentioned more than once.
+  const uniqueIds = [...new Set(matches.map((m) => m[1]))];
+  const nameMap = new Map(
+    await Promise.all(
+      uniqueIds.map(async (id) => [id, await resolveUserName(app, id)] as const),
+    ),
+  );
+
+  return text.replace(mentionPattern, (_, userId: string) => {
+    const name = nameMap.get(userId) ?? userId;
+    return `@${name} (<@${userId}>)`;
+  });
 }
 
 export interface WorkspaceContext {
@@ -174,6 +182,7 @@ export async function buildPromptPreamble(
     `Thread: ${threadTs}`,
     `You are responding in this thread. You already have the full thread history below.`,
     `Do NOT use Slack search or read tools to find this thread — you already have all the context you need.`,
+    `To tag a user, use their Slack mention format \`<@USERID>\` (shown in thread history as \`User(Name <@USERID>)\`). Plain \`@Name\` does not notify them.`,
     ``,
     `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
     ``,
@@ -239,7 +248,9 @@ async function fetchThreadHistory(
     if (messages.length === 0) return null;
 
     const lines = messages.map((m) => {
-      const role = m.isBot ? "Junior (you)" : `User(${m.userName})`;
+      const role = m.isBot
+        ? "Junior (you)"
+        : `User(${m.userName}${m.user !== "unknown" ? ` <@${m.user}>` : ""})`;
       let line = `${role}: ${m.text}`;
       if (m.fileNames.length > 0) {
         const fileNotes = m.fileNames.map((f) => `[shared image: ${f}]`).join(" ");
