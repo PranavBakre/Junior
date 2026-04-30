@@ -199,6 +199,7 @@ export class SessionManager {
           : "never";
         const lines = [
           `*Status:* ${session.status}`,
+          `*Muted:* ${session.muted ? "yes" : "no"}`,
           `*Agent:* ${session.agentType ?? "default"}`,
           `*Repo:* ${session.targetRepo ?? "none"}`,
           `*Worktree:* ${session.worktreePath ?? "none"}`,
@@ -629,7 +630,17 @@ export class SessionManager {
       ? fresh.pendingMessages
       : (agentSession?.pendingMessages ?? []);
 
-    if (pendingMessages.length > 0) {
+    if (pendingMessages.length > 0 && fresh.muted) {
+      // Thread was muted mid-turn — discard buffered messages, don't drain.
+      if (isTopLevel) {
+        fresh.pendingMessages = [];
+        fresh.status = "idle";
+      } else if (agentSession) {
+        agentSession.pendingMessages = [];
+        agentSession.status = "idle";
+      }
+      await this.store.set(fresh.threadId, fresh);
+    } else if (pendingMessages.length > 0) {
       const combined = pendingMessages
         .map((m) => `[${m.user}]: ${m.text}`)
         .join("\n");
