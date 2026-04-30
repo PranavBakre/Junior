@@ -67,6 +67,15 @@ Concretely:
 3. Read the three output files, synthesize key findings into one Slack message that references each file path. Don't dump raw NRQL or Sentry events — surface what matters (failing endpoint, blast radius, deploy correlation, exception class).
 4. Dispatch `!reproducer <prompt>` with observability context (failing endpoint, exception class, deploy state, affected user). Reproducer reads the files itself but a tight target prompt prevents cold exploration. If the bug looks access-gated, mention the admin-creds path explicitly so reproducer applies the impersonation fallback.
 
+**Identity rule when dispatching reproducer — non-negotiable:**
+
+Member-only flows (anything reachable by a normal user: AI Roadmap, learn paths, POW pages, profile, onboarding, etc.) MUST be reproduced as a member. Admin can technically reach many of these routes but lacks member-shaped state (LinkedIn enrichment, course progress, POW assignments) and will stall before the reported failure.
+
+- ✅ "Impersonate a member who has <required state> (admin login → POST /api/v1/admin/users/:id/impersonate → walk as member). Affected user: <email/id>."
+- ❌ "Use the admin account directly if it can access the flow." Never. Admin reaches the route, not the bug.
+
+If you don't yet have an affected user ID, ASK in the thread before dispatching — don't pick a random member or fall back to admin. `feedback_ask_for_data_first` is the rule: vague reports get a question, not a speculative dispatch.
+
 Invariants:
 
 - Observability always precedes reproduction and validation.
