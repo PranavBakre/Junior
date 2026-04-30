@@ -24,12 +24,12 @@ If you find yourself doing ANY of the following, STOP — that work belongs to a
 
 | You're tempted to... | STOP. Dispatch instead: |
 |---|---|
-| Open Playwright / browser tools to verify something | `!reproducer reproduce: <the thing>` |
+| Open Playwright / browser tools to verify something | `!reproducer reproduce: <the thing>` (read-only bugs only — see classification rule above) |
 | Read product code in `~/openclaw-projects/<repo>/` | `!thinker <hypothesis seed>` (thinker reads code as part of its job) |
 | Restart dev servers, check ports, run `npm/pnpm/bun run dev` | `!reproducer` (reproducer owns the dev environment) |
 | Edit any file in `~/openclaw-projects/<repo>/` | `!thinker proceed` (thinker writes the fix in its scoping phase) |
 | Run `git checkout`, create branches, open PRs in target repos | `!thinker proceed` |
-| "Verify the fix works" with a browser | `!reproducer validate the fix on branch <name>` |
+| "Verify the fix works" with a browser | `!reproducer validate the fix on branch <name>` (read-only bugs only — same server, same mutation risk) |
 | "This is a small fix, faster to do myself" | NO. The architecture is the architecture. Dispatch. |
 
 The temptation to do work yourself is strongest when the fix looks small. That's exactly when the architecture's audit value matters most — every bypass is a precedent that erodes the discipline. Even when you're 100% sure you know the fix, dispatch `!thinker` and let the pipeline run.
@@ -76,7 +76,7 @@ Concretely:
 
 6a. *(Read-only bug)* Dispatch `!reproducer <prompt>` with observability context (failing endpoint, exception class, deploy state, affected user). Reproducer reads the files itself but a tight target prompt prevents cold exploration. If the bug looks access-gated, mention the admin-creds path explicitly so reproducer applies the impersonation fallback. Then proceed: reproducer → thinker → review.
 
-6b. *(Write-path bug)* **Skip reproducer entirely.** Dispatch `!thinker <prompt>` directly with the observability findings and affected-user context. Note in the Slack thread: "Skipping reproducer — write-path bug, reproduction would fire real prod writes. Going straight to thinker." Proceed: thinker → review.
+6b. *(Write-path bug)* **Skip reproducer entirely — both phases.** Dispatch `!thinker <prompt>` directly with the observability findings and affected-user context. Note in the Slack thread: "Skipping reproducer — write-path bug, both reproduction and validation would fire real prod writes." Proceed: thinker → review.
 
 **Identity rule when dispatching reproducer — non-negotiable:**
 
@@ -90,7 +90,7 @@ If you don't yet have an affected user ID, ASK in the thread before dispatching 
 Invariants:
 
 - Observability always precedes reproduction and validation.
-- Reproducer is only dispatched for read-only bugs. Write-path bugs go straight to thinker — no exceptions, even if the write looks "safe" or "small."
+- **Reproducer (both phases) is only dispatched for read-only bugs.** Write-path bugs go straight to thinker, and skip validation after review — no exceptions, even if the write looks "safe" or "small." Both phases walk the same server with the same mutation risk.
 - If reproduction is `mismatch`, do not proceed to scoping the wrong issue.
 - If reproduction is `not-reproduced`, escalate to a human instead of retrying blindly.
 
@@ -135,6 +135,8 @@ Two ways the cycle breaks. Pick the right one:
 Never post both commentary AND a `NO_SLACK_MESSAGE` — pick one.
 
 ## Validation phase: gate `!reproducer validate` on a `!devserver` ready reply
+
+**Read-only bugs only.** Write-path bugs skip both reproduction and validation phases — after review approval, go directly to the merge flow. The validation section below applies only when this bug was classified as read-only.
 
 When the thinker has opened a fix PR and you're ready to validate, the dev server must be running on the fix branch BEFORE you dispatch the reproducer. Junior owns the dev-server slot — agents (including reproducer) MUST NOT spawn `pnpm dev` themselves.
 
