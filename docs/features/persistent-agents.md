@@ -182,7 +182,7 @@ For observability fan-out (NR / Sentry / Vercel), the lead does NOT use multi-di
 
 **Operational directives** (added with the bug-pipeline worktree feature, [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md)) sit at the same syntactic layer as `!<agent>` but do NOT spawn a Claude process — junior handles them inline:
 
-- `!devserver <branch> [repo]` — acquire the per-repo dev-server slot, check out the branch in junior's dedicated dev-server worktree, restart `pnpm dev` if needed, post `ready @ localhost:<port>` when up. `repo` defaults to all entries in `session.worktreePaths` (every routed repo for this bug). Reproducer's phase-2 validation flow gates on this; humans can post it directly too.
+- `!devserver <branch> [repo]` — acquire the per-repo dev-server slot, check out the branch in junior's dedicated dev-server worktree, restart `pnpm dev` if needed, post `ready @ localhost:<port>` when up. `repo` defaults to the entries in `session.worktreePaths` filtered to those with a `devCommand` configured; if `session.worktreePaths` is empty (non-bug-pipeline thread, or one that called `!devserver` before lead's intake registered worktrees), the fallback is every repo with a `devCommand` configured. Reproducer's phase-2 validation flow gates on this; humans can post it directly too.
 - `!devserver status` — show queue depth + holder for every repo with a `devCommand`.
 - `!devserver kill <repo>` — kill the dev server for a repo (manual escape hatch when junior's tracking drifts). Bare `!devserver kill` (no repo) returns a usage hint.
 
