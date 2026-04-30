@@ -137,8 +137,17 @@ setInterval(() => {
 
 (async () => {
   // Bootstrap dev-server worktrees and check for external port conflicts before
-  // accepting any Slack events.
-  await devServerManager.bootstrap();
+  // accepting any Slack events. Failure here is non-fatal — log loudly and
+  // continue so other features keep working even if a single repo's worktree
+  // setup is broken (missing remote, dirty state, etc.).
+  try {
+    await devServerManager.bootstrap();
+  } catch (err) {
+    log.error(
+      "boot",
+      `dev-server bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
   await app.start();
 
