@@ -1,5 +1,7 @@
 # Worktree Manager
 
+> **Two flows live here.** The single-target-repo flow (driven by `!repo <name>`) creates one worktree per thread at `session.worktreePath`. The bug-pipeline flow (lead-driven) creates one worktree per routed repo per thread at `session.worktreePaths[repo]`, plus a dedicated dev-server worktree per repo at a fixed path. See [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md) for the full bug-pipeline design and [process-lifecycle.md](process-lifecycle.md) for the dev-server lifecycle that owns the dev-server worktree.
+
 ## Problem
 
 When a Slack thread needs to edit code in a target repo (example-backend, example-frontend), it needs its own git worktree so concurrent threads don't collide on file state. The worktree manager creates, tracks, and cleans up worktrees in target repos — not in junior's own workspace.
@@ -30,28 +32,29 @@ When a Slack thread needs to edit code in a target repo (example-backend, exampl
 
 ```typescript
 interface RepoConfig {
-  name: string; // "example-backend"
-  path: string; // "~/Projects/example-backend"
-  defaultBase: string; // "origin/main"
-  worktreeDir: string; // ".claude/worktrees" (relative to repo root)
+  name: string;                       // "gx-backend"
+  path: string;                       // "/Users/.../openclaw-projects/growthx/gx-backend"
+  defaultBase: string;                // "origin/main"
+  // Optional — bug-pipeline / dev-server fields:
+  worktreeSetupCommand?: string;      // e.g. "bin/setup-worktree.sh" — resolved relative to `path`
+  devCommand?: string;                // e.g. "pnpm dev", "npm run dev" — split on whitespace, no shell
+  devPort?: number;                   // e.g. 3000, 8000 — readiness probe target
+  readyUrl?: string;                  // e.g. "http://localhost:3000" — defaults to localhost:<devPort>
 }
-
-// configured via env or config file
-const repos: RepoConfig[] = [
-  {
-    name: "example-backend",
-    path: "~/Projects/example-backend",
-    defaultBase: "origin/main",
-    worktreeDir: ".claude/worktrees",
-  },
-  {
-    name: "example-frontend",
-    path: "~/Projects/example-frontend",
-    defaultBase: "origin/main",
-    worktreeDir: ".claude/worktrees",
-  },
-];
 ```
+
+The bug-pipeline + dev-server fields are optional. Repos that only need the `!repo` flow can leave them unset; repos that participate in the bug pipeline set them per [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md).
+
+## Public API (current)
+
+`WorktreeManager` (`src/worktree/manager.ts`):
+
+- `createWorktree(repoName, threadId, baseRef?, branchOverride?) → Promise<worktreePath>` — creates a worktree at `<repo.path>/.claude/worktrees/slack-<threadId>` (or whatever path `getWorktreePath` derives). The new branch is `branchOverride ?? slack/<threadId>`; the starting ref is `baseRef ?? repo.defaultBase`. If `repo.worktreeSetupCommand` is set, the manager runs `<repo.path>/<command> <worktreePath> <branch>` instead of `git fetch + git worktree add`.
+- `removeWorktree(repoName, threadId) → Promise<void>` — reads the actual current branch via `git -C <wt> branch --show-current` before deletion (so cleanup works for `branchOverride` callers), force-removes the worktree, and `git branch -D`s the branch. Both lookup and delete are wrapped in try/catch so missing/detached state is non-fatal.
+- `worktreeExists(repoName, threadId) → Promise<boolean>` and `isWorktreeDirty(worktreePath) → Promise<boolean>` — used by cleanup.
+- `getWorktreePath(repoName, threadId) → string` and `getBranchName(threadId) → string` — pure helpers (no I/O).
+
+The MCP tool `mcp__slack-bot__register_worktree({ thread_id, repo, branch? })` (in `src/mcp/slack-server.ts`) wraps `createWorktree` for lead's intake and persists the resulting path into `session.worktreePaths[repo]` via the session store using the refetch-then-mutate pattern.
 
 ## Iterations
 
