@@ -370,10 +370,21 @@ export class AgentDispatcher {
         }
       }
       if (releaseHandles.length > 0) {
-        await this.postSlack(
-          event,
-          `dev-server: slot timeout — released (${sortedRepos.join(", ")}).`,
-        );
+        // postSlack must not throw out of `finally`. handleMessage is fired
+        // and forgotten from index.ts, so any unhandled rejection past the
+        // 10-min sleep would surface as an `unhandledRejection` event with no
+        // catch site. Wrap defensively.
+        try {
+          await this.postSlack(
+            event,
+            `dev-server: slot timeout — released (${sortedRepos.join(", ")}).`,
+          );
+        } catch (err) {
+          log.warn(
+            "devserver",
+            `failed to post slot-timeout notification: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
   }
@@ -418,15 +429,8 @@ export class AgentDispatcher {
       return;
     }
 
-    // Kill via DevServerManager (accessible through the queue's internal reference).
-    // The queue doesn't expose kill() directly, so we call the devServerManager.
-    // Access via the queue's private field would require casting. Instead, we
-    // expose a kill helper on the queue (or just use the manager directly).
-    // Since the queue holds the manager internally, we call kill on it.
-    // We use a small type cast here — the manager is accessible on the queue.
-    const queueAsAny = this.devServerQueue as unknown as { devServerManager: { kill: (r: string) => Promise<void> } };
     try {
-      await queueAsAny.devServerManager.kill(repoName);
+      await this.devServerQueue.kill(repoName);
       await this.postSlack(event, `dev-server \`${repoName}\`: killed.`);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -472,6 +476,3 @@ function sleep(ms: number): Promise<void> {
 
 // Re-export for callers that import these from here.
 export { readWaiters, readHolderMeta } from "../lifecycle/dev-server-queue.ts";
-
-// Back-compat export name for callers that haven't been updated yet.
-export const SupportRouter = AgentDispatcher;

@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { SessionManager } from "../session/manager.ts";
-import { parseAgentDirectives, parseDevserverDirective, SupportRouter } from "./router.ts";
+import { parseAgentDirectives, parseDevserverDirective, AgentDispatcher } from "./router.ts";
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
   return {
@@ -30,14 +30,14 @@ describe("parseAgentDirectives", () => {
   });
 });
 
-describe("SupportRouter", () => {
+describe("AgentDispatcher", () => {
   it("routes unprefixed support-channel messages to lead", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
 
     await router.handleMessage(makeEvent({ text: "plain bug" }));
 
@@ -52,7 +52,7 @@ describe("SupportRouter", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
 
     await router.handleMessage(
       makeEvent({ text: "!echo first\ncommentary\n!reproducer second" }),
@@ -81,7 +81,7 @@ describe("SupportRouter", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
 
     await router.handleMessage(
       makeEvent({
@@ -103,7 +103,7 @@ describe("SupportRouter", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
 
     await router.handleMessage(
       makeEvent({
@@ -123,7 +123,7 @@ describe("SupportRouter", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
 
     await router.handleMessage(
       makeEvent({
@@ -147,7 +147,7 @@ describe("SupportRouter", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
 
     await router.handleMessage(
       makeEvent({
@@ -172,7 +172,7 @@ describe("SupportRouter", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(
+    const router = new AgentDispatcher(
       managerMock as unknown as SessionManager,
       new Set(["CBUGS"]), // CBUGS is the only support channel; CJUNIOR is not
     );
@@ -198,7 +198,7 @@ describe("SupportRouter", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(
+    const router = new AgentDispatcher(
       managerMock as unknown as SessionManager,
       new Set(["CBUGS"]),
     );
@@ -224,7 +224,7 @@ describe("SupportRouter", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const router = new SupportRouter(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
 
     await router.handleMessage(
       makeEvent({
@@ -288,7 +288,7 @@ describe("AgentDispatcher !devserver interception", () => {
       },
     };
 
-    const router = new SupportRouter(
+    const router = new AgentDispatcher(
       managerMock as unknown as SessionManager,
       new Set(["CBUGS"]),
       {
@@ -327,7 +327,7 @@ describe("AgentDispatcher !devserver interception", () => {
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
 
-    const router = new SupportRouter(
+    const router = new AgentDispatcher(
       managerMock as unknown as SessionManager,
       new Set(["CBUGS"]),
     );
