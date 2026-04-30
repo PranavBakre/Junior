@@ -85,7 +85,15 @@ interface ThreadSession {
   agentSessions: Map<string, AgentSession>;
   bugId: string | null;
   status: "idle" | "active" | "needs-human" | "done";
-  // existing fields (worktreePath, targetRepo, etc.) carry through
+  // existing fields (worktreePath, targetRepo, etc.) carry through.
+  // Bug-pipeline threads also populate worktreePaths, a Record<repoName, path>
+  // populated by lead via the `mcp__slack-bot__register_worktree` MCP tool on
+  // intake. Subsequent agents see the paths in the multi-repo `<workspace>`
+  // block at the top of their prompt and use them for ALL reads/edits/git
+  // ops — never the bare repos under `~/openclaw-projects/`. See
+  // [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md) and
+  // [worktree-manager.md](worktree-manager.md).
+  worktreePaths: Record<string, string>;
 }
 
 // One AgentSession per *persistent* agent dispatched in this thread.
@@ -171,6 +179,14 @@ For dispatching multiple **persistent** agents in one turn (rare — most pipeli
 Router rule: every line matching `^!<agent> ` in the message is a separate dispatch. Each persistent agent gets its own Claude process. Commentary lines are ignored by the router (humans still see them).
 
 For observability fan-out (NR / Sentry / Vercel), the lead does NOT use multi-directive dispatch — it uses parallel Task calls instead (see below).
+
+**Operational directives** (added with the bug-pipeline worktree feature, [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md)) sit at the same syntactic layer as `!<agent>` but do NOT spawn a Claude process — junior handles them inline:
+
+- `!devserver <branch> [repo]` — acquire the per-repo dev-server slot, check out the branch in junior's dedicated dev-server worktree, restart `pnpm dev` if needed, post `ready @ localhost:<port>` when up. `repo` defaults to all entries in `session.worktreePaths` (every routed repo for this bug). Reproducer's phase-2 validation flow gates on this; humans can post it directly too.
+- `!devserver status` — show queue depth + holder for every repo with a `devCommand`.
+- `!devserver kill <repo>` — kill the dev server for a repo (manual escape hatch when junior's tracking drifts). Bare `!devserver kill` (no repo) returns a usage hint.
+
+The dispatcher (`src/support/router.ts`) intercepts `!devserver` lines BEFORE the persistent-agent routing path. See [process-lifecycle.md](process-lifecycle.md) for the queue's lockfile + `onCompromised` mechanics.
 
 ### Sub-agent invocation (Task tool, internal)
 

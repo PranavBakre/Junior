@@ -1,6 +1,13 @@
 # Bug-pipeline worktree isolation + shared dev-server queue
 
-Status: design / not yet built. Captures the discussion in a Slack thread on 2026-04-29.
+Status: **landed (Scopes 1, 2a, 2b)**. Step 4 (this doc sync) shipped 2026-04-30.
+
+Implementation history:
+- Scope-1 (PR #3, merged 2026-04-29): per-thread worktrees + `register_worktree` MCP tool. Code: `WorktreeManager.createWorktree(repo, threadId, baseRef?, branchOverride?)`, `ThreadSession.worktreePaths`, multi-repo `<workspace>` block in `buildWorkspaceBlock`.
+- Scope-2a (PR #4, merged 2026-04-30): `DevServerManager` (`src/lifecycle/dev-server.ts`) — owns dev-server PID/branch tracking, idle TTL sweeper, shutdown teardown, startup orphan check. Independently fixed the leaked-`pnpm dev` bug.
+- Scope-2b (PR #5, merged 2026-04-30): `DevServerQueue` (`src/lifecycle/dev-server-queue.ts`) — `proper-lockfile` per repo, `.lock.meta.json` (atomic write-tmp + rename) and append-only NDJSON `.queue` for waiter introspection, `onCompromised` handler wired to `stealStale` so stale-lock takeovers recover instead of crashing the bot. New `!devserver <branch> [repo]` / `!devserver status` / `!devserver kill <repo>` directives in `src/support/router.ts`.
+
+Captures the discussion in a Slack thread on 2026-04-29.
 
 ## Problem
 
