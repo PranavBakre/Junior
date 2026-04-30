@@ -1,4 +1,5 @@
 import type { App } from "@slack/bolt";
+import type { AgentIdentity } from "../session/types.ts";
 import { splitResponse } from "./formatting.ts";
 import { log } from "../logger.ts";
 
@@ -24,6 +25,7 @@ export class SlackResponder {
     channel: string,
     threadTs: string,
     text: string,
+    identity?: AgentIdentity,
   ): Promise<void> {
     const chunks = splitResponse(text);
     log.info(
@@ -37,6 +39,9 @@ export class SlackResponder {
           channel,
           thread_ts: threadTs,
           text: chunk,
+          ...(identity
+            ? { username: identity.username, icon_emoji: identity.iconEmoji }
+            : {}),
         });
         log.info(
           "responder",
@@ -55,8 +60,10 @@ export class SlackResponder {
     channel: string,
     threadTs: string,
     text: string,
+    agentName: string = "lead",
   ): Promise<void> {
-    const existing = this.statusMessages.get(threadTs);
+    const key = this.statusKey(threadTs, agentName);
+    const existing = this.statusMessages.get(key);
 
     if (!existing) {
       // First call: post a new status message
@@ -67,13 +74,13 @@ export class SlackResponder {
           text,
         });
         if (result.ts) {
-          this.statusMessages.set(threadTs, {
+          this.statusMessages.set(key, {
             messageTs: result.ts,
             lastUpdateTime: Date.now(),
           });
           log.info(
             "responder",
-            `status.post thread=${threadTs} ts=${result.ts} preview="${preview(text)}"`,
+            `status.post thread=${threadTs} agent=${agentName} ts=${result.ts} preview="${preview(text)}"`,
           );
         }
       } catch (err) {
@@ -90,7 +97,7 @@ export class SlackResponder {
     if (now - existing.lastUpdateTime < 1000) {
       log.info(
         "responder",
-        `status.debounce thread=${threadTs} ts=${existing.messageTs}`,
+        `status.debounce thread=${threadTs} agent=${agentName} ts=${existing.messageTs}`,
       );
       return;
     }
@@ -104,7 +111,7 @@ export class SlackResponder {
       existing.lastUpdateTime = now;
       log.info(
         "responder",
-        `status.update thread=${threadTs} ts=${existing.messageTs} preview="${preview(text)}"`,
+        `status.update thread=${threadTs} agent=${agentName} ts=${existing.messageTs} preview="${preview(text)}"`,
       );
     } catch (err) {
       log.error(
@@ -114,10 +121,18 @@ export class SlackResponder {
     }
   }
 
-  async deleteStatus(channel: string, threadTs: string): Promise<void> {
-    const existing = this.statusMessages.get(threadTs);
+  async deleteStatus(
+    channel: string,
+    threadTs: string,
+    agentName: string = "lead",
+  ): Promise<void> {
+    const key = this.statusKey(threadTs, agentName);
+    const existing = this.statusMessages.get(key);
     if (!existing) {
-      log.info("responder", `status.delete.noop thread=${threadTs}`);
+      log.info(
+        "responder",
+        `status.delete.noop thread=${threadTs} agent=${agentName}`,
+      );
       return;
     }
 
@@ -128,7 +143,7 @@ export class SlackResponder {
       });
       log.info(
         "responder",
-        `status.delete thread=${threadTs} ts=${existing.messageTs}`,
+        `status.delete thread=${threadTs} agent=${agentName} ts=${existing.messageTs}`,
       );
     } catch (err) {
       log.error(
@@ -137,7 +152,7 @@ export class SlackResponder {
       );
     }
 
-    this.statusMessages.delete(threadTs);
+    this.statusMessages.delete(key);
   }
 
   async addReaction(
@@ -161,5 +176,9 @@ export class SlackResponder {
         `reaction.add.fail channel=${channel} ts=${messageTs} emoji=${emoji} err=${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private statusKey(threadTs: string, agentName: string): string {
+    return `${threadTs}:${agentName}`;
   }
 }

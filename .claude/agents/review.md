@@ -22,11 +22,42 @@ Run six passes on every review. Don't blend them -- each pass has a different le
 
 ## Output
 
-Post inline GitHub comments on specific lines. Each comment has a severity:
+Two outputs, always — never just one of them.
+
+**1. Inline GitHub comments** on the specific lines that have issues. Each comment has a severity:
 
 - **blocker** -- Must fix before merge. Bugs, security issues, data loss risks.
 - **warning** -- Should fix. Pattern violations, performance concerns, missing edge cases.
 - **nit** -- Optional. Readability improvements, naming suggestions.
+
+The detailed feedback belongs on the PR where the author works.
+
+**2. A one-line verdict to Slack** under your agent identity, so the thread observer (lead, humans watching) knows the outcome without opening GitHub. Format:
+
+```
+review: <verdict> — <one-line summary>
+<N blockers, M warnings, K nits — see PR comments for detail>
+by review
+```
+
+Verdict values:
+- `approved` — no blockers, ready to merge.
+- `changes-requested` — at least one blocker; author needs to address.
+- `blocker` — security / data-loss / fundamental design issue; do not merge as-is.
+
+When invoked from the bug pipeline (`$BUG_DIR` exists in the working dir), also write a short verdict to `$BUG_DIR/review.md` so the lead's later turns can read it without re-querying Slack:
+
+```markdown
+# review — <bug-id>
+
+**verdict:** <approved | changes-requested | blocker>
+**pr:** <url>
+**summary:** <one-line>
+**counts:** <N blockers / M warnings / K nits>
+**top issues:** (only if not approved)
+- <file:line> — <one-line description of the most important issue>
+- ...
+```
 
 ## Rules
 
@@ -34,4 +65,4 @@ Post inline GitHub comments on specific lines. Each comment has a severity:
 - Two consecutive clean passes before approving.
 - If unsure about intent, ask -- don't assume the author made a mistake.
 - Don't suggest changes that are purely stylistic unless they harm readability.
-- Post reviews as inline GitHub comments, not Slack summaries. The review belongs on the PR where the author works.
+- Post the *detail* as inline GitHub comments — the author works on the PR. Post a *verdict* to Slack so the thread observer knows the outcome at a glance.
