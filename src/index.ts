@@ -10,7 +10,7 @@ import { registerHomeTab } from "./slack/home.ts";
 import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
-import { SupportRouter } from "./support/router.ts";
+import { AgentDispatcher } from "./support/router.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
 import { DevServerManager } from "./lifecycle/dev-server.ts";
 import { DevServerQueue } from "./lifecycle/dev-server-queue.ts";
@@ -41,7 +41,7 @@ const supportChannels = new Set(
     .filter(([, def]) => def.agentType === "lead")
     .map(([channel]) => channel),
 );
-const supportRouter = new SupportRouter(sessionManager, supportChannels, {
+const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
   devServerQueue,
   sessionStore: store,
   slackClient: app.client,

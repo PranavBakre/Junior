@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { log } from "../logger.ts";
 import type { RepoConfig } from "../config.ts";
 import { WorktreeManager } from "../worktree/manager.ts";
+import { isPidAlive, isPortHeld } from "./process-utils.ts";
 
 export interface DevServerState {
   pid: number | null;
@@ -402,47 +403,9 @@ export function resolveReadyUrl(repo: RepoConfig): string {
   return `http://localhost:${repo.devPort}`;
 }
 
-/** Send signal 0 to check if a PID is alive. Returns false if ESRCH. */
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Promise-based sleep. */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Check if a TCP port is already bound by attempting a non-blocking connect
- * via Node's `net` module.
- *
- * Works on both macOS and Linux without depending on external tools.
- */
-async function isPortHeld(port: number): Promise<boolean> {
-  const net = await import("node:net");
-  return new Promise((resolve) => {
-    const socket = new net.Socket();
-    let settled = false;
-
-    const done = (held: boolean) => {
-      if (!settled) {
-        settled = true;
-        socket.destroy();
-        resolve(held);
-      }
-    };
-
-    socket.setTimeout(3_000);
-    socket.once("connect", () => done(true));
-    socket.once("error", () => done(false));
-    socket.once("timeout", () => done(false));
-    socket.connect(port, "127.0.0.1");
-  });
 }
 
 /** Run a git command in `cwd`. Throws on non-zero exit. */

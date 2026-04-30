@@ -250,7 +250,6 @@ export class SessionManager {
 
       case "build":
       case "frontend":
-      case "review":
       case "architect": {
         session.agentType = event.command;
         await this.store.set(session.threadId, session);

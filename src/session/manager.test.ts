@@ -364,15 +364,8 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("!review", () => {
-    it("sets agentType to review and continues to Claude", async () => {
-      const event = makeEvent({ command: "review", text: "Review this PR" });
-      await manager.handleMessage(event);
-
-      const session = await store.get("thread-1");
-      expect(session!.agentType).toBe("review");
-    });
-  });
+  // !review was removed from KNOWN_COMMANDS (it's now a persistent-agent
+  // directive handled by the dispatcher) — no manager-level test here.
 
   describe("!architect", () => {
     it("sets agentType to architect and continues to Claude", async () => {

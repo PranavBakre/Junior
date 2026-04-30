@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { log } from "../logger.ts";
 import type { RepoConfig } from "../config.ts";
 import type { DevServerManager, DevServerInfo } from "./dev-server.ts";
+import { isPidAlive, isPortHeld } from "./process-utils.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -113,30 +114,34 @@ export class DevServerQueue {
 
     let releaseLockFile: (() => Promise<void>) | null = null;
     let released = false;
+    // Captured AFTER ensure() returns so onCompromised knows which dev-server
+    // PID this acquire is responsible for cleaning up. See stealStale's
+    // doc-comment for the race this guards against.
+    let expectedOrphanPid: number | null = null;
 
     try {
       // Step 2: acquire the filesystem lock. Retries forever with jitter.
       //
       // `onCompromised` fires from inside proper-lockfile's `setTimeout`-driven
       // update loop when our lockfile mtime is no longer ours (i.e. another
-      // process took over after deciding our lock was stale). The default is
-      // `(err) => { throw err }` — but throwing from a setTimeout callback is
-      // an uncatchable uncaught exception that kills the entire bot process.
-      // We override with a fire-and-forget handler that runs `stealStale`
-      // (kills any orphan dev-server PID we left bound to the port) so the
-      // takeover actually recovers, and marks our local state as released so
-      // the user-facing release function below is a no-op. NOTE: proper-lockfile
-      // does not await the handler — keep it synchronous; do NOT make it async.
+      // process took over after deciding our lock was stale). proper-lockfile
+      // ignores the return value of this callback — do NOT mark it `async` and
+      // do NOT `await` inside it. The default handler is `(err) => { throw err }`,
+      // and throwing from a setTimeout callback is an uncatchable uncaught
+      // exception that crashes the bot process. We override with a synchronous
+      // handler that fire-and-forgets `stealStale` (cleaning the orphan PID we
+      // left bound) and marks local state as released so the user-facing
+      // release becomes a no-op.
       releaseLockFile = await lockFile(lockDir, {
         stale: slotTimeoutMs,
         retries: { forever: true, minTimeout: 1_000, maxTimeout: 5_000 },
         onCompromised: (err) => {
           log.warn(
             "dev-server-queue",
-            `lock compromised thread=${threadId} repo=${repoName}: ${err.message}; running stealStale`,
+            `lock compromised thread=${threadId} repo=${repoName}: ${err.message}; running stealStale (expectedOrphanPid=${expectedOrphanPid})`,
           );
           // Fire and forget — proper-lockfile won't await us.
-          this.stealStale(repoName).catch((killErr) => {
+          this.stealStale(repoName, expectedOrphanPid).catch((killErr) => {
             log.warn(
               "dev-server-queue",
               `stealStale after compromise failed repo=${repoName}: ${killErr instanceof Error ? killErr.message : String(killErr)}`,
@@ -162,6 +167,7 @@ export class DevServerQueue {
     try {
       // Step 3: bring the dev server up on the requested branch.
       info = await this.devServerManager.ensure(repoName, branch);
+      expectedOrphanPid = info.pid;
     } catch (err) {
       // Ensure failed — release the lock before propagating.
       await releaseLockFile();
@@ -241,15 +247,45 @@ export class DevServerQueue {
    * takes the lock but the previous holder's dev server may still be bound on
    * the port. This helper finds and kills such orphans.
    *
-   * Typically called as the `onCompromised` handler or after detecting a stale
-   * lock takeover.
+   * `expectedOrphanPid` is the dev-server PID this caller previously spawned
+   * and now expects to clean up. The race we guard against:
+   *
+   *   1. Thread A acquires; ensure() spawns PID X; A's expectedOrphanPid = X.
+   *   2. Thread A's lock goes stale (event loop stall, etc.).
+   *   3. Thread B steals the lock; B's ensure() kills X and spawns PID Y.
+   *   4. Thread A's onCompromised fires from inside its update timer and calls
+   *      stealStale. Without the guard, this would kill PID Y — Thread B's
+   *      freshly-started server, not an orphan.
+   *
+   * If the manager's currently-tracked PID for this repo no longer matches the
+   * one we expected, a different acquire has already replaced it; bail. If
+   * `expectedOrphanPid` is `null`, fall back to the legacy best-effort kill
+   * (used by direct callers that don't have a captured PID — e.g. boot-time
+   * orphan recovery).
    */
-  async stealStale(repoName: string): Promise<void> {
+  async stealStale(
+    repoName: string,
+    expectedOrphanPid: number | null = null,
+  ): Promise<void> {
     const repo = this.repos.find((r) => r.name === repoName);
     if (!repo?.devPort) return;
 
     const held = await isPortHeld(repo.devPort);
     if (!held) return;
+
+    if (expectedOrphanPid !== null) {
+      const tracked = this.devServerManager.status(repoName) as
+        | { pid: number | null }
+        | undefined;
+      const trackedPid = tracked?.pid ?? null;
+      if (trackedPid !== null && trackedPid !== expectedOrphanPid) {
+        log.info(
+          "dev-server-queue",
+          `stealStale repo=${repoName}: tracked pid=${trackedPid} != expected=${expectedOrphanPid}; another acquire already replaced the server, skipping kill`,
+        );
+        return;
+      }
+    }
 
     // Check if the PID in the meta matches any alive process listening on the port.
     // If meta is stale (different pid or null), kill the process on the port.
@@ -257,8 +293,6 @@ export class DevServerQueue {
     const meta = readHolderMeta(lockDir);
 
     if (meta?.holderPid && isPidAlive(meta.holderPid)) {
-      // The holder is still alive — that's either us or a legit prior holder.
-      // Don't kill unless we own the lock.
       log.warn(
         "dev-server-queue",
         `stealStale repo=${repoName}: port ${repo.devPort} held by pid=${meta.holderPid} which is still alive; deferring to DevServerManager.kill()`,
@@ -271,6 +305,15 @@ export class DevServerQueue {
       );
       await this.devServerManager.kill(repoName);
     }
+  }
+
+  /**
+   * Public passthrough to `DevServerManager.kill`, used by the `!devserver kill`
+   * directive. Keeps the directive handler from having to cast through a private
+   * field on the queue.
+   */
+  async kill(repoName: string): Promise<void> {
+    await this.devServerManager.kill(repoName);
   }
 
   // ---------------------------------------------------------------------------
@@ -389,37 +432,3 @@ export function ensureLockDir(lockDir: string): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PID / port helpers (module-level, reused by stealStale)
-// ---------------------------------------------------------------------------
-
-function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function isPortHeld(port: number): Promise<boolean> {
-  const net = await import("node:net");
-  return new Promise((resolve) => {
-    const socket = new net.Socket();
-    let settled = false;
-
-    const done = (held: boolean) => {
-      if (!settled) {
-        settled = true;
-        socket.destroy();
-        resolve(held);
-      }
-    };
-
-    socket.setTimeout(3_000);
-    socket.once("connect", () => done(true));
-    socket.once("error", () => done(false));
-    socket.once("timeout", () => done(false));
-    socket.connect(port, "127.0.0.1");
-  });
-}
