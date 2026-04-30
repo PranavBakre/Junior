@@ -94,6 +94,120 @@ Trap to watch:
 - Stale-lock takeover is automatic but blunt — when `proper-lockfile` detects a stale lock, it just steals it. We need to ALSO kill any orphan `pnpm dev` PID we find listening on the port at takeover time, otherwise the new holder restarts a server while the old one is still bound.
 - `proper-lockfile` writes the lockfile inside the directory you point at; the dev-server worktree's `.gitignore` must cover `.lock*` and `.queue*` so they don't show up as untracked.
 
+## Implementation specifics
+
+### Who creates worktrees, and how
+
+**Lead initiates, junior executes.** Concretely: junior's slack-bot MCP server exposes a new tool `register_worktree(repo, branch?)`. Lead calls it on intake, after writing `state.json`, once per routed repo. The tool:
+
+1. Resolves the repo's `RepoConfig`. Errors if unknown.
+2. If `repo.worktreeSetupCommand` is configured (e.g. `"bin/setup-worktree.sh"`), runs `<repo.path>/<command> <worktreePath> <branch>`. Otherwise runs `git fetch origin && git worktree add <worktreePath> -b <branch> <baseRef>` directly.
+3. Sets `worktreePath = <repo.path>/.claude/worktrees/slack-<threadId>` and `branch = slack/<threadId>` (unless caller overrides).
+4. Persists `session.worktreePaths[repo] = worktreePath` via `SessionManager.updateSession`.
+5. Returns `{ path, branch }` to the caller.
+
+Lead's prompt grows by ~3 lines: "after `state.json`, call `register_worktree` for each routed repo." Lead is the only persistent agent that calls this — workers see the paths via the workspace block, never call the tool themselves.
+
+### Multi-repo workspace block format
+
+`buildWorkspaceBlock` in `slack/thread-context.ts` currently emits one workspace. Extend it: when `session.worktreePaths` has entries, emit a block listing all of them. Format:
+
+```
+<workspace>
+You have isolated git worktrees for this thread. ALWAYS use these paths
+for reading code, editing files, and running git commands. NEVER touch
+the bare repos under ~/openclaw-projects/. NEVER run dev servers
+yourself — post `!devserver <branch>` instead.
+
+repo: gx-client-next
+  worktree: /Users/.../openclaw-projects/growthx/gx-client-next/.claude/worktrees/slack-<tid>
+  branch:   slack/<tid>
+  base:     origin/main
+
+repo: gx-backend
+  worktree: /Users/.../openclaw-projects/growthx/gx-backend/.claude/worktrees/slack-<tid>
+  branch:   slack/<tid>
+  base:     origin/main
+</workspace>
+```
+
+For non-bug threads (single `worktreePath`), keep the existing single-workspace format. The block is always injected on first turn; on resumed turns, only re-injected if paths changed (rare — usually only at intake).
+
+### Agent prompt rewrite plan (lands WITH Scope-1, not after)
+
+These edits ship in the same commit as the `register_worktree` tool — otherwise agents still cd into `~/openclaw-projects/` and the worktree creation does nothing.
+
+- **`runtime-environment.md`**: replace the "Repo locations" section. New text says: "Repo paths for THIS thread are listed in the `<workspace>` block at the top of your prompt. Use those — never `~/openclaw-projects/<repo>/` directly. The bare repos are the human developer's working trees; touching them corrupts active branches." Also: "Don't run `pnpm dev` / `npm run dev` / any dev server yourself. Post `!devserver <branch> [repo]` in the thread; junior owns the dev-server slot. Wait for junior's ready message before walking."
+- **`lead.md`**: add an intake step after `state.json`: "For each routed repo in `repo-routing.yaml`, call the `register_worktree` MCP tool. Capture the returned paths and reference them in the dispatch prompt to reproducer/thinker so they know which workspace to use."
+- **`reproducer.md`**: replace "check out the fix branch in `~/openclaw-projects/<repo>/`" with "post `!devserver <branch> <repo>` and wait for junior's `ready` reply. Walk against `localhost:<port>` as before."
+- **`thinker.md`**: no path edits needed — it already follows whatever cwd it's spawned in (which will be the worktree once Scope-1 lands). Add one sentence: "the workspace block at the top of your prompt has the repo paths. Use them; don't cd elsewhere."
+
+### `RepoConfig` schema additions
+
+```ts
+interface RepoConfig {
+  name: string;
+  path: string;
+  defaultBase: string;
+  // NEW:
+  devCommand?: string;          // "pnpm dev" | "npm run dev" — junior runs this
+  devPort?: number;             // 3000 | 3001 | 8000 — readiness probe target
+  readyUrl?: string;            // "http://localhost:3000" — what junior curls
+  worktreeSetupCommand?: string; // optional; e.g. "bin/setup-worktree.sh"
+}
+```
+
+Repos that don't run dev servers (e.g. a docs-only repo) leave the dev fields unset; `!devserver` returns "no dev server configured for `<repo>`."
+
+This kills the recurring pnpm-vs-npm class of mistake — agents never invoke either; junior reads the configured command.
+
+### `!devserver` directive
+
+Lives in `src/support/router.ts` next to the persistent-agent dispatch logic. Form: `!devserver <branch> [repo]` (repo optional — defaults to all repos in `session.worktreePaths`). Sub-commands: `!devserver status`, `!devserver kill <repo>`.
+
+Flow on `!devserver <branch>`:
+
+1. Junior posts a "queued" reaction immediately so the thread sees it was picked up.
+2. For each target repo, async: acquire the per-repo `proper-lockfile` lock. While waiting, update `.queue` file with `{ threadId, enqueuedAt }`.
+3. On lock acquired: read `.lock.meta.json` → if `currentBranch === <branch>`, skip restart (reuse the warm dev server). Otherwise: kill the tracked PID, `git fetch && git checkout <branch>` in the dev-server worktree, spawn `<devCommand>`, poll `<readyUrl>` until 200 (90s timeout). Update `.lock.meta.json`.
+4. Post a Slack message: `dev-server for <repo> on <branch>: ready @ localhost:<port>` (or `failed: <reason>` / `port held by external listener — free it and retry`).
+5. Hold the lock for the validation walk's `slotTimeoutMs` (default 10 min). On `release`: don't kill the dev server (the next caller may want it warm) — just release the lock and update `.lock.meta.json` to `{ holderThreadId: null, ... }`.
+
+The reproducer's `!reproducer validate ...` is dispatched by lead AFTER junior posts `ready`. Lead reads junior's reply in its next turn and only then dispatches reproducer.
+
+Humans posting `!devserver fix/foo gx-client-next` from a thread (or even outside any bug pipeline) get the same flow. Useful for quick "is this branch broken?" checks.
+
+### Lockfile bootstrap
+
+The lockfile path is `<repo>/.claude/dev-server/.lock`. The dev-server worktree must exist before the lock can be acquired. Junior on boot:
+
+1. For each `RepoConfig` with a `devCommand`, ensure `<repo>/.claude/dev-server/` exists as a worktree on `defaultBase`. Create it if missing using the same logic as `register_worktree` (with branch `dev-server-slot/<repo>` to avoid clashing with thread worktrees).
+2. Scan `<repo>/.claude/dev-server/.lock.meta.json`. If it claims a holder PID that doesn't exist anymore, treat as orphan — clear the lock and the queue file.
+3. Scan the configured `devPort`. If a listener exists and isn't us (PID mismatch with `.lock.meta.json`), refuse to spawn until the human frees it. Log it loudly.
+
+This is the entirety of `lifecycle/dev-server.ts`'s startup path; the rest is event-driven from `!devserver` directives.
+
+### Cleanup integration
+
+Extend `lifecycle/cleanup.ts`:
+
+- For each stale session, walk `session.worktreePaths` (in addition to the old single `worktreePath`). For each `(repo, path)`, run `worktreeManager.isWorktreeDirty(path)` — if clean, `removeWorktree(repo, threadId)`; if dirty, log a warning and skip.
+- The dev-server worktree (`<repo>/.claude/dev-server/`) is NEVER cleaned up by stale-session sweeps. It's a permanent fixture, owned by junior, lifecycled by `lifecycle/dev-server.ts`.
+
+### Test plan
+
+- **Unit**:
+  - `worktreeManager.createWorktree` / `removeWorktree` already covered. Add coverage for the `worktreeSetupCommand` branch — mock `Bun.spawn` and assert args.
+  - `register_worktree` MCP handler — mocks the worktree manager + session store, asserts `session.worktreePaths` is updated and the right path is returned.
+  - `buildWorkspaceBlock` with `worktreePaths` populated — assert the multi-repo format renders correctly.
+  - `!devserver` directive parser — `!devserver <branch>`, `!devserver <branch> <repo>`, `!devserver status`, `!devserver kill <repo>` all parse correctly.
+  - Lifecycle: stub `proper-lockfile`, assert acquire / release / stale-takeover behavior.
+- **Integration (real-git, real-fs)**:
+  - End-to-end: spin up `register_worktree` against a tmpdir-cloned repo, verify the worktree exists, branch is correct, `worktreePaths` is persisted.
+  - `!devserver` end-to-end: stub the dev command with a script that listens on a port; assert the lockfile + ready-probe + restart-on-branch-change paths.
+- **Manual (smoke)**:
+  - File a real bug in #bugs-backlog. Confirm worktrees get created, agents reference them in their tool calls (grep their stream output for the worktree path), `!devserver` ready message appears, reproducer phase-2 walks against the warm server.
+
 ## What's not in scope here
 
 - Replacing `repo-routing.yaml` with anything else.
@@ -101,9 +215,28 @@ Trap to watch:
 - Multi-repo dev-server orchestration beyond the FE+BE pair.
 - Auto-cleanup of the per-thread worktrees on bug-thread completion (already covered by the existing worktree cleanup feature).
 
-## Build order (rough)
+## Build order
 
-1. Scope-1: session schema (`worktreePaths`), lead-on-intake worktree creation per routed repo, prompt/runtime-doc updates, verify thinker writes in worktree.
-2. Scope-2a — dev-server lifecycle: junior tracks spawned dev-server PIDs per repo, owns spawn/kill/readiness, idle TTL, shutdown teardown, startup orphan check. This is a prerequisite for the queue and also independently fixes today's leaked-process bug.
-3. Scope-2b — queue: dedicated dev-server worktree per repo, repo-level mutex in junior, reproducer phase-2 acquires/releases, branch-change triggers restart, slot timeout + Slack note.
-4. Update `worktree-manager.md`, `process-lifecycle.md`, and `persistent-agents.md` to reflect the new model. Add a runtime-environment.md note that all repo paths in agent prompts are dynamic per thread, and that reproducer must NEVER spawn its own `pnpm dev` — it requests a slot from junior.
+Each step lands as one commit (or one PR) with prompt updates and code changes co-located so agents don't fall out of sync with the runtime.
+
+1. **Scope-1 — per-thread worktrees + prompt rewrite (one commit).**
+   - Session schema: add `session.worktreePaths: Record<repoName, path>`. Migration: existing sessions default to `{}`; old `worktreePath` field stays for the `!repo` flow.
+   - `RepoConfig`: add `worktreeSetupCommand?` (dev-server fields land in step 2).
+   - `WorktreeManager.createWorktree`: respect `worktreeSetupCommand` if set.
+   - New MCP tool `register_worktree(repo, branch?)` in `src/mcp/slack-server.ts`. Persists to `session.worktreePaths`.
+   - `buildWorkspaceBlock`: render the multi-repo format when `worktreePaths` is non-empty.
+   - Agent prompt updates: `runtime-environment.md`, `lead.md`, `reproducer.md`, `thinker.md` per the rewrite plan above.
+   - Tests: unit for the MCP handler + workspace block; integration for end-to-end worktree creation.
+2. **Scope-2a — dev-server lifecycle (one commit).**
+   - `RepoConfig`: add `devCommand`, `devPort`, `readyUrl`.
+   - New module `src/lifecycle/dev-server.ts` — tracks PID + branch per repo, spawn/kill/ready-probe, idle TTL, shutdown teardown.
+   - Bootstrap on junior boot: ensure `<repo>/.claude/dev-server/` exists; orphan-PID check; external-listener check.
+   - Tests: unit with mocked `Bun.spawn` for spawn/kill/probe paths.
+3. **Scope-2b — `!devserver` directive + lockfile queue (one commit).**
+   - Add `proper-lockfile` dep.
+   - Lockfile + `.lock.meta.json` + `.queue` files at `<repo>/.claude/dev-server/`.
+   - `!devserver <branch> [repo]`, `!devserver status`, `!devserver kill <repo>` directives in `src/support/router.ts`.
+   - Reproducer + lead prompt updates: reproducer waits for `!devserver` ready; lead orchestrates the dispatch sequence.
+   - Tests: directive parser unit; lockfile integration with a stubbed dev command.
+4. **Doc sync (one commit).**
+   - Update `docs/features/worktree-manager.md`, `docs/features/process-lifecycle.md`, `docs/features/persistent-agents.md` to point at this design as the current model.
