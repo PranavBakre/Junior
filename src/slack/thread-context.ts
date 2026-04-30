@@ -64,12 +64,20 @@ export async function resolveSlackMentions(
   const matches = [...text.matchAll(mentionPattern)];
   if (matches.length === 0) return text;
 
-  let resolved = text;
-  for (const match of matches) {
-    const name = await resolveUserName(app, match[1]);
-    resolved = resolved.replace(match[0], `@${name} (<@${match[1]}>)`);
-  }
-  return resolved;
+  // Pre-resolve unique IDs in parallel, then replace in one pass.
+  // Single-pass replace (regex + callback) avoids re-matching inside prior
+  // replacements when the same user is mentioned more than once.
+  const uniqueIds = [...new Set(matches.map((m) => m[1]))];
+  const nameMap = new Map(
+    await Promise.all(
+      uniqueIds.map(async (id) => [id, await resolveUserName(app, id)] as const),
+    ),
+  );
+
+  return text.replace(mentionPattern, (_, userId: string) => {
+    const name = nameMap.get(userId) ?? userId;
+    return `@${name} (<@${userId}>)`;
+  });
 }
 
 export interface WorkspaceContext {
