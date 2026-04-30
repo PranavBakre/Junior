@@ -74,13 +74,20 @@ function buildHomeBlocks(
   const idle = allSessions.filter((s) => s.status === "idle").length;
   const draining = allSessions.filter((s) => s.status === "draining").length;
   const withErrors = allSessions.filter((s) => s.lastError !== null).length;
+  const muted = allSessions.filter((s) => s.muted).length;
+
+  const summaryParts = [
+    `*Active:* ${active}`,
+    `*Idle:* ${idle}`,
+    `*Draining:* ${draining}`,
+    `*Errors:* ${withErrors}`,
+    ...(muted > 0 ? [`*Muted:* ${muted}`] : []),
+    `*Total:* ${allSessions.length}`,
+  ];
 
   blocks.push({
     type: "section",
-    text: {
-      type: "mrkdwn",
-      text: `*Active:* ${active}  |  *Idle:* ${idle}  |  *Draining:* ${draining}  |  *Errors:* ${withErrors}  |  *Total:* ${allSessions.length}`,
-    },
+    text: { type: "mrkdwn", text: summaryParts.join("  |  ") },
   });
 
   blocks.push({ type: "divider" });
@@ -179,7 +186,8 @@ function sessionBlock(
     : `*${session.threadId}*`;
 
   // Lead/primary session line
-  let text = `${title}\n${status}  |  Agent: \`${leadAgent}\`  |  Repo: ${repo}\nLast activity: ${ago}`;
+  const muteFlag = session.muted ? "  |  :no_bell: *Muted*" : "";
+  let text = `${title}\n${status}${muteFlag}  |  Agent: \`${leadAgent}\`  |  Repo: ${repo}\nLast activity: ${ago}`;
 
   if (pending > 0) {
     text += `  |  Pending: ${pending}`;
