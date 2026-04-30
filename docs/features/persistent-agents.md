@@ -52,14 +52,14 @@ Every orchestration decision is visible. Humans can see exactly what the lead as
 - Lead orchestrates by emitting `!<agent> <prompt>` lines in normal Slack messages. Router parses those lines and dispatches to persistent agents only. Sub-agents are never invoked via `!<agent>` — only via Task tool, and only by persistent agents.
 - Lead is the _only_ role that can emit `!<agent>` directives. Workers can use the Task tool for stateless data fetches but cannot trigger more persistent work.
 - Lead is awoken on every event in the thread (human messages and worker responses) and can choose silence (via `NO_SLACK_MESSAGE` or by posting commentary with no directives) — silence breaks the cycle.
-- Observability fan-out: lead issues parallel Task calls to nr-research / sentry-fetch / vercel-status in **one turn**. All three run concurrently. Once all return, lead reads their files, synthesizes findings into a single Slack message, then dispatches `!reproducer` with that context.
-- Reproducer runs _after_ observability completes — it needs failing endpoints, exception classes, deploy state as context.
+- Observability fan-out: lead issues parallel Task calls to nr-research / sentry-fetch / vercel-status in **one turn**. All three run concurrently. Once all return, lead reads their files, synthesizes findings into a single Slack message, then dispatches `!reproducer` with that context (read-only bugs only — write-path bugs go straight to thinker).
+- Reproducer runs _after_ observability completes and only for read-only bugs — it needs failing endpoints, exception classes, deploy state as context. Write-path bugs skip reproducer (both phases) to avoid prod side-effects.
 - Re-queries go through lead. Round caps (research max 3, review max 2) live in the lead's prompt as semantic guardrails, not in the router.
 - Live progress is signaled via a **status pill** that streams `tool_use` events (one pill per active agent session). Humans see "calling nr-research, sentry-fetch, vercel-status (3 in progress)" → "1 done, 2 in progress" → cleared. `tool_result` content stays internal.
 
 ## Invariants (architectural commitments)
 
-1. **Observability ALWAYS precedes UI verification.** Both for reproduction phase and validation phase. The reproducer runs both phases with observability context, never cold.
+1. **Observability ALWAYS precedes UI verification.** When reproducer runs (read-only bugs only), it always has observability context, never cold. Write-path bugs skip both phases of reproducer — observability still runs first, it just feeds thinker directly.
 2. **Lead is the only role that emits `!<agent>` directives.** Workers can post any commentary, but they cannot trigger more work.
 3. **The Slack thread IS the message bus.** No internal-dispatch-plus-audit-log split. Every cross-agent call goes through Slack events. One source of truth, full audit trail by construction.
 4. **Silence is a first-class action.** Cycle-break by composition, not enforcement. No router-level retry counters.
