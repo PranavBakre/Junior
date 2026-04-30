@@ -10,6 +10,8 @@
  * spawn / probe / kill / idle-TTL.
  */
 
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { log } from "../logger.ts";
 import type { RepoConfig } from "../config.ts";
 import { WorktreeManager } from "../worktree/manager.ts";
@@ -104,11 +106,14 @@ export class DevServerManager {
    * Two concurrent `ensure(repo, branch)` calls both miss the reuse branch,
    * both run `git reset --hard`, and both call `Bun.spawn`. The second
    * `state.set` orphans the first PID — it stays bound to the port forever
-   * with no in-memory handle to kill. Today the only caller is the (yet to
-   * land) Scope-2b lockfile path, which already serializes via
-   * `proper-lockfile`. If you add a second caller before the lock is wired,
-   * you MUST add per-repo serialization at the call site, OR build it into
-   * this method (an in-memory `Map<repoName, Promise<DevServerInfo>>` of
+   * with no in-memory handle to kill.
+   *
+   * **This is now satisfied by `DevServerQueue.acquire()` (Scope-2b).**
+   * `acquire()` calls `proper-lockfile.lock()` before calling `ensure()`,
+   * serializing concurrent callers at the filesystem level. All production
+   * callers should go through `DevServerQueue.acquire()`, NOT call `ensure()`
+   * directly. If you add a direct caller, you MUST add per-repo serialization
+   * at the call site (an in-memory `Map<repoName, Promise<DevServerInfo>>` of
    * in-flight calls would be the minimal fix). Do not assume callers are
    * single-threaded just because nothing visibly races today.
    */
@@ -263,6 +268,23 @@ export class DevServerManager {
           );
           // Non-fatal: dev-server usage will fail gracefully at ensure() time.
         }
+      }
+
+      // Write .gitignore for lock/queue files so they don't appear as
+      // untracked in the dev-server worktree. Fixed content — overwrite on
+      // each boot for idempotency. Only write if the worktree directory
+      // actually exists (creation above may have failed).
+      const wtPath = this.worktreeManager.getWorktreePath(repo.name, DEV_SERVER_THREAD_ID);
+      const gitignorePath = join(wtPath, ".gitignore");
+      try {
+        // Attempt write regardless of whether `exists` was true at the start of
+        // this iteration: the worktree may have been created just above.
+        writeFileSync(gitignorePath, ".lock*\n.queue*\n");
+      } catch (err) {
+        log.warn(
+          "dev-server",
+          `bootstrap: failed to write .gitignore for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
 
       // Step 2: scan the configured port for external listeners.
