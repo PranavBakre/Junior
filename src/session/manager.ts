@@ -201,6 +201,7 @@ export class SessionManager {
           `*Status:* ${session.status}`,
           `*Muted:* ${session.muted ? "yes" : "no"}`,
           `*Agent:* ${session.agentType ?? "default"}`,
+          `*Default Agent:* ${session.defaultAgent ?? "channel default"}`,
           `*Repo:* ${session.targetRepo ?? "none"}`,
           `*Worktree:* ${session.worktreePath ?? "none"}`,
           `*Last activity:* ${ago}`,
@@ -219,6 +220,7 @@ export class SessionManager {
           "`!architect` — Architect agent (continues to Claude)",
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
+          "`!agent <junior|lead>` — Set thread default agent",
           "`!cancel` — Kill running process, keep session",
           "`!reset` — Reset session",
           "`!status` — Show session status",
@@ -286,6 +288,22 @@ export class SessionManager {
         session.baseRef = ref;
         await this.store.set(session.threadId, session);
         this.onCommandResponse?.(event, `Base ref set to *${ref}*.`);
+        return true;
+      }
+
+      case "agent": {
+        const agentName = event.text.trim().toLowerCase();
+        if (agentName === "junior" || agentName === "default") {
+          session.defaultAgent = "junior";
+          await this.store.set(session.threadId, session);
+          this.onCommandResponse?.(event, "Thread default set to *Junior*. Future messages will go to Junior instead of the channel default.");
+        } else if (agentName === "lead") {
+          session.defaultAgent = "lead";
+          await this.store.set(session.threadId, session);
+          this.onCommandResponse?.(event, "Thread default set to *Lead*. Future messages will go to the support lead.");
+        } else {
+          this.onCommandResponse?.(event, `Unknown agent "${agentName}". Use \`!agent junior\` or \`!agent lead\`.`);
+        }
         return true;
       }
 
