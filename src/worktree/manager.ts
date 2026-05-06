@@ -18,7 +18,7 @@ export class WorktreeManager {
    *   pass `baseRef` to fork from a non-main starting point.
    *
    * Setup-script delegation contract:
-   *   `<repo.path>/<command> <branch> --path <abs> [--base <ref>]`
+   *   `<repo.path>/<command> <branch> --path <abs> --base <ref>`
    *
    * Returns the worktree path.
    */
