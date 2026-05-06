@@ -4,7 +4,12 @@ export interface RepoConfig {
   name: string;
   path: string;
   defaultBase: string;
-  /** Optional setup script for worktree creation. Run as `<repo.path>/<command> <worktreePath> <branch>`. */
+  /**
+   * Optional post-create hook. Junior creates the worktree itself
+   * (`git fetch` + `git worktree add`); if set, this is invoked afterward as
+   * `<repo.path>/<command> <abs-worktree-path>`. Use for env-file copying,
+   * dependency install, MCP migration.
+   */
   worktreeSetupCommand?: string;
   /**
    * Command to start the dev server (e.g. "pnpm dev", "npm run dev").
