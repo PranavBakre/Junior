@@ -12,8 +12,8 @@ import type { RepoConfig } from "../config.ts";
 import { WorktreeManager } from "./manager.ts";
 
 // Real-fs integration test. We create a tiny git repo in a tmpdir and let
-// WorktreeManager run actual git commands against it, plus a fake
-// post-create setup script we can verify by side effects.
+// WorktreeManager run actual git commands against it, plus fake setup scripts
+// that exercise the delegation contract.
 
 let repoRoot: string;
 let setupMarker: string;
@@ -48,30 +48,50 @@ beforeAll(async () => {
   await runIn(repoRoot, ["git", "remote", "add", "origin", repoRoot]);
   await runIn(repoRoot, ["git", "fetch", "-q", "origin"]);
 
-  // Fake post-create setup script. Single argument: the absolute worktree
-  // path. Junior has already created the worktree before this runs — the
-  // script writes a marker file containing $1 to confirm it ran with the
-  // right argument, and validates the new contract internally.
+  // Fake setup script. Two args: <branch_name> <abs_target_path>. Owns the
+  // full worktree-creation lifecycle: fetch + worktree add + marker write.
+  // This mirrors the real contract — Junior never pre-creates the worktree
+  // when delegating; it hands the script the branch and target path and the
+  // script does the rest.
   setupMarker = join(repoRoot, "setup-marker.txt");
   const setupScript = join(repoRoot, "fake-setup.sh");
   writeFileSync(
     setupScript,
     `#!/usr/bin/env bash
 set -e
-# Validate single-arg contract: must be an existing absolute path directory.
-if [[ "$1" != /* || ! -d "$1" ]]; then
-  echo "fake-setup: expected absolute path to existing dir, got: $1" >&2
+# Validate two-arg contract.
+if [[ "$#" -ne 2 ]]; then
+  echo "fake-setup: expected 2 args (branch, abs-target-path), got: $#" >&2
   exit 1
 fi
-# Reject extra args — new contract is single-arg.
-if [[ -n "$2" ]]; then
-  echo "fake-setup: unexpected second argument: $2" >&2
+BRANCH="$1"
+ABS_TARGET="$2"
+if [[ "$ABS_TARGET" != /* ]]; then
+  echo "fake-setup: expected absolute target path, got: $ABS_TARGET" >&2
   exit 1
 fi
-echo "$1" > "${setupMarker}"
+git fetch origin --prune
+git worktree add "$ABS_TARGET" -b "$BRANCH" origin/main
+printf '%s\\n%s\\n' "$BRANCH" "$ABS_TARGET" > "${setupMarker}"
 `,
   );
   chmodSync(setupScript, 0o755);
+
+  // Non-fetching setup script — used by the inverse autofetch guard test.
+  // Creates the worktree but never runs `git fetch`. If Junior also doesn't
+  // fetch (correct delegating behavior), a fresh commit on origin/main won't
+  // appear in the resulting worktree.
+  const nonFetchingScript = join(repoRoot, "non-fetching-setup.sh");
+  writeFileSync(
+    nonFetchingScript,
+    `#!/usr/bin/env bash
+set -e
+BRANCH="$1"
+ABS_TARGET="$2"
+git worktree add "$ABS_TARGET" -b "$BRANCH" origin/main
+`,
+  );
+  chmodSync(nonFetchingScript, 0o755);
 
   // Failing setup script.
   const failScript = join(repoRoot, "fail-setup.sh");
@@ -90,7 +110,7 @@ afterAll(() => {
  * Add a fresh commit on `main` (which is also the `origin` remote since
  * the test repo's origin self-references). The new file is only visible
  * via `origin/main` AFTER a fresh `git fetch origin`, so its presence in
- * a created worktree proves Junior fetched before `git worktree add`.
+ * a created worktree proves the creator fetched before `git worktree add`.
  *
  * Returns the filename written.
  */
@@ -103,7 +123,7 @@ async function addFreshCommitOnMain(label: string): Promise<string> {
 }
 
 describe("WorktreeManager.createWorktree", () => {
-  it("creates worktree via git when worktreeSetupCommand is not set", async () => {
+  it("creates worktree inline when worktreeSetupCommand is not set", async () => {
     const repos: RepoConfig[] = [
       { name: "default-flow", path: repoRoot, defaultBase: "origin/main" },
     ];
@@ -119,13 +139,13 @@ describe("WorktreeManager.createWorktree", () => {
     );
     expect(existsSync(wtPath)).toBe(true);
     expect(existsSync(join(wtPath, "README.md"))).toBe(true);
-    // Regression guard: fetch ran, so origin/main is fresh.
+    // Inline-path autofetch regression guard: fetch ran, so origin/main is fresh.
     expect(existsSync(join(wtPath, freshFile))).toBe(true);
 
     await wm.removeWorktree("default-flow", "default-thread");
   });
 
-  it("runs setup hook with single arg AFTER creating the worktree", async () => {
+  it("delegates to worktreeSetupCommand with [branch, absTargetPath]", async () => {
     const repos: RepoConfig[] = [
       {
         name: "custom-flow",
@@ -140,16 +160,16 @@ describe("WorktreeManager.createWorktree", () => {
 
     const wtPath = await wm.createWorktree("custom-flow", "custom-thread");
 
-    // Junior created the worktree itself before the hook ran.
+    // Script created the worktree (manager did not pre-create).
     expect(existsSync(wtPath)).toBe(true);
     expect(existsSync(join(wtPath, "README.md"))).toBe(true);
 
-    // Setup hook ran with single arg = abs worktree path. The script
-    // validates the contract internally (abs path, exists, no $2) and
-    // exits non-zero on violation, which would have failed createWorktree.
+    // Marker proves the script received exactly the two expected args.
     expect(existsSync(setupMarker)).toBe(true);
-    const marker = await Bun.file(setupMarker).text();
-    expect(marker.trim()).toBe(
+    const marker = (await Bun.file(setupMarker).text()).trim();
+    const [branchArg, pathArg] = marker.split("\n");
+    expect(branchArg).toBe("slack/custom-thread");
+    expect(pathArg).toBe(
       join(repoRoot, ".claude/worktrees/slack-custom-thread"),
     );
     expect(wtPath).toBe(
@@ -159,36 +179,32 @@ describe("WorktreeManager.createWorktree", () => {
     await wm.removeWorktree("custom-flow", "custom-thread");
   });
 
-  it("fetches origin even when worktreeSetupCommand is set (autofetch regression guard)", async () => {
+  it("does NOT fetch when delegating (script owns fetch — inverse autofetch guard)", async () => {
     const repos: RepoConfig[] = [
       {
-        name: "fetch-with-hook-flow",
+        name: "no-double-fetch-flow",
         path: repoRoot,
         defaultBase: "origin/main",
-        worktreeSetupCommand: "fake-setup.sh",
+        worktreeSetupCommand: "non-fetching-setup.sh",
       },
     ];
     const wm = new WorktreeManager(repos);
 
-    if (existsSync(setupMarker)) rmSync(setupMarker);
-
-    // Add a commit on main that's only visible after `git fetch origin`.
-    const freshFile = await addFreshCommitOnMain("with-hook");
+    // Drop a fresh commit on main. The non-fetching setup script will NOT
+    // fetch, and Junior must NOT fetch either when delegating. So the new
+    // commit must be ABSENT from the resulting worktree. If the file shows
+    // up, Junior fetched behind the script's back — a regression.
+    const freshFile = await addFreshCommitOnMain("no-double-fetch");
 
     const wtPath = await wm.createWorktree(
-      "fetch-with-hook-flow",
-      "fetch-thread",
+      "no-double-fetch-flow",
+      "no-double-thread",
     );
 
-    // If Junior fetched before `git worktree add`, origin/main is current
-    // and the worktree contains the new file. If fetch was skipped (the
-    // old behaviour when worktreeSetupCommand was set), the file would
-    // be absent.
-    expect(existsSync(join(wtPath, freshFile))).toBe(true);
-    // Hook still ran.
-    expect(existsSync(setupMarker)).toBe(true);
+    expect(existsSync(wtPath)).toBe(true);
+    expect(existsSync(join(wtPath, freshFile))).toBe(false);
 
-    await wm.removeWorktree("fetch-with-hook-flow", "fetch-thread");
+    await wm.removeWorktree("no-double-fetch-flow", "no-double-thread");
   });
 
   it("throws when worktreeSetupCommand exits non-zero", async () => {
@@ -206,12 +222,13 @@ describe("WorktreeManager.createWorktree", () => {
       wm.createWorktree("fail-flow", "fail-thread"),
     ).rejects.toThrow(/fail-setup\.sh failed/);
 
-    // Worktree was created before the hook failed — clean up so any
-    // future test runs against the same tmpdir start clean.
-    await wm.removeWorktree("fail-flow", "fail-thread");
+    // The failing script never created the worktree, so no cleanup needed.
+    expect(existsSync(wm.getWorktreePath("fail-flow", "fail-thread"))).toBe(
+      false,
+    );
   });
 
-  it("forwards baseRef as the worktree's starting point (not as branch name)", async () => {
+  it("forwards baseRef as the worktree's starting point (inline path)", async () => {
     const repos: RepoConfig[] = [
       { name: "baseref-flow", path: repoRoot, defaultBase: "origin/main" },
     ];
@@ -239,7 +256,7 @@ describe("WorktreeManager.createWorktree", () => {
     await wm.removeWorktree("baseref-flow", "baseref-thread");
   });
 
-  it("uses branchOverride for the new branch name (independent of baseRef)", async () => {
+  it("uses branchOverride for the new branch name (inline path)", async () => {
     const repos: RepoConfig[] = [
       {
         name: "branch-override-flow",
@@ -280,5 +297,33 @@ describe("WorktreeManager.createWorktree", () => {
     await listProc.exited;
     const listed = (await new Response(listProc.stdout).text()).trim();
     expect(listed).toBe("");
+  });
+
+  it("delegates branchOverride to the setup script", async () => {
+    const repos: RepoConfig[] = [
+      {
+        name: "delegate-branch-override",
+        path: repoRoot,
+        defaultBase: "origin/main",
+        worktreeSetupCommand: "fake-setup.sh",
+      },
+    ];
+    const wm = new WorktreeManager(repos);
+
+    if (existsSync(setupMarker)) rmSync(setupMarker);
+
+    const wtPath = await wm.createWorktree(
+      "delegate-branch-override",
+      "delegate-override-thread",
+      undefined,
+      "fix/delegated-name",
+    );
+
+    const marker = (await Bun.file(setupMarker).text()).trim();
+    const [branchArg, pathArg] = marker.split("\n");
+    expect(branchArg).toBe("fix/delegated-name");
+    expect(pathArg).toBe(wtPath);
+
+    await wm.removeWorktree("delegate-branch-override", "delegate-override-thread");
   });
 });
