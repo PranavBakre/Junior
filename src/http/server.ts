@@ -22,13 +22,6 @@ import { log } from "../logger.ts";
 const PUBLIC_DIR = path.resolve(import.meta.dir, "../../public");
 const startedAt = new Date().toISOString();
 
-function cors(res: Response): Response {
-  res.headers.set("Access-Control-Allow-Origin", "*");
-  res.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.headers.set("Access-Control-Allow-Headers", "Content-Type");
-  return res;
-}
-
 export interface HttpServerDeps {
   store: SessionStore;
   config: Config;
@@ -46,56 +39,54 @@ export function startHttpServer(deps: HttpServerDeps): void {
     async fetch(req) {
       const url = new URL(req.url);
 
+      // No CORS headers — the dashboard at public/index.html is served from
+      // the same origin (127.0.0.1:<port>) as the API, so cross-origin support
+      // would only let arbitrary websites read this server's data when the
+      // operator visits them. Loopback-only binding is the threat model.
       if (req.method === "OPTIONS") {
-        return cors(new Response(null, { status: 204 }));
+        return new Response(null, { status: 204 });
       }
 
       try {
-        let res: Response;
-
         if (url.pathname === "/" || url.pathname === "/index.html") {
           const file = Bun.file(path.join(PUBLIC_DIR, "index.html"));
           if (await file.exists()) {
-            res = new Response(file, {
+            return new Response(file, {
               headers: { "Content-Type": "text/html; charset=utf-8" },
             });
-          } else {
-            res = new Response("Dashboard not found. Create public/index.html", {
-              status: 404,
-            });
           }
-          return cors(res);
+          return new Response("Dashboard not found. Create public/index.html", {
+            status: 404,
+          });
         }
 
         if (url.pathname === "/api/health") {
-          res = await handleHealth(store, config, startedAt);
+          return await handleHealth(store, config, startedAt);
         } else if (url.pathname === "/api/sessions") {
-          res = await handleSessions(store);
+          return await handleSessions(store);
         } else if (url.pathname.startsWith("/api/sessions/")) {
           const threadId = decodeURIComponent(
             url.pathname.slice("/api/sessions/".length),
           );
-          res = await handleSessionDetail(store, threadId);
+          return await handleSessionDetail(store, threadId);
         } else if (url.pathname === "/api/dev-server") {
-          res = await handleDevServers(devServerManager, devServerQueue, repos);
+          return await handleDevServers(devServerManager, devServerQueue, repos);
         } else if (url.pathname === "/api/logs") {
-          res = await handleLogs(url.searchParams);
+          return await handleLogs(url.searchParams);
         } else if (url.pathname === "/api/memory") {
-          res = await handleMemoryList();
+          return await handleMemoryList();
         } else if (url.pathname.startsWith("/api/memory/")) {
           const filePath = decodeURIComponent(
             url.pathname.slice("/api/memory/".length),
           );
-          res = await handleMemoryRead(filePath);
-        } else {
-          res = Response.json({ error: "not found" }, { status: 404 });
+          return await handleMemoryRead(filePath);
         }
-
-        return cors(res);
+        return Response.json({ error: "not found" }, { status: 404 });
       } catch (err) {
         log.error("http", `${req.method} ${url.pathname} — ${err}`);
-        return cors(
-          Response.json({ error: "internal server error" }, { status: 500 }),
+        return Response.json(
+          { error: "internal server error" },
+          { status: 500 },
         );
       }
     },
