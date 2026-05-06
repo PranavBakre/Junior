@@ -209,6 +209,8 @@ describe("WorktreeManager.createWorktree", () => {
       "slack/custom-thread",
       "--path",
       join(repoRoot, ".claude/worktrees/slack-custom-thread"),
+      "--base",
+      "origin/main",
     ]);
     expect(wtPath).toBe(
       join(repoRoot, ".claude/worktrees/slack-custom-thread"),
@@ -254,7 +256,7 @@ describe("WorktreeManager.createWorktree", () => {
     await wm.removeWorktree("delegate-baseref", "delegate-baseref-thread");
   });
 
-  it("does NOT forward --base when baseRef is unset", async () => {
+  it("forwards repo.defaultBase as --base when baseRef is unset", async () => {
     const repos: RepoConfig[] = [
       {
         name: "delegate-no-baseref",
@@ -271,9 +273,9 @@ describe("WorktreeManager.createWorktree", () => {
 
     const markerText = await Bun.file(setupMarker).text();
     const args = markerText.split("\n").filter((l) => l.length > 0);
-    expect(args).not.toContain("--base");
-    // And specifically: only branch + --path + path, nothing extra.
-    expect(args.length).toBe(3);
+    expect(args).toContain("--base");
+    expect(args).toContain("origin/main");
+    expect(args.length).toBe(5);
 
     await wm.removeWorktree("delegate-no-baseref", "no-baseref-thread");
   });
@@ -421,7 +423,7 @@ describe("WorktreeManager.createWorktree", () => {
     const args = (await Bun.file(setupMarker).text())
       .split("\n")
       .filter((l) => l.length > 0);
-    expect(args).toEqual(["fix/delegated-name", "--path", wtPath]);
+    expect(args).toEqual(["fix/delegated-name", "--path", wtPath, "--base", "origin/main"]);
 
     await wm.removeWorktree("delegate-branch-override", "delegate-override-thread");
   });
