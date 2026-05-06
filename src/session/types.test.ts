@@ -78,6 +78,11 @@ describe("createSession", () => {
     expect(session.verbosity).toBe("verbose");
   });
 
+  it("has muted set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.muted).toBe(false);
+  });
+
   it("has lastActivity as a recent timestamp", () => {
     const before = Date.now();
     const session = createSession("t1", "C01");
@@ -108,6 +113,7 @@ describe("createSession", () => {
       "lastError",
       "leadSessionId",
       "model",
+      "muted",
       "pendingMessages",
       "pid",
       "sessionId",
