@@ -181,5 +181,16 @@ setInterval(() => {
     supportRouter.handleMessage(event);
   }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
 
+  if (config.http.enabled) {
+    const { startHttpServer } = await import("./http/server.ts");
+    startHttpServer({
+      store,
+      config,
+      devServerManager,
+      devServerQueue,
+      repos: config.repos,
+    });
+  }
+
   log.info("boot", "Junior is running (Socket Mode)");
 })();

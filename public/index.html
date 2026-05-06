@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Junior — Dashboard</title>
+    <style>
+      :root {
+        --bg: #0e0f12;
+        --bg-elev: #16181d;
+        --bg-elev-2: #1c1f26;
+        --border: #262a32;
+        --fg: #e6e8ec;
+        --fg-dim: #9aa0aa;
+        --fg-faint: #6b7180;
+        --accent: #7aa2f7;
+        --green: #9ece6a;
+        --yellow: #e0af68;
+        --red: #f7768e;
+        --purple: #bb9af7;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      header {
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 16px;
+        align-items: baseline;
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+        z-index: 10;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+      header .meta { color: var(--fg-dim); font-size: 12px; }
+      header .meta b { color: var(--fg); font-weight: 500; }
+      header .pulse {
+        margin-left: auto;
+        color: var(--fg-faint);
+        font-size: 11px;
+      }
+      main { padding: 20px; max-width: 1280px; margin: 0 auto; }
+      section { margin-bottom: 32px; }
+      h2 {
+        margin: 0 0 10px;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--fg-dim);
+      }
+      .panel {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .row {
+        display: grid;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .row:last-child { border-bottom: none; }
+      .row.session {
+        grid-template-columns: minmax(200px, 1.2fr) 1fr 1fr;
+        align-items: start;
+      }
+      .row.devserver {
+        grid-template-columns: minmax(160px, 1fr) 2fr 1fr;
+      }
+      .row .col-label {
+        font-size: 11px;
+        color: var(--fg-faint);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 2px;
+      }
+      .agent-list {
+        margin-top: 8px;
+        border-left: 2px solid var(--border);
+        padding-left: 10px;
+      }
+      .agent-row {
+        display: grid;
+        grid-template-columns: 90px 90px 1fr 1fr;
+        gap: 10px;
+        padding: 4px 0;
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .agent-row b { color: var(--fg); font-weight: 500; }
+      .pill {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 10px;
+        font-size: 11px;
+        background: var(--bg-elev-2);
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+      }
+      .pill.busy { color: var(--yellow); border-color: rgba(224,175,104,0.3); }
+      .pill.idle { color: var(--fg-dim); }
+      .pill.draining { color: var(--purple); border-color: rgba(187,154,247,0.3); }
+      .pill.done { color: var(--green); border-color: rgba(158,206,106,0.3); }
+      .pill.failed, .pill.error { color: var(--red); border-color: rgba(247,118,142,0.3); }
+      .pill.running { color: var(--green); border-color: rgba(158,206,106,0.3); }
+      .pill.stopped { color: var(--fg-faint); }
+      .mono { font-family: inherit; }
+      .dim { color: var(--fg-dim); }
+      .faint { color: var(--fg-faint); }
+      .empty { padding: 20px 14px; color: var(--fg-faint); font-style: italic; }
+      .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px;
+      }
+      .stat {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+      }
+      .stat .num { font-size: 20px; font-weight: 600; }
+      .stat .lbl { color: var(--fg-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+      .waiters {
+        margin-top: 6px;
+        padding: 6px 8px;
+        background: var(--bg-elev-2);
+        border-radius: 4px;
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .waiters .wt { display: block; padding: 2px 0; }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      code {
+        background: var(--bg-elev-2);
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-size: 12px;
+      }
+      .threadId, .sessionId { color: var(--accent); word-break: break-all; }
+      .truncate { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>JUNIOR</h1>
+      <div class="meta" id="health-meta">loading…</div>
+      <div class="pulse" id="pulse">·</div>
+    </header>
+    <main>
+      <section>
+        <h2>Health</h2>
+        <div class="stat-grid" id="health-stats"></div>
+      </section>
+      <section>
+        <h2>Dev Servers</h2>
+        <div class="panel" id="devservers"><div class="empty">loading…</div></div>
+      </section>
+      <section>
+        <h2>Threads</h2>
+        <div class="panel" id="threads"><div class="empty">loading…</div></div>
+      </section>
+    </main>
+
+    <script>
+      const POLL_MS = 2000;
+      const pulseEl = document.getElementById("pulse");
+      let tick = 0;
+      const PULSE = ["·", ":", "·", " "];
+
+      function pillClass(status) {
+        if (!status) return "pill";
+        return "pill " + status;
+      }
+
+      function fmtAgo(ms) {
+        if (!ms) return "—";
+        const delta = Date.now() - ms;
+        if (delta < 0) return "0s";
+        const s = Math.floor(delta / 1000);
+        if (s < 60) return s + "s";
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + "m " + (s % 60) + "s";
+        const h = Math.floor(m / 60);
+        return h + "h " + (m % 60) + "m";
+      }
+
+      function fmtRemaining(ms) {
+        if (ms == null) return "—";
+        const s = Math.max(0, Math.floor(ms / 1000));
+        const m = Math.floor(s / 60);
+        return m + "m " + (s % 60).toString().padStart(2, "0") + "s";
+      }
+
+      function fmtUptime(s) {
+        if (s == null) return "—";
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const r = s % 60;
+        if (h > 0) return h + "h " + m + "m";
+        if (m > 0) return m + "m " + r + "s";
+        return r + "s";
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return "";
+        return String(s)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function shortId(id) {
+        if (!id) return "—";
+        const s = String(id);
+        return s.length > 14 ? s.slice(0, 8) + "…" + s.slice(-4) : s;
+      }
+
+      async function fetchJson(path) {
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(path + " " + res.status);
+        return await res.json();
+      }
+
+      function renderHealth(h) {
+        const meta = document.getElementById("health-meta");
+        meta.innerHTML =
+          "v<b>" + escapeHtml(h.version) + "</b> · uptime <b>" +
+          fmtUptime(h.uptime) + "</b> · repos <b>" +
+          escapeHtml(h.repos.join(", ") || "—") + "</b>";
+
+        const stats = document.getElementById("health-stats");
+        const s = h.sessions || {};
+        const a = h.agents || {};
+        stats.innerHTML = [
+          stat(s.total ?? 0, "Threads"),
+          stat(s.busy ?? 0, "Busy", "busy"),
+          stat(s.idle ?? 0, "Idle"),
+          stat(s.draining ?? 0, "Draining", "draining"),
+          stat(s.errors ?? 0, "Errors", (s.errors ?? 0) > 0 ? "failed" : ""),
+          stat(a.total ?? 0, "Agents"),
+          stat(a.busy ?? 0, "Agents busy", (a.busy ?? 0) > 0 ? "busy" : ""),
+        ].join("");
+      }
+
+      function stat(num, label, cls) {
+        return (
+          '<div class="stat"><div class="num ' + (cls || "") +
+          '">' + num + "</div><div class=\"lbl\">" + label + "</div></div>"
+        );
+      }
+
+      function renderDevServers(payload) {
+        const root = document.getElementById("devservers");
+        const items = payload.devServers || [];
+        if (items.length === 0) {
+          root.innerHTML = '<div class="empty">No repos with devCommand configured.</div>';
+          return;
+        }
+        root.innerHTML = items.map(renderDevServerRow).join("");
+      }
+
+      function renderDevServerRow(d) {
+        const statusPill = d.running
+          ? '<span class="' + pillClass("running") + '">running pid ' + d.pid + "</span>"
+          : '<span class="' + pillClass("stopped") + '">stopped</span>';
+        const branch = d.branch
+          ? '<code>' + escapeHtml(d.branch) + "</code>"
+          : '<span class="faint">no branch</span>';
+        const port = d.devPort ? ":" + d.devPort : "";
+        const idle = d.running
+          ? "idle TTL <b>" + fmtRemaining(d.idleMsRemaining) + "</b>"
+          : '<span class="faint">—</span>';
+
+        const holder = d.holder
+          ? "thread <code>" + escapeHtml(shortId(d.holder.holderThreadId)) +
+            "</code> · acquired " + fmtAgo(d.holder.acquiredAt) + " ago"
+          : '<span class="faint">no holder</span>';
+
+        const waiters = (d.waiters || []).length
+          ? '<div class="waiters"><div class="col-label">' + d.waiters.length +
+            ' waiter' + (d.waiters.length === 1 ? "" : "s") + '</div>' +
+            d.waiters
+              .map(
+                (w) =>
+                  '<span class="wt"><code>' + escapeHtml(shortId(w.threadId)) +
+                  "</code> → <code>" + escapeHtml(w.branch) +
+                  '</code> <span class="faint">' + fmtAgo(w.enqueuedAt) +
+                  " ago</span></span>",
+              )
+              .join("") +
+            "</div>"
+          : "";
+
+        return (
+          '<div class="row devserver">' +
+          "<div><div class=\"col-label\">repo</div><b>" +
+          escapeHtml(d.repo) + "</b><div class=\"dim\">" +
+          escapeHtml(d.devCommand || "—") + port + "</div></div>" +
+          "<div><div class=\"col-label\">status</div>" + statusPill +
+          " · " + branch + " · " + idle + waiters + "</div>" +
+          "<div><div class=\"col-label\">holder</div>" + holder + "</div>" +
+          "</div>"
+        );
+      }
+
+      function renderThreads(payload) {
+        const root = document.getElementById("threads");
+        const sessions = payload.sessions || [];
+        if (sessions.length === 0) {
+          root.innerHTML = '<div class="empty">No active threads.</div>';
+          return;
+        }
+        root.innerHTML = sessions.map(renderThreadRow).join("");
+      }
+
+      function renderThreadRow(s) {
+        const agents = (s.agents || [])
+          .map(
+            (a) =>
+              '<div class="agent-row">' +
+              "<b>" + escapeHtml(a.agentName) + "</b>" +
+              '<span class="' + pillClass(a.status) + '">' +
+              escapeHtml(a.status) + "</span>" +
+              '<span class="truncate">sid <code class="sessionId">' +
+              escapeHtml(shortId(a.sessionId)) + "</code></span>" +
+              '<span>last ' + fmtAgo(a.lastActivity) +
+              " ago" +
+              (a.pendingMessages
+                ? ' · <span class="faint">' + a.pendingMessages + " buffered</span>"
+                : "") +
+              "</span></div>",
+          )
+          .join("");
+
+        const agentBlock = agents
+          ? '<div class="agent-list">' + agents + "</div>"
+          : '<div class="agent-list faint">no agent sessions yet</div>';
+
+        const repoBits = [
+          s.targetRepo ? "<code>" + escapeHtml(s.targetRepo) + "</code>" : null,
+          s.baseRef ? "<code>" + escapeHtml(s.baseRef) + "</code>" : null,
+          s.agentType ? '<span class="dim">' + escapeHtml(s.agentType) + "</span>" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
+        const errBlock = s.lastError
+          ? '<div class="dim" style="margin-top:4px;color:var(--red)">⚠ ' +
+            escapeHtml(s.lastError.type) + ": " +
+            escapeHtml(s.lastError.message) + "</div>"
+          : "";
+
+        return (
+          '<div class="row session">' +
+          "<div><div class=\"col-label\">thread</div><b class=\"threadId\">" +
+          escapeHtml(shortId(s.threadId)) + "</b><div class=\"dim\">channel " +
+          escapeHtml(s.channel) +
+          (s.muted ? ' · <span class="pill draining">muted</span>' : "") +
+          "</div>" + (repoBits ? '<div class="dim" style="margin-top:2px">' + repoBits + "</div>" : "") +
+          errBlock + "</div>" +
+          "<div><div class=\"col-label\">status</div>" +
+          '<span class="' + pillClass(s.status) + '">' + escapeHtml(s.status) + "</span>" +
+          " · last " + fmtAgo(s.lastActivity) + " ago" +
+          (s.pendingMessages
+            ? ' · <span class="faint">' + s.pendingMessages + " buffered</span>"
+            : "") +
+          "<div class=\"dim\">lead sid <code>" + escapeHtml(shortId(s.leadSessionId)) +
+          "</code></div></div>" +
+          "<div><div class=\"col-label\">agents (" +
+          (s.agents ? s.agents.length : 0) + ")</div>" + agentBlock + "</div>" +
+          "</div>"
+        );
+      }
+
+      async function refresh() {
+        try {
+          const [health, sessions, devServers] = await Promise.all([
+            fetchJson("/api/health"),
+            fetchJson("/api/sessions"),
+            fetchJson("/api/dev-server"),
+          ]);
+          renderHealth(health);
+          renderThreads(sessions);
+          renderDevServers(devServers);
+        } catch (err) {
+          console.error("refresh failed", err);
+        }
+        pulseEl.textContent = PULSE[tick++ % PULSE.length];
+      }
+
+      refresh();
+      setInterval(refresh, POLL_MS);
+    </script>
+  </body>
+</html>
