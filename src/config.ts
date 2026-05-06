@@ -110,11 +110,31 @@ export function loadConfig(): Config {
         '{"C05557KKV37":{"agentType":"lead"}}',
       ),
     ),
-    http: {
-      enabled: process.env.HTTP_DASHBOARD_PORT != null,
-      port: Number(optional("HTTP_DASHBOARD_PORT", "0")),
-    },
+    http: parseHttpDashboard(process.env.HTTP_DASHBOARD_PORT),
   };
+}
+
+/**
+ * Parse HTTP_DASHBOARD_PORT strictly.
+ *
+ * - Unset or empty → dashboard disabled (port 0).
+ * - Positive integer string → enabled on that port.
+ * - Anything else (NaN, 0, negative, decimal) → throw at config load. The
+ *   prior `Number(...)` fallback would silently let `Bun.serve` bind to a
+ *   random port for non-numeric values, which is surprising and makes the
+ *   dashboard unreachable at the configured URL.
+ */
+function parseHttpDashboard(raw: string | undefined): { enabled: boolean; port: number } {
+  if (raw == null || raw === "") {
+    return { enabled: false, port: 0 };
+  }
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new Error(
+      `Invalid HTTP_DASHBOARD_PORT: ${JSON.stringify(raw)} (expected positive integer 1-65535, or unset to disable)`,
+    );
+  }
+  return { enabled: true, port };
 }
 
 function parseStoreKind(value: string): SessionStoreKind {
