@@ -50,6 +50,8 @@ export interface ThreadSession {
   lastActivity: number;
   lastError: { type: string; message: string; timestamp: number } | null;
   createdAt: number;
+  /** Thread-specific default agent override. When set, overrides channel default (e.g., lead in support channels). */
+  defaultAgent?: "junior" | "lead" | null;
 }
 
 export function createSession(

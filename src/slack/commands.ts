@@ -13,6 +13,7 @@ const KNOWN_COMMANDS = new Set([
   "status",
   "repo",
   "branch",
+  "agent",
   "quiet",
   "verbose",
   "normal",

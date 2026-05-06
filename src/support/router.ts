@@ -188,14 +188,24 @@ export class AgentDispatcher {
         return;
       }
       // Human (or non-self-bot) with no directives.
-      if (isSupport) {
+      // Check if thread has a custom default agent set via !agent command.
+      let targetAgent: "lead" | "junior" = isSupport ? "lead" : "junior";
+      if (this.sessionStore) {
+        const session = await this.sessionStore.get(event.threadId);
+        if (session?.defaultAgent) {
+          targetAgent = session.defaultAgent;
+        }
+      }
+
+      if (targetAgent === "lead") {
         await this.manager.handleLeadMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
         });
       } else {
-        // Non-support channel: generic single-session Claude (no lead identity,
-        // no persistent-agent state block, no orchestrator system prompt).
+        // Junior (default) or non-support channel: generic single-session
+        // Claude (no lead identity, no persistent-agent state block, no
+        // orchestrator system prompt).
         await this.manager.handleMessage(event);
       }
       return;
