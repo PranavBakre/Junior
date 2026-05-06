@@ -238,6 +238,11 @@ export class DevServerManager {
     return new Map(this.state);
   }
 
+  /** Configured idle TTL in ms. Surfaced for diagnostics (HTTP dashboard). */
+  getIdleTtlMs(): number {
+    return this.idleTtlMs;
+  }
+
   /**
    * Bootstrap step: run once at junior startup.
    *
