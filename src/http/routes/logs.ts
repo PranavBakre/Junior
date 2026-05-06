@@ -11,6 +11,15 @@ interface LogEntry {
 
 const LOG_LINE_RE = /^(.+?) \[(\w+)\] \[(.+?)\] (.*)$/;
 
+/**
+ * Strict ISO date matcher for the `?date=` query param. The value is concatenated
+ * into a filesystem path (`<LOG_DIR>/<date>.log`), so anything other than a
+ * literal YYYY-MM-DD string would let a caller escape `LOG_DIR` via traversal
+ * (e.g. `?date=../../../etc/passwd`). Reject at the input layer rather than
+ * trying to sanitize after the fact.
+ */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 function parseLogLine(line: string): LogEntry | null {
   const match = line.match(LOG_LINE_RE);
   if (!match) return null;
@@ -24,6 +33,12 @@ function parseLogLine(line: string): LogEntry | null {
 
 export async function handleLogs(searchParams: URLSearchParams): Promise<Response> {
   const date = searchParams.get("date") ?? new Date().toISOString().split("T")[0];
+  if (!DATE_RE.test(date)) {
+    return Response.json(
+      { error: "invalid date — expected YYYY-MM-DD" },
+      { status: 400 },
+    );
+  }
   const tail = Number(searchParams.get("tail") ?? "50");
   const tag = searchParams.get("tag");
   const level = searchParams.get("level");
