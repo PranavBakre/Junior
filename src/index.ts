@@ -182,14 +182,25 @@ setInterval(() => {
   }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
 
   if (config.http.enabled) {
-    const { startHttpServer } = await import("./http/server.ts");
-    startHttpServer({
-      store,
-      config,
-      devServerManager,
-      devServerQueue,
-      repos: config.repos,
-    });
+    // Bun.serve throws synchronously on port conflict (EADDRINUSE) and a few
+    // other I/O failures. The dashboard is non-critical — its failure must
+    // not bring down the bot before "Junior is running" prints, otherwise
+    // Slack disconnects. Mirror the bootstrap try/catch above.
+    try {
+      const { startHttpServer } = await import("./http/server.ts");
+      startHttpServer({
+        store,
+        config,
+        devServerManager,
+        devServerQueue,
+        repos: config.repos,
+      });
+    } catch (err) {
+      log.error(
+        "boot",
+        `HTTP dashboard failed to start: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   log.info("boot", "Junior is running (Socket Mode)");
