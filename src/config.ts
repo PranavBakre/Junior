@@ -59,6 +59,11 @@ export interface Config {
     defaultVerbosity: SessionVerbosity;
   };
   channelDefaults: Record<string, { agentType: string }>;
+  http: {
+    /** Localhost dashboard. Off unless HTTP_DASHBOARD_PORT is set. */
+    enabled: boolean;
+    port: number;
+  };
 }
 
 function required(name: string): string {
@@ -105,6 +110,10 @@ export function loadConfig(): Config {
         '{"C05557KKV37":{"agentType":"lead"}}',
       ),
     ),
+    http: {
+      enabled: process.env.HTTP_DASHBOARD_PORT != null,
+      port: Number(optional("HTTP_DASHBOARD_PORT", "0")),
+    },
   };
 }
 
