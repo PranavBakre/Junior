@@ -11,10 +11,7 @@ export class WorktreeManager {
    * Create a worktree in the target repo for a thread.
    *
    * - `baseRef` is the starting point (a git ref/commit like `origin/main`).
-   *   On the inline path, defaults to `repo.defaultBase`. On the delegated
-   *   path, when undefined, the script's per-repo default applies (do NOT
-   *   forward `repo.defaultBase` here — that would override the script's
-   *   own default for manual users).
+   *   Defaults to `repo.defaultBase` on both the inline and delegated paths.
    * - `branchOverride` renames the new branch the worktree tracks. Defaults
    *   to `slack/<threadId>`. The two are independent — pass `branchOverride`
    *   to name the branch differently from the default thread-keyed slug,
@@ -43,21 +40,13 @@ export class WorktreeManager {
       // Delegate worktree creation to the repo's setup script. The script
       // owns `git fetch`, `git worktree add`, env-file copying, dependency
       // install, and MCP migration. Junior hands it the branch, the absolute
-      // target path (preserving Junior's `<repo>/.claude/worktrees/slack-<thread>`
-      // namespace), and — when explicitly set by the caller — the base ref.
-      // We deliberately do NOT forward `repo.defaultBase` when `baseRef` is
-      // unset: each script defines its own per-repo default for the manual
-      // case (local HEAD for gx-backend/admin, origin/main for gx-client-next),
-      // and overriding that here would silently break manual workflows.
-      // Resolve the command relative to repo.path so paths like
-      // "scripts/setup-worktree.sh" work without requiring the script on PATH.
+      // target path, and the base ref (always — defaulting to repo.defaultBase
+      // so the script's own HEAD-based fallback is never reached).
       const setupCmd = repo.worktreeSetupCommand.startsWith("/")
         ? repo.worktreeSetupCommand
         : `${repo.path}/${repo.worktreeSetupCommand}`;
-      const args = [setupCmd, branchName, "--path", worktreePath];
-      if (baseRef !== undefined) {
-        args.push("--base", baseRef);
-      }
+      const base = baseRef ?? repo.defaultBase;
+      const args = [setupCmd, branchName, "--path", worktreePath, "--base", base];
       await this.runCommand(args, repo.path);
     } else {
       // No setup hook configured — Junior creates the worktree inline. Fetch
