@@ -97,6 +97,7 @@ const testConfig: Config = {
     defaultVerbosity: "quiet",
   },
   channelDefaults: {},
+  http: { enabled: false, port: 0 },
 };
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
