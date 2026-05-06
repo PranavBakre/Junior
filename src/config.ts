@@ -6,10 +6,13 @@ export interface RepoConfig {
   defaultBase: string;
   /**
    * Optional. When set, Junior delegates worktree creation to this script via
-   * `<repo.path>/<command> <branch> <abs-target-path>`. The script must
-   * `git fetch`, `git worktree add` at the given path, and perform setup
-   * (env copy, install, MCPs). When unset, Junior runs
-   * `git fetch origin --prune` and `git worktree add` inline (no setup hook).
+   * `<repo.path>/<command> <branch> --path <abs> [--base <ref>]`. The script
+   * must `git fetch`, `git worktree add` at the given path, and perform setup
+   * (env copy, install, MCPs). `--base <ref>` is forwarded only when the
+   * caller passes an explicit `baseRef` to `createWorktree`; when unset, the
+   * script applies its own per-repo default (e.g., local HEAD or
+   * `origin/main`). When unset, Junior runs `git fetch origin --prune` and
+   * `git worktree add` inline (no setup hook).
    */
   worktreeSetupCommand?: string;
   /**

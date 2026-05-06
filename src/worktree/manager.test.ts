@@ -48,31 +48,56 @@ beforeAll(async () => {
   await runIn(repoRoot, ["git", "remote", "add", "origin", repoRoot]);
   await runIn(repoRoot, ["git", "fetch", "-q", "origin"]);
 
-  // Fake setup script. Two args: <branch_name> <abs_target_path>. Owns the
-  // full worktree-creation lifecycle: fetch + worktree add + marker write.
-  // This mirrors the real contract — Junior never pre-creates the worktree
-  // when delegating; it hands the script the branch and target path and the
-  // script does the rest.
+  // Fake setup script. Flag-based contract:
+  //   <branch_name> --path <abs> [--base <ref>]
+  // Owns the full worktree-creation lifecycle: fetch + worktree add + marker
+  // write. This mirrors the real contract — Junior never pre-creates the
+  // worktree when delegating; it hands the script the branch, target path,
+  // and (optionally) base ref, and the script does the rest.
+  //
+  // The marker file dumps every received arg on its own line so tests can
+  // assert exact arg ordering, presence/absence of --base, etc.
   setupMarker = join(repoRoot, "setup-marker.txt");
   const setupScript = join(repoRoot, "fake-setup.sh");
   writeFileSync(
     setupScript,
     `#!/usr/bin/env bash
 set -e
-# Validate two-arg contract.
-if [[ "$#" -ne 2 ]]; then
-  echo "fake-setup: expected 2 args (branch, abs-target-path), got: $#" >&2
+# Dump every received arg on its own line BEFORE any validation, so even
+# malformed invocations leave a marker for tests to inspect.
+: > "${setupMarker}"
+for a in "$@"; do
+  printf '%s\\n' "$a" >> "${setupMarker}"
+done
+# Parse flag-based args.
+BRANCH=""
+ABS_TARGET=""
+BASE_REF=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --path) ABS_TARGET="$2"; shift 2 ;;
+    --base) BASE_REF="$2"; shift 2 ;;
+    -*) echo "fake-setup: unknown flag: $1" >&2; exit 1 ;;
+    *)
+      if [[ -z "$BRANCH" ]]; then BRANCH="$1"; shift
+      else echo "fake-setup: unexpected positional: $1" >&2; exit 1
+      fi ;;
+  esac
+done
+if [[ -z "$BRANCH" || -z "$ABS_TARGET" ]]; then
+  echo "fake-setup: branch and --path required" >&2
   exit 1
 fi
-BRANCH="$1"
-ABS_TARGET="$2"
 if [[ "$ABS_TARGET" != /* ]]; then
-  echo "fake-setup: expected absolute target path, got: $ABS_TARGET" >&2
+  echo "fake-setup: --path must be absolute, got: $ABS_TARGET" >&2
   exit 1
 fi
 git fetch origin --prune
-git worktree add "$ABS_TARGET" -b "$BRANCH" origin/main
-printf '%s\\n%s\\n' "$BRANCH" "$ABS_TARGET" > "${setupMarker}"
+if [[ -n "$BASE_REF" ]]; then
+  git worktree add "$ABS_TARGET" -b "$BRANCH" "$BASE_REF"
+else
+  git worktree add "$ABS_TARGET" -b "$BRANCH" origin/main
+fi
 `,
   );
   chmodSync(setupScript, 0o755);
@@ -80,14 +105,25 @@ printf '%s\\n%s\\n' "$BRANCH" "$ABS_TARGET" > "${setupMarker}"
   // Non-fetching setup script — used by the inverse autofetch guard test.
   // Creates the worktree but never runs `git fetch`. If Junior also doesn't
   // fetch (correct delegating behavior), a fresh commit on origin/main won't
-  // appear in the resulting worktree.
+  // appear in the resulting worktree. Parses the same flag-based contract.
   const nonFetchingScript = join(repoRoot, "non-fetching-setup.sh");
   writeFileSync(
     nonFetchingScript,
     `#!/usr/bin/env bash
 set -e
-BRANCH="$1"
-ABS_TARGET="$2"
+BRANCH=""
+ABS_TARGET=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --path) ABS_TARGET="$2"; shift 2 ;;
+    --base) shift 2 ;;
+    -*) echo "non-fetching: unknown flag: $1" >&2; exit 1 ;;
+    *)
+      if [[ -z "$BRANCH" ]]; then BRANCH="$1"; shift
+      else echo "non-fetching: unexpected positional: $1" >&2; exit 1
+      fi ;;
+  esac
+done
 git worktree add "$ABS_TARGET" -b "$BRANCH" origin/main
 `,
   );
@@ -145,7 +181,7 @@ describe("WorktreeManager.createWorktree", () => {
     await wm.removeWorktree("default-flow", "default-thread");
   });
 
-  it("delegates to worktreeSetupCommand with [branch, absTargetPath]", async () => {
+  it("delegates to worktreeSetupCommand with [branch, --path, absTargetPath]", async () => {
     const repos: RepoConfig[] = [
       {
         name: "custom-flow",
@@ -164,19 +200,82 @@ describe("WorktreeManager.createWorktree", () => {
     expect(existsSync(wtPath)).toBe(true);
     expect(existsSync(join(wtPath, "README.md"))).toBe(true);
 
-    // Marker proves the script received exactly the two expected args.
+    // Marker proves the script received exactly the expected args, in order.
     expect(existsSync(setupMarker)).toBe(true);
-    const marker = (await Bun.file(setupMarker).text()).trim();
-    const [branchArg, pathArg] = marker.split("\n");
-    expect(branchArg).toBe("slack/custom-thread");
-    expect(pathArg).toBe(
+    const args = (await Bun.file(setupMarker).text())
+      .split("\n")
+      .filter((l) => l.length > 0);
+    expect(args).toEqual([
+      "slack/custom-thread",
+      "--path",
       join(repoRoot, ".claude/worktrees/slack-custom-thread"),
-    );
+    ]);
     expect(wtPath).toBe(
       join(repoRoot, ".claude/worktrees/slack-custom-thread"),
     );
 
     await wm.removeWorktree("custom-flow", "custom-thread");
+  });
+
+  it("forwards baseRef as --base to the setup script when set explicitly", async () => {
+    const repos: RepoConfig[] = [
+      {
+        name: "delegate-baseref",
+        path: repoRoot,
+        defaultBase: "origin/main",
+        worktreeSetupCommand: "fake-setup.sh",
+      },
+    ];
+    const wm = new WorktreeManager(repos);
+
+    if (existsSync(setupMarker)) rmSync(setupMarker);
+
+    const wtPath = await wm.createWorktree(
+      "delegate-baseref",
+      "delegate-baseref-thread",
+      "feature/seeded",
+    );
+
+    const args = (await Bun.file(setupMarker).text())
+      .split("\n")
+      .filter((l) => l.length > 0);
+    expect(args).toEqual([
+      "slack/delegate-baseref-thread",
+      "--path",
+      wtPath,
+      "--base",
+      "feature/seeded",
+    ]);
+
+    // Sanity: the script honored --base, so FEATURE.md (only on
+    // feature/seeded) is present.
+    expect(existsSync(join(wtPath, "FEATURE.md"))).toBe(true);
+
+    await wm.removeWorktree("delegate-baseref", "delegate-baseref-thread");
+  });
+
+  it("does NOT forward --base when baseRef is unset", async () => {
+    const repos: RepoConfig[] = [
+      {
+        name: "delegate-no-baseref",
+        path: repoRoot,
+        defaultBase: "origin/main",
+        worktreeSetupCommand: "fake-setup.sh",
+      },
+    ];
+    const wm = new WorktreeManager(repos);
+
+    if (existsSync(setupMarker)) rmSync(setupMarker);
+
+    await wm.createWorktree("delegate-no-baseref", "no-baseref-thread");
+
+    const markerText = await Bun.file(setupMarker).text();
+    const args = markerText.split("\n").filter((l) => l.length > 0);
+    expect(args).not.toContain("--base");
+    // And specifically: only branch + --path + path, nothing extra.
+    expect(args.length).toBe(3);
+
+    await wm.removeWorktree("delegate-no-baseref", "no-baseref-thread");
   });
 
   it("does NOT fetch when delegating (script owns fetch — inverse autofetch guard)", async () => {
@@ -319,10 +418,10 @@ describe("WorktreeManager.createWorktree", () => {
       "fix/delegated-name",
     );
 
-    const marker = (await Bun.file(setupMarker).text()).trim();
-    const [branchArg, pathArg] = marker.split("\n");
-    expect(branchArg).toBe("fix/delegated-name");
-    expect(pathArg).toBe(wtPath);
+    const args = (await Bun.file(setupMarker).text())
+      .split("\n")
+      .filter((l) => l.length > 0);
+    expect(args).toEqual(["fix/delegated-name", "--path", wtPath]);
 
     await wm.removeWorktree("delegate-branch-override", "delegate-override-thread");
   });
