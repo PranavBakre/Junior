@@ -5,10 +5,11 @@ export interface RepoConfig {
   path: string;
   defaultBase: string;
   /**
-   * Optional post-create hook. Junior creates the worktree itself
-   * (`git fetch` + `git worktree add`); if set, this is invoked afterward as
-   * `<repo.path>/<command> <abs-worktree-path>`. Use for env-file copying,
-   * dependency install, MCP migration.
+   * Optional. When set, Junior delegates worktree creation to this script via
+   * `<repo.path>/<command> <branch> <abs-target-path>`. The script must
+   * `git fetch`, `git worktree add` at the given path, and perform setup
+   * (env copy, install, MCPs). When unset, Junior runs
+   * `git fetch origin --prune` and `git worktree add` inline (no setup hook).
    */
   worktreeSetupCommand?: string;
   /**

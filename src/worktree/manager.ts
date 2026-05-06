@@ -32,28 +32,32 @@ export class WorktreeManager {
 
     const worktreePath = this.getWorktreePath(repoName, threadId);
     const branchName = branchOverride ?? `slack/${threadId}`;
-    const base = baseRef ?? repo.defaultBase;
-
-    // Always create the worktree ourselves: fetch fresh, then add. The setup
-    // command (if any) is a post-create hook, never the worktree creator.
-    // Single flow keeps autofetch reliable across all paths and prevents the
-    // "directory does not exist" failure mode when both sides assumed the
-    // other would do `git worktree add`.
-    await this.runGit(["fetch", "origin", "--prune"], repo.path);
-    await this.runGit(
-      ["worktree", "add", worktreePath, "-b", branchName, base],
-      repo.path,
-    );
 
     if (repo.worktreeSetupCommand) {
-      // Post-create hook: env-file copying, dependency install, MCP migration.
-      // Resolve the command relative to repo.path so paths like
+      // Delegate worktree creation to the repo's setup script. The script
+      // owns `git fetch`, `git worktree add`, env-file copying, dependency
+      // install, and MCP migration. Junior just hands it the branch name
+      // and the absolute target path it wants the worktree at — preserving
+      // Junior's path namespace (`<repo>/.claude/worktrees/slack-<thread>`)
+      // while letting manual callers of the script keep their default
+      // ergonomics. Resolve the command relative to repo.path so paths like
       // "scripts/setup-worktree.sh" work without requiring the script on PATH.
-      // Single argument: the absolute worktree path.
       const setupCmd = repo.worktreeSetupCommand.startsWith("/")
         ? repo.worktreeSetupCommand
         : `${repo.path}/${repo.worktreeSetupCommand}`;
-      await this.runCommand([setupCmd, worktreePath], repo.path);
+      await this.runCommand(
+        [setupCmd, branchName, worktreePath],
+        repo.path,
+      );
+    } else {
+      // No setup hook configured — Junior creates the worktree inline. Fetch
+      // fresh first so the base ref is up to date, then `git worktree add`.
+      const base = baseRef ?? repo.defaultBase;
+      await this.runGit(["fetch", "origin", "--prune"], repo.path);
+      await this.runGit(
+        ["worktree", "add", worktreePath, "-b", branchName, base],
+        repo.path,
+      );
     }
 
     return worktreePath;
