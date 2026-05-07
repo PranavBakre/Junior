@@ -424,4 +424,21 @@ describe("WorktreeManager.createWorktree", () => {
 
     await wm.removeWorktree("delegate-branch-override", "delegate-override-thread");
   });
+
+  it("getWorktreePath strips trailing slashes from repo.path", () => {
+    // Regression guard: a config with a trailing slash on `path` must NOT
+    // produce a path INSIDE the repo (`<repo>/.junior-worktrees/...`) — that
+    // would re-introduce the recursive-copy bug this directory move solves.
+    const repos: RepoConfig[] = [
+      {
+        name: "trailing-slash",
+        path: `${repoRoot}/`,
+        defaultBase: "origin/main",
+      },
+    ];
+    const wm = new WorktreeManager(repos);
+    expect(wm.getWorktreePath("trailing-slash", "t1")).toBe(
+      `${repoRoot}.junior-worktrees/slack-t1`,
+    );
+  });
 });
