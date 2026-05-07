@@ -127,7 +127,7 @@ When the bot itself shuts down (SIGINT, SIGTERM, restart), handle running proces
 `DevServerManager` (`src/lifecycle/dev-server.ts`) owns long-lived dev servers for the bug-pipeline validation flow. The full design is in [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md); the runtime invariants:
 
 - **One dev server per repo.** Tracked as `Map<repoName, DevServerState>` where `DevServerState = { pid, branch, startedAt, lastUsedAt }`. Never two on the same configured `devPort`.
-- **Dev servers always run from a dedicated worktree.** Bootstrapped to `<repo.path>/.claude/worktrees/slack-dev-server` on branch `dev-server-slot/<repo>`. Bare repos are never touched by junior.
+- **Dev servers always run from a dedicated worktree.** Bootstrapped to `<repo.path>.junior-worktrees/slack-dev-server` (sibling to the repo, not under `.claude/`) on branch `dev-server-slot/<repo>`. Bare repos are never touched by junior.
 - **Branch-keyed reuse.** `ensure(repoName, branch)` reuses the running process if its branch matches; otherwise kills, `git fetch && git reset --hard origin/<branch>` (reset, not checkout — checkout rejects branches checked out elsewhere), respawns, polls `<readyUrl>` until 200 (90s timeout).
 - **Idle TTL** = 20 min default. `setInterval` sweeper kills servers whose `lastUsedAt` is past the TTL. Tunable via `DevServerManagerOptions` for tests.
 - **Junior shutdown.** `setupGracefulShutdown` calls `devServerManager.killAll()` in parallel with session teardown. SIGINT first, 5s grace, SIGKILL fallback.
@@ -138,7 +138,7 @@ When the bot itself shuts down (SIGINT, SIGTERM, restart), handle running proces
 
 Wraps `DevServerManager.ensure` with a `proper-lockfile`-based per-repo queue (`src/lifecycle/dev-server-queue.ts`). Accessed via the `!devserver` directive (`src/support/router.ts`); humans and agents post the same form.
 
-- **Lock dir.** `<repo.path>/.claude/worktrees/slack-dev-server` — the dev-server worktree itself. `proper-lockfile.lock(...)` creates a `.lock` directory inside.
+- **Lock dir.** `<repo.path>.junior-worktrees/slack-dev-server` — the dev-server worktree itself. `proper-lockfile.lock(...)` creates a `.lock` directory inside.
 - **Holder metadata.** `<lockDir>/.lock.meta.json` written atomically (`write-tmp + rename`) on acquire with `{ holderThreadId, holderPid, branch, acquiredAt }`. Cleared on release.
 - **Waiter queue.** `<lockDir>/.queue` — append-only NDJSON, one line per waiter. Append uses O_APPEND atomic semantics. On release, the line is removed via read-modify-write under the lock that's about to be released. Read by `!devserver status` for "you're 3rd in line" UX.
 - **Slot timeout.** 10 min default. The auto-release timer lives in `handleDevserverAcquire` (`src/support/router.ts`), NOT inside `acquire()` itself: after the queue acquires and junior posts the ready message, the handler `await sleep(slotTimeoutMs)` then calls `release()` in a `finally`. `acquire()` itself has no built-in timer — direct callers (i.e. anything that bypasses the `!devserver` directive) are responsible for calling `release()` themselves. The `proper-lockfile` `stale` config (passed through `acquire()`) is the secondary backstop: a held lock that lives past `stale` is eligible for takeover by the next acquirer, which fires `onCompromised` on the original holder.

@@ -91,7 +91,14 @@ export function loadConfig(): Config {
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
       defaultModel: process.env.CLAUDE_MODEL ?? null,
     },
-    repos: JSON.parse(optional("REPOS", "[]")) as RepoConfig[],
+    repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({
+      ...r,
+      // Strip any trailing slashes so path-construction sites can do
+      // `${r.path}.junior-worktrees/...` without producing
+      // `<repo>//.junior-worktrees/...` (which collapses to a path INSIDE
+      // the repo and recreates the recursive-copy bug).
+      path: r.path.replace(/\/+$/, ""),
+    })),
     session: {
       staleTimeoutMs: Number(optional("SESSION_STALE_TIMEOUT_MS", "86400000")),
       cleanupIntervalMs: Number(
