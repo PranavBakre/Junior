@@ -149,6 +149,7 @@ process.on('SIGTERM', () => { server.close(); process.exit(0); });
 
   afterAll(() => {
     rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(`${repoRoot}.junior-worktrees`, { recursive: true, force: true });
   });
 
   it("bootstrap creates the dev-server worktree if it does not exist", async () => {
