@@ -20,6 +20,7 @@ import {
   writeFileSync,
   chmodSync,
   existsSync,
+  readFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -160,6 +161,29 @@ process.on('SIGTERM', () => { server.close(); process.exit(0); });
       const wtPath = worktreeManager.getWorktreePath("test-repo", "dev-server");
       expect(existsSync(wtPath)).toBe(true);
       expect(existsSync(join(wtPath, "README.md"))).toBe(true);
+
+      // Lock/queue patterns are written to the per-worktree info/exclude,
+      // NOT .gitignore — bootstrap must not clobber the upstream-tracked file.
+      // Resolve the worktree's gitdir via `git rev-parse` (it's not a fixed
+      // path; for `git worktree add` it lives at <main>/.git/worktrees/<name>/).
+      const gitDirProc = Bun.spawnSync({
+        cmd: ["git", "-C", wtPath, "rev-parse", "--git-dir"],
+        stdout: "pipe",
+      });
+      const gitDir = new TextDecoder().decode(gitDirProc.stdout).trim();
+      const excludeContent = readFileSync(join(gitDir, "info", "exclude"), "utf8");
+      expect(excludeContent).toContain(".lock*");
+      expect(excludeContent).toContain(".queue*");
+
+      // Regression guard for the bug this fix addresses: .gitignore must not
+      // be modified relative to HEAD by bootstrap. Status should be clean for
+      // that file specifically.
+      const statusProc = Bun.spawnSync({
+        cmd: ["git", "-C", wtPath, "status", "--porcelain", ".gitignore"],
+        stdout: "pipe",
+      });
+      const statusOut = new TextDecoder().decode(statusProc.stdout).trim();
+      expect(statusOut).toBe("");
     } finally {
       manager.dispose();
     }
