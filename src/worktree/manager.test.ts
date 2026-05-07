@@ -140,6 +140,7 @@ git worktree add "$ABS_TARGET" -b "$BRANCH" origin/main
 
 afterAll(() => {
   rmSync(repoRoot, { recursive: true, force: true });
+  rmSync(`${repoRoot}.junior-worktrees`, { recursive: true, force: true });
 });
 
 /**
@@ -170,9 +171,7 @@ describe("WorktreeManager.createWorktree", () => {
     const freshFile = await addFreshCommitOnMain("default-flow");
 
     const wtPath = await wm.createWorktree("default-flow", "default-thread");
-    expect(wtPath).toBe(
-      join(repoRoot, ".claude/worktrees/slack-default-thread"),
-    );
+    expect(wtPath).toBe(`${repoRoot}.junior-worktrees/slack-default-thread`);
     expect(existsSync(wtPath)).toBe(true);
     expect(existsSync(join(wtPath, "README.md"))).toBe(true);
     // Inline-path autofetch regression guard: fetch ran, so origin/main is fresh.
@@ -208,13 +207,11 @@ describe("WorktreeManager.createWorktree", () => {
     expect(args).toEqual([
       "slack/custom-thread",
       "--path",
-      join(repoRoot, ".claude/worktrees/slack-custom-thread"),
+      `${repoRoot}.junior-worktrees/slack-custom-thread`,
       "--base",
       "origin/main",
     ]);
-    expect(wtPath).toBe(
-      join(repoRoot, ".claude/worktrees/slack-custom-thread"),
-    );
+    expect(wtPath).toBe(`${repoRoot}.junior-worktrees/slack-custom-thread`);
 
     await wm.removeWorktree("custom-flow", "custom-thread");
   });
@@ -426,5 +423,22 @@ describe("WorktreeManager.createWorktree", () => {
     expect(args).toEqual(["fix/delegated-name", "--path", wtPath, "--base", "origin/main"]);
 
     await wm.removeWorktree("delegate-branch-override", "delegate-override-thread");
+  });
+
+  it("getWorktreePath strips trailing slashes from repo.path", () => {
+    // Regression guard: a config with a trailing slash on `path` must NOT
+    // produce a path INSIDE the repo (`<repo>/.junior-worktrees/...`) — that
+    // would re-introduce the recursive-copy bug this directory move solves.
+    const repos: RepoConfig[] = [
+      {
+        name: "trailing-slash",
+        path: `${repoRoot}/`,
+        defaultBase: "origin/main",
+      },
+    ];
+    const wm = new WorktreeManager(repos);
+    expect(wm.getWorktreePath("trailing-slash", "t1")).toBe(
+      `${repoRoot}.junior-worktrees/slack-t1`,
+    );
   });
 });

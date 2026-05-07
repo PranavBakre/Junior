@@ -56,7 +56,7 @@ Implementation: [`src/lifecycle/dev-server.ts`](src/lifecycle/dev-server.ts), [`
 
 ### Worktrees per (repo, thread)
 
-Each thread that touches a target repo gets its own git worktree under `<repo>/.claude/worktrees/slack-<threadId>`. A thread can have worktrees in multiple repos at once (full-stack bug → backend + frontend). See [`src/worktree/manager.ts`](src/worktree/manager.ts) and the `worktreePaths` field on `ThreadSession`.
+Each thread that touches a target repo gets its own git worktree at `<repo>.junior-worktrees/slack-<threadId>` (sibling to the repo, deliberately outside `.claude/` so target-repo setup scripts that recursively copy `.claude/` don't pull every sibling thread's source tree into a fresh worktree). A thread can have worktrees in multiple repos at once (full-stack bug → backend + frontend). See [`src/worktree/manager.ts`](src/worktree/manager.ts) and the `worktreePaths` field on `ThreadSession`.
 
 ### SQLite persistence
 

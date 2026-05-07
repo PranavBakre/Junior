@@ -185,7 +185,7 @@ Slack message ("!build fix auth")
   → Worktree Manager: create worktree in example-backend
   → Agent Router: load example-backend/.claude/agents/build.md → compose systemPrompt
   → Claude Spawner: spawn claude -p "fix auth" --resume --append-system-prompt "..." 
-      cwd=example-backend/.claude/worktrees/slack-<threadId>
+      cwd=example-backend.junior-worktrees/slack-<threadId>
   → Stream Parser: parse stdout events
       → init event: extract sessionId, store in session
       → tool_use events: emit to Stream-to-Slack → edit status message

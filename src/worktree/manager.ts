@@ -135,13 +135,24 @@ export class WorktreeManager {
 
   /**
    * Get the worktree path for a thread (without creating it).
+   *
+   * Worktrees live in a sibling directory to the repo, NOT under `.claude/`.
+   * Setup scripts that recursively copy `.claude/` (e.g. `cp -R .claude/.`)
+   * would otherwise pull every sibling thread's worktree — and the destination
+   * itself — into a freshly-creating worktree, producing a recursive copy
+   * that loops on its own destination.
    */
   getWorktreePath(repoName: string, threadId: string): string {
     const repo = this.getRepo(repoName);
     if (!repo) {
       throw new Error(`Unknown repo: ${repoName}`);
     }
-    return `${repo.path}/.claude/worktrees/slack-${threadId}`;
+    // Strip trailing slashes — without this, a config with `path: "/r/"` would
+    // resolve to `/r/.junior-worktrees/...`, a hidden subdir INSIDE the repo
+    // rather than a sibling, recreating the recursive-copy bug. Belt-and-
+    // suspenders with the same normalization at config load.
+    const base = repo.path.replace(/\/+$/, "");
+    return `${base}.junior-worktrees/slack-${threadId}`;
   }
 
   getBranchName(threadId: string): string {

@@ -251,6 +251,7 @@ describe("DevServerQueue (integration — real lockfile)", () => {
 
   afterAll(() => {
     rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(`${repoRoot}.junior-worktrees`, { recursive: true, force: true });
   });
 
   beforeEach(() => {
@@ -266,7 +267,7 @@ describe("DevServerQueue (integration — real lockfile)", () => {
   });
 
   it("acquire / release happy path: lock metadata + queue round-trip", async () => {
-    const lockDir = join(repoRoot, ".claude", "worktrees", "slack-dev-server");
+    const lockDir = `${repoRoot}.junior-worktrees/slack-dev-server`;
     mkdirSync(lockDir, { recursive: true });
 
     const managerMock = makeMockDevServerManager();
@@ -309,7 +310,7 @@ describe("DevServerQueue (integration — real lockfile)", () => {
   }, 15_000);
 
   it("release is idempotent — second call does not throw", async () => {
-    const lockDir = join(repoRoot, ".claude", "worktrees", "slack-dev-server");
+    const lockDir = `${repoRoot}.junior-worktrees/slack-dev-server`;
     mkdirSync(lockDir, { recursive: true });
 
     const managerMock = makeMockDevServerManager();
@@ -386,7 +387,7 @@ describe("DevServerQueue (integration — real lockfile)", () => {
 
   it("second acquire serializes behind first (sequential acquire + release)", async () => {
     // Set up the lock dir.
-    const lockDir = join(repoRoot, ".claude", "worktrees", "slack-dev-server");
+    const lockDir = `${repoRoot}.junior-worktrees/slack-dev-server`;
     mkdirSync(lockDir, { recursive: true });
 
     const order: string[] = [];
@@ -437,9 +438,6 @@ describe("DevServerQueue (integration — real lockfile)", () => {
     // is present on every lock acquisition. Triggering an actual compromise is
     // timer-driven and brittle to test directly; this guards against the option
     // being silently dropped in a future refactor.
-    const lockDir = join(repoRoot, ".claude", "worktrees", "slack-dev-server-compromise-check");
-    mkdirSync(lockDir, { recursive: true });
-
     // Spy on proper-lockfile.lock by re-importing through a wrapper.
     // Bun's module mocking is limited — we use a different angle: spy on the
     // queue's stealStale method, then synthesize a compromise by manipulating
@@ -462,9 +460,9 @@ describe("DevServerQueue (integration — real lockfile)", () => {
     );
 
     // The acquire path needs the dev-server worktree to exist at the
-    // expected path (acquire uses repo.path/.claude/worktrees/slack-dev-server,
+    // expected path (acquire uses repo.path.junior-worktrees/slack-dev-server,
     // not our compromise-check subdir) — set that up.
-    const realLockDir = join(repoRoot, ".claude", "worktrees", "slack-dev-server");
+    const realLockDir = `${repoRoot}.junior-worktrees/slack-dev-server`;
     mkdirSync(realLockDir, { recursive: true });
 
     const { release } = await queue.acquire("test-repo", "main", "thread-comp-1");
