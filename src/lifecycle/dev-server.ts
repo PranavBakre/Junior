@@ -11,8 +11,8 @@
  * spawn / probe / kill / idle-TTL.
  */
 
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { log } from "../logger.ts";
 import type { RepoConfig } from "../config.ts";
 import { WorktreeManager } from "../worktree/manager.ts";
@@ -277,20 +277,56 @@ export class DevServerManager {
         }
       }
 
-      // Write .gitignore for lock/queue files so they don't appear as
-      // untracked in the dev-server worktree. Fixed content — overwrite on
-      // each boot for idempotency. Only write if the worktree directory
-      // actually exists (creation above may have failed).
+      // Hide the queue's lock/state files from `git status` in the dev-server
+      // worktree. We write to the worktree's per-clone `info/exclude` rather
+      // than `.gitignore` — these are operational artifacts, not source-tree
+      // ignores. Writing to `.gitignore` would clobber the upstream-tracked
+      // file (it's shared-owner: upstream repo + user + tools all contribute).
+      // `info/exclude` is per-worktree (lives in `<main>/.git/worktrees/<name>/info/exclude`)
+      // and untracked, so this write is idempotent and invisible to git status.
       const wtPath = this.worktreeManager.getWorktreePath(repo.name, DEV_SERVER_THREAD_ID);
-      const gitignorePath = join(wtPath, ".gitignore");
       try {
-        // Attempt write regardless of whether `exists` was true at the start of
-        // this iteration: the worktree may have been created just above.
-        writeFileSync(gitignorePath, ".lock*\n.queue*\n");
+        const rawGitDir = (await runGit(["rev-parse", "--git-dir"], wtPath)).trim();
+        const gitDir = isAbsolute(rawGitDir) ? rawGitDir : join(wtPath, rawGitDir);
+        const infoDir = join(gitDir, "info");
+        mkdirSync(infoDir, { recursive: true });
+        writeFileSync(join(infoDir, "exclude"), ".lock*\n.queue*\n");
       } catch (err) {
         log.warn(
           "dev-server",
-          `bootstrap: failed to write .gitignore for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
+          `bootstrap: failed to write info/exclude for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Self-heal: a previous version of bootstrap (before this fix) wrote
+      // ".lock*\n.queue*\n" into .gitignore directly, clobbering the
+      // upstream-tracked file. Detect that exact fingerprint and restore.
+      // Exact-match only — zero risk of overwriting legitimate edits.
+      // Separate try-block so failure here doesn't mask info/exclude success.
+      try {
+        const gitignorePath = join(wtPath, ".gitignore");
+        if (existsSync(gitignorePath)) {
+          const content = readFileSync(gitignorePath, "utf8");
+          if (content === ".lock*\n.queue*\n") {
+            log.info(
+              "dev-server",
+              `bootstrap: detected legacy .gitignore overwrite in repo=${repo.name}, restoring upstream`,
+            );
+            // Remove the corrupt file, then ask git to restore from HEAD.
+            // If upstream doesn't track .gitignore, the unlink alone is the
+            // correct cleanup and the restore will fail harmlessly.
+            unlinkSync(gitignorePath);
+            try {
+              await runGit(["checkout", "--", ".gitignore"], wtPath);
+            } catch {
+              // Upstream doesn't track .gitignore; unlink is sufficient.
+            }
+          }
+        }
+      } catch (err) {
+        log.warn(
+          "dev-server",
+          `bootstrap: failed to self-heal .gitignore for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
 
