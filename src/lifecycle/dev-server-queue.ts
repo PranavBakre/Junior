@@ -6,7 +6,7 @@
  * PRECONDITION comment in DevServerManager.ensure() — callers should go through
  * DevServerQueue.acquire() rather than calling ensure() directly.
  *
- * Lock file layout (all under <repo>/.claude/worktrees/slack-dev-server/):
+ * Lock file layout (all under <repo>.junior-worktrees/slack-dev-server/):
  *   .lock            — proper-lockfile's lock directory (created by the library)
  *   .lock.meta.json  — holder metadata: { holderThreadId, holderPid, branch, acquiredAt }
  *   .queue           — NDJSON, one line per waiter: { threadId, branch, enqueuedAt }
@@ -322,16 +322,15 @@ export class DevServerQueue {
 
   /**
    * Resolve the lock directory path for a repo.
-   * This is the dev-server worktree: <repo.path>/.claude/worktrees/slack-dev-server
+   * This is the dev-server worktree: <repo.path>.junior-worktrees/slack-dev-server
+   * Path shape mirrors WorktreeManager.getWorktreePath — keep them in sync.
    */
   private getLockDir(repoName: string): string {
     const repo = this.repos.find((r) => r.name === repoName);
     if (!repo) {
       throw new Error(`Unknown repo: ${repoName}`);
     }
-    // The dev-server worktree uses the fixed thread-ID "dev-server", same as
-    // DevServerManager internally. Path: <repo.path>/.claude/worktrees/slack-dev-server
-    return join(repo.path, ".claude", "worktrees", "slack-dev-server");
+    return `${repo.path}.junior-worktrees/slack-dev-server`;
   }
 }
 

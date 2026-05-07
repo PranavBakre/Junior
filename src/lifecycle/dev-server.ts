@@ -4,7 +4,8 @@
  * Junior owns the lifecycle of dev servers that are used for bug-pipeline
  * validation. Each repo with `devCommand` configured gets a single shared
  * dev-server process running from a dedicated worktree at
- * `<repo>/.claude/worktrees/slack-dev-server`.
+ * `<repo>.junior-worktrees/slack-dev-server` (sibling to the repo, NOT under
+ * `.claude/` — see WorktreeManager.getWorktreePath for why).
  *
  * Scope-2b will layer the per-repo lock/queue on top; this module only handles
  * spawn / probe / kill / idle-TTL.

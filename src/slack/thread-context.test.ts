@@ -16,7 +16,7 @@ describe("buildWorkspaceBlock", () => {
 
   it("renders the single-repo format from a WorkspaceContext", () => {
     const ws: WorkspaceContext = {
-      worktreePath: "/repos/gx-backend/.claude/worktrees/slack-t1",
+      worktreePath: "/repos/gx-backend.junior-worktrees/slack-t1",
       repoName: "gx-backend",
       repoPath: "/repos/gx-backend",
       branchName: "slack/t1",
@@ -24,15 +24,15 @@ describe("buildWorkspaceBlock", () => {
     const block = buildWorkspaceBlock(ws);
     expect(block).toContain("<workspace>");
     expect(block).toContain("Target repo: gx-backend");
-    expect(block).toContain("Worktree (your sandbox): /repos/gx-backend/.claude/worktrees/slack-t1");
+    expect(block).toContain("Worktree (your sandbox): /repos/gx-backend.junior-worktrees/slack-t1");
     expect(block).toContain("Worktree branch: slack/t1");
     expect(block).toContain("</workspace>");
   });
 
   it("renders the multi-repo format when worktreePaths is non-empty", () => {
     const paths = {
-      "gx-backend": "/repos/gx-backend/.claude/worktrees/slack-t1",
-      "gx-client-next": "/repos/gx-client-next/.claude/worktrees/slack-t1",
+      "gx-backend": "/repos/gx-backend.junior-worktrees/slack-t1",
+      "gx-client-next": "/repos/gx-client-next.junior-worktrees/slack-t1",
     };
     const block = buildWorkspaceBlock(undefined, paths, repos, "t1");
 
@@ -41,11 +41,11 @@ describe("buildWorkspaceBlock", () => {
     expect(block).toContain("NEVER touch");
     expect(block).toContain("~/openclaw-projects/");
     expect(block).toContain("repo: gx-backend");
-    expect(block).toContain("worktree: /repos/gx-backend/.claude/worktrees/slack-t1");
+    expect(block).toContain("worktree: /repos/gx-backend.junior-worktrees/slack-t1");
     expect(block).toContain("branch:   slack/t1");
     expect(block).toContain("base:     origin/main");
     expect(block).toContain("repo: gx-client-next");
-    expect(block).toContain("worktree: /repos/gx-client-next/.claude/worktrees/slack-t1");
+    expect(block).toContain("worktree: /repos/gx-client-next.junior-worktrees/slack-t1");
     expect(block).toContain("</workspace>");
   });
 
@@ -56,7 +56,7 @@ describe("buildWorkspaceBlock", () => {
       repoPath: "/should/not/appear",
       branchName: "should-not-appear",
     };
-    const paths = { "gx-backend": "/repos/gx-backend/.claude/worktrees/slack-t1" };
+    const paths = { "gx-backend": "/repos/gx-backend.junior-worktrees/slack-t1" };
     const block = buildWorkspaceBlock(ws, paths, repos, "t1");
 
     expect(block).not.toContain("should-not-appear");
