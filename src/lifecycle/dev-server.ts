@@ -11,7 +11,7 @@
  * spawn / probe / kill / idle-TTL.
  */
 
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { log } from "../logger.ts";
 import type { RepoConfig } from "../config.ts";
@@ -286,17 +286,7 @@ export class DevServerManager {
       // and untracked, so this write is idempotent and invisible to git status.
       const wtPath = this.worktreeManager.getWorktreePath(repo.name, DEV_SERVER_THREAD_ID);
       try {
-        const proc = Bun.spawnSync({
-          cmd: ["git", "-C", wtPath, "rev-parse", "--git-dir"],
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        if (proc.exitCode !== 0) {
-          throw new Error(
-            `git rev-parse --git-dir: ${new TextDecoder().decode(proc.stderr).trim()}`,
-          );
-        }
-        const rawGitDir = new TextDecoder().decode(proc.stdout).trim();
+        const rawGitDir = (await runGit(["rev-parse", "--git-dir"], wtPath)).trim();
         const gitDir = isAbsolute(rawGitDir) ? rawGitDir : join(wtPath, rawGitDir);
         const infoDir = join(gitDir, "info");
         mkdirSync(infoDir, { recursive: true });
@@ -305,6 +295,38 @@ export class DevServerManager {
         log.warn(
           "dev-server",
           `bootstrap: failed to write info/exclude for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Self-heal: a previous version of bootstrap (before this fix) wrote
+      // ".lock*\n.queue*\n" into .gitignore directly, clobbering the
+      // upstream-tracked file. Detect that exact fingerprint and restore.
+      // Exact-match only — zero risk of overwriting legitimate edits.
+      // Separate try-block so failure here doesn't mask info/exclude success.
+      try {
+        const gitignorePath = join(wtPath, ".gitignore");
+        if (existsSync(gitignorePath)) {
+          const content = readFileSync(gitignorePath, "utf8");
+          if (content === ".lock*\n.queue*\n") {
+            log.info(
+              "dev-server",
+              `bootstrap: detected legacy .gitignore overwrite in repo=${repo.name}, restoring upstream`,
+            );
+            // Remove the corrupt file, then ask git to restore from HEAD.
+            // If upstream doesn't track .gitignore, the unlink alone is the
+            // correct cleanup and the restore will fail harmlessly.
+            unlinkSync(gitignorePath);
+            try {
+              await runGit(["checkout", "--", ".gitignore"], wtPath);
+            } catch {
+              // Upstream doesn't track .gitignore; unlink is sufficient.
+            }
+          }
+        }
+      } catch (err) {
+        log.warn(
+          "dev-server",
+          `bootstrap: failed to self-heal .gitignore for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
 
