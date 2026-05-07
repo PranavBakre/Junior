@@ -15,7 +15,7 @@ For bug threads, junior's persistent agents (lead, thinker, reproducer) operate
 directly on the bare target repos under `~/openclaw-projects/<repo>/`. Specifically:
 
 - `runtime-environment.md` and the agent prompts hardcode `~/openclaw-projects/<repo>/` and tell agents to `cd` there for reading code, editing, `git checkout`, and `pnpm dev`.
-- `WorktreeManager` exists and `runClaudeWithAgent` will create a per-thread worktree at `<repo>/.claude/worktrees/slack-<threadId>` — but only when `session.targetRepo` is set, which never happens on the lead-driven bug pipeline.
+- `WorktreeManager` exists and `runClaudeWithAgent` will create a per-thread worktree at `<repo>.junior-worktrees/slack-<threadId>` — but only when `session.targetRepo` is set, which never happens on the lead-driven bug pipeline.
 
 Consequences:
 
@@ -36,7 +36,7 @@ Three things tangle:
 
 ### Scope-1 — per-thread worktrees for read/write
 
-- Lead, on intake, reads `repo-routing.yaml` and creates one worktree per routed repo for this thread (`<repo>/.claude/worktrees/slack-<threadId>`, branch `slack/<threadId>` off `defaultBase`).
+- Lead, on intake, reads `repo-routing.yaml` and creates one worktree per routed repo for this thread (`<repo>.junior-worktrees/slack-<threadId>`, branch `slack/<threadId>` off `defaultBase`).
 - Session schema gains `worktreePaths: Record<repoName, path>` alongside the existing `worktreePath` (or replaces it).
 - `runtime-environment.md` and agent prompts swap hardcoded `~/openclaw-projects/<repo>/` references for the per-thread worktree paths, injected via the workspace block.
 - `thinker` writes its fix branch in its repo's worktree. PR is opened from that branch.
@@ -109,7 +109,7 @@ Trap to watch:
 
 1. Resolves the repo's `RepoConfig`. Errors if unknown.
 2. If `repo.worktreeSetupCommand` is configured (e.g. `"bin/setup-worktree.sh"`), runs `<repo.path>/<command> <worktreePath> <branch>`. Otherwise runs `git fetch origin && git worktree add <worktreePath> -b <branch> <baseRef>` directly.
-3. Sets `worktreePath = <repo.path>/.claude/worktrees/slack-<threadId>` and `branch = slack/<threadId>` (unless caller overrides).
+3. Sets `worktreePath = <repo.path>.junior-worktrees/slack-<threadId>` and `branch = slack/<threadId>` (unless caller overrides).
 4. Persists `session.worktreePaths[repo] = worktreePath` via `SessionManager.updateSession`.
 5. Returns `{ path, branch }` to the caller.
 
@@ -127,12 +127,12 @@ the bare repos under ~/openclaw-projects/. NEVER run dev servers
 yourself — post `!devserver <branch>` instead.
 
 repo: gx-client-next
-  worktree: /Users/.../openclaw-projects/growthx/gx-client-next/.claude/worktrees/slack-<tid>
+  worktree: /Users/.../openclaw-projects/growthx/gx-client-next.junior-worktrees/slack-<tid>
   branch:   slack/<tid>
   base:     origin/main
 
 repo: gx-backend
-  worktree: /Users/.../openclaw-projects/growthx/gx-backend/.claude/worktrees/slack-<tid>
+  worktree: /Users/.../openclaw-projects/growthx/gx-backend.junior-worktrees/slack-<tid>
   branch:   slack/<tid>
   base:     origin/main
 </workspace>

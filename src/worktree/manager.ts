@@ -147,7 +147,12 @@ export class WorktreeManager {
     if (!repo) {
       throw new Error(`Unknown repo: ${repoName}`);
     }
-    return `${repo.path}.junior-worktrees/slack-${threadId}`;
+    // Strip trailing slashes — without this, a config with `path: "/r/"` would
+    // resolve to `/r/.junior-worktrees/...`, a hidden subdir INSIDE the repo
+    // rather than a sibling, recreating the recursive-copy bug. Belt-and-
+    // suspenders with the same normalization at config load.
+    const base = repo.path.replace(/\/+$/, "");
+    return `${base}.junior-worktrees/slack-${threadId}`;
   }
 
   getBranchName(threadId: string): string {

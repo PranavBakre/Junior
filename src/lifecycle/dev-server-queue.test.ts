@@ -438,9 +438,6 @@ describe("DevServerQueue (integration — real lockfile)", () => {
     // is present on every lock acquisition. Triggering an actual compromise is
     // timer-driven and brittle to test directly; this guards against the option
     // being silently dropped in a future refactor.
-    const lockDir = join(repoRoot, ".claude", "worktrees", "slack-dev-server-compromise-check");
-    mkdirSync(lockDir, { recursive: true });
-
     // Spy on proper-lockfile.lock by re-importing through a wrapper.
     // Bun's module mocking is limited — we use a different angle: spy on the
     // queue's stealStale method, then synthesize a compromise by manipulating

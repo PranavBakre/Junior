@@ -57,7 +57,7 @@ The two most critical control commands.
 - `!status`: reply with session info or "No active session."
   ```
   Agent: build
-  Worktree: example-backend/.claude/worktrees/slack-1234
+  Worktree: example-backend.junior-worktrees/slack-1234
   Status: idle
   Last activity: 2 min ago
   Pending messages: 0

@@ -158,7 +158,7 @@ Prove Bun + Bolt + Socket Mode works.
 - `bun run dev` — watch mode with `--watch` flag
 - `bun run build` — production build
 - `bun run typecheck` — type checking without emit
-- `.gitignore` — node_modules, .env, dist, .claude/worktrees
+- `.gitignore` — node_modules, .env, dist, `.claude/worktrees/` (used by other tooling like ultrareview/Agent isolation; junior itself stores worktrees in a sibling directory)
 - `.env.example` — all required and optional env vars documented
 
 **Test:** Edit a file → dev server reloads. `bun run typecheck` → clean. `.env` not tracked by git.

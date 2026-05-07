@@ -330,7 +330,9 @@ export class DevServerQueue {
     if (!repo) {
       throw new Error(`Unknown repo: ${repoName}`);
     }
-    return `${repo.path}.junior-worktrees/slack-dev-server`;
+    // Strip trailing slashes — see WorktreeManager.getWorktreePath for why.
+    const base = repo.path.replace(/\/+$/, "");
+    return `${base}.junior-worktrees/slack-dev-server`;
   }
 }
 
