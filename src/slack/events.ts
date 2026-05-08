@@ -71,6 +71,13 @@ export function registerEventHandlers(
       return;
     }
 
+    // Sibling Claude bots (Friday, Doraemon) post their streaming "thinking"
+    // updates with a leading ✽ glyph. Drop those — they're not user input.
+    if (text.trimStart().startsWith("✽")) {
+      logDrop("foreign-bot-thinking", evMeta);
+      return;
+    }
+
     // Auto-trigger channels (e.g. #bugs-backlog) accept messages from other bots
     // like growthx-bug-reporter that have no `user` field — fall back to bot_id.
     let user = "user" in event ? event.user : undefined;
