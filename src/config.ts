@@ -59,6 +59,12 @@ export interface Config {
     defaultVerbosity: SessionVerbosity;
   };
   channelDefaults: Record<string, { agentType: string }>;
+  /**
+   * Single Slack user ID allowed to run elevated commands (`!mute`, `!unmute`,
+   * `!reset`). When unset, those commands are open to anyone — useful for local
+   * dev. In production this should always be set.
+   */
+  adminSlackUserId: string | null;
   http: {
     /** Localhost dashboard. Off unless HTTP_DASHBOARD_PORT is set. */
     enabled: boolean;
@@ -117,6 +123,7 @@ export function loadConfig(): Config {
         '{"C05557KKV37":{"agentType":"lead"}}',
       ),
     ),
+    adminSlackUserId: process.env.ADMIN_SLACK_USER_ID?.trim() || null,
     http: parseHttpDashboard(process.env.HTTP_DASHBOARD_PORT),
   };
 }

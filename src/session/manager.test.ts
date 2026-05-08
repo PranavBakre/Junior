@@ -97,6 +97,7 @@ const testConfig: Config = {
     defaultVerbosity: "quiet",
   },
   channelDefaults: {},
+  adminSlackUserId: null,
   http: { enabled: false, port: 0 },
 };
 
@@ -297,27 +298,131 @@ describe("SessionManager", () => {
   // --- Commands ---
 
   describe("!reset", () => {
-    it("kills running process and deletes session", async () => {
+    it("rejects bare !reset with usage help", async () => {
       const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
       manager.onCommandResponse = onCmd;
-
-      // Start a session
       await manager.handleMessage(makeEvent({ text: "Work on this" }));
 
-      // Now reset
-      const resetEvent = makeEvent({ command: "reset", text: "", ts: "ts-reset" });
-      await manager.handleMessage(resetEvent);
+      await manager.handleMessage(makeEvent({ command: "reset", text: "", ts: "ts-reset" }));
 
-      // Session should be deleted
-      const session = await store.get("thread-1");
-      expect(session).toBeUndefined();
+      // Session must NOT be deleted — bare !reset is a usage error
+      expect(await store.get("thread-1")).toBeDefined();
+      expect(currentHandle.kill).not.toHaveBeenCalled();
+      expect(onCmd).toHaveBeenCalledTimes(1);
+      expect(onCmd.mock.calls[0][1]).toContain("Usage:");
+    });
 
-      // kill should have been called on the handle
+    it("!reset all kills running process and deletes session", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+      await manager.handleMessage(makeEvent({ text: "Work on this" }));
+
+      await manager.handleMessage(makeEvent({ command: "reset", text: "all", ts: "ts-reset" }));
+
+      expect(await store.get("thread-1")).toBeUndefined();
       expect(currentHandle.kill).toHaveBeenCalled();
-
-      // Command response should fire
       expect(onCmd).toHaveBeenCalledTimes(1);
       expect(onCmd.mock.calls[0][1]).toBe("Session reset.");
+    });
+
+    it("!reset <agent> clears only that agent's slice", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+      await manager.handleAgentMessage(makeEvent({ text: "hello" }), "echo");
+      currentHandle._complete("echo response", "echo-session-1");
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Set lead state too so we can verify it's untouched
+      let session = await store.get("thread-1");
+      session!.sessionId = "lead-session-1";
+      session!.leadSessionId = "lead-session-1";
+      await store.set("thread-1", session!);
+
+      await manager.handleMessage(makeEvent({ command: "reset", text: "echo", ts: "ts-reset" }));
+
+      session = await store.get("thread-1");
+      expect(session!.agentSessions.echo).toBeUndefined();
+      // Lead state untouched
+      expect(session!.leadSessionId).toBe("lead-session-1");
+      expect(onCmd.mock.calls[0][1]).toContain("Reset *echo*");
+    });
+
+    it("!reset <unknown-agent> reports nothing to reset", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+      await manager.handleMessage(makeEvent({ text: "Work on this" }));
+
+      await manager.handleMessage(
+        makeEvent({ command: "reset", text: "nonexistent", ts: "ts-reset" }),
+      );
+
+      expect(onCmd.mock.calls[0][1]).toContain("Nothing to reset");
+    });
+
+    describe("admin gating", () => {
+      const adminConfig: Config = { ...testConfig, adminSlackUserId: "U-ADMIN" };
+
+      it("non-admin gets ❌ reaction and command is ignored", async () => {
+        const adminManager = new SessionManager(store, adminConfig);
+        const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
+        const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+        adminManager.onReaction = onReaction;
+        adminManager.onCommandResponse = onCmd;
+        await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+
+        await adminManager.handleMessage(
+          makeEvent({ user: "U-OTHER", command: "reset", text: "all", ts: "ts-reset" }),
+        );
+
+        expect(onReaction).toHaveBeenCalledTimes(1);
+        expect(onReaction.mock.calls[0][1]).toBe("x");
+        // Session not deleted
+        expect(await store.get("thread-1")).toBeDefined();
+        expect(onCmd).not.toHaveBeenCalled();
+      });
+
+      it("admin can run !reset all", async () => {
+        const adminManager = new SessionManager(store, adminConfig);
+        const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+        adminManager.onCommandResponse = onCmd;
+        await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+
+        await adminManager.handleMessage(
+          makeEvent({ user: "U-ADMIN", command: "reset", text: "all", ts: "ts-reset" }),
+        );
+
+        expect(await store.get("thread-1")).toBeUndefined();
+        expect(onCmd.mock.calls[0][1]).toBe("Session reset.");
+      });
+
+      it("non-admin !mute is ignored with ❌", async () => {
+        const adminManager = new SessionManager(store, adminConfig);
+        const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
+        adminManager.onReaction = onReaction;
+        await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+
+        await adminManager.handleMessage(
+          makeEvent({ user: "U-OTHER", command: "mute", text: "", ts: "ts-mute" }),
+        );
+
+        expect(onReaction).toHaveBeenCalledTimes(1);
+        expect(onReaction.mock.calls[0][1]).toBe("x");
+        expect((await store.get("thread-1"))!.muted).toBe(false);
+      });
+
+      it("when adminSlackUserId is null, gate is open", async () => {
+        // testConfig has adminSlackUserId: null
+        const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
+        manager.onReaction = onReaction;
+        await manager.handleMessage(makeEvent({ user: "U-ANYONE", text: "go" }));
+
+        await manager.handleMessage(
+          makeEvent({ user: "U-ANYONE", command: "mute", text: "", ts: "ts-mute" }),
+        );
+
+        expect(onReaction).not.toHaveBeenCalled();
+        expect((await store.get("thread-1"))!.muted).toBe(true);
+      });
     });
   });
 
