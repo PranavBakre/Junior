@@ -3,6 +3,15 @@ import type { SessionStore } from "../session/store/interface.ts";
 import { parseCommand } from "./commands.ts";
 import { log } from "../logger.ts";
 
+/**
+ * Sibling Claude bots (Friday, Doraemon) post their streaming "thinking"
+ * updates with a leading ✽ glyph. Drop those — they're not user input, and
+ * treating them as input creates cross-bot reply loops.
+ */
+export function isForeignBotThinking(text: string): boolean {
+  return text.trimStart().startsWith("✽");
+}
+
 function logDrop(
   reason: string,
   ev: { channel?: string; ts?: string; subtype?: string; thread_ts?: string },
@@ -71,9 +80,7 @@ export function registerEventHandlers(
       return;
     }
 
-    // Sibling Claude bots (Friday, Doraemon) post their streaming "thinking"
-    // updates with a leading ✽ glyph. Drop those — they're not user input.
-    if (text.trimStart().startsWith("✽")) {
+    if (isForeignBotThinking(text)) {
       logDrop("foreign-bot-thinking", evMeta);
       return;
     }
@@ -138,6 +145,14 @@ export function registerEventHandlers(
 
   app.event("app_mention", async ({ event }) => {
     if (!event.user) return;
+    if (isForeignBotThinking(event.text)) {
+      logDrop("foreign-bot-thinking", {
+        channel: event.channel,
+        ts: event.ts,
+        thread_ts: event.thread_ts,
+      });
+      return;
+    }
 
     const threadId = event.thread_ts ?? event.ts;
 

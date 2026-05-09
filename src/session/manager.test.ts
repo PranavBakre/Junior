@@ -347,6 +347,48 @@ describe("SessionManager", () => {
       expect(onCmd.mock.calls[0][1]).toContain("Reset *echo*");
     });
 
+    it("!reset <agent> mid-flight survives the killed run completing", async () => {
+      // Regression: previously, a !reset that killed an in-flight run was
+      // clobbered by the killed run's onRunComplete writing back the stale
+      // sessionId / recreating the agent slice via getOrCreateAgentSession.
+      await manager.handleAgentMessage(makeEvent({ text: "go" }), "echo");
+      let session = await store.get("thread-1");
+      expect(session!.agentSessions.echo.status).toBe("busy");
+
+      // Reset while the run is still in flight (no _complete yet)
+      await manager.handleMessage(
+        makeEvent({ command: "reset", text: "echo", ts: "ts-reset" }),
+      );
+      session = await store.get("thread-1");
+      expect(session!.agentSessions.echo).toBeUndefined();
+      expect(currentHandle.kill).toHaveBeenCalled();
+
+      // Killed process exits with a "normal" result — must NOT recreate the slice
+      currentHandle._complete("late response", "stale-session-id");
+      await new Promise((r) => setTimeout(r, 10));
+
+      session = await store.get("thread-1");
+      expect(session!.agentSessions.echo).toBeUndefined();
+    });
+
+    it("!reset all mid-flight survives the killed run completing", async () => {
+      // Same race as above but for the top-level lead/default path
+      await manager.handleMessage(makeEvent({ text: "go" }));
+      expect((await store.get("thread-1"))!.status).toBe("busy");
+
+      await manager.handleMessage(
+        makeEvent({ command: "reset", text: "all", ts: "ts-reset-all" }),
+      );
+      expect(await store.get("thread-1")).toBeUndefined();
+      expect(currentHandle.kill).toHaveBeenCalled();
+
+      // Killed process exits — must NOT recreate the row from the snapshot
+      currentHandle._complete("late response", "stale-session-id");
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(await store.get("thread-1")).toBeUndefined();
+    });
+
     it("!reset <unknown-agent> reports nothing to reset", async () => {
       const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
       manager.onCommandResponse = onCmd;
@@ -378,6 +420,25 @@ describe("SessionManager", () => {
         expect(onReaction.mock.calls[0][1]).toBe("x");
         // Session not deleted
         expect(await store.get("thread-1")).toBeDefined();
+        expect(onCmd).not.toHaveBeenCalled();
+      });
+
+      it("non-admin bare !reset is silently ❌'d (no usage leak)", async () => {
+        const adminManager = new SessionManager(store, adminConfig);
+        const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
+        const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+        adminManager.onReaction = onReaction;
+        adminManager.onCommandResponse = onCmd;
+        await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+
+        await adminManager.handleMessage(
+          makeEvent({ user: "U-OTHER", command: "reset", text: "", ts: "ts-reset" }),
+        );
+
+        expect(onReaction).toHaveBeenCalledTimes(1);
+        expect(onReaction.mock.calls[0][1]).toBe("x");
+        // CRITICAL: the usage hint must NOT have been posted to thread —
+        // would leak the gating model and contradict the silent-deny promise.
         expect(onCmd).not.toHaveBeenCalled();
       });
 
