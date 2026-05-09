@@ -74,6 +74,14 @@ Slack Bot Server (Node.js / Bun)
 14. **Pure functions over framework ceremony.** If a library's core value is bypassed, replace it with the simplest implementation. A 20-line function beats a dependency you're working around.
 15. **Test against real infrastructure, mock at boundaries.** Mock Slack API and Claude CLI at system boundaries. Don't mock internal session management or message routing.
 
+## Engineering Principles
+
+1. **Sync before reading.** Any agent dispatch (or you reading source to draw a conclusion) needs `git fetch && git log @{u}` first. Stale checkouts produce confidently-wrong analysis with no error signal.
+2. **Read current state before planning.** Run `git status` / `git diff --stat` / the obvious query before proposing a multi-step plan. Plans built from recall stay plausible until execution touches reality.
+3. **Trust the build, not the LSP.** When editor diagnostics fire but `bun run typecheck` is green, the LSP is reading stale context. Verify against the build before refactoring code that wasn't broken.
+4. **Code tracing is inference, not evidence — execute to verify.** Pure mock-runs prove the shape of intermediate values; only an integration test proves behavior. Match verification scope to the claim.
+5. **Categorize before bulk action.** "Dirty," "globally," "missing" each name several distinct cases. Classify per-item (junk / extractable / mergeable / real-work) before picking the operation.
+
 ## Project Structure
 
 ```
