@@ -243,6 +243,11 @@ export class SessionManager {
       }
 
       case "reset": {
+        // Gate on admin BEFORE inspecting args. Otherwise a non-admin sending
+        // bare `!reset` gets the usage hint posted to the thread, contradicting
+        // the documented "silent ❌ reaction, no thread reply" promise — and
+        // leaks the gating model to anyone probing.
+        if (this.denyIfNotAdmin(event)) return true;
         const arg = event.text.trim();
         if (!arg) {
           this.onCommandResponse?.(
@@ -251,7 +256,6 @@ export class SessionManager {
           );
           return true;
         }
-        if (this.denyIfNotAdmin(event)) return true;
         if (arg === "all") {
           await this.resetSession(session.threadId);
           this.onCommandResponse?.(event, "Session reset.");
@@ -636,7 +640,7 @@ export class SessionManager {
       });
 
       handle.result.then(
-        (result: SpawnResult) => this.onRunComplete(session, result, agentName),
+        (result: SpawnResult) => this.onRunComplete(session, result, agentName, handle),
         (err: unknown) =>
           this.onRunComplete(session, {
             sessionId: null,
@@ -644,7 +648,7 @@ export class SessionManager {
             events: [],
             exitCode: null,
             error: err instanceof Error ? err.message : String(err),
-          }, agentName),
+          }, agentName, handle),
       );
     } catch (err) {
       // Agent prompt composition or worktree creation failed fatally
@@ -672,10 +676,21 @@ export class SessionManager {
     session: ThreadSession,
     result: SpawnResult,
     agentName: string,
+    ownHandle?: SpawnHandle,
   ): Promise<void> {
     const isTopLevel = agentName === "lead" || agentName === "default";
     const agentIdentity = identityForAgent(agentName);
-    this.handles.delete(this.handleKey(session.threadId, agentName));
+    const handleKey = this.handleKey(session.threadId, agentName);
+
+    // If our handle no longer owns the slot, this run was killed by !reset
+    // (handle deleted from map) or replaced by a newer spawn. Either way,
+    // persisting our stale sessionId / status would clobber authoritative
+    // state — bail without writing anything. Also skip onResponse: a discarded
+    // run shouldn't post its final message to Slack.
+    if (ownHandle && this.handles.get(handleKey) !== ownHandle) {
+      return;
+    }
+    this.handles.delete(handleKey);
 
     // Refetch the authoritative session before mutating. The `session` we hold
     // is a snapshot from spawn time — long-running agents can be minutes stale.
