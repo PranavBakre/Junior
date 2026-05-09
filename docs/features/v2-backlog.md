@@ -27,6 +27,35 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 
 **Priority:** Low — current thread sizes are small. Becomes relevant when threads regularly exceed ~20 unique participants.
 
+## Per-agent mute
+
+**Problem:** `session.muted` is a single boolean on the parent `ThreadSession`. There is no way to mute *just* the reproducer (e.g. when it's looping noisily) while keeping the lead agent responsive.
+
+**Scope (to be refined):**
+- Move `muted: boolean` from `ThreadSession` onto each `agentSessions[name]` entry. Lead lives on the parent — either keep `ThreadSession.muted` as the lead's flag, or carve out a synthetic `agentSessions["lead"]` for symmetry.
+- `!mute <agent>` / `!unmute <agent>` toggle the per-agent flag. `!mute all` mutes every agent currently registered in `agentSessions`.
+- Update the home tab counter (`src/slack/home.ts`) to count *any* muted agent rather than `session.muted`.
+- SQLite migration: add a `muted` column to the `agent_sessions` table (or store on the existing JSON blob). Old `muted` column on the parent stays for the lead until the model is unified.
+- Buffer/drain logic in `src/session/manager.ts:86,127,651` must consult the agent in question, not the parent.
+
+**Open questions:**
+- Does `!mute` (no arg) become an alias for `!mute all`, or a usage error like `!reset`? Leaning toward usage error to stay consistent with `!reset`.
+- Should muting an agent kill an in-flight process for that agent, or only suppress *future* turns? Today muting mid-turn discards the buffer (`manager.ts:651`) but lets the running process complete — that behavior probably ports over.
+
+## Thread-owner-based command access
+
+**Problem:** Today admin gating is a single env var (`ADMIN_SLACK_USER_ID`). The original sketch was richer — env admin + a SQLite-backed list of additional admins, plus letting the *thread owner* (first non-bot author) run elevated commands in their own thread.
+
+**Scope (to be refined):**
+- Persist `ownerSlackUserId` on `ThreadSession`, set from the first user message that creates the session. Survives `!reset all`.
+- `isAdmin(userId, session?)` returns true if `userId === envAdmin` OR `userId === session.ownerSlackUserId`.
+- Optional: SQLite `admins` table (`slack_user_id PRIMARY KEY, granted_by, granted_at`) plus `!admin add @user` / `!admin remove @user` / `!admin list`. Env admin is the bootstrap and cannot be removed via the command (they're not in the table).
+- Decide: do owners get *all* elevated commands, or only a safe subset (e.g. mute/unmute on their own thread but not reset)?
+
+**Open questions:**
+- Legacy threads have no `ownerSlackUserId`. Fall back to admin-only, or backfill from the first message?
+- DMs — is the DM partner the "owner" by default? Probably yes.
+
 ## Image & Media Support from Slack
 
 **Problem:** Users send screenshots, diagrams, error images, and file uploads in Slack threads. The bot currently ignores them — only `event.text` is passed to Claude. Claude Code can read images, so the capability is there but not wired.

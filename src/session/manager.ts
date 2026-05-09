@@ -45,6 +45,7 @@ export class SessionManager {
   onMessageBuffered?: (event: SlackMessageEvent) => void;
   onError?: (session: ThreadSession, error: string | null) => void;
   onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
+  onReaction?: (event: SlackMessageEvent, emoji: string) => void;
 
   constructor(
     store: SessionStore,
@@ -158,6 +159,60 @@ export class SessionManager {
     await this.store.delete(threadId);
   }
 
+  /**
+   * Reset a single agent's slice of a thread session, leaving other agents'
+   * state intact. Returns true if the agent had state to clear.
+   *
+   * "lead"/"default" live on the parent ThreadSession (sessionId,
+   * leadSessionId, pendingMessages); everything else lives in
+   * agentSessions[agentName].
+   */
+  async resetAgent(threadId: string, agentName: string): Promise<boolean> {
+    const session = await this.store.get(threadId);
+    if (!session) return false;
+
+    const handleKey = this.handleKey(threadId, agentName);
+    const handle = this.handles.get(handleKey);
+    if (handle) {
+      handle.kill();
+      this.handles.delete(handleKey);
+    }
+
+    let touched = false;
+    if (agentName === "lead" || agentName === "default") {
+      if (session.sessionId || session.leadSessionId || session.pendingMessages.length > 0 || session.status !== "idle") {
+        touched = true;
+      }
+      session.sessionId = null;
+      session.leadSessionId = null;
+      session.pendingMessages = [];
+      session.status = "idle";
+      session.pid = null;
+    } else if (session.agentSessions?.[agentName]) {
+      delete session.agentSessions[agentName];
+      touched = true;
+    }
+
+    await this.store.set(threadId, session);
+    return touched;
+  }
+
+  isAdmin(userId: string): boolean {
+    const adminId = this.config.adminSlackUserId;
+    if (!adminId) return true;
+    return userId === adminId;
+  }
+
+  /**
+   * Returns true if the user is denied (and a ❌ reaction was queued).
+   * Caller should `return true` from the command handler to short-circuit.
+   */
+  private denyIfNotAdmin(event: SlackMessageEvent): boolean {
+    if (this.isAdmin(event.user)) return false;
+    this.onReaction?.(event, "x");
+    return true;
+  }
+
   private async handleCommand(
     session: ThreadSession,
     event: SlackMessageEvent,
@@ -188,8 +243,33 @@ export class SessionManager {
       }
 
       case "reset": {
-        await this.resetSession(session.threadId);
-        this.onCommandResponse?.(event, "Session reset.");
+        // Gate on admin BEFORE inspecting args. Otherwise a non-admin sending
+        // bare `!reset` gets the usage hint posted to the thread, contradicting
+        // the documented "silent ❌ reaction, no thread reply" promise — and
+        // leaks the gating model to anyone probing.
+        if (this.denyIfNotAdmin(event)) return true;
+        const arg = event.text.trim();
+        if (!arg) {
+          this.onCommandResponse?.(
+            event,
+            "Usage: `!reset <agent>` (e.g. `!reset lead`, `!reset reproducer`) or `!reset all` to clear the entire thread session.",
+          );
+          return true;
+        }
+        if (arg === "all") {
+          await this.resetSession(session.threadId);
+          this.onCommandResponse?.(event, "Session reset.");
+          return true;
+        }
+        const touched = await this.resetAgent(session.threadId, arg);
+        if (touched) {
+          this.onCommandResponse?.(event, `Reset *${arg}*.`);
+        } else {
+          this.onCommandResponse?.(
+            event,
+            `No state for *${arg}* in this thread. Nothing to reset.`,
+          );
+        }
         return true;
       }
 
@@ -222,15 +302,15 @@ export class SessionManager {
           "`!branch <ref>` — Set base branch ref",
           "`!agent <junior|lead>` — Set thread default agent",
           "`!cancel` — Kill running process, keep session",
-          "`!reset` — Reset session",
+          "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
           "`!status` — Show session status",
           "`!quiet` — Minimal output",
           "`!normal` — Normal output",
           "`!verbose` — Verbose output",
           "`!adhoc <text>` — Add ad-hoc item to calendar",
           "`!bugs <text>` — Add bug item to calendar",
-          "`!mute` — Stop responding until !unmute",
-          "`!unmute` — Resume responding",
+          "`!mute` — Stop responding until !unmute (admin only)",
+          "`!unmute` — Resume responding (admin only)",
           "`!help` — Show this help",
         ].join("\n");
         this.onCommandResponse?.(event, helpText);
@@ -354,6 +434,7 @@ export class SessionManager {
       }
 
       case "mute": {
+        if (this.denyIfNotAdmin(event)) return true;
         session.muted = true;
         await this.store.set(session.threadId, session);
         this.onCommandResponse?.(event, "Muted. I'll stop responding until you `!unmute`.");
@@ -361,6 +442,7 @@ export class SessionManager {
       }
 
       case "unmute": {
+        if (this.denyIfNotAdmin(event)) return true;
         session.muted = false;
         await this.store.set(session.threadId, session);
         this.onCommandResponse?.(event, "Unmuted.");
@@ -558,7 +640,7 @@ export class SessionManager {
       });
 
       handle.result.then(
-        (result: SpawnResult) => this.onRunComplete(session, result, agentName),
+        (result: SpawnResult) => this.onRunComplete(session, result, agentName, handle),
         (err: unknown) =>
           this.onRunComplete(session, {
             sessionId: null,
@@ -566,7 +648,7 @@ export class SessionManager {
             events: [],
             exitCode: null,
             error: err instanceof Error ? err.message : String(err),
-          }, agentName),
+          }, agentName, handle),
       );
     } catch (err) {
       // Agent prompt composition or worktree creation failed fatally
@@ -594,10 +676,21 @@ export class SessionManager {
     session: ThreadSession,
     result: SpawnResult,
     agentName: string,
+    ownHandle?: SpawnHandle,
   ): Promise<void> {
     const isTopLevel = agentName === "lead" || agentName === "default";
     const agentIdentity = identityForAgent(agentName);
-    this.handles.delete(this.handleKey(session.threadId, agentName));
+    const handleKey = this.handleKey(session.threadId, agentName);
+
+    // If our handle no longer owns the slot, this run was killed by !reset
+    // (handle deleted from map) or replaced by a newer spawn. Either way,
+    // persisting our stale sessionId / status would clobber authoritative
+    // state — bail without writing anything. Also skip onResponse: a discarded
+    // run shouldn't post its final message to Slack.
+    if (ownHandle && this.handles.get(handleKey) !== ownHandle) {
+      return;
+    }
+    this.handles.delete(handleKey);
 
     // Refetch the authoritative session before mutating. The `session` we hold
     // is a snapshot from spawn time — long-running agents can be minutes stale.

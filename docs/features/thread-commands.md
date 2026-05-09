@@ -11,7 +11,7 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 
 ## Full Vision
 
-- `!reset` — Clear session (kill process if running, remove session state, optionally remove worktree)
+- `!reset <agent|all>` — Clear one agent's slice of the session, or the whole thread. Bare `!reset` is rejected with usage help so admins don't accidentally nuke an active reproducer/thinker turn. (admin only)
 - `!status` — Show session state (agent type, worktree, busy/idle, last activity, pending messages count)
 - `!build [prompt]` — Set agent to build, create worktree if needed, run prompt
 - `!frontend [prompt]` — Set agent to frontend, create worktree, run prompt
@@ -20,9 +20,15 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 - `!repo <name>` — Switch target repo for this thread
 - `!branch <ref>` — Set worktree base ref (next worktree creation uses this)
 - `!quiet` / `!normal` / `!verbose` — Set verbosity
-- `!mute` — Stop seeing or replying to any messages until `!unmute`
-- `!unmute` — Resume normal operation
+- `!mute` — Stop seeing or replying to any messages until `!unmute` (admin only)
+- `!unmute` — Resume normal operation (admin only)
 - `!help` — List available commands
+
+## Admin-only commands
+
+`!mute`, `!unmute`, and `!reset` are gated behind `ADMIN_SLACK_USER_ID` (single Slack user ID, env-configured). Non-admin invocations are silently rejected with a ❌ reaction on the trigger message — no thread reply, no log noise. When `ADMIN_SLACK_USER_ID` is unset (local dev), the gate is open.
+
+This is intentionally a single-admin model. The "elevation list lives in SQLite" idea was scoped out for v1 — see [v2-backlog.md](v2-backlog.md).
 
 ## Design Decision: `!` prefix, not Slack slash commands
 

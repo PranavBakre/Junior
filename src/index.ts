@@ -109,6 +109,10 @@ sessionManager.onCommandResponse = (event, response) => {
   responder.postResponse(event.channel, event.threadId, response);
 };
 
+sessionManager.onReaction = (event, emoji) => {
+  responder.addReaction(event.channel, event.ts, emoji);
+};
+
 sessionManager.onError = (session, error) => {
   const agentName = session.activeAgentName ?? "lead";
   log.error("error", `thread=${session.threadId} agent=${agentName} ${error ?? "Unknown error"}`);
