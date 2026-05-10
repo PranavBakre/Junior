@@ -4,7 +4,7 @@ import type { SessionManager } from "../session/manager.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { RepoConfig } from "../config.ts";
-import { agentForUsername, isPersistentAgent } from "./agents.ts";
+import { agentForUsername, isPersistentAgent, workerMayDispatch } from "./agents.ts";
 import { log } from "../logger.ts";
 
 export interface AgentDirective {
@@ -212,24 +212,34 @@ export class AgentDispatcher {
     }
 
     // Has directives.
-    // In support channels, only lead may emit them; workers/unknown self-bots
-    // get the directives stripped (re-routed to lead as plain text).
-    // In non-support channels there's no lead-only invariant — humans drive.
-    // Self-bot directives in non-support channels are weird (single-session
-    // bots don't typically dispatch); drop them too rather than risk loops.
+    // In support channels, lead may emit anything; workers may emit only the
+    // dispatches in WORKER_DISPATCH_ALLOW (e.g. thinker → !review). Other
+    // worker directives are stripped and the message re-routes to lead as
+    // plain text so lead can decide what to do with the unauthorised attempt.
+    // Unknown self-bots are treated as workers with no allow-list.
+    // In non-support channels there's no lead — humans drive — and self-bots
+    // shouldn't be dispatching either; drop to avoid loops.
+    let dispatchableDirectives = directives;
     if (event.isSelfBot && sourceAgent !== "lead") {
-      if (isSupport) {
+      if (!isSupport) {
+        return;
+      }
+      const allowed = directives.filter((d) =>
+        sourceAgent ? workerMayDispatch(sourceAgent, d.agentName) : false,
+      );
+      if (allowed.length === 0) {
         await this.manager.handleLeadMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
         });
+        return;
       }
-      return;
+      dispatchableDirectives = allowed;
     }
 
     // Dispatch each directive (works in any channel).
     const byAgent = new Map<string, Array<{ directive: AgentDirective; index: number }>>();
-    directives.forEach((directive, index) => {
+    dispatchableDirectives.forEach((directive, index) => {
       const entries = byAgent.get(directive.agentName) ?? [];
       entries.push({ directive, index });
       byAgent.set(directive.agentName, entries);

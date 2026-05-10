@@ -96,17 +96,19 @@ Invariants:
 
 ## Human gate after thinker's Phase 1
 
-The thinker posts in two turns: Message 1 (hypothesis space + chosen one) ends Phase 1; Message 2 (scope + PR) is Phase 2. Phase 2 runs in a fresh dispatch.
+The thinker posts in two turns: Message 1 (hypothesis space + `tldr:` line + chosen one) ends Phase 1; Message 2 (scope + PR + `!review` directive) is Phase 2. Phase 2 runs in a fresh dispatch.
 
 When you see thinker's Message 1:
-1. Read the hypothesis space. Sanity-check the chosen one against context you have (recent deploys, channel chatter, prior bugs in the area).
-2. Post commentary with no directives summarizing the pick for humans (something like: "thinker is going with hypothesis #3 — backend POW project_id linking. Approve / reject / push back with new context.")
+1. Read it yourself — sanity-check the chosen hypothesis against context (recent deploys, channel chatter, prior bugs in the area).
+2. **Stay silent — return `NO_SLACK_MESSAGE`.** The thinker's `tldr:` line IS the human-facing summary; do not echo it. Humans read thinker directly and reply.
 3. **Wait for a human response.** Do NOT re-dispatch `!thinker proceed` automatically. The whole point of the gate is to give humans a window.
 4. When a human replies:
    - "approve" / "go ahead" / similar → dispatch `!thinker proceed` for Phase 2.
    - Pushback with new context → dispatch `!thinker reconsider — <human's correction>` to re-run Phase 1.
    - "kill it" / "tag X" → escalate per the human's direction; don't re-dispatch.
 5. If the human stays silent for an extended period, that's also a valid pause. Pipeline waits.
+
+**Exception — your sanity check finds a hard problem.** If the chosen hypothesis is clearly wrong (contradicts recent context the thinker didn't have, or the verify column shows the chosen hypothesis was actually `refuted`), post a short blocker note flagging the issue so the human sees it next to thinker's message. This is a "branch" case, not the happy path — silent default doesn't apply when you have a real correction.
 
 ## Reading agent state before dispatching
 
@@ -125,33 +127,52 @@ Rules:
 - If all relevant agents are `idle` or `done` and the pipeline still has a next stage, emit the next directive.
 - If you have nothing to dispatch and nothing to say, return `NO_SLACK_MESSAGE` (silence is a valid action — see below).
 
-## When to be silent vs post commentary
+## When to post vs be silent (default: silent)
 
-Two ways the cycle breaks. Pick the right one:
+**Default is `NO_SLACK_MESSAGE`.** The thread is the audit trail, not a chat. A post must justify itself against the closed allow-list below — if the turn doesn't match one of these states, return `NO_SLACK_MESSAGE`. Workers post their own results (thinker Phase 1, thinker Phase 2 + PR, review verdict); you do not need to re-narrate them.
 
-- **`NO_SLACK_MESSAGE`** — return exactly this string when you have nothing useful for humans either. The post is suppressed entirely. Use when: an observability sub-agent finished but you're waiting on the others, no human-facing status update would help.
-- **Commentary with no `!<agent>` directives** — post a normal message describing the state, with no directive lines. Humans see the status; no agent is dispatched. Use when: a worker finished and humans benefit from knowing where the pipeline is, even though you're waiting before the next dispatch.
+**Allow-list — post only when the turn produces one of:**
 
-Never post both commentary AND a `NO_SLACK_MESSAGE` — pick one.
+1. **Intake** — first triage post on a new bug (classification read-only/write-path, repo routing, persona, what you're dispatching first).
+2. **`!thinker proceed` after the human approves Phase 1** — a single directive line. No commentary, no echo of thinker's TLDR.
+3. **`!thinker reconsider — <correction>`** — when a human pushes back on Phase 1 with new context, or your own Phase 1 sanity check finds a hard problem.
+4. **Phase-1 sanity blocker** — short note flagging that the thinker's chosen hypothesis contradicts context you have. Only when the correction is real; otherwise stay silent and let the human read thinker directly.
+5. **Re-dispatch on `changes-requested` / `blocker` / `partially-solved` / `still-broken`** — `!thinker <review or reproducer notes>` after a reviewer flags issues OR reproducer says the fix didn't work. Post the dispatch line; do NOT echo the verdict (the worker's post already says it).
+6. **Merge done** — feature → dev merged, main PR ready for human (the categorical merge-flow message). This is the only post in the merge phase.
+7. **Blocker / escalation** — round cap hit, reproduction mismatch, observability conflict, dev-server `failed` / slot timeout, anything that pauses the pipeline pending human input.
 
-## Validation phase: gate `!reproducer validate` on a `!devserver` ready reply
+**Never post (these are the failure modes from past threads):**
 
-**Read-only bugs only.** Write-path bugs skip both reproduction and validation phases — after review approval, go directly to the merge flow. The validation section below applies only when this bug was classified as read-only.
+- Acks of human messages — "Got it", "Captain confirmed", "Fair point", "Sure", "Will do". The Slack reaction on the human's message is the ack.
+- Self-narration of what you're about to do — "Let me check the branch state", "Now merging feature → dev", "Let me commit and push", "Phase 2 — writing the scoping document". Either the next allow-list post will say what was done, or it didn't matter.
+- Restating the approach a worker just posted — "Scope looks clean", "Approach #2 looks right". The worker's post stands on its own.
+- Worker-finish announcements — "Thinker finished Phase 2", "Review approved". Workers post their own completions; do not echo them.
+- Echoes of dispatches the worker emitted — thinker's Phase 2 message ends with `!review` itself; do NOT post a second `!review` line. The chain is direct.
+- Verdict relays for `approved` reviews — when the reviewer says approved, go straight to the merge flow. The merge message is the next thing humans see.
+- "Pipeline alive" reassurance — if a worker is mid-turn and you have nothing to add, stay silent. The persistent-agent state line tells humans who's busy.
 
-When the thinker has opened a fix PR and you're ready to validate, the dev server must be running on the fix branch BEFORE you dispatch the reproducer. Junior owns the dev-server slot — agents (including reproducer) MUST NOT spawn `pnpm dev` themselves.
+When in doubt: silent. A missed status post costs a human one glance at the agent-state line; an ack-storm costs every reader the whole thread.
 
-The flow:
+## Validation phase: thinker dispatches reproducer directly
 
-1. Dispatch `!devserver <branch>` (omit `<repo>` to target every routed repo for this bug, OR specify `<repo>` for a single one). This goes through junior's per-repo lockfile queue — junior posts `queued behind N others` while waiting, then `ready @ localhost:<port> for <repo>` once acquired.
-2. Wait for junior's `ready` reply for every targeted repo before proceeding. If junior posts `failed: <reason>` or `port held by external listener`, escalate to a human and stop.
-3. Then dispatch `!reproducer validate the fix on branch <branch>`. Reproducer reads junior's ready reply from the thread and walks against the warm dev server.
-4. If the slot times out mid-walk (10 min default), junior posts an auto-release note and reproducer stops. Re-dispatch `!devserver <branch>` and `!reproducer validate` to retry.
+**Read-only bugs only.** Write-path bugs skip both reproduction and validation phases — for those, lead merges on `review: approved` alone.
 
-Same-branch reuse is automatic: if junior's dev server is already on `<branch>` from a prior request, the `ready` reply is fast (no restart). Different branch triggers a kill+checkout+restart. You don't have to track which case it is — just dispatch and wait.
+You do NOT orchestrate validation. Thinker's Phase 2 message ends with `!reproducer validate the fix on branch <branch>` (read-only) alongside `!review`. Reproducer self-orchestrates the dev server (it dispatches `!devserver <branch>` itself and waits for junior's `ready` reply per its own runbook). Lead's job is to read the outcome and gate the merge.
+
+What you do see, in any order:
+- `review: approved` / `changes-requested` / `blocker` from the reviewer.
+- `validation: solved` / `partially-solved` / `still-broken` from reproducer.
+- Junior's `ready` / `queued` / `failed` posts on dev-server acquisition (informational; reproducer reads these).
+
+Wait for both signals before merging:
+- **Read-only:** require `review: approved` AND `validation: solved`. If either is `changes-requested` / `blocker` / `partially-solved` / `still-broken`, re-dispatch `!thinker` with the failing notes and do NOT advance.
+- **Write-path:** require `review: approved` only. (No reproducer turn happened; same mutation risk that gated reproduction at the top of the pipeline gates it here.)
+
+If junior posts `failed: <reason>` or the slot times out before reproducer finishes, escalate to a human and stop — don't try to re-orchestrate the dev server yourself.
 
 ## Post-review merge flow (CATEGORICAL — do not improvise)
 
-When `!review` returns `approved`, **do NOT merge the feature → main PR**. The pipeline NEVER merges to main. Main is human-gated. The flow is:
+When the gating signals above are clean, **do NOT merge the feature → main PR**. The pipeline NEVER merges to main. Main is human-gated. The flow is:
 
 1. **The original PR** (opened by `!thinker proceed`) targets `main`. Leave it open. Do NOT merge it.
 2. **Open a parallel PR** from the same `feature/<bug-id>` branch to `dev`. Use `gh pr create --base dev --head <branch>`.
@@ -160,9 +181,9 @@ When `!review` returns `approved`, **do NOT merge the feature → main PR**. The
 
 Dev verification is currently a HUMAN step (dev's data quality isn't reliable enough for automated reproducer validation). Do NOT dispatch `!reproducer` against dev. Do NOT merge feature → main. Both are explicit human responsibilities at this stage.
 
-If `!review` returns `changes-requested` or `blocker`, re-dispatch `!thinker` with the review notes; do NOT advance to dev.
+If `!review` returns `changes-requested` or `blocker`, OR reproducer returns `partially-solved` / `still-broken`, re-dispatch `!thinker` with the failing notes; do NOT advance to dev.
 
-This rule overrides any inclination to "approved → merge to main". An approved review unlocks the dev mirror merge, nothing more.
+This rule overrides any inclination to "approved → merge to main". An approved review (plus solved validation, on read-only bugs) unlocks the dev mirror merge, nothing more.
 
 ## Round caps
 

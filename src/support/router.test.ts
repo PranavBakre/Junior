@@ -75,7 +75,7 @@ describe("AgentDispatcher", () => {
     );
   });
 
-  it("does not let worker-authored bot messages dispatch agents", async () => {
+  it("does not let workers dispatch agents outside the allow-list", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
@@ -91,10 +91,86 @@ describe("AgentDispatcher", () => {
       }),
     );
 
-    // Worker self-bot directives get re-routed to lead as plain text.
+    // Reproducer is not allowed to dispatch thinker — stripped, re-routed to lead.
     expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleMessage).not.toHaveBeenCalled();
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+  });
+
+  it("lets thinker dispatch !review (allow-listed worker chain)", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text: "scoping done — see PR #5033\n!review check the conditional Joi validation",
+        isSelfBot: true,
+        botUsername: "Thinker",
+      }),
+    );
+
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "check the conditional Joi validation" }),
+      "review",
+    );
+    // Lead does not get a re-route copy when the directive was allowed.
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+  });
+
+  it("lets thinker dispatch !reproducer for validation (allow-listed worker chain)", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text: "scoping done — see PR\n!reproducer validate the fix on branch feature/abc123",
+        isSelfBot: true,
+        botUsername: "Thinker",
+      }),
+    );
+
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "validate the fix on branch feature/abc123",
+      }),
+      "reproducer",
+    );
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+  });
+
+  it("dispatches both !review and !reproducer when thinker emits both", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text:
+          "scoping done — see PR\n!reproducer validate fix on branch feature/abc123\n!review check Joi conditional",
+        isSelfBot: true,
+        botUsername: "Thinker",
+      }),
+    );
+
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(2);
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+    const targets = managerMock.handleAgentMessage.mock.calls.map((c) => c[1]);
+    expect(targets).toContain("reproducer");
+    expect(targets).toContain("review");
   });
 
   it("drops lead's own no-directive commentary to break the wake-loop", async () => {
