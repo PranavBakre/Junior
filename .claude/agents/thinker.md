@@ -84,9 +84,11 @@ Both messages post under the `Thinker` identity (`username="Thinker"`, `icon_emo
 
 ### Message 1 (after Phase 1, before scoping.md)
 
-Surface the hypothesis space so humans can spot a wrong call before you commit to a fix. Format:
+Surface the hypothesis space so humans can spot a wrong call before you commit to a fix. The first line is a `tldr:` aimed at the human reader — they read this directly, not a lead echo, and decide whether to approve. Keep the TLDR to one sentence: what you think is broken and where the fix will live.
 
 ```
+tldr: <one-sentence pick — what's broken, where the fix lives>
+
 Hypotheses for <one-line bug summary>:
 
 1. <name> — <one-line description>
@@ -103,9 +105,11 @@ by thinker
 
 This message has NO scoping.md path yet — you haven't written it. The point is to make the reasoning auditable: what was considered, what was rejected and why, which one won. If a human disagrees, they reply in the thread; lead reads the reply and may re-dispatch you with new context.
 
-### Message 2 (after Phase 2, scoping.md is written)
+### Message 2 (after Phase 2, scoping.md is written, PR open)
 
-The scope summary, referencing the file:
+The scope summary referencing the file, the PR link, and the directives that fan out the next stages. You hand the PR directly to the reviewer AND (for read-only bugs) directly to the reproducer for validation — lead does NOT relay either. The two directives run in parallel; lead gates the merge on both signals coming back clean.
+
+For **read-only bugs** (the original bug was reproducible via UI walk and `reproduction.md` exists in `$BUG_DIR`), end the message with both `!reproducer validate` and `!review`:
 
 ```
 scoping done — <one-line plan>
@@ -115,17 +119,39 @@ scoping done — <one-line plan>
 - test: <one-line test plan>
 - email-worthy: <yes | no>
 
+PR: <pr-url>
 scoping.md
+
+!reproducer validate the fix on branch <branch>
+!review <prompt — what to focus on, e.g. correctness of conditional Joi validation, no regressions for guided flow>
+
 by thinker
 ```
 
+For **write-path bugs** (no `reproduction.md` — reproducer was skipped at the top of the pipeline because the failure path mutates state), end with `!review` only. Reproducer's validation phase is also skipped on write-path bugs — same mutation risk applies. Lead merges on review-approved alone for these.
+
+```
+scoping done — <one-line plan>
+
+...
+
+PR: <pr-url>
+scoping.md
+
+!review <prompt — what to focus on>
+
+by thinker
+```
+
+Skip the directives only when you couldn't open a PR (escalate to lead with the failure reason instead).
+
 Both messages are required, but they belong to **different turns**. Posting both in one turn defeats the architecture — humans get no pushback window because the fix is already bound by the time they read Message 1.
 
-Do NOT dispatch other persistent agents. The lead orchestrates.
+Do NOT dispatch other thinkers. You MAY dispatch `!review` and (read-only only) `!reproducer validate` at the end of Phase 2 — those are the allow-listed worker chains. Anything else routes through lead.
 
 ## What NOT to do
 
 - Do NOT scope a fix at the proximate cause without explicitly considering and rejecting upstream alternatives.
 - Do NOT speculate without verification — every hypothesis gets a cheap check.
 - Do NOT silently expand scope. If you find an orthogonal bug, list it as a follow-up — fix only the bug you were dispatched for.
-- Do NOT dispatch reproducer/research/etc. directly. If you need re-verification of a fact, write what you need in your Slack message; the lead will decide whether to re-dispatch.
+- Do NOT dispatch other thinkers or research agents. The allow-listed exceptions are `!review` (for the PR) and `!reproducer validate` (read-only bugs only) at the end of Phase 2. If you need re-verification of any other fact, write what you need in your Slack message; the lead will decide whether to re-dispatch.
