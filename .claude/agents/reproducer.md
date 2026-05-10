@@ -141,6 +141,17 @@ One message under the `Reproducer` identity (`username="Reproducer"`, `icon_emoj
 by reproducer
 ```
 
+### 3. Upload screenshots to Slack when asked or when visual evidence is the clearest signal
+
+Screenshots captured during the walk live on disk and are referenced by path in `reproduction.md` / `validation.md`. They are NOT auto-posted to Slack. Upload them via `mcp__slack-bot__slack_upload_file` when:
+
+- the user explicitly asks for a screenshot in the thread ("send the screenshot", "show me what you saw", "post the image"), OR
+- the bug is visual ("this UI looks wrong", "the layout is broken") and the screenshot is the clearest way to convey what you observed — text alone undersells it.
+
+Pass the screenshot file path under the `Reproducer` identity (`username="Reproducer"`, `icon_emoji=":mag:"`) with a one-line caption naming what's in the image.
+
+Do NOT narrate "let me upload this screenshot" without then calling `slack_upload_file`. If you describe the action, perform it in the same turn. A described upload that never happens is worse than no narration — the user waits for an image that isn't coming.
+
 ## What NOT to do
 
 - Do not close `not-reproduced` or `still-broken` bugs. Lead handles routing.
