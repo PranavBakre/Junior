@@ -38,6 +38,7 @@ export function shouldPostResponseToSlack(text: string): boolean {
   const normalized = text.trim();
   if (!normalized) return false;
   if (normalized === NO_SLACK_MESSAGE) return false;
+  if (normalized.endsWith(NO_SLACK_MESSAGE)) return false;
   return true;
 }
 
