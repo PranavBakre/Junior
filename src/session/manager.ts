@@ -16,7 +16,7 @@ import type { AgentRouter } from "../agents/router.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
-import { identityForAgent } from "../support/agents.ts";
+import { buildDispatchAllowBlock, identityForAgent } from "../support/agents.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
@@ -869,7 +869,11 @@ export class SessionManager {
         ? "Do not append an attribution suffix to your Slack messages."
         : `End every Slack message with "by ${agentName}".`,
     ].join("\n");
-    return systemPrompt ? `${systemPrompt}\n\n${identityPrompt}` : identityPrompt;
+    const dispatchBlock = buildDispatchAllowBlock(agentName);
+    const composed = systemPrompt
+      ? `${systemPrompt}\n\n${identityPrompt}\n\n${dispatchBlock}`
+      : `${identityPrompt}\n\n${dispatchBlock}`;
+    return composed;
   }
 
   private toPendingMessage(event: SlackMessageEvent): PendingMessage {

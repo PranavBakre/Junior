@@ -51,3 +51,46 @@ export function workerMayDispatch(
 ): boolean {
   return WORKER_DISPATCH_ALLOW[sourceAgent]?.has(targetAgent) ?? false;
 }
+
+/**
+ * Persistent agents this agent may dispatch via `!<agent>`. Lead may dispatch
+ * any registered persistent agent; workers are restricted to
+ * WORKER_DISPATCH_ALLOW. Returns an empty array for agents with no dispatch
+ * capability — they should re-route requests through lead (e.g. via plain
+ * commentary that lead's next turn reads).
+ */
+export function dispatchableAgentsFor(agentName: string): string[] {
+  if (agentName === "lead") {
+    return Object.keys(AGENT_IDENTITIES).filter(
+      (name) => name !== "lead" && name !== "echo",
+    );
+  }
+  const allow = WORKER_DISPATCH_ALLOW[agentName];
+  return allow ? [...allow] : [];
+}
+
+/**
+ * Build the `<dispatch-allow>` system-prompt block injected into every agent's
+ * Claude session. Single source of truth: the same data the router uses to
+ * gate self-bot directives. Without this, agents would learn the rule from
+ * their .md file (prose) which can drift from the code (enforcement) — and
+ * disallowed directives strip silently with no feedback signal to the worker.
+ */
+export function buildDispatchAllowBlock(agentName: string): string {
+  const allowed = dispatchableAgentsFor(agentName).sort();
+  const lines = ["<dispatch-allow>"];
+  if (allowed.length === 0) {
+    lines.push(
+      "You may NOT emit `!<agent>` directives. Any directive you write will be stripped by the router and re-routed to lead as plain text. If you need another agent to act, describe what you need in your Slack message — lead reads the thread and decides whether to dispatch.",
+    );
+  } else {
+    lines.push(
+      `You may emit \`!<agent>\` directives for: ${allowed.map((a) => `\`${a}\``).join(", ")}.`,
+    );
+    lines.push(
+      "Any other `!<agent>` directive will be stripped by the router (silently — no error reply). Treat this list as authoritative; if the rule below disagrees with your agent doc, the code wins.",
+    );
+  }
+  lines.push("</dispatch-allow>");
+  return lines.join("\n");
+}
