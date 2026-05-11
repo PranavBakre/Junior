@@ -24,6 +24,7 @@ import {
   resolveSlackMentions,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
+import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 
@@ -522,11 +523,20 @@ export class SessionManager {
           ? session.worktreePaths
           : undefined;
 
-      // Build the prompt. On the first turn (no sessionId yet), inject the full
-      // preamble (identity, slack-context, workspace, thread history). On resumed
-      // turns, --resume already carries identity/context/history — sending them
-      // again duplicates tokens and pollutes the conversation. Keep just the
-      // workspace block (cheap insurance for the worktree safety rule).
+      // Resolve the agent definition early so its declared context profile
+      // gates the preamble. Default agent (no .md) and missing-flag cases
+      // fall back to DEFAULT_CONTEXT_PROFILE (all blocks on).
+      const agentDefinition = this.agentRouter
+        ? await this.agentRouter.resolveAgent(runSession)
+        : null;
+      const contextProfile: AgentContextProfile =
+        agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
+
+      // Build the prompt. On the first turn (no sessionId yet), inject the
+      // preamble blocks the agent asked for. On resumed turns, --resume already
+      // carries identity/context/history — keep just the workspace block (cheap
+      // insurance for the worktree safety rule), and only if the agent wants
+      // the workspace context at all.
       if (this.slackApp && latestTs) {
         const isFirstTurn = !runSession.sessionId;
         const readablePrompt = await resolveSlackMentions(this.slackApp, prompt);
@@ -540,9 +550,10 @@ export class SessionManager {
             workspace,
             worktreePaths,
             this.config.repos,
+            contextProfile,
           );
-          prompt = `${preamble}\n\n${readablePrompt}`;
-        } else {
+          prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
+        } else if (contextProfile.workspace) {
           const workspaceBlock = buildWorkspaceBlock(
             workspace,
             worktreePaths,
@@ -552,6 +563,8 @@ export class SessionManager {
           prompt = workspaceBlock
             ? `${workspaceBlock}\n\n${readablePrompt}`
             : readablePrompt;
+        } else {
+          prompt = readablePrompt;
         }
       }
 
@@ -597,9 +610,11 @@ export class SessionManager {
         ? undefined
         : targetRepo?.path;
 
-      const agentStateBlock = this.buildAgentStateBlock(session);
-      if (agentStateBlock) {
-        prompt = `${agentStateBlock}\n\n${prompt}`;
+      if (contextProfile.agentState) {
+        const agentStateBlock = this.buildAgentStateBlock(session);
+        if (agentStateBlock) {
+          prompt = `${agentStateBlock}\n\n${prompt}`;
+        }
       }
 
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it

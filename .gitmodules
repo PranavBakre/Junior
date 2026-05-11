@@ -1,3 +1,6 @@
 [submodule "identity"]
 	path = identity
 	url = git@github.com:PranavBakre/junior-identity.git
+[submodule ".claude/agents-org"]
+	path = .claude/agents-org
+	url = https://github.com/GrowthX-Club/junior-private-agents.git
