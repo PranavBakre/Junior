@@ -12,9 +12,9 @@ Captures the discussion in a Slack thread on 2026-04-29.
 ## Problem
 
 For bug threads, junior's persistent agents (lead, thinker, reproducer) operate
-directly on the bare target repos under `~/openclaw-projects/<repo>/`. Specifically:
+directly on the bare target repos under `~/projects/<repo>/`. Specifically:
 
-- `runtime-environment.md` and the agent prompts hardcode `~/openclaw-projects/<repo>/` and tell agents to `cd` there for reading code, editing, `git checkout`, and `pnpm dev`.
+- `runtime-environment.md` and the agent prompts hardcode `~/projects/<repo>/` and tell agents to `cd` there for reading code, editing, `git checkout`, and `pnpm dev`.
 - `WorktreeManager` exists and `runClaudeWithAgent` will create a per-thread worktree at `<repo>.junior-worktrees/slack-<threadId>` — but only when `session.targetRepo` is set, which never happens on the lead-driven bug pipeline.
 
 Consequences:
@@ -28,9 +28,9 @@ The complaint: junior must run inside worktrees for bug work. The pieces to buil
 
 Three things tangle:
 
-1. **One thread can need multiple repos.** `repo-routing.yaml` routes a bug to e.g. `{frontend: gx-client-next, backend: gx-backend}`. The session model has a single `worktreePath`. Need `worktreePaths: Record<repoName, path>` (or equivalent).
+1. **One thread can need multiple repos.** `repo-routing.yaml` routes a bug to e.g. `{frontend: app-frontend, backend: app-backend}`. The session model has a single `worktreePath`. Need `worktreePaths: Record<repoName, path>` (or equivalent).
 2. **Reproducer's dev servers run on fixed ports (3000, 8000) from the bare repo.** Phase-2 validation is "checkout fix branch, restart dev server, walk the same path." If the dev server runs from a worktree, two concurrent validations on the same repo collide on the port. If it runs from the bare repo, we're back to corrupting the dev's branch.
-3. **Agent prompts hardcode the bare path.** Every reference to `~/openclaw-projects/<repo>/` needs to become a per-thread worktree path injected via the existing workspace block.
+3. **Agent prompts hardcode the bare path.** Every reference to `~/projects/<repo>/` needs to become a per-thread worktree path injected via the existing workspace block.
 
 ## Proposal
 
@@ -38,7 +38,7 @@ Three things tangle:
 
 - Lead, on intake, reads `repo-routing.yaml` and creates one worktree per routed repo for this thread (`<repo>.junior-worktrees/slack-<threadId>`, branch `slack/<threadId>` off `defaultBase`).
 - Session schema gains `worktreePaths: Record<repoName, path>` alongside the existing `worktreePath` (or replaces it).
-- `runtime-environment.md` and agent prompts swap hardcoded `~/openclaw-projects/<repo>/` references for the per-thread worktree paths, injected via the workspace block.
+- `runtime-environment.md` and agent prompts swap hardcoded `~/projects/<repo>/` references for the per-thread worktree paths, injected via the workspace block.
 - `thinker` writes its fix branch in its repo's worktree. PR is opened from that branch.
 - `reproducer` phase-1 reads code in the worktree (or bare — read-only is fine either way; consistency is easier).
 
@@ -66,7 +66,7 @@ Even before queueing, today's reproducer has no kill path: when phase-2 spawns `
 Lifecycle policy proposed:
 
 - Junior tracks the dev server it spawns (PID + repo + current branch) per dev-server worktree.
-- **Reuse across validations on the same branch.** When the queue lock is acquired by a thread whose fix branch matches the running dev server, no restart — just walk. (Cold-starting `pnpm dev` for gx-client-next is ~30s, not free.)
+- **Reuse across validations on the same branch.** When the queue lock is acquired by a thread whose fix branch matches the running dev server, no restart — just walk. (Cold-starting `pnpm dev` for app-frontend is ~30s, not free.)
 - **Restart on branch change.** When the lock is acquired with a different branch than the running server, kill the running PID, `git checkout` the new branch in the dev-server worktree, spawn a fresh `pnpm dev`, wait for ready (curl the port until 200), then hand off.
 - **Idle TTL.** No validations for N minutes → kill the dev server. Default ~30 min.
 - **Junior shutdown.** Graceful shutdown kills all tracked dev-server PIDs. Same hook as the rest of the lifecycle teardown in `src/lifecycle/`.
@@ -77,7 +77,7 @@ This bumps the dev-server worktree from a passive checkout location to an active
 ## Decisions
 
 - **Session schema.** Extend, don't replace. Keep the existing `session.worktreePath` (single-repo flow for `!repo <name>` threads) and add `session.worktreePaths: Record<repoName, path>` for the bug pipeline. Bug threads populate the map; non-bug threads keep using the single field. Avoids regressing the existing flow.
-- **Lock granularity.** One queue per repo. We have three repo queues: `gx-client-next` (FE), `gx-admin-client` (FE), `gx-backend` (BE). A FE-only bug only contends with other FE-only bugs on the same FE repo; a full-stack bug acquires both its FE queue and `gx-backend` independently. Mixed-repo bugs may deadlock if two threads acquire repos in opposite order — acquire in a fixed alphabetical order to avoid this.
+- **Lock granularity.** One queue per repo. We have three repo queues: `app-frontend` (FE), `app-admin` (FE), `app-backend` (BE). A FE-only bug only contends with other FE-only bugs on the same FE repo; a full-stack bug acquires both its FE queue and `app-backend` independently. Mixed-repo bugs may deadlock if two threads acquire repos in opposite order — acquire in a fixed alphabetical order to avoid this.
 - **Slot timeout.** 5–10 min hard timeout on the validation slot. Lock auto-releases and posts a Slack note (`reproducer phase-2 timed out on <repo> after Nm — slot released, dev server killed`). Reproducer's outcome falls back to `needs-human`.
 - **Idle TTL.** 20 min of no validations → kill the dev server. Cold-start cost re-paid on the next validation but the host stays clean.
 - **Human's bare-repo dev server.** If a port is held when junior tries to spawn from the dev-server worktree, do NOT kill the listener. Detect the conflict, post "can't validate `<repo>` right now — port `<n>` is held by something junior didn't spawn. Free the port and re-dispatch `!reproducer validate`." Reproducer outcome → `needs-human`.
@@ -123,16 +123,16 @@ Lead's prompt grows by ~3 lines: "after `state.json`, call `register_worktree` f
 <workspace>
 You have isolated git worktrees for this thread. ALWAYS use these paths
 for reading code, editing files, and running git commands. NEVER touch
-the bare repos under ~/openclaw-projects/. NEVER run dev servers
+the bare repos under ~/projects/. NEVER run dev servers
 yourself — post `!devserver <branch>` instead.
 
-repo: gx-client-next
-  worktree: /Users/.../openclaw-projects/growthx/gx-client-next.junior-worktrees/slack-<tid>
+repo: app-frontend
+  worktree: /Users/.../projects/app-frontend.junior-worktrees/slack-<tid>
   branch:   slack/<tid>
   base:     origin/main
 
-repo: gx-backend
-  worktree: /Users/.../openclaw-projects/growthx/gx-backend.junior-worktrees/slack-<tid>
+repo: app-backend
+  worktree: /Users/.../projects/app-backend.junior-worktrees/slack-<tid>
   branch:   slack/<tid>
   base:     origin/main
 </workspace>
@@ -142,11 +142,11 @@ For non-bug threads (single `worktreePath`), keep the existing single-workspace 
 
 ### Agent prompt rewrite plan (lands WITH Scope-1, not after)
 
-These edits ship in the same commit as the `register_worktree` tool — otherwise agents still cd into `~/openclaw-projects/` and the worktree creation does nothing.
+These edits ship in the same commit as the `register_worktree` tool — otherwise agents still cd into `~/projects/` and the worktree creation does nothing.
 
-- **`runtime-environment.md`**: replace the "Repo locations" section. New text says: "Repo paths for THIS thread are listed in the `<workspace>` block at the top of your prompt. Use those — never `~/openclaw-projects/<repo>/` directly. The bare repos are the human developer's working trees; touching them corrupts active branches." Also: "Don't run `pnpm dev` / `npm run dev` / any dev server yourself. Post `!devserver <branch> [repo]` in the thread; junior owns the dev-server slot. Wait for junior's ready message before walking."
+- **`runtime-environment.md`**: replace the "Repo locations" section. New text says: "Repo paths for THIS thread are listed in the `<workspace>` block at the top of your prompt. Use those — never `~/projects/<repo>/` directly. The bare repos are the human developer's working trees; touching them corrupts active branches." Also: "Don't run `pnpm dev` / `npm run dev` / any dev server yourself. Post `!devserver <branch> [repo]` in the thread; junior owns the dev-server slot. Wait for junior's ready message before walking."
 - **`lead.md`**: add an intake step after `state.json`: "For each routed repo in `repo-routing.yaml`, call the `register_worktree` MCP tool. Capture the returned paths and reference them in the dispatch prompt to reproducer/thinker so they know which workspace to use."
-- **`reproducer.md`**: replace "check out the fix branch in `~/openclaw-projects/<repo>/`" with "post `!devserver <branch> <repo>` and wait for junior's `ready` reply. Walk against `localhost:<port>` as before."
+- **`reproducer.md`**: replace "check out the fix branch in `~/projects/<repo>/`" with "post `!devserver <branch> <repo>` and wait for junior's `ready` reply. Walk against `localhost:<port>` as before."
 - **`thinker.md`**: no path edits needed — it already follows whatever cwd it's spawned in (which will be the worktree once Scope-1 lands). Add one sentence: "the workspace block at the top of your prompt has the repo paths. Use them; don't cd elsewhere."
 
 ### `RepoConfig` schema additions
@@ -182,7 +182,7 @@ Flow on `!devserver <branch>`:
 
 The reproducer's `!reproducer validate ...` is dispatched by lead AFTER junior posts `ready`. Lead reads junior's reply in its next turn and only then dispatches reproducer.
 
-Humans posting `!devserver fix/foo gx-client-next` from a thread (or even outside any bug pipeline) get the same flow. Useful for quick "is this branch broken?" checks.
+Humans posting `!devserver fix/foo app-frontend` from a thread (or even outside any bug pipeline) get the same flow. Useful for quick "is this branch broken?" checks.
 
 ### Lockfile bootstrap
 

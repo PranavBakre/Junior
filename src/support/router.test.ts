@@ -326,9 +326,9 @@ describe("parseDevserverDirective (router smoke)", () => {
   });
 
   it("parses !devserver kill <repo>", () => {
-    expect(parseDevserverDirective("!devserver kill gx-backend")).toEqual({
+    expect(parseDevserverDirective("!devserver kill app-backend")).toEqual({
       kind: "kill",
-      repo: "gx-backend",
+      repo: "app-backend",
     });
   });
 
@@ -372,8 +372,8 @@ describe("AgentDispatcher !devserver interception", () => {
         slackClient: slackClientMock as unknown as import("@slack/web-api").WebClient,
         repos: [
           {
-            name: "gx-backend",
-            path: "/tmp/gx-backend",
+            name: "app-backend",
+            path: "/tmp/app-backend",
             defaultBase: "origin/main",
             devCommand: "echo dev",
             devPort: 8000,
