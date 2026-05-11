@@ -38,7 +38,7 @@ The temptation to do work yourself is strongest when the fix looks small. That's
 
 - **Observability sub-agents (`nr-research`, `sentry-fetch`, `vercel-status`)** ARE expected to be dispatched via Task by you — they're stateless data fetchers, not persistent participants. The categorical rule above is about persistent agents (reproducer, thinker, review).
 - **Reading bug-folder files** under `support/bugs/<product>/<bug-id>/` IS your job — that's where you synthesize. Just don't read product source.
-- **Reading `support/repo-routing.yaml`, `support/admin-credentials.yaml`, your own past Slack posts** IS your job.
+- **Reading the config files named in the runtime-environment notes above (routing map, admin credentials) and your own past Slack posts** IS your job.
 
 ## Persistent agent dispatch
 
@@ -172,11 +172,11 @@ If junior posts `failed: <reason>` or the slot times out before reproducer finis
 
 ## Post-review merge flow (CATEGORICAL — do not improvise)
 
-The cross-cutting merge rules (gxt-admin token, 3-way merge, two-stage GX flow) live in `common/merge-workflow.md` and are loaded into your prompt automatically. Read them — they are non-negotiable. The bug-pipeline adds the following orchestration on top:
+The cross-cutting merge rules (admin token, 3-way merge, multi-stage release flow) are already in your prompt — see the merge-workflow rules above. They are non-negotiable. The bug-pipeline adds the following orchestration on top:
 
 1. **The original PR** (opened by `!thinker proceed`) targets `main`. Leave it open. Do NOT merge it. The pipeline NEVER merges to main — main is human-gated.
-2. **Open the parallel feature → `dev` PR** as described in `common/merge-workflow.md`.
-3. **Merge the dev PR** following the gxt-admin + 3-way rules in `common/merge-workflow.md`.
+2. **Open the parallel feature → `dev` PR** following the merge-workflow rules above.
+3. **Merge the dev PR** following the admin-token + 3-way rules above.
 4. **Post a Slack message and STOP.** Format: "Merged feature → dev (PR <url>). PR <main-pr-url> is ready for human to verify on dev and then merge to main."
 
 Dev verification is currently a HUMAN step (dev's data quality isn't reliable enough for automated reproducer validation). Do NOT dispatch `!reproducer` against dev. Do NOT merge feature → main. Both are explicit human responsibilities at this stage.

@@ -2,6 +2,8 @@
 
 Static facts. Do NOT spend tool calls discovering these.
 
+> **Org-specific specifics** (concrete repo names, local dev URLs, credential file paths, impersonation flows) are appended below this section when an org context is configured. Treat the appended block as the source of truth for any value this section leaves abstract.
+
 ## Always read attached images
 
 Whenever a Slack message includes an image (screenshot, photo, diagram), **read it before responding**. Don't acknowledge the image and proceed without examining it — visual evidence usually holds the most directly useful signal in a bug report (the broken UI, the error toast, the failing screen, the URL in the address bar). Skipping the image and responding from text alone produces shallow analysis and makes you re-ask things the user already showed you.
@@ -17,33 +19,17 @@ For browser screenshots specifically, extract:
 
 **Repo paths for this thread are dynamic — read the `<workspace>` block at the top of your prompt.** When present, it lists each routed repo's per-thread worktree path, branch, and base. Use those paths for ALL reads, edits, and git commands.
 
-**NEVER use `~/openclaw-projects/<repo>/` directly.** Those bare repos are the human developer's working trees — touching them corrupts active branches. The canonical product → repo mapping lives in `~/Projects/junior/support/repo-routing.yaml` (reference only — don't cd into the paths it lists).
+Never touch repos outside the `<workspace>` block. If you need to touch a repo and there's no entry for it, STOP and post a Slack note instead of improvising. The lead is responsible for registering the worktrees you need; if one is missing, that's a state error to flag, not a reason to fall back to anything else.
 
-If you need to touch a repo and there's no entry for it in your `<workspace>` block, STOP and post a Slack note instead of improvising. The lead is responsible for registering the worktrees you need; if one is missing, that's a state error to flag, not a reason to fall back to the bare repo.
+**Always read each repo's `CLAUDE.md` before working in it.** Each product repo has its own conventions (naming, patterns, deprecated paths, test/build commands, gotchas). Read it from the worktree path in the workspace block. The repo's `CLAUDE.md` overrides anything generic — if it says "use X pattern," use X even if your default would have been Y.
 
-**Always read each repo's `CLAUDE.md` before working in it.** Each product repo has its own conventions (naming, patterns, deprecated paths, test/build commands, gotchas). Read it from the worktree path in the workspace block, not the bare repo. The repo's `CLAUDE.md` overrides anything generic — if it says "use X pattern," use X even if your default would have been Y.
+## Local dev servers
 
-## Local dev servers + FE↔BE wiring
+Concrete services, ports, and start commands are in the org-specific section appended below. Use a fixed-port pattern — do NOT `lsof`/`ps`/`curl`-loop to discover ports.
 
-Fixed ports — do NOT `lsof`/`ps`/`curl`-loop to discover them:
-- Frontend: `http://localhost:3000` (gx-client-next, `pnpm dev`)
-- Backend: `http://localhost:8000` (gx-backend, `pnpm dev`)
+## FE↔BE wiring
 
-To check up:
-```sh
-curl -s -o /dev/null -w "fe=%{http_code} " http://localhost:3000
-curl -s -o /dev/null -w "be=%{http_code}\n" http://localhost:8000
-```
-
-To start if down: `cd <repo-path>; pnpm dev`. Backend usually wants the frontend up too if the bug touches the UI.
-
-**FE↔BE call path** (active dev config):
-
-`gx-client-next/.env` sets `API_URL=http://localhost:8000/api/v1` and `COOKIE_DOMAIN=localhost`. So when you load the FE at `http://localhost:3000`, browser-side API calls go directly to `http://localhost:8000` (NOT through `backend-local.growthx.club`). Cookies are per-host and apply to both `localhost:3000` and `localhost:8000`, so auth carries automatically once cookies are set on the `localhost` domain.
-
-Some FE calls go through Next.js API routes (server-side proxies running in the Next.js process at port 3000) — e.g. `GET /api/proof-of-works/<id>` hits a Next.js handler that itself calls the backend. These show up in the network tab as `localhost:3000/api/...` even though they ultimately resolve to backend logic.
-
-**Parallel "production-like" path (NOT current default):** `/etc/hosts` maps `community-local.growthx.club` and `backend-local.growthx.club` to `127.0.0.1`. A local reverse proxy (nginx/Caddy with self-signed SSL) listens on 443 and forwards to the same dev servers. Activated by uncommenting `API_URL=https://backend-local.growthx.club/api/v1` and changing `COOKIE_DOMAIN` to `.growthx.club`. If the bug is reproducible only at the prod-like FQDN (cookies, SSL, CORS specifics), switch to this path.
+The active dev config and any production-like fallback paths (e.g. `/etc/hosts` SSL proxy) are in the org-specific section below. If a bug only reproduces on a non-default path, switch as described there.
 
 ## Available MCP tools
 
@@ -53,9 +39,9 @@ Pre-loaded — do NOT `ToolSearch` for them:
 - **MongoDB (read-only)**: `mcp__mongodb__find`, `mcp__mongodb__aggregate`, `mcp__mongodb__count`, `mcp__mongodb__collection-schema`, `mcp__mongodb__list-collections`, `mcp__mongodb__list-databases`. Use to verify data shape during research / reproduction. NEVER mutate.
 - **Playwright** (browser automation, reproducer's primary tool): `mcp__playwright__browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_take_screenshot`, `browser_console_messages`, `browser_network_requests`, `browser_evaluate`, `browser_wait_for`, `browser_navigate_back`, `browser_fill_form`, `browser_close`.
 
-## Admin credentials
+## Admin credentials & access-gated reproduction
 
-`~/Projects/junior/support/admin-credentials.yaml` (gitignored) holds the superadmin login + admin-API impersonation flow + Cloudfront signed-URL flow. The reproducer uses these for access-gated bugs (403 → impersonate as the affected user → re-call). Read this file directly when you need the exact API sequence — don't re-derive it.
+When a bug requires admin/impersonation access, the credential file path, admin-API impersonation flow, and any signed-URL conventions are in the org-specific section appended below. Read the credentials file by the path named there; never paste contents into prompts or commit them.
 
 ## Bug folder layout
 
