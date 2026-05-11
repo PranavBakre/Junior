@@ -60,7 +60,7 @@ describe("AgentRouter overlay", () => {
     expect(def!.prompt).toBe("private agent body");
   });
 
-  it("public dir takes precedence over overlay when both define the same agent", async () => {
+  it("overlay takes precedence over public fallback when both define the same agent (no targetRepo)", async () => {
     await fs.writeFile(
       path.join(orgDir, "build.md"),
       `---\nname: build\n---\n\nORG VERSION`,
@@ -73,9 +73,47 @@ describe("AgentRouter overlay", () => {
     const router = new AgentRouter([], fallbackDir, orgDir);
     const def = await router.resolveAgent(makeSession({ agentType: "build" }));
 
-    // Search order is target-repo → org → public, so when only public + org
-    // exist (no targetRepo on the session), org wins.
+    // Search order is target-repo → org → public. With no targetRepo on the
+    // session, the org overlay matches before the public fallback, so org wins.
     expect(def!.prompt).toBe("ORG VERSION");
+  });
+
+  it("composeSystemPrompt appends org common to target-repo common (skipping public common)", async () => {
+    // Asymmetric load chain: target-repo OR public is exclusive; overlay is
+    // additive. Regression guard for the case where a target repo has its own
+    // common dir — public common is bypassed but overlay still appends.
+    const targetRepoDir = path.join(tmpRoot, "target-repo");
+    await fs.mkdir(path.join(targetRepoDir, ".claude/agents/common"), { recursive: true });
+    await fs.writeFile(
+      path.join(targetRepoDir, ".claude/agents/common/repo-rules.md"),
+      "# target-repo common",
+    );
+    await fs.writeFile(
+      path.join(orgDir, "common", "org-rules.md"),
+      "# org common",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "public-rules.md"),
+      "# public common (should NOT appear when target has its own common)",
+    );
+
+    const router = new AgentRouter(
+      [{ name: "target-repo", path: targetRepoDir, defaultBase: "origin/main" }],
+      fallbackDir,
+      orgDir,
+    );
+    const prompt = await router.composeSystemPrompt(
+      makeSession({ targetRepo: "target-repo" }),
+    );
+
+    expect(prompt).not.toBeNull();
+    expect(prompt!).toContain("# target-repo common");
+    expect(prompt!).toContain("# org common");
+    expect(prompt!).not.toContain("# public common");
+    // Order: target-repo common first, then overlay.
+    expect(prompt!.indexOf("# target-repo common")).toBeLessThan(
+      prompt!.indexOf("# org common"),
+    );
   });
 
   it("composeSystemPrompt appends org common files additively to public common", async () => {
