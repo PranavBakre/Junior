@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.ts";
 import { createSlackApp } from "./slack/app.ts";
 import { registerEventHandlers } from "./slack/events.ts";
-import { formatToolStatuses, extractAssistantText, shouldPostResponseToSlack } from "./slack/formatting.ts";
+import { formatToolStatuses, extractAssistantText, prepareSlackResponse } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { createSessionStore } from "./session/store/factory.ts";
@@ -49,18 +49,18 @@ const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
 });
 
 sessionManager.onResponse = (session, response) => {
-  const willPost = shouldPostResponseToSlack(response);
+  const prepared = prepareSlackResponse(response);
   const agentName = session.activeAgentName ?? "lead";
   log.info(
     "response",
-    `thread=${session.threadId} agent=${agentName} len=${response.length} willPost=${willPost}`,
+    `thread=${session.threadId} agent=${agentName} len=${response.length} willPost=${prepared !== null}`,
   );
   responder.deleteStatus(session.channel, session.threadId, agentName);
-  if (willPost) {
+  if (prepared !== null) {
     responder.postResponse(
       session.channel,
       session.threadId,
-      response,
+      prepared,
       session.slackIdentity,
     );
   } else {
@@ -80,14 +80,16 @@ sessionManager.onEvent = (session, event) => {
   if (event.type === "assistant") {
     // Show text content as live status (gets overwritten each turn)
     const text = extractAssistantText(event);
-    if (text && !shouldPostResponseToSlack(text)) {
-      log.info(
-        "response",
-        `thread=${session.threadId} status.suppressed reason=${text.trim() ? "sentinel" : "empty"}`,
-      );
-    }
-    if (text && shouldPostResponseToSlack(text)) {
-      responder.updateStatus(session.channel, session.threadId, text, agentName);
+    if (text) {
+      const prepared = prepareSlackResponse(text);
+      if (prepared === null) {
+        log.info(
+          "response",
+          `thread=${session.threadId} status.suppressed reason=${text.trim() ? "sentinel" : "empty"}`,
+        );
+      } else {
+        responder.updateStatus(session.channel, session.threadId, prepared, agentName);
+      }
     }
 
     // Show tool use as status
