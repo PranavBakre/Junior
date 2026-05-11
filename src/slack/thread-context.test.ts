@@ -51,6 +51,10 @@ describe("buildWorkspaceBlock", () => {
     expect(block).toContain("RULES — non-negotiable:");
     expect(block).toContain("inside the worktree paths listed above");
     expect(block).toContain("at any bare-repo path listed above");
+    // Rule 3: cd prohibition. Rule 4: devserver prohibition.
+    expect(block).toContain("NEVER `cd` out of your worktree");
+    expect(block).toContain("NEVER run dev servers yourself");
+    expect(block).toContain("`!devserver <branch>`");
     expect(block).toContain("</workspace>");
   });
 
