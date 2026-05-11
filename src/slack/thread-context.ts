@@ -110,22 +110,33 @@ export function buildWorkspaceBlock(
       const repoConfig = repos?.find((r) => r.name === repoName);
       const branch = threadId ? `slack/${threadId}` : "slack/<thread>";
       const base = repoConfig?.defaultBase ?? "origin/main";
-      return [
+      const lines = [
         `repo: ${repoName}`,
-        `  worktree: ${wPath}`,
-        `  branch:   ${branch}`,
-        `  base:     ${base}`,
-      ].join("\n");
+        `  worktree (your sandbox): ${wPath}`,
+      ];
+      if (repoConfig?.path) {
+        lines.push(`  bare repo (OFF-LIMITS):  ${repoConfig.path}`);
+      }
+      lines.push(
+        `  branch:                 ${branch}`,
+        `  base:                   ${base}`,
+      );
+      return lines.join("\n");
     });
 
     return [
       `<workspace>`,
-      `You have isolated git worktrees for this thread. ALWAYS use these paths`,
-      `for reading code, editing files, and running git commands. NEVER touch`,
-      `the bare repos under ~/openclaw-projects/. NEVER run dev servers`,
-      `yourself — post \`!devserver <branch>\` instead.`,
+      `You have isolated git worktrees for this thread. The bare repos at the`,
+      `paths shown below are shared across all threads — DO NOT touch them.`,
+      `Work ONLY inside the worktree paths listed below.`,
       ``,
       ...repoBlocks.flatMap((block, i) => (i < repoBlocks.length - 1 ? [block, ""] : [block])),
+      ``,
+      `RULES — non-negotiable:`,
+      `1. ALL reads, writes, edits, and git commands MUST happen inside the worktree paths listed above.`,
+      `2. NEVER write, edit, or commit files at any bare-repo path listed above — those are the shared origin repos.`,
+      `3. NEVER \`cd\` out of your worktree to do work. Read-only references to other paths are OK via absolute Read paths, but do not Edit or Write outside the worktrees.`,
+      `4. NEVER run dev servers yourself — post \`!devserver <branch>\` instead.`,
       `</workspace>`,
     ].join("\n");
   }
