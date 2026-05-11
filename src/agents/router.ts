@@ -36,7 +36,6 @@ export class AgentRouter {
     session: ThreadSession,
   ): Promise<string | null> {
     const definition = await this.resolveAgent(session);
-    if (!definition) return null;
 
     const preambleParts: string[] = [];
 
@@ -59,11 +58,12 @@ export class AgentRouter {
 
     const commonPreamble = preambleParts.join("\n\n");
 
-    if (commonPreamble) {
+    if (commonPreamble && definition) {
       return commonPreamble + "\n\n" + definition.prompt;
     }
-
-    return definition.prompt;
+    if (commonPreamble) return commonPreamble;
+    if (definition) return definition.prompt;
+    return null;
   }
 }
 

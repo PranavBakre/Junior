@@ -572,8 +572,11 @@ export class SessionManager {
         }
       }
 
-      // Compose agent system prompt
-      if (runSession.agentType && this.agentRouter) {
+      // Compose agent system prompt. Note: composeSystemPrompt now returns
+      // the common preamble even when no agent .md resolves (e.g. the
+      // "default" agent has no definition file but should still receive
+      // junior's invariants like the merge-workflow rules).
+      if (this.agentRouter) {
         const composed =
           (await this.agentRouter.composeSystemPrompt(runSession)) ?? null;
         runSession.systemPrompt = this.withAgentIdentityPrompt(
@@ -832,7 +835,16 @@ export class SessionManager {
     agentName: string,
     agentIdentity?: AgentIdentity,
   ): ThreadSession {
-    if (agentName === "lead" || agentName === "default") {
+    if (agentName === "lead") {
+      return {
+        ...session,
+        sessionId: session.leadSessionId ?? session.sessionId,
+        activeAgentName: agentName,
+        slackIdentity: agentIdentity,
+        agentType: "lead",
+      };
+    }
+    if (agentName === "default") {
       return {
         ...session,
         sessionId: session.leadSessionId ?? session.sessionId,
