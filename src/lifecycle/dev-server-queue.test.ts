@@ -188,10 +188,10 @@ describe("parseDevserverDirective (unit)", () => {
   });
 
   it("parses !devserver <branch> <repo>", () => {
-    expect(parseDevserverDirective("!devserver fix/foo gx-backend")).toEqual({
+    expect(parseDevserverDirective("!devserver fix/foo app-backend")).toEqual({
       kind: "acquire",
       branch: "fix/foo",
-      repos: ["gx-backend"],
+      repos: ["app-backend"],
     });
   });
 
@@ -200,9 +200,9 @@ describe("parseDevserverDirective (unit)", () => {
   });
 
   it("parses !devserver kill <repo>", () => {
-    expect(parseDevserverDirective("!devserver kill gx-client-next")).toEqual({
+    expect(parseDevserverDirective("!devserver kill app-frontend")).toEqual({
       kind: "kill",
-      repo: "gx-client-next",
+      repo: "app-frontend",
     });
   });
 

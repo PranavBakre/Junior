@@ -86,7 +86,7 @@ export function registerEventHandlers(
     }
 
     // Auto-trigger channels (e.g. #bugs-backlog) accept messages from other bots
-    // like growthx-bug-reporter that have no `user` field — fall back to bot_id.
+    // like service-account reporters that have no `user` field — fall back to bot_id.
     let user = "user" in event ? event.user : undefined;
     if (!user && isSelfBot && selfUserId) {
       user = selfUserId;
