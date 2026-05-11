@@ -2,6 +2,8 @@ import type { App } from "@slack/bolt";
 import type { RepoConfig } from "../config.ts";
 import { loadPersona } from "../persona.ts";
 import { NO_SLACK_MESSAGE } from "./formatting.ts";
+import type { AgentContextProfile } from "../agents/loader.ts";
+import { DEFAULT_CONTEXT_PROFILE } from "../agents/loader.ts";
 
 interface ThreadMessage {
   user: string;
@@ -163,43 +165,60 @@ export async function buildPromptPreamble(
   workspace?: WorkspaceContext | null,
   worktreePaths?: Record<string, string>,
   repos?: RepoConfig[],
+  contextProfile: AgentContextProfile = DEFAULT_CONTEXT_PROFILE,
 ): Promise<string> {
+  // Only fetch the data we'll actually emit — skipping thread history matters
+  // for lightweight task agents, both for tokens and for latency.
   const [persona, channelName, threadContext] = await Promise.all([
-    loadPersona(),
-    resolveChannelName(app, channel),
-    fetchThreadHistory(app, channel, threadTs, latestTs, botUserId),
+    contextProfile.identity ? loadPersona() : Promise.resolve(""),
+    contextProfile.slack ? resolveChannelName(app, channel) : Promise.resolve(channel),
+    contextProfile.threadHistory
+      ? fetchThreadHistory(app, channel, threadTs, latestTs, botUserId)
+      : Promise.resolve(""),
   ]);
 
-  const parts: string[] = [
-    `<identity>`,
-    persona,
-    ``,
-    `Your Slack user ID is ${botUserId ?? "unknown"}. Messages from this user ID in the thread are yours.`,
-    `</identity>`,
-    ``,
-    `<slack-context>`,
-    `Channel: #${channelName} (${channel})`,
-    `Thread: ${threadTs}`,
-    `You are responding in this thread. You already have the full thread history below.`,
-    `Do NOT use Slack search or read tools to find this thread — you already have all the context you need.`,
-    `To tag a user, use their Slack mention format \`<@USERID>\` (shown in thread history as \`User(Name <@USERID>)\`). Plain \`@Name\` does not notify them.`,
-    ``,
-    `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
-    ``,
-    `CRITICAL — no double-posting: if you used \`slack_send_message\` (or any other Slack post tool) during this turn, that tool call IS your reply. Your final response in this turn MUST be exactly \`${NO_SLACK_MESSAGE}\`. Do NOT also return a recap, summary, or "Posted X..." narration — the human already saw what you posted, and a second message restating it is a duplicate. Pick one channel: either post via the tool and return \`${NO_SLACK_MESSAGE}\`, or skip the tool and return prose as your reply. Never both.`,
-    `</slack-context>`,
-  ];
+  const parts: string[] = [];
 
-  const workspaceBlock = buildWorkspaceBlock(workspace, worktreePaths, repos, threadTs);
-  if (workspaceBlock) {
-    parts.push(``, workspaceBlock);
+  if (contextProfile.identity) {
+    parts.push(
+      `<identity>`,
+      persona,
+      ``,
+      `Your Slack user ID is ${botUserId ?? "unknown"}. Messages from this user ID in the thread are yours.`,
+      `</identity>`,
+      ``,
+    );
   }
 
-  if (threadContext) {
+  if (contextProfile.slack) {
+    parts.push(
+      `<slack-context>`,
+      `Channel: #${channelName} (${channel})`,
+      `Thread: ${threadTs}`,
+      `You are responding in this thread. You already have the full thread history below.`,
+      `Do NOT use Slack search or read tools to find this thread — you already have all the context you need.`,
+      `To tag a user, use their Slack mention format \`<@USERID>\` (shown in thread history as \`User(Name <@USERID>)\`). Plain \`@Name\` does not notify them.`,
+      ``,
+      `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
+      ``,
+      `CRITICAL — no double-posting: if you used \`slack_send_message\` (or any other Slack post tool) during this turn, that tool call IS your reply. Your final response in this turn MUST be exactly \`${NO_SLACK_MESSAGE}\`. Do NOT also return a recap, summary, or "Posted X..." narration — the human already saw what you posted, and a second message restating it is a duplicate. Pick one channel: either post via the tool and return \`${NO_SLACK_MESSAGE}\`, or skip the tool and return prose as your reply. Never both.`,
+      `</slack-context>`,
+    );
+  }
+
+  if (contextProfile.workspace) {
+    const workspaceBlock = buildWorkspaceBlock(workspace, worktreePaths, repos, threadTs);
+    if (workspaceBlock) {
+      parts.push(``, workspaceBlock);
+    }
+  }
+
+  if (contextProfile.threadHistory && threadContext) {
     parts.push("", threadContext);
   }
 
-  return parts.join("\n");
+  // Trim leading/trailing empty separators left by skipped blocks.
+  return parts.join("\n").replace(/^\n+|\n+$/g, "");
 }
 
 async function fetchThreadHistory(

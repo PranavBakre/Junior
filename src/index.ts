@@ -23,7 +23,11 @@ const app = createSlackApp(config);
 const store = createSessionStore(config);
 log.info("boot", `Session store: ${config.session.store}`);
 const sessionManager = new SessionManager(store, config);
-const agentRouter = new AgentRouter(config.repos, ".claude/agents");
+const agentRouter = new AgentRouter(
+  config.repos,
+  ".claude/agents",
+  ".claude/agents-org",
+);
 const worktreeManager = new WorktreeManager(config.repos);
 const devServerManager = new DevServerManager(config.repos, worktreeManager);
 const devServerQueue = new DevServerQueue(devServerManager, config.repos);
