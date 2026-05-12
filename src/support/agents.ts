@@ -1,5 +1,20 @@
+import { loadAgentDefinition } from "../agents/loader.ts";
+import { log } from "../logger.ts";
 import type { AgentIdentity } from "../session/types.ts";
 
+/**
+ * Core agents — part of the open-source architecture. Orchestrators (lead,
+ * default) and bug-pipeline workers (reproducer, thinker, review) plus the
+ * echo debug agent. Identities live in code because these names are
+ * referenced from junior's source (special-cases in `manager.ts`, the
+ * `isOrchestratorAgent` set, attribution-suffix logic, etc.) — they're part
+ * of the contract any fork of junior inherits.
+ *
+ * Private / org-specific workers (e.g. `onboard-member`) register their
+ * identities via `username` + `iconEmoji` frontmatter on their `.md` files,
+ * loaded at startup by `loadOverlayIdentities` from the org overlay
+ * directory. This keeps the public repo free of org-specific names.
+ */
 export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   // Default Junior — the bot's main face, responds to @mentions in any channel.
   default: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
@@ -11,8 +26,65 @@ export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   thinker: { username: "Thinker", iconEmoji: ":wrench:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
   echo: { username: "Echo", iconEmoji: ":speech_balloon:" },
-  "onboard-member": { username: "Onboarder", iconEmoji: ":handshake:" },
 };
+
+/**
+ * Register a slack identity for a private/overlay agent. Called by
+ * `loadOverlayIdentities` during startup; can also be called directly by
+ * tests. Refuses to override an existing entry — overlay agents shouldn't
+ * silently re-skin core ones.
+ */
+export function registerAgentIdentity(
+  name: string,
+  identity: AgentIdentity,
+): boolean {
+  if (AGENT_IDENTITIES[name]) {
+    log.warn(
+      "agents",
+      `registerAgentIdentity: refusing to overwrite existing identity for "${name}" (core agent or duplicate overlay entry)`,
+    );
+    return false;
+  }
+  AGENT_IDENTITIES[name] = identity;
+  return true;
+}
+
+/**
+ * Scan a directory of agent `.md` files (typically the org overlay at
+ * `.claude/agents-org/`) and register slack identities for any agent that
+ * declares both `username` and `iconEmoji` in its frontmatter. Files
+ * without those fields are skipped silently — agents are free to declare
+ * just a prompt without a slack identity (e.g. they only run as Task-tool
+ * sub-agents and never post to slack).
+ *
+ * Idempotent: re-running won't double-register. Call once at startup before
+ * any session spawns; the registry is read at call-time by every consumer
+ * of `AGENT_IDENTITIES`.
+ */
+export async function loadOverlayIdentities(dirPath: string): Promise<void> {
+  try {
+    const glob = new Bun.Glob("*.md");
+    const entries: string[] = [];
+    for await (const entry of glob.scan({ cwd: dirPath })) {
+      entries.push(entry);
+    }
+    for (const entry of entries) {
+      const def = await loadAgentDefinition(`${dirPath}/${entry}`);
+      if (!def || !def.name) continue;
+      if (!def.username || !def.iconEmoji) continue;
+      registerAgentIdentity(def.name, {
+        username: def.username,
+        iconEmoji: def.iconEmoji,
+      });
+    }
+  } catch (err) {
+    // Directory doesn't exist or not readable — overlay is optional.
+    log.info(
+      "agents",
+      `loadOverlayIdentities(${dirPath}): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
 /**
  * Orchestrator agents — they may dispatch any registered worker. Both share

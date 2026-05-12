@@ -124,8 +124,11 @@ const AGENT_IDENTITIES: Record<
   reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
   thinker: { username: "Thinker", iconEmoji: ":wrench:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
-  "onboard-member": { username: "Onboarder", iconEmoji: ":handshake:" },
 };
+// Private / org-specific worker identities are NOT registered here — they
+// declare `username` + `iconEmoji` in their own .md frontmatter and get
+// merged in at startup by `loadOverlayIdentities` from the org overlay
+// directory. This keeps the public repo free of org-specific agent names.
 ```
 
 ### Persistent agents vs sub-agents

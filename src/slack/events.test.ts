@@ -150,7 +150,7 @@ describe("registerEventHandlers — ✽ filter", () => {
     await handlers.get("message")!({
       event: {
         type: "message",
-        text: "!onboard-member onboard Ruta Bhatt",
+        text: "!review take a look at PR 21",
         channel: "C_OTHER",
         channel_type: "channel",
         ts: "1700000000.000011",
@@ -160,7 +160,7 @@ describe("registerEventHandlers — ✽ filter", () => {
     });
 
     expect(onMessage).toHaveBeenCalledTimes(1);
-    expect(onMessage.mock.calls[0][0].text).toContain("!onboard-member");
+    expect(onMessage.mock.calls[0][0].text).toContain("!review");
     expect(onMessage.mock.calls[0][0].isSelfBot).toBe(true);
   });
 
