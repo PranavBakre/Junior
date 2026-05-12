@@ -214,7 +214,7 @@ describe("AgentDispatcher", () => {
     expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
   });
 
-  it("default Junior may dispatch any registered worker (not just onboard-member)", async () => {
+  it("default Junior may dispatch multiple core workers in a non-support channel", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
@@ -225,7 +225,7 @@ describe("AgentDispatcher", () => {
 
     await router.handleMessage(
       makeEvent({
-        text: "!onboard-member onboard Ruta Bhatt\n!review take a look at PR 21",
+        text: "!review take a look at PR 21\n!thinker root-cause the timeout",
         isSelfBot: true,
         botUsername: "Junior",
         channel: "C_TECH",
@@ -233,8 +233,8 @@ describe("AgentDispatcher", () => {
     );
 
     const targets = managerMock.handleAgentMessage.mock.calls.map((c) => c[1]);
-    expect(targets).toContain("onboard-member");
     expect(targets).toContain("review");
+    expect(targets).toContain("thinker");
   });
 
   it("forwards worker no-directive responses to lead", async () => {
