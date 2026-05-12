@@ -225,7 +225,7 @@ describe("AgentDispatcher", () => {
 
     await router.handleMessage(
       makeEvent({
-        text: "!onboard-member onboard Ruta Bhatt\n!review take a look at PR 21",
+        text: "!onboard-member onboard Test Member\n!review take a look at PR 21",
         isSelfBot: true,
         botUsername: "Junior",
         channel: "C_TECH",
