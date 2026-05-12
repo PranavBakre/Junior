@@ -34,12 +34,28 @@ export function extractAssistantText(event: StreamEventAssistant): string | null
 
 export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
 
-export function shouldPostResponseToSlack(text: string): boolean {
-  const normalized = text.trim();
-  if (!normalized) return false;
-  if (normalized === NO_SLACK_MESSAGE) return false;
-  if (normalized.endsWith(NO_SLACK_MESSAGE)) return false;
-  return true;
+/**
+ * Decide whether to post `text` to Slack and what to post.
+ * Returns null to suppress entirely; otherwise the cleaned text to post.
+ *
+ * Suppress when:
+ *   - text is empty/whitespace
+ *   - text is exactly the sentinel
+ *
+ * Strip + post when:
+ *   - text has real content followed by a trailing sentinel — the agent
+ *     intended to reply and habitually appended the sentinel; the reply
+ *     itself is what humans need.
+ */
+export function prepareSlackResponse(text: string): string | null {
+  let normalized = text.trim();
+  if (!normalized) return null;
+  if (normalized === NO_SLACK_MESSAGE) return null;
+  if (normalized.endsWith(NO_SLACK_MESSAGE)) {
+    normalized = normalized.slice(0, -NO_SLACK_MESSAGE.length).trimEnd();
+    if (!normalized) return null;
+  }
+  return normalized;
 }
 
 function formatToolBlock(block: ContentBlockToolUse): string {

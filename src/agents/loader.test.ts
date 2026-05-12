@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { loadAgentDefinition } from "./loader.ts";
+import { loadAgentDefinition, DEFAULT_CONTEXT_PROFILE } from "./loader.ts";
 import path from "node:path";
 
 const agentsDir = path.resolve(
@@ -106,5 +106,60 @@ This has no closing delimiter`;
       const fs = await import("node:fs/promises");
       await fs.unlink(tmpPath).catch(() => {});
     }
+  });
+
+  describe("context profile", () => {
+    it("defaults all flags to true when no context.* keys are declared", async () => {
+      const def = await loadAgentDefinition(path.join(agentsDir, "build.md"));
+      expect(def).not.toBeNull();
+      expect(def!.context).toEqual(DEFAULT_CONTEXT_PROFILE);
+    });
+
+    it("parses individual context.* flags as overrides", async () => {
+      const tmpPath = path.join(import.meta.dir, "__test_ctx.md");
+      const content = `---
+name: pr-summarize
+description: Summarize a PR in one sentence.
+context.workspace: false
+context.threadHistory: false
+---
+
+body`;
+      await Bun.write(tmpPath, content);
+
+      try {
+        const def = await loadAgentDefinition(tmpPath);
+        expect(def).not.toBeNull();
+        expect(def!.context.identity).toBe(true);
+        expect(def!.context.slack).toBe(true);
+        expect(def!.context.workspace).toBe(false);
+        expect(def!.context.threadHistory).toBe(false);
+        expect(def!.context.agentState).toBe(true);
+      } finally {
+        const fs = await import("node:fs/promises");
+        await fs.unlink(tmpPath).catch(() => {});
+      }
+    });
+
+    it("ignores invalid context.* values (not 'true'/'false')", async () => {
+      const tmpPath = path.join(import.meta.dir, "__test_ctx_bad.md");
+      const content = `---
+name: bad
+context.workspace: maybe
+context.threadHistory: 0
+---
+body`;
+      await Bun.write(tmpPath, content);
+
+      try {
+        const def = await loadAgentDefinition(tmpPath);
+        // Bad values fall back to default (true) — safe-but-heavy.
+        expect(def!.context.workspace).toBe(true);
+        expect(def!.context.threadHistory).toBe(true);
+      } finally {
+        const fs = await import("node:fs/promises");
+        await fs.unlink(tmpPath).catch(() => {});
+      }
+    });
   });
 });

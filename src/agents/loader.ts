@@ -1,9 +1,43 @@
+/**
+ * Per-agent preamble context profile. Each flag controls whether the
+ * corresponding block in `buildPromptPreamble` is emitted on the first turn.
+ *
+ * Defaults are ALL TRUE — existing agents that don't declare flags keep their
+ * current heavy preamble. Lightweight task agents opt out per-block via
+ * frontmatter:
+ *
+ *   ---
+ *   name: pr-summarize
+ *   context.workspace: false
+ *   context.threadHistory: false
+ *   ---
+ *
+ * Missing flag → true (safe-but-heavy). Unknown `context.*` keys are ignored
+ * silently; values must be the literal strings "true" or "false".
+ */
+export interface AgentContextProfile {
+  identity: boolean;
+  slack: boolean;
+  workspace: boolean;
+  threadHistory: boolean;
+  agentState: boolean;
+}
+
+export const DEFAULT_CONTEXT_PROFILE: AgentContextProfile = {
+  identity: true,
+  slack: true,
+  workspace: true,
+  threadHistory: true,
+  agentState: true,
+};
+
 export interface AgentDefinition {
   name: string;
   description: string;
   tools: string | null;
   model: string | null;
   prompt: string;
+  context: AgentContextProfile;
 }
 
 export async function loadAgentDefinition(
@@ -22,7 +56,29 @@ export async function loadAgentDefinition(
     tools: frontmatter["tools"] ?? null,
     model: frontmatter["model"] ?? null,
     prompt: body.trim(),
+    context: readContextProfile(frontmatter),
   };
+}
+
+function readContextProfile(
+  fm: Record<string, string>,
+): AgentContextProfile {
+  return {
+    identity: parseBool(fm["context.identity"]) ?? DEFAULT_CONTEXT_PROFILE.identity,
+    slack: parseBool(fm["context.slack"]) ?? DEFAULT_CONTEXT_PROFILE.slack,
+    workspace: parseBool(fm["context.workspace"]) ?? DEFAULT_CONTEXT_PROFILE.workspace,
+    threadHistory:
+      parseBool(fm["context.threadHistory"]) ?? DEFAULT_CONTEXT_PROFILE.threadHistory,
+    agentState: parseBool(fm["context.agentState"]) ?? DEFAULT_CONTEXT_PROFILE.agentState,
+  };
+}
+
+function parseBool(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const v = value.trim().toLowerCase();
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return undefined;
 }
 
 function parseFrontmatter(content: string): {
