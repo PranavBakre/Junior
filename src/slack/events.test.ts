@@ -120,6 +120,69 @@ describe("registerEventHandlers — ✽ filter", () => {
     expect(onMessage).not.toHaveBeenCalled();
   });
 
+  it("self-bot message is dropped in a non-auto-trigger channel without a directive", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    registerEventHandlers(app, onMessage, undefined, "B_SELF");
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "just talking to myself",
+        channel: "C_OTHER",
+        channel_type: "channel",
+        ts: "1700000000.000010",
+        bot_id: "B_SELF",
+      },
+    });
+
+    expect(onMessage).not.toHaveBeenCalled();
+  });
+
+  it("self-bot message with a !<persistent-agent> directive is let through even in non-auto-trigger channels", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    const store = {
+      get: async () => ({ threadId: "T1" }),
+    } as unknown as Parameters<typeof registerEventHandlers>[2];
+    registerEventHandlers(app, onMessage, store, "B_SELF", "U_BOT");
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "!onboard-member onboard Ruta Bhatt",
+        channel: "C_OTHER",
+        channel_type: "channel",
+        ts: "1700000000.000011",
+        thread_ts: "1700000000.000000",
+        bot_id: "B_SELF",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage.mock.calls[0][0].text).toContain("!onboard-member");
+    expect(onMessage.mock.calls[0][0].isSelfBot).toBe(true);
+  });
+
+  it("self-bot message with a non-agent !word is still dropped", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    registerEventHandlers(app, onMessage, undefined, "B_SELF");
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "!notarealagent hello",
+        channel: "C_OTHER",
+        channel_type: "channel",
+        ts: "1700000000.000012",
+        bot_id: "B_SELF",
+      },
+    });
+
+    expect(onMessage).not.toHaveBeenCalled();
+  });
+
   it("app_mention handler passes through a normal mention", async () => {
     const { app, handlers } = makeMockApp();
     const onMessage = mock((_e: SlackMessageEvent) => {});

@@ -6,7 +6,21 @@ export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   thinker: { username: "Thinker", iconEmoji: ":wrench:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
   echo: { username: "Echo", iconEmoji: ":speech_balloon:" },
+  "onboard-member": { username: "Onboarder", iconEmoji: ":handshake:" },
 };
+
+/**
+ * Agents the *default* Junior orchestrator (any-channel @mentions, no
+ * support-channel routing) is allowed to dispatch via `!<agent>` directives.
+ *
+ * Lead has full dispatch over the bug-pipeline agents (see `dispatchableAgentsFor`).
+ * The default orchestrator is narrower — it's not running a triage pipeline,
+ * it's an everyday assistant — but it still needs a way to hand off one-shot
+ * org-specific workflows (e.g. member onboarding) instead of doing them inline.
+ */
+export const DEFAULT_DISPATCH_ALLOW: ReadonlySet<string> = new Set([
+  "onboard-member",
+]);
 
 export function isPersistentAgent(agentName: string): boolean {
   return Object.prototype.hasOwnProperty.call(AGENT_IDENTITIES, agentName);
@@ -64,6 +78,9 @@ export function dispatchableAgentsFor(agentName: string): string[] {
     return Object.keys(AGENT_IDENTITIES).filter(
       (name) => name !== "lead" && name !== "echo",
     );
+  }
+  if (agentName === "default" || agentName === "junior") {
+    return [...DEFAULT_DISPATCH_ALLOW];
   }
   const allow = WORKER_DISPATCH_ALLOW[agentName];
   return allow ? [...allow] : [];
