@@ -1,18 +1,31 @@
 import { describe, expect, it } from "bun:test";
 import {
+  AGENT_IDENTITIES,
+  agentForUsername,
   buildDispatchAllowBlock,
   dispatchableAgentsFor,
+  isOrchestratorAgent,
   workerMayDispatch,
 } from "./agents.ts";
 
 describe("dispatchableAgentsFor", () => {
-  it("lets lead dispatch every persistent agent except itself and echo", () => {
+  it("lets lead dispatch every worker except itself, default, and echo", () => {
     const allowed = dispatchableAgentsFor("lead");
     expect(allowed).toContain("thinker");
     expect(allowed).toContain("review");
     expect(allowed).toContain("reproducer");
+    expect(allowed).toContain("onboard-member");
     expect(allowed).not.toContain("lead");
+    expect(allowed).not.toContain("default");
     expect(allowed).not.toContain("echo");
+  });
+
+  it("gives default Junior the same full dispatch power as lead", () => {
+    const leadAllowed = dispatchableAgentsFor("lead").sort();
+    const defaultAllowed = dispatchableAgentsFor("default").sort();
+    const juniorAllowed = dispatchableAgentsFor("junior").sort();
+    expect(defaultAllowed).toEqual(leadAllowed);
+    expect(juniorAllowed).toEqual(leadAllowed);
   });
 
   it("returns thinker's allow-list", () => {
@@ -23,10 +36,36 @@ describe("dispatchableAgentsFor", () => {
   it("returns empty for workers with no allow-list", () => {
     expect(dispatchableAgentsFor("review")).toEqual([]);
     expect(dispatchableAgentsFor("reproducer")).toEqual([]);
+    expect(dispatchableAgentsFor("onboard-member")).toEqual([]);
   });
 
   it("returns empty for unknown agents", () => {
     expect(dispatchableAgentsFor("unknown-agent")).toEqual([]);
+  });
+});
+
+describe("identity / username collision (the footgun this guards)", () => {
+  it("lead and default Junior have different slack usernames", () => {
+    expect(AGENT_IDENTITIES.lead.username).not.toBe(
+      AGENT_IDENTITIES.default.username,
+    );
+  });
+
+  it("agentForUsername resolves 'Junior' to default, not lead", () => {
+    expect(agentForUsername("Junior")).toBe("default");
+  });
+
+  it("agentForUsername resolves 'Junior (Lead)' to lead", () => {
+    expect(agentForUsername("Junior (Lead)")).toBe("lead");
+  });
+
+  it("isOrchestratorAgent recognises both orchestrators and rejects workers", () => {
+    expect(isOrchestratorAgent("lead")).toBe(true);
+    expect(isOrchestratorAgent("default")).toBe(true);
+    expect(isOrchestratorAgent("junior")).toBe(true);
+    expect(isOrchestratorAgent("thinker")).toBe(false);
+    expect(isOrchestratorAgent("onboard-member")).toBe(false);
+    expect(isOrchestratorAgent(null)).toBe(false);
   });
 });
 
@@ -76,6 +115,15 @@ describe("buildDispatchAllowBlock", () => {
     expect(block).toContain("`thinker`");
     expect(block).toContain("`review`");
     expect(block).toContain("`reproducer`");
+    expect(block).not.toContain("may NOT emit");
+  });
+
+  it("lists every dispatchable agent for default Junior too", () => {
+    const block = buildDispatchAllowBlock("default");
+    expect(block).toContain("`thinker`");
+    expect(block).toContain("`review`");
+    expect(block).toContain("`reproducer`");
+    expect(block).toContain("`onboard-member`");
     expect(block).not.toContain("may NOT emit");
   });
 

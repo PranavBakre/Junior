@@ -1,7 +1,27 @@
 import type { App } from "@slack/bolt";
 import type { SessionStore } from "../session/store/interface.ts";
 import { parseCommand } from "./commands.ts";
+import { isPersistentAgent } from "../support/agents.ts";
 import { log } from "../logger.ts";
+
+/**
+ * Detect whether a self-bot message contains at least one `!<persistent-agent>`
+ * directive line. Used to bypass the self-bot drop guard so an orchestrator
+ * agent (e.g. default Junior in #tech) can hand off to a registered worker
+ * even in channels that aren't in `autoTriggerChannels`.
+ *
+ * The check is intentionally narrow — it only matches lines that start with
+ * `!<word>` where the word is a known persistent agent. Plain self-bot prose
+ * (no directive) continues to drop, preserving the original loop guard.
+ */
+function containsDispatchDirective(text: string | undefined): boolean {
+  if (!text) return false;
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^!(\S+)/);
+    if (match && isPersistentAgent(match[1])) return true;
+  }
+  return false;
+}
 
 /**
  * Sibling Claude bots (Friday, Doraemon) post their streaming "thinking"
@@ -66,10 +86,16 @@ export function registerEventHandlers(
       selfBotId &&
       (event as { bot_id: string }).bot_id === selfBotId;
     const isAutoTrigger = !!autoTriggerChannels?.has(event.channel);
+    const selfBotText = "text" in event ? event.text : undefined;
+    const hasDirective = isSelfBot && containsDispatchDirective(selfBotText);
 
     // Only support auto-trigger channels route our own bot messages; other
     // channels keep the legacy self-filter to avoid ordinary response loops.
-    if (isSelfBot && !isAutoTrigger) {
+    // Exception: self-bot messages that contain a `!<persistent-agent>`
+    // directive line are let through so an orchestrator (default Junior or
+    // lead) can hand off to a worker from any channel — the directive is the
+    // explicit intent signal, so it's no longer "incidental self-bot chatter".
+    if (isSelfBot && !isAutoTrigger && !hasDirective) {
       logDrop("self-bot", evMeta);
       return;
     }
