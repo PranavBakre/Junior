@@ -34,6 +34,36 @@ describe("loadAgentDefinition", () => {
     expect(def!.model).toBe("opus");
   });
 
+  it("parses optional username + iconEmoji frontmatter fields", async () => {
+    const tmpPath = path.join(import.meta.dir, "__test_identity_fm.md");
+    const content = `---
+name: example-worker
+description: Test
+username: Examplor
+iconEmoji: ":wave:"
+---
+
+body`;
+    await Bun.write(tmpPath, content);
+
+    try {
+      const def = await loadAgentDefinition(tmpPath);
+      expect(def).not.toBeNull();
+      expect(def!.username).toBe("Examplor");
+      expect(def!.iconEmoji).toBe(":wave:");
+    } finally {
+      const fs = await import("node:fs/promises");
+      await fs.unlink(tmpPath).catch(() => {});
+    }
+  });
+
+  it("identity fields are null when not declared", async () => {
+    const def = await loadAgentDefinition(path.join(agentsDir, "build.md"));
+    expect(def).not.toBeNull();
+    expect(def!.username).toBeNull();
+    expect(def!.iconEmoji).toBeNull();
+  });
+
   it("body is the content after the second ---", async () => {
     const def = await loadAgentDefinition(path.join(agentsDir, "build.md"));
     expect(def).not.toBeNull();

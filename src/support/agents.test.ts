@@ -1,23 +1,43 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import path from "node:path";
+import fs from "node:fs/promises";
 import {
   AGENT_IDENTITIES,
   agentForUsername,
   buildDispatchAllowBlock,
   dispatchableAgentsFor,
   isOrchestratorAgent,
+  loadOverlayIdentities,
+  registerAgentIdentity,
   workerMayDispatch,
 } from "./agents.ts";
 
 describe("dispatchableAgentsFor", () => {
+  const cleanupKeys: string[] = [];
+  afterEach(() => {
+    for (const key of cleanupKeys) {
+      delete AGENT_IDENTITIES[key];
+    }
+    cleanupKeys.length = 0;
+  });
+
   it("lets lead dispatch every worker except itself, default, and echo", () => {
     const allowed = dispatchableAgentsFor("lead");
     expect(allowed).toContain("thinker");
     expect(allowed).toContain("review");
     expect(allowed).toContain("reproducer");
-    expect(allowed).toContain("onboard-member");
     expect(allowed).not.toContain("lead");
     expect(allowed).not.toContain("default");
     expect(allowed).not.toContain("echo");
+  });
+
+  it("includes overlay-registered workers in lead's allow-list once registered", () => {
+    cleanupKeys.push("overlay-worker-test");
+    registerAgentIdentity("overlay-worker-test", {
+      username: "OverlayTest",
+      iconEmoji: ":test_tube:",
+    });
+    expect(dispatchableAgentsFor("lead")).toContain("overlay-worker-test");
   });
 
   it("gives default Junior the same full dispatch power as lead", () => {
@@ -36,7 +56,6 @@ describe("dispatchableAgentsFor", () => {
   it("returns empty for workers with no allow-list", () => {
     expect(dispatchableAgentsFor("review")).toEqual([]);
     expect(dispatchableAgentsFor("reproducer")).toEqual([]);
-    expect(dispatchableAgentsFor("onboard-member")).toEqual([]);
   });
 
   it("returns empty for unknown agents", () => {
@@ -118,17 +137,109 @@ describe("buildDispatchAllowBlock", () => {
     expect(block).not.toContain("may NOT emit");
   });
 
-  it("lists every dispatchable agent for default Junior too", () => {
+  it("lists every dispatchable core agent for default Junior too", () => {
     const block = buildDispatchAllowBlock("default");
     expect(block).toContain("`thinker`");
     expect(block).toContain("`review`");
     expect(block).toContain("`reproducer`");
-    expect(block).toContain("`onboard-member`");
     expect(block).not.toContain("may NOT emit");
   });
 
   it("emits a deny-all block for unknown agents (safe default)", () => {
     const block = buildDispatchAllowBlock("unknown-agent");
     expect(block).toContain("may NOT emit");
+  });
+});
+
+describe("registerAgentIdentity", () => {
+  const cleanupKeys: string[] = [];
+  afterEach(() => {
+    for (const key of cleanupKeys) {
+      delete AGENT_IDENTITIES[key];
+    }
+    cleanupKeys.length = 0;
+  });
+
+  it("registers a new overlay agent identity", () => {
+    cleanupKeys.push("test-worker");
+    const ok = registerAgentIdentity("test-worker", {
+      username: "Tester",
+      iconEmoji: ":test_tube:",
+    });
+    expect(ok).toBe(true);
+    expect(AGENT_IDENTITIES["test-worker"]).toEqual({
+      username: "Tester",
+      iconEmoji: ":test_tube:",
+    });
+  });
+
+  it("refuses to overwrite a core agent identity", () => {
+    const before = AGENT_IDENTITIES.lead;
+    const ok = registerAgentIdentity("lead", {
+      username: "HijackedLead",
+      iconEmoji: ":skull:",
+    });
+    expect(ok).toBe(false);
+    expect(AGENT_IDENTITIES.lead).toEqual(before);
+  });
+});
+
+describe("loadOverlayIdentities", () => {
+  const tmpDir = path.join(import.meta.dir, "__overlay_test");
+  const cleanupKeys: string[] = [];
+
+  afterEach(async () => {
+    for (const key of cleanupKeys) {
+      delete AGENT_IDENTITIES[key];
+    }
+    cleanupKeys.length = 0;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("registers identities from .md frontmatter in the overlay dir", async () => {
+    await fs.mkdir(tmpDir, { recursive: true });
+    await Bun.write(
+      path.join(tmpDir, "overlay-worker.md"),
+      `---
+name: overlay-worker
+description: Test overlay worker
+username: OverlayPerson
+iconEmoji: ":construction:"
+---
+
+body
+`,
+    );
+
+    cleanupKeys.push("overlay-worker");
+    await loadOverlayIdentities(tmpDir);
+
+    expect(AGENT_IDENTITIES["overlay-worker"]).toEqual({
+      username: "OverlayPerson",
+      iconEmoji: ":construction:",
+    });
+  });
+
+  it("skips .md files that declare only one of username/iconEmoji", async () => {
+    await fs.mkdir(tmpDir, { recursive: true });
+    await Bun.write(
+      path.join(tmpDir, "half-identity.md"),
+      `---
+name: half-identity
+description: Missing iconEmoji
+username: OnlyUsername
+---
+
+body
+`,
+    );
+
+    await loadOverlayIdentities(tmpDir);
+    expect(AGENT_IDENTITIES["half-identity"]).toBeUndefined();
+  });
+
+  it("does not throw when the overlay directory is missing", async () => {
+    const missing = path.join(import.meta.dir, "__definitely_not_here");
+    await expect(loadOverlayIdentities(missing)).resolves.toBeUndefined();
   });
 });
