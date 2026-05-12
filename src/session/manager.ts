@@ -888,19 +888,26 @@ export class SessionManager {
     agentName: string,
     identity?: AgentIdentity,
   ): string | null {
-    if (!identity) return systemPrompt;
-    const identityPrompt = [
-      `You are the persistent "${agentName}" agent in this Slack thread.`,
-      `When posting through slack_send_message, pass username="${identity.username}" and icon_emoji="${identity.iconEmoji}".`,
-      agentName === "lead"
-        ? "Do not append an attribution suffix to your Slack messages."
-        : `End every Slack message with "by ${agentName}".`,
-    ].join("\n");
-    const dispatchBlock = buildDispatchAllowBlock(agentName);
-    const composed = systemPrompt
-      ? `${systemPrompt}\n\n${identityPrompt}\n\n${dispatchBlock}`
-      : `${identityPrompt}\n\n${dispatchBlock}`;
-    return composed;
+    const sections: string[] = [];
+    if (systemPrompt) sections.push(systemPrompt);
+    if (identity) {
+      const isOrchestrator = agentName === "lead" || agentName === "default";
+      const identityPrompt = [
+        `You are the "${agentName}" agent in this Slack thread.`,
+        `When posting through slack_send_message, pass username="${identity.username}" and icon_emoji="${identity.iconEmoji}".`,
+        // Orchestrators (lead, default Junior) post as Junior's voice and
+        // don't append a "by <agent>" suffix — that's a worker convention so
+        // humans can tell workers' posts apart from the orchestrator's.
+        isOrchestrator
+          ? "Do not append an attribution suffix to your Slack messages."
+          : `End every Slack message with "by ${agentName}".`,
+      ].join("\n");
+      sections.push(identityPrompt);
+    }
+    // Always inject the dispatch-allow block so the agent knows which
+    // `!<agent>` directives it may emit.
+    sections.push(buildDispatchAllowBlock(agentName));
+    return sections.length > 0 ? sections.join("\n\n") : null;
   }
 
   private toPendingMessage(event: SlackMessageEvent): PendingMessage {
