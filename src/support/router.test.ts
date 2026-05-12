@@ -185,12 +185,56 @@ describe("AgentDispatcher", () => {
       makeEvent({
         text: "research done, waiting on sentry/vercel",
         isSelfBot: true,
+        botUsername: "Junior (Lead)",
+      }),
+    );
+
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+  });
+
+  it("drops default Junior's own no-directive commentary to break the wake-loop", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text: "checking the script, one moment",
+        isSelfBot: true,
         botUsername: "Junior",
       }),
     );
 
     expect(managerMock.handleMessage).not.toHaveBeenCalled();
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+  });
+
+  it("default Junior may dispatch any registered worker (not just onboard-member)", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    // No support channels — exercises the non-support dispatch path.
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set());
+
+    await router.handleMessage(
+      makeEvent({
+        text: "!onboard-member onboard Ruta Bhatt\n!review take a look at PR 21",
+        isSelfBot: true,
+        botUsername: "Junior",
+        channel: "C_TECH",
+      }),
+    );
+
+    const targets = managerMock.handleAgentMessage.mock.calls.map((c) => c[1]);
+    expect(targets).toContain("onboard-member");
+    expect(targets).toContain("review");
   });
 
   it("forwards worker no-directive responses to lead", async () => {

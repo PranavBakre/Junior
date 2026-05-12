@@ -1,7 +1,12 @@
 import type { AgentIdentity } from "../session/types.ts";
 
 export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
-  lead: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
+  // Default Junior — the bot's main face, responds to @mentions in any channel.
+  default: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
+  // Lead — the bug-pipeline orchestrator. Keeps the Junior brand association
+  // but disambiguates from default Junior so `agentForUsername` can resolve
+  // self-bot posts back to the right role.
+  lead: { username: "Junior (Lead)", iconEmoji: ":face_with_cowboy_hat:" },
   reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
   thinker: { username: "Thinker", iconEmoji: ":wrench:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
@@ -10,17 +15,20 @@ export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
 };
 
 /**
- * Agents the *default* Junior orchestrator (any-channel @mentions, no
- * support-channel routing) is allowed to dispatch via `!<agent>` directives.
- *
- * Lead has full dispatch over the bug-pipeline agents (see `dispatchableAgentsFor`).
- * The default orchestrator is narrower — it's not running a triage pipeline,
- * it's an everyday assistant — but it still needs a way to hand off one-shot
- * org-specific workflows (e.g. member onboarding) instead of doing them inline.
+ * Orchestrator agents — they may dispatch any registered worker. Both share
+ * the same dispatch power; they differ in slack identity and which channels
+ * route to them. The check at the router layer (and dispatch-allow block) uses
+ * this set, so adding a new orchestrator is one edit, not a hunt across files.
  */
-export const DEFAULT_DISPATCH_ALLOW: ReadonlySet<string> = new Set([
-  "onboard-member",
+const ORCHESTRATOR_AGENTS: ReadonlySet<string> = new Set([
+  "lead",
+  "default",
+  "junior",
 ]);
+
+export function isOrchestratorAgent(agentName: string | null): boolean {
+  return !!agentName && ORCHESTRATOR_AGENTS.has(agentName);
+}
 
 export function isPersistentAgent(agentName: string): boolean {
   return Object.prototype.hasOwnProperty.call(AGENT_IDENTITIES, agentName);
@@ -74,13 +82,12 @@ export function workerMayDispatch(
  * commentary that lead's next turn reads).
  */
 export function dispatchableAgentsFor(agentName: string): string[] {
-  if (agentName === "lead") {
+  if (isOrchestratorAgent(agentName)) {
+    // Orchestrators (lead, default Junior) may dispatch any registered worker.
+    // Exclude self, the other orchestrator, and echo.
     return Object.keys(AGENT_IDENTITIES).filter(
-      (name) => name !== "lead" && name !== "echo",
+      (name) => !isOrchestratorAgent(name) && name !== "echo",
     );
-  }
-  if (agentName === "default" || agentName === "junior") {
-    return [...DEFAULT_DISPATCH_ALLOW];
   }
   const allow = WORKER_DISPATCH_ALLOW[agentName];
   return allow ? [...allow] : [];
