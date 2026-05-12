@@ -83,7 +83,7 @@ describe("identity / username collision (the footgun this guards)", () => {
     expect(isOrchestratorAgent("default")).toBe(true);
     expect(isOrchestratorAgent("junior")).toBe(true);
     expect(isOrchestratorAgent("thinker")).toBe(false);
-    expect(isOrchestratorAgent("onboard-member")).toBe(false);
+    expect(isOrchestratorAgent("review")).toBe(false);
     expect(isOrchestratorAgent(null)).toBe(false);
   });
 });
@@ -236,6 +236,25 @@ body
 
     await loadOverlayIdentities(tmpDir);
     expect(AGENT_IDENTITIES["half-identity"]).toBeUndefined();
+  });
+
+  it("skips .md files that have identity fields but no name", async () => {
+    await fs.mkdir(tmpDir, { recursive: true });
+    await Bun.write(
+      path.join(tmpDir, "no-name-but-identity.md"),
+      `---
+description: Forgot to put a name on this one
+username: Anonymous
+iconEmoji: ":ghost:"
+---
+
+body
+`,
+    );
+
+    // Should not throw and should not register anything (no name to key on).
+    await loadOverlayIdentities(tmpDir);
+    expect(AGENT_IDENTITIES["Anonymous"]).toBeUndefined();
   });
 
   it("does not throw when the overlay directory is missing", async () => {
