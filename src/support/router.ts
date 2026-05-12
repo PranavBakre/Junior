@@ -4,7 +4,12 @@ import type { SessionManager } from "../session/manager.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { RepoConfig } from "../config.ts";
-import { agentForUsername, isPersistentAgent, workerMayDispatch } from "./agents.ts";
+import {
+  agentForUsername,
+  isOrchestratorAgent,
+  isPersistentAgent,
+  workerMayDispatch,
+} from "./agents.ts";
 import { log } from "../logger.ts";
 
 export interface AgentDirective {
@@ -171,15 +176,16 @@ export class AgentDispatcher {
       : null;
 
     if (directives.length === 0) {
-      // Drop self-bot loops in support channels (lead reading its own posts).
-      // In non-support channels, drop self-bot too — bots shouldn't trigger
+      // Drop self-bot loops: an orchestrator (lead, default Junior) reading
+      // its own no-directive post would spawn a redundant turn. Unknown
+      // self-bots (sourceAgent === null) drop too — they shouldn't trigger
       // new turns on their own posts regardless of channel.
-      if (event.isSelfBot && (sourceAgent === "lead" || sourceAgent === null)) {
+      if (event.isSelfBot && (isOrchestratorAgent(sourceAgent) || sourceAgent === null)) {
         return;
       }
-      // Worker self-bot (non-lead) without directives: forward to lead in
-      // support channels so it can decide next step. In non-support channels
-      // there's no lead — fall through to the regular session manager.
+      // Worker self-bot (non-orchestrator) without directives: forward to lead
+      // in support channels so it can decide next step. In non-support
+      // channels there's no lead — fall through to the regular session manager.
       if (event.isSelfBot && isSupport) {
         await this.manager.handleLeadMessage({
           ...event,
@@ -212,15 +218,15 @@ export class AgentDispatcher {
     }
 
     // Has directives.
-    // In support channels, lead may emit anything; workers may emit only the
-    // dispatches in WORKER_DISPATCH_ALLOW (e.g. thinker → !review). Other
-    // worker directives are stripped and the message re-routes to lead as
-    // plain text so lead can decide what to do with the unauthorised attempt.
-    // Unknown self-bots are treated as workers with no allow-list.
-    // In non-support channels there's no lead — humans drive — and self-bots
-    // shouldn't be dispatching either; drop to avoid loops.
+    // Orchestrators (lead, default Junior) may emit anything; workers may emit
+    // only the dispatches in WORKER_DISPATCH_ALLOW (e.g. thinker → !review).
+    // Other worker directives are stripped and the message re-routes to lead
+    // as plain text so lead can decide what to do with the unauthorised
+    // attempt. Unknown self-bots are treated as workers with no allow-list.
+    // In non-support channels there's no lead to forward to — drop to avoid
+    // loops.
     let dispatchableDirectives = directives;
-    if (event.isSelfBot && sourceAgent !== "lead") {
+    if (event.isSelfBot && !isOrchestratorAgent(sourceAgent)) {
       if (!isSupport) {
         return;
       }

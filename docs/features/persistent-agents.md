@@ -50,7 +50,7 @@ Every orchestration decision is visible. Humans can see exactly what the lead as
 - **Persistent agents** have their own Claude Code session per bug thread, post to Slack with their own username + icon, and resume across turns via `--resume`. They participate in the human-readable conversation.
 - **Sub-agents** are stateless tool calls invoked by persistent agents via the Task tool. They never post to Slack directly — output goes to bug-folder files (`research.md`, `sentry.md`, `vercel.md`, `email.md`). The calling persistent agent synthesizes findings for the human.
 - Lead orchestrates by emitting `!<agent> <prompt>` lines in normal Slack messages. Router parses those lines and dispatches to persistent agents only. Sub-agents are never invoked via `!<agent>` — only via Task tool, and only by persistent agents.
-- Lead is the _only_ role that can emit `!<agent>` directives. Workers can use the Task tool for stateless data fetches but cannot trigger more persistent work.
+- **Orchestrators** (lead, default Junior) can emit `!<agent>` directives — both share the same full dispatch power; they differ only in slack identity and which channels route to them. Workers can use the Task tool for stateless data fetches but cannot trigger more persistent work, with the narrow exceptions in `WORKER_DISPATCH_ALLOW` (e.g. thinker → review / reproducer for happy-path chains).
 - Lead is awoken on every event in the thread (human messages and worker responses) and can choose silence (via `NO_SLACK_MESSAGE` or by posting commentary with no directives) — silence breaks the cycle.
 - Observability fan-out: lead issues parallel Task calls to nr-research / sentry-fetch / vercel-status in **one turn**. All three run concurrently. Once all return, lead reads their files, synthesizes findings into a single Slack message, then dispatches `!reproducer` with that context (read-only bugs only — write-path bugs go straight to thinker).
 - Reproducer runs _after_ observability completes and only for read-only bugs — it needs failing endpoints, exception classes, deploy state as context. Write-path bugs skip reproducer (both phases) to avoid prod side-effects.
@@ -60,7 +60,7 @@ Every orchestration decision is visible. Humans can see exactly what the lead as
 ## Invariants (architectural commitments)
 
 1. **Observability ALWAYS precedes UI verification.** When reproducer runs (read-only bugs only), it always has observability context, never cold. Write-path bugs skip both phases of reproducer — observability still runs first, it just feeds thinker directly.
-2. **Lead is the only role that emits `!<agent>` directives.** Workers can post any commentary, but they cannot trigger more work.
+2. **Only orchestrators (lead, default Junior) emit `!<agent>` directives.** Workers can post any commentary, but they cannot trigger more work — except for the narrow happy-path chains declared in `WORKER_DISPATCH_ALLOW` (e.g. thinker → review).
 3. **The Slack thread IS the message bus.** No internal-dispatch-plus-audit-log split. Every cross-agent call goes through Slack events. One source of truth, full audit trail by construction.
 4. **Silence is a first-class action.** Cycle-break by composition, not enforcement. No router-level retry counters.
 
@@ -116,10 +116,15 @@ const AGENT_IDENTITIES: Record<
   string,
   { username: string; iconEmoji: string }
 > = {
-  lead: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
+  // Default Junior — the bot's main face for any-channel @mentions.
+  default: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
+  // Lead — bug-pipeline orchestrator. Distinct slack username so
+  // `agentForUsername` can resolve self-bot posts back to the right role.
+  lead: { username: "Junior (Lead)", iconEmoji: ":face_with_cowboy_hat:" },
   reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
   thinker: { username: "Thinker", iconEmoji: ":wrench:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
+  "onboard-member": { username: "Onboarder", iconEmoji: ":handshake:" },
 };
 ```
 
@@ -142,7 +147,7 @@ Every Slack message in a `#bugs-backlog` thread goes through the router. Four ca
 | -------- | ----------- | -------------------------------------------------- |
 | Human    | (no prefix) | lead                                               |
 | Human    | `!<agent>`  | that agent                                         |
-| Bot (us) | `!<agent>`  | that agent — **only lead emits these**             |
+| Bot (us) | `!<agent>`  | that agent — **emitted by orchestrators (lead, default Junior)** |
 | Bot (us) | (no prefix) | lead (lead reads agent responses; can stay silent) |
 
 Notes:
