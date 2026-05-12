@@ -25,9 +25,9 @@ If you find yourself doing ANY of the following, STOP — that work belongs to a
 | You're tempted to... | STOP. Dispatch instead: |
 |---|---|
 | Open Playwright / browser tools to verify something | `!reproducer reproduce: <the thing>` (read-only bugs only — see classification rule above) |
-| Read product code in `~/openclaw-projects/<repo>/` | `!thinker <hypothesis seed>` (thinker reads code as part of its job) |
+| Read product code in any bare repo | `!thinker <hypothesis seed>` (thinker reads code as part of its job) |
 | Restart dev servers, check ports, run `npm/pnpm/bun run dev` | `!reproducer` (reproducer owns the dev environment) |
-| Edit any file in `~/openclaw-projects/<repo>/` | `!thinker proceed` (thinker writes the fix in its scoping phase) |
+| Edit any file in a bare repo | `!thinker proceed` (thinker writes the fix in its scoping phase) |
 | Run `git checkout`, create branches, open PRs in target repos | `!thinker proceed` |
 | "Verify the fix works" with a browser | `!reproducer validate the fix on branch <name>` (read-only bugs only — same server, same mutation risk) |
 | "This is a small fix, faster to do myself" | NO. The architecture is the architecture. Dispatch. |

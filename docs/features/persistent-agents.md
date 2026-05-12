@@ -20,12 +20,12 @@ When a bug is reported in `#bugs-backlog`, Junior needs to triage it: pull obser
                 (status pill: "calling nr-research, sentry-fetch, vercel-status (3 in progress)")
                 (status pill updates: "nr-research done, 2 in progress" → "all 3 done")
 [Junior]        observability done.
-                NR: 1,247 errors / 860 users, deploy gx-backend@a3f2c1 correlation strong
+                NR: 1,247 errors / 860 users, deploy app-backend@a3f2c1 correlation strong
                 Sentry: no client-side exceptions for /events in last 2h
                 Vercel: a3f2c1 deployed 2h before first error
                 Full findings in research.md, sentry.md, vercel.md.
                 Blast radius is wide — bumping P1 → P0 before reproducing.
-                !reproducer GET /api/v1/events?past_events=true returning 500 for priya@growthx.club
+                !reproducer GET /api/v1/events?past_events=true returning 500 for user@example.com
 [Reproducer]    reproduced — blank page on /events, 500 on GET /api/v1/events    by reproducer
 [Junior]        scope this fix.
                 !thinker reproduction shows stale cache, NRQL points at events-service.ts deploy a3f2c1
@@ -90,7 +90,7 @@ interface ThreadSession {
   // populated by lead via the `mcp__slack-bot__register_worktree` MCP tool on
   // intake. Subsequent agents see the paths in the multi-repo `<workspace>`
   // block at the top of their prompt and use them for ALL reads/edits/git
-  // ops — never the bare repos under `~/openclaw-projects/`. See
+  // ops — never the bare repos under `~/projects/`. See
   // [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md) and
   // [worktree-manager.md](worktree-manager.md).
   worktreePaths: Record<string, string>;
@@ -194,7 +194,7 @@ For stateless data fetches (NR, Sentry, Vercel, email drafting), the lead invoke
 
 ```
 (inside lead's session, one assistant message, parallel)
-Task(subagent_type: "nr-research",   prompt: "events errors last 2h, user priya@growthx.club")
+Task(subagent_type: "nr-research",   prompt: "events errors last 2h, user user@example.com")
 Task(subagent_type: "sentry-fetch",  prompt: "/events exceptions last 2h")
 Task(subagent_type: "vercel-status", prompt: "latest deploy state")
 ```
@@ -295,7 +295,7 @@ Validates the sub-agent (Task tool) tier end-to-end. nr-research is invoked from
 - Output contract: writes `$BUG_DIR/research.md` with the structured findings; returns a one-line summary like `"DONE: 1,247 errors across 860 users — see research.md"` as the Task tool result
 - Status pill: a `"Task"` case in `formatToolBlock` renders `Calling nr-research`
 
-**Test:** Operator triggers an interactive Claude session in a real bug thread, invokes `Task(subagent_type: "nr-research", prompt: "events errors last 2h, user priya@growthx.club")`. Verify status pill shows `Calling nr-research`, then clears at turn end. Verify `research.md` exists in the bug folder with the findings. Verify the sub-agent never posts to Slack directly.
+**Test:** Operator triggers an interactive Claude session in a real bug thread, invokes `Task(subagent_type: "nr-research", prompt: "events errors last 2h, user user@example.com")`. Verify status pill shows `Calling nr-research`, then clears at turn end. Verify `research.md` exists in the bug folder with the findings. Verify the sub-agent never posts to Slack directly.
 
 **Defers:** Sentry, Vercel, parallel fan-out, lead orchestration.
 
