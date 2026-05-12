@@ -888,19 +888,24 @@ export class SessionManager {
     agentName: string,
     identity?: AgentIdentity,
   ): string | null {
-    if (!identity) return systemPrompt;
-    const identityPrompt = [
-      `You are the persistent "${agentName}" agent in this Slack thread.`,
-      `When posting through slack_send_message, pass username="${identity.username}" and icon_emoji="${identity.iconEmoji}".`,
-      agentName === "lead"
-        ? "Do not append an attribution suffix to your Slack messages."
-        : `End every Slack message with "by ${agentName}".`,
-    ].join("\n");
-    const dispatchBlock = buildDispatchAllowBlock(agentName);
-    const composed = systemPrompt
-      ? `${systemPrompt}\n\n${identityPrompt}\n\n${dispatchBlock}`
-      : `${identityPrompt}\n\n${dispatchBlock}`;
-    return composed;
+    const sections: string[] = [];
+    if (systemPrompt) sections.push(systemPrompt);
+    if (identity) {
+      const identityPrompt = [
+        `You are the persistent "${agentName}" agent in this Slack thread.`,
+        `When posting through slack_send_message, pass username="${identity.username}" and icon_emoji="${identity.iconEmoji}".`,
+        agentName === "lead"
+          ? "Do not append an attribution suffix to your Slack messages."
+          : `End every Slack message with "by ${agentName}".`,
+      ].join("\n");
+      sections.push(identityPrompt);
+    }
+    // Always inject the dispatch-allow block. The default orchestrator has no
+    // slack identity but still needs to know which `!<agent>` directives it
+    // may emit — without this block it would either guess (and have its
+    // directives stripped) or do the work inline.
+    sections.push(buildDispatchAllowBlock(agentName));
+    return sections.length > 0 ? sections.join("\n\n") : null;
   }
 
   private toPendingMessage(event: SlackMessageEvent): PendingMessage {

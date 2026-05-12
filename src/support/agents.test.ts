@@ -28,6 +28,15 @@ describe("dispatchableAgentsFor", () => {
   it("returns empty for unknown agents", () => {
     expect(dispatchableAgentsFor("unknown-agent")).toEqual([]);
   });
+
+  it("lets the default orchestrator dispatch onboard-member", () => {
+    expect(dispatchableAgentsFor("default")).toContain("onboard-member");
+    expect(dispatchableAgentsFor("junior")).toContain("onboard-member");
+  });
+
+  it("includes onboard-member in lead's allow-list", () => {
+    expect(dispatchableAgentsFor("lead")).toContain("onboard-member");
+  });
 });
 
 describe("workerMayDispatch", () => {
