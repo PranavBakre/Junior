@@ -11,6 +11,7 @@ import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
 import { AgentRouter } from "./agents/router.ts";
 import { AgentDispatcher } from "./support/router.ts";
+import { loadOverlayIdentities } from "./support/agents.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
 import { DevServerManager } from "./lifecycle/dev-server.ts";
 import { DevServerQueue } from "./lifecycle/dev-server-queue.ts";
@@ -153,6 +154,20 @@ setInterval(() => {
 }, config.session.cleanupIntervalMs);
 
 (async () => {
+  // Load private/overlay agent identities BEFORE accepting events. Each
+  // `.claude/agents-org/*.md` file may declare `username` + `iconEmoji` in
+  // frontmatter; those get merged into `AGENT_IDENTITIES` so dispatch,
+  // `agentForUsername`, and slack posting all see them. Failure is
+  // non-fatal — overlay is optional.
+  try {
+    await loadOverlayIdentities(".claude/agents-org");
+  } catch (err) {
+    log.error(
+      "boot",
+      `overlay-identity load failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // Bootstrap dev-server worktrees and check for external port conflicts before
   // accepting any Slack events. Failure here is non-fatal — log loudly and
   // continue so other features keep working even if a single repo's worktree

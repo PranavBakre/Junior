@@ -38,6 +38,14 @@ export interface AgentDefinition {
   model: string | null;
   prompt: string;
   context: AgentContextProfile;
+  /**
+   * Optional slack identity declared in frontmatter. Lets private/overlay
+   * agents register their visual identity (username + emoji) without
+   * touching the public AGENT_IDENTITIES literal. Both fields must be
+   * present to take effect; a partial declaration is ignored.
+   */
+  username: string | null;
+  iconEmoji: string | null;
 }
 
 export async function loadAgentDefinition(
@@ -57,6 +65,8 @@ export async function loadAgentDefinition(
     model: frontmatter["model"] ?? null,
     prompt: body.trim(),
     context: readContextProfile(frontmatter),
+    username: frontmatter["username"] ?? null,
+    iconEmoji: frontmatter["iconEmoji"] ?? null,
   };
 }
 
