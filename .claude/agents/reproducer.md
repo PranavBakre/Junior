@@ -46,7 +46,7 @@ If `scoping.md` lists a "user story" or "expected fixed behavior," walk THAT exp
 The runtime environment (Playwright tool list, repo paths, dev-server ports + FE↔BE wiring, MCP inventory, admin credentials path) is in the common preamble. Highlights:
 
 - **Playwright MCP** is your primary tool — navigate, click, fill forms, capture network/console, screenshot.
-- **Admin credentials** (`support/admin-credentials.yaml`) — read this file directly for the impersonation API sequence when access blocks the walk.
+- **Admin credentials** — the credential file path and impersonation API sequence are in the runtime-environment notes above. Read the file by the path named there when access blocks the walk; never paste contents into Slack or prompts.
 - **Bash + curl** for direct API calls when you need to verify a response without going through the browser.
 
 If a tool you need is unavailable or returns an unexpected error, do NOT fail silently — set status `needs-human` and explain.

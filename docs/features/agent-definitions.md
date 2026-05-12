@@ -15,17 +15,49 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 
 | Agent | Purpose |
 |---|---|
-| `build.md` | Generic backend builder — for junior itself and repos without their own build agent |
-| `review.md` | Code reviewer — Bones equivalent. 6-pass methodology, inline GitHub comments |
-| `frontend.md` | Generic frontend builder — for repos without their own frontend agent |
-| `architect.md` | System architect — specs, data models, state machines |
-| `pm.md` | Product manager — scoping, iterations, scope cuts |
-| `common/building-philosophy.md` | Shared preamble for all builder agents |
+| `lead.md` | Bug-pipeline orchestrator. Routes between thinker, reproducer, review; gates the dev-mirror merge. |
+| `thinker.md` | Two-phase root-cause hypothesizer + fix-scoper. |
+| `reproducer.md` | Two-phase Playwright walker — reproduces the bug, then validates the fix. |
+| `review.md` | Code reviewer (6-pass methodology, inline GitHub comments). |
+| `build.md` | Generic backend builder — for junior itself and repos without their own build agent. |
+| `frontend.md` | Generic frontend builder — for repos without their own frontend agent. |
+| `architect.md` | System architect — specs, data models, state machines. |
+| `pm.md` | Product manager — scoping, iterations, scope cuts. |
+| `common/building-philosophy.md` | Shared preamble — generic building principles. |
+| `common/merge-workflow.md` | Shared preamble — generic merge invariants (admin token, 3-way, branch from main). Org-specifics live in the overlay. |
+| `common/runtime-environment.md` | Shared preamble — generic runtime rules (image-reading, repo-locations meta-rule, MCP tool list, bug folder layout). Org-specifics live in the overlay. |
 
-**Loading priority:**
-1. Target repo's `.claude/agents/<type>.md` (e.g., example-backend has its own build.md)
-2. Junior's `.claude/agents/<type>.md` (fallback)
-3. No agent (generic Claude with just CLAUDE.md)
+**Private org overlay (`.claude/agents-org/`, mounted as a private submodule):**
+
+Contains org-specific agents and common preamble files that don't belong in the public repo:
+- `common/merge-workflow.md` — concrete token name, credentials path, exact merge invocation, multi-stage release flow.
+- `common/runtime-environment.md` — concrete repo names, local dev URLs, production-like FQDN config, admin-credentials.yaml usage, impersonation flow.
+- Any org-specific agents (e.g. internal task agents that name proprietary tooling).
+
+**Loading priority for an agent `.md`:**
+1. Target repo's `.claude/agents/<type>.md` (if `session.targetRepo` is set)
+2. Org overlay's `<orgAgentsDir>/<type>.md`
+3. Junior's `.claude/agents/<type>.md` (public fallback)
+4. No agent (generic Claude with the common preamble alone)
+
+**Loading order for common preamble:**
+1. Exclusive tier — target repo's `.claude/agents/common/*.md` **OR** Junior's public `.claude/agents/common/*.md` (target wins if non-empty; never both).
+2. Additive tier — org overlay's `<orgAgentsDir>/common/*.md` (always appended when overlay is configured).
+
+**Per-agent context profile:**
+
+Agents can opt out of preamble blocks via frontmatter dot-notation flags. Useful for lightweight task agents that don't need the full thread context.
+
+```yaml
+---
+name: pr-summarize
+description: One-sentence PR summary.
+context.workspace: false
+context.threadHistory: false
+---
+```
+
+Flags: `identity`, `slack`, `workspace`, `threadHistory`, `agentState`. Missing or invalid values default to `true` (safe-but-heavy).
 
 **What already exists in example-backend (DON'T duplicate):**
 - build.md, domain-eng.md, design-fe.md, content.md, pm.md, audit.md, retention.md, strategy.md, provocateur.md, domain-ops.md
