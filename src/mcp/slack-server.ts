@@ -243,7 +243,7 @@ function registerTools(server: McpServer) {
         "Returns the worktree path and branch name.",
       inputSchema: {
         thread_id: z.string().describe("Slack thread timestamp (the session key)"),
-        repo: z.string().describe("Repo name as configured in REPOS (e.g. 'gx-backend')"),
+        repo: z.string().describe("Repo name as configured in REPOS"),
         branch: z.string().optional().describe("Branch name override. Defaults to slack/<thread_id>"),
       },
     },

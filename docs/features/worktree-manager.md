@@ -32,8 +32,8 @@ When a Slack thread needs to edit code in a target repo (example-backend, exampl
 
 ```typescript
 interface RepoConfig {
-  name: string;                       // "gx-backend"
-  path: string;                       // "/Users/.../openclaw-projects/growthx/gx-backend"
+  name: string;                       // "app-backend"
+  path: string;                       // "/Users/.../projects/app-backend"
   defaultBase: string;                // "origin/main"
   // Optional — bug-pipeline / dev-server fields:
   worktreeSetupCommand?: string;      // e.g. "bin/setup-worktree.sh" — resolved relative to `path`
