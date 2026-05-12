@@ -10,9 +10,9 @@ import type { AgentIdentity } from "../session/types.ts";
  * `isOrchestratorAgent` set, attribution-suffix logic, etc.) — they're part
  * of the contract any fork of junior inherits.
  *
- * Private / org-specific workers (e.g. `onboard-member`) register their
- * identities via `username` + `iconEmoji` frontmatter on their `.md` files,
- * loaded at startup by `loadOverlayIdentities` from the org overlay
+ * Private / org-specific workers (e.g. an org-specific worker) register
+ * their identities via `username` + `iconEmoji` frontmatter on their `.md`
+ * files, loaded at startup by `loadOverlayIdentities` from the org overlay
  * directory. This keeps the public repo free of org-specific names.
  */
 export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
@@ -70,11 +70,32 @@ export async function loadOverlayIdentities(dirPath: string): Promise<void> {
     }
     for (const entry of entries) {
       const def = await loadAgentDefinition(`${dirPath}/${entry}`);
-      if (!def || !def.name) continue;
-      if (!def.username || !def.iconEmoji) continue;
+      if (!def) continue;
+      const hasUsername = !!def.username;
+      const hasIcon = !!def.iconEmoji;
+      // Genuine "no slack identity declared" — fine. Many overlay files are
+      // pure prompt with no slack-posting role (Task-tool sub-agents, etc.).
+      if (!hasUsername && !hasIcon) continue;
+      // Identity declared but incomplete — likely a typo. Warn so the author
+      // can fix it; without this signal the agent silently has no identity
+      // and the next observable failure is at dispatch time.
+      if (!hasUsername || !hasIcon) {
+        log.warn(
+          "agents",
+          `loadOverlayIdentities: ${entry} declares ${hasUsername ? "username" : "iconEmoji"} but not ${hasUsername ? "iconEmoji" : "username"} — both fields are required; skipping`,
+        );
+        continue;
+      }
+      if (!def.name) {
+        log.warn(
+          "agents",
+          `loadOverlayIdentities: ${entry} declares username + iconEmoji but no name — skipping; add a 'name:' field in frontmatter`,
+        );
+        continue;
+      }
       registerAgentIdentity(def.name, {
-        username: def.username,
-        iconEmoji: def.iconEmoji,
+        username: def.username!,
+        iconEmoji: def.iconEmoji!,
       });
     }
   } catch (err) {
