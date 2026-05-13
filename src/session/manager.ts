@@ -200,11 +200,13 @@ export class SessionManager {
 
   async isAdmin(userId: string): Promise<boolean> {
     const envAdmin = this.config.adminSlackUserId;
-    // No env admin configured = open mode (local dev). Skip DB lookup.
-    if (!envAdmin) return true;
-    if (userId === envAdmin) return true;
+    if (envAdmin && userId === envAdmin) return true;
     const extras = await this.store.extraAdmins();
-    return extras.has(userId);
+    if (extras.has(userId)) return true;
+    // Open-mode (local dev) only when NEITHER tier is configured. Without
+    // this guard, an env-var misfire in prod that unsets ADMIN_SLACK_USER_ID
+    // would silently promote everyone AND ignore the populated admins table.
+    return !envAdmin && extras.size === 0;
   }
 
   /**

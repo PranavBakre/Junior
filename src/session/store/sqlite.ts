@@ -37,9 +37,9 @@ export class SqliteSessionStore implements SessionStore {
         FOREIGN KEY (thread_id) REFERENCES sessions(thread_id)
       )
     `);
-    // Extra admins beyond the env-var bootstrap. Added by direct SQL —
-    // process restart picks up changes; isAdmin() reads from this table each
-    // call so no cache invalidation is needed.
+    // Extra admins beyond the env-var bootstrap. Added by direct SQL.
+    // isAdmin() reads from this table on each call (no cache), so inserts
+    // take effect on the next command without a restart.
     this.db.run(`
       CREATE TABLE IF NOT EXISTS admins (
         slack_user_id TEXT PRIMARY KEY,
