@@ -37,4 +37,8 @@ export class InMemorySessionStore implements SessionStore {
       session.lastActivity = Date.now();
     }
   }
+
+  async extraAdmins(): Promise<Set<string>> {
+    return new Set();
+  }
 }
