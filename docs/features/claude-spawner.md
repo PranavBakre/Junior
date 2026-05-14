@@ -1,112 +1,53 @@
 # Claude CLI Spawner
 
-## Problem
+## Role
 
-The bot needs to spawn Claude Code CLI processes, feed them prompts, parse their streaming output, and collect the final response. Each spawn must use the right flags (`--resume`, `--output-format stream-json`, agent definition, MCP config) and handle process lifecycle (exit, error, timeout).
+Execution layer between [session-management](session-management.md) and the `claude` CLI. Given a session and a prompt, it builds args, spawns the process, streams output back to listeners, and resolves a final `SpawnResult` on exit.
 
-**Who has this problem:** The session manager — it needs a clean interface to "run Claude and get a response."
-**What happens today:** Nothing — this is the execution layer.
-**Painful part:** stream-json parsing. The output is newline-delimited JSON with multiple event types. Session ID must be extracted from the first `init` event. The final response comes from the `result` event. Tool calls and thinking steps come as intermediate events. All of this arrives as raw stdout chunks that may split across JSON boundaries.
-**"Finally" moment:** `spawnClaude(prompt, session)` → returns a structured response with session ID, response text, and tool call events.
+## Public surface
 
-## Full Vision
+- `spawnClaude(session, prompt, config, targetRepoCwd?, botToken?, agentIdentity?) -> SpawnHandle`
+- `SpawnHandle = { result, onEvent, kill, pid }`
+- `SpawnResult = { sessionId, response, events, exitCode, error }`
 
-- Spawn `claude -p "<prompt>"` as child process
-- Build args from session state: `--resume`, `--output-format stream-json`, `--append-system-prompt`, `--allowedTools`, `--disallowedTools`, `--max-turns`, `--mcp-config`
-- Set `cwd` to worktree path (if code thread) or junior workspace (if non-code)
-- Parse stream-json events line by line
-- Extract session ID from `init` event
-- Emit intermediate events (tool_use, text) for Slack status updates
-- Collect final response from `result` event
-- Handle process exit (code 0 = success, non-zero = error)
-- Handle timeout (SIGINT after configurable duration)
-- Handle errors (spawn failure, parse failure)
+Session manager calls `spawnClaude`, subscribes via `onEvent` (consumed by [stream-to-slack](stream-to-slack.md) for status pills), and awaits `result`.
 
-## Dependencies
+## Arg building (`args.ts`)
 
-- Claude Code CLI installed and authenticated (Max subscription)
-- Session Manager provides session state (sessionId, worktreePath, agentType)
-- Stream Parser (built as part of this feature)
+Always: `-p <prompt>`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode` (from config).
 
-## Iterations
+Conditional:
+- `--resume <id>` if `session.sessionId` is set
+- `--append-system-prompt` if `session.systemPrompt` (composed upstream by [agent-routing](agent-routing.md) — spawner does not load agent files)
+- `--model` from `session.model ?? config.defaultModel`
+- `--mcp-config <path>` only when an mcp config path is passed in
 
-### Iteration 0: Raw spawn and capture (~20 min)
+## Spawn (`spawner.ts`)
 
-Prove we can spawn `claude -p` and get output back.
+- `cwd` precedence: `session.cwd` (utility commands) -> `session.worktreePath` (per-thread worktree, see [worktree-manager](worktree-manager.md)) -> `targetRepoCwd` -> `process.cwd()`
+- If `session.cwd` is set, it's `mkdirSync`'d first (e.g. `/tmp/junior-utility` for `!adhoc` / `!bugs`). This keeps utility commands away from any project `CLAUDE.md`.
+- `--mcp-config` points at junior's `.mcp.json` (so worktrees can reach the slack-bot MCP server, see [mcp-server](mcp-server.md)). Skipped when `session.cwd` is an override — utility commands rely on cloud integrations, not local MCP.
+- Env passed to child: `JUNIOR_SPAWNED=1`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `JUNIOR_AGENT_NAME`, optional `JUNIOR_SLACK_USERNAME` / `JUNIOR_SLACK_ICON_EMOJI` (per-agent identity for [mcp-server](mcp-server.md) postings, see [thread-context](thread-context.md)), and `SLACK_BOT_TOKEN` when provided.
 
-**What it adds:** Function that spawns `claude -p "hello" --output-format stream-json`, collects stdout, logs each line. No parsing, no session management.
-**Test:** Run the function. See raw stream-json output in console. Process exits cleanly.
-**Defers:** Parsing, --resume, args building, error handling, timeouts.
+Process is `Bun.spawn(["claude", ...args])` with piped stdout/stderr. `kill()` forwards to the child; lifecycle (timeout, zombie cleanup) lives in [process-lifecycle](process-lifecycle.md).
 
-### Iteration 1: Stream-json parser (~1h)
+## Stream parsing (`parser.ts`, `types.ts`)
 
-Parse the structured events from stdout into typed objects.
+Line-buffered reader over stdout chunks. Each newline-terminated line is `JSON.parse`d and shape-checked by `isStreamEvent`. Unknown / malformed lines are skipped silently — the CLI's event vocabulary evolves.
 
-**What it adds:**
-- Line-buffered stdout reader (handles chunks that split across JSON boundaries)
-- Parse each line as JSON
-- Type each event: `init`, `tool_use`, `text`, `result`, `error`
-- Extract `session_id` from `init` event
-- Extract final response text from `result` event
-- EventEmitter or callback pattern: `onEvent(event)` fires for each parsed event
-- Return value: `{ sessionId, response, events[], exitCode }`
+Recognized events (`StreamEvent`):
+- `system` subtype `init` -> carries `session_id`, captured once
+- `assistant` -> `message.content[]` of `text` / `tool_use` / `thinking` blocks; the most recent assistant turn's text is held as a fallback response
+- `result` -> `result` or `text` is the final response
+- `user`, `rate_limit_event` -> passed through to listeners
 
-**Test:** Spawn Claude with a simple prompt. `sessionId` is extracted. `response` contains the final text. `events` array has all intermediate events typed correctly. No parse errors on split chunks.
-**Defers:** Arg building, --resume, timeouts, Slack status updates.
+## Exit handoff
 
-### Iteration 2: Arg builder (~30 min)
+On `proc.exited`:
+- `response = resultText || lastAssistantText` (fallback covers turns that end without a `result`)
+- Non-zero exit reads `stderr` into `error`
+- Returns `{ sessionId, response, events, exitCode, error }` to the session manager, which posts the response (subject to thread-level `!mute` from [thread-commands](thread-commands.md)) and drains buffered messages.
 
-Build the full `claude` command args from session state.
+## Configuration
 
-**What it adds:**
-- `buildClaudeArgs(session, prompt)` function
-- Always: `-p`, `--output-format stream-json`, `--max-turns 25`
-- If `session.sessionId`: add `--resume <id>`
-- If `session.systemPrompt`: add `--append-system-prompt` (prompt string is pre-composed by agent router, spawner doesn't load agents)
-- If MCP config exists: add `--mcp-config <path>`
-- If `session.worktreePath`: set `cwd` to worktree
-- If no worktree: set `cwd` to junior workspace or target repo root
-- Permission mode: `--permission-mode bypassPermissions` (bot runs unattended)
-
-**Test:** Session with sessionId → args include `--resume`. Session with systemPrompt → args include `--append-system-prompt`. Session without worktree → cwd defaults to target repo root.
-**Defers:** Allowed/disallowed tools config, MCP config generation.
-
-### Iteration 3: Timeout and error handling (~30 min)
-
-**What it adds:**
-- Configurable timeout (default 5 min, env var override)
-- On timeout: send SIGINT, wait 10s, then SIGKILL if still alive
-- On process error (spawn failure, ENOENT): return error result, don't crash bot
-- On non-zero exit: include stderr in error result
-- On parse error (invalid JSON line): log and skip, don't abort the whole stream
-
-**Test:** Spawn Claude with a prompt that takes forever (or mock a hanging process). Process killed after timeout. Error result returned to session manager. Bot stays alive.
-**Defers:** Retry logic (don't retry — user re-sends).
-
-### Iteration 4: Tool scoping (~30 min)
-
-**What it adds:**
-- `--allowedTools` and `--disallowedTools` from session config
-- Default allowed: `Read, Write, Edit, Bash, Grep, Glob, Agent`
-- Default disallowed: `Bash(rm -rf *)`, `Bash(sudo *)`
-- Agent-type specific overrides: review agent gets `Read, Grep, Glob, Bash(git *)` only
-- Configurable per-thread via `/allow` and `/deny` commands (post-MVP)
-
-**Test:** Review session → Claude can read files and run git but can't write. Build session → full tool access except destructive commands.
-**Defers:** Per-thread command overrides, dynamic tool scoping mid-session.
-
-## Shortcuts
-
-| Shortcut | Replaced in |
-|---|---|
-| No --resume on first message | Iteration 2 (handled naturally — sessionId is null) |
-| Hardcoded max-turns 25 | Post-MVP (configurable per agent type) |
-| No retry on failure | By design — user re-sends |
-| bypassPermissions always | Post-MVP (configurable trust levels) |
-
-## Cut List (true v2)
-
-- `--input-format stream-json` bidirectional mode (undocumented, unstable)
-- Streaming response to Slack in real-time (update message as chunks arrive)
-- Claude Code SDK mode (if/when Max subscription works with SDK)
-- Process pooling (pre-warm Claude processes for faster cold start)
+From `config.claude`: `maxTurns`, `permissionMode`, `defaultModel`. Per-session overrides on `ThreadSession`: `sessionId`, `systemPrompt`, `model`, `worktreePath`, `cwd`, `channel`, `threadId`, `activeAgentName`.
