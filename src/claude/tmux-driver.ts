@@ -403,6 +403,15 @@ function extractAssistantText(event: StreamEvent): string {
   return text;
 }
 
+/**
+ * Deterministic tmux session name for `(threadId, agentName)`. The manager
+ * persists this string on the session row so `tmux has-session` checks
+ * after a bot restart can find the existing tmux session.
+ */
+export function tmuxSessionNameFor(threadId: string, agentName: string): string {
+  return computeSessionName(threadId, agentName);
+}
+
 function computeSessionName(threadId: string, agentName: string): string {
   // tmux session names can't contain '.', ':', or whitespace cleanly.
   const safeThread = threadId.replace(/[^A-Za-z0-9_-]/g, "_");

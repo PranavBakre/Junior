@@ -22,6 +22,9 @@ const KNOWN_COMMANDS = new Set([
   "bugs",
   "mute",
   "unmute",
+  // Driver controls — tmux substrate
+  "stop",
+  "driver",
 ]);
 
 export interface ParsedCommand {
