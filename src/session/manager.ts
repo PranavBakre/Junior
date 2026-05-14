@@ -198,18 +198,23 @@ export class SessionManager {
     return touched;
   }
 
-  isAdmin(userId: string): boolean {
-    const adminId = this.config.adminSlackUserId;
-    if (!adminId) return true;
-    return userId === adminId;
+  async isAdmin(userId: string): Promise<boolean> {
+    const envAdmin = this.config.adminSlackUserId;
+    if (envAdmin && userId === envAdmin) return true;
+    const extras = await this.store.extraAdmins();
+    if (extras.has(userId)) return true;
+    // Open-mode (local dev) only when NEITHER tier is configured. Without
+    // this guard, an env-var misfire in prod that unsets ADMIN_SLACK_USER_ID
+    // would silently promote everyone AND ignore the populated admins table.
+    return !envAdmin && extras.size === 0;
   }
 
   /**
    * Returns true if the user is denied (and a ❌ reaction was queued).
    * Caller should `return true` from the command handler to short-circuit.
    */
-  private denyIfNotAdmin(event: SlackMessageEvent): boolean {
-    if (this.isAdmin(event.user)) return false;
+  private async denyIfNotAdmin(event: SlackMessageEvent): Promise<boolean> {
+    if (await this.isAdmin(event.user)) return false;
     this.onReaction?.(event, "x");
     return true;
   }
@@ -248,7 +253,7 @@ export class SessionManager {
         // bare `!reset` gets the usage hint posted to the thread, contradicting
         // the documented "silent ❌ reaction, no thread reply" promise — and
         // leaks the gating model to anyone probing.
-        if (this.denyIfNotAdmin(event)) return true;
+        if (await this.denyIfNotAdmin(event)) return true;
         const arg = event.text.trim();
         if (!arg) {
           this.onCommandResponse?.(
@@ -435,7 +440,7 @@ export class SessionManager {
       }
 
       case "mute": {
-        if (this.denyIfNotAdmin(event)) return true;
+        if (await this.denyIfNotAdmin(event)) return true;
         session.muted = true;
         await this.store.set(session.threadId, session);
         this.onCommandResponse?.(event, "Muted. I'll stop responding until you `!unmute`.");
@@ -443,7 +448,7 @@ export class SessionManager {
       }
 
       case "unmute": {
-        if (this.denyIfNotAdmin(event)) return true;
+        if (await this.denyIfNotAdmin(event)) return true;
         session.muted = false;
         await this.store.set(session.threadId, session);
         this.onCommandResponse?.(event, "Unmuted.");

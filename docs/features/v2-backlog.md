@@ -44,12 +44,14 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 
 ## Thread-owner-based command access
 
-**Problem:** Today admin gating is a single env var (`ADMIN_SLACK_USER_ID`). The original sketch was richer — env admin + a SQLite-backed list of additional admins, plus letting the *thread owner* (first non-bot author) run elevated commands in their own thread.
+**Status:** Two-tier admin (env + SQLite `admins` table) shipped — see [thread-commands.md](thread-commands.md#admin-only-commands). Thread-owner branch is still open.
+
+**Problem:** Today admin gating is env + SQLite. The original sketch also let the *thread owner* (first non-bot author) run elevated commands in their own thread.
 
 **Scope (to be refined):**
 - Persist `ownerSlackUserId` on `ThreadSession`, set from the first user message that creates the session. Survives `!reset all`.
-- `isAdmin(userId, session?)` returns true if `userId === envAdmin` OR `userId === session.ownerSlackUserId`.
-- Optional: SQLite `admins` table (`slack_user_id PRIMARY KEY, granted_by, granted_at`) plus `!admin add @user` / `!admin remove @user` / `!admin list`. Env admin is the bootstrap and cannot be removed via the command (they're not in the table).
+- `isAdmin(userId, session?)` returns true if env-match OR DB-match OR `userId === session.ownerSlackUserId`.
+- Slack-command admin management (`!admin add @user` / `!admin remove @user` / `!admin list`) was deliberately scoped out — admins added by direct SQL is the v1 UX. Revisit only if admin churn becomes frequent enough that SQL access is a bottleneck.
 - Decide: do owners get *all* elevated commands, or only a safe subset (e.g. mute/unmute on their own thread but not reset)?
 
 **Open questions:**

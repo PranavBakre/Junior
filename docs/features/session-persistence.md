@@ -40,7 +40,7 @@ Write volume: `updateActivity` and `set` are called on status transitions and tu
 
 ### Schema
 
-One table, one row per thread, the session as a JSON blob:
+One row per thread for `sessions`, plus a small `admins` table colocated in the same DB:
 
 ```sql
 CREATE TABLE sessions (
@@ -51,6 +51,13 @@ CREATE TABLE sessions (
 );
 CREATE INDEX idx_sessions_last_activity ON sessions(last_activity);
 CREATE INDEX idx_sessions_status ON sessions(status);
+
+-- Additional admins beyond the env-var bootstrap. Added by direct SQL.
+-- See thread-commands.md for the gate semantics.
+CREATE TABLE admins (
+  slack_user_id  TEXT PRIMARY KEY,
+  added_at       INTEGER NOT NULL
+);
 ```
 
 - `json` holds the full `ThreadSession` (including ephemeral `pendingMessages` — accepted as stale on restart per rule 11).
@@ -69,6 +76,9 @@ interface SessionStore {
   getAll(): Promise<Map<string, ThreadSession>>;
   getRecent(sinceMs: number): Promise<Map<string, ThreadSession>>;
   updateActivity(threadId): Promise<void>;
+  // Slack user IDs of admins beyond the env-var bootstrap. Memory store
+  // returns empty; sqlite queries the `admins` table on every call.
+  extraAdmins(): Promise<Set<string>>;
 }
 ```
 

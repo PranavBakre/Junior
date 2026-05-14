@@ -37,6 +37,15 @@ export class SqliteSessionStore implements SessionStore {
         FOREIGN KEY (thread_id) REFERENCES sessions(thread_id)
       )
     `);
+    // Extra admins beyond the env-var bootstrap. Added by direct SQL.
+    // isAdmin() reads from this table on each call (no cache), so inserts
+    // take effect on the next command without a restart.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS admins (
+        slack_user_id TEXT PRIMARY KEY,
+        added_at INTEGER NOT NULL
+      )
+    `);
   }
 
   close(): void {
@@ -108,6 +117,15 @@ export class SqliteSessionStore implements SessionStore {
       out.set(row.thread_id, session);
     }
     return out;
+  }
+
+  async extraAdmins(): Promise<Set<string>> {
+    const rows = this.db
+      .query<{ slack_user_id: string }, []>(
+        "SELECT slack_user_id FROM admins",
+      )
+      .all();
+    return new Set(rows.map((r) => r.slack_user_id));
   }
 
   async updateActivity(threadId: string): Promise<void> {

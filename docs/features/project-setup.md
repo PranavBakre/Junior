@@ -65,8 +65,9 @@ interface Config {
     staleTimeoutMs: number; // SESSION_STALE_TIMEOUT_MS (default: 86400000)
     cleanupIntervalMs: number; // SESSION_CLEANUP_INTERVAL_MS (default: 900000)
   };
-  // Single Slack user ID allowed to run !mute, !unmute, !reset.
-  // Unset → gate is open (local dev). Production must set this.
+  // Bootstrap admin Slack user ID. Additional admins live in the `admins`
+  // table in the session DB (added via direct SQL — see thread-commands.md).
+  // Gate is open only when env is unset AND the admins table is empty.
   adminSlackUserId: string | null; // ADMIN_SLACK_USER_ID
   redis?: {
     url: string; // REDIS_URL (optional — in-memory if not set)
