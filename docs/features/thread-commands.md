@@ -26,9 +26,21 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 
 ## Admin-only commands
 
-`!mute`, `!unmute`, and `!reset` are gated behind `ADMIN_SLACK_USER_ID` (single Slack user ID, env-configured). Non-admin invocations are silently rejected with a ❌ reaction on the trigger message — no thread reply, no log noise. When `ADMIN_SLACK_USER_ID` is unset (local dev), the gate is open.
+`!mute`, `!unmute`, and `!reset` are admin-gated. Two tiers:
 
-This is intentionally a single-admin model. The "elevation list lives in SQLite" idea was scoped out for v1 — see [v2-backlog.md](v2-backlog.md).
+1. **Env bootstrap** — `ADMIN_SLACK_USER_ID` names one Slack user ID. This is the bootstrap admin; the system stays bootable on a fresh DB.
+2. **SQLite extras** — the `admins` table in the session DB (`data/sessions.db`) lists additional admins. Added by **direct SQL only** (no Slack command, no CLI script — intentional minimal UX):
+   ```sql
+   INSERT INTO admins (slack_user_id, added_at)
+   VALUES ('U0XXXX', strftime('%s','now') * 1000);
+   ```
+   `isAdmin` reads the table on every check (no cache), so inserts take effect on the next command without a restart.
+
+Permissions are flat — anyone in either tier can run any admin command. Non-admin invocations are silently rejected with a ❌ reaction on the trigger message — no thread reply, no log noise.
+
+**Open-mode** (everyone admitted): only when **both** tiers are empty (env unset AND `admins` table empty). A partial misconfiguration — env unset but DB populated — still rejects unlisted users. This guards against an env-reload misfire silently promoting everyone in prod.
+
+The thread-owner-can-run-elevated-commands idea is still v2 — see [v2-backlog.md](v2-backlog.md).
 
 ## Design Decision: `!` prefix, not Slack slash commands
 
