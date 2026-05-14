@@ -34,6 +34,8 @@ interface TmuxSession {
   transcriptOffset: number;
   /** Live fs watcher for the transcript file (or its parent dir until the file exists). */
   watcher: FSWatcher | null;
+  /** Polling timer for file-discovery (macOS fs.watch misses create events). */
+  pollTimer: ReturnType<typeof setInterval> | null;
   /** Listeners attached to the live SpawnHandle for the current turn, if any. */
   activeTurn: ActiveTurn | null;
   /** Wall-clock cutoff for transcript-file selection — only files mtime >= this match. */
@@ -142,6 +144,7 @@ export class TmuxDriver implements ClaudeDriver {
     const sess = this.sessions.get(key);
     if (!sess) return;
     sess.watcher?.close();
+    if (sess.pollTimer) clearInterval(sess.pollTimer);
     sess.activeTurn = null;
     await this.killTmuxSession(sess.name).catch(() => undefined);
     this.sessions.delete(key);
@@ -181,6 +184,7 @@ export class TmuxDriver implements ClaudeDriver {
       transcriptPath,
       transcriptOffset: 0,
       watcher: null,
+      pollTimer: null,
       activeTurn: null,
       startedAt: Date.now() - 86_400_000, // Adopt anything that already exists.
     };
@@ -212,6 +216,7 @@ export class TmuxDriver implements ClaudeDriver {
     }
     if (existing) {
       existing.watcher?.close();
+      if (existing.pollTimer) clearInterval(existing.pollTimer);
       this.sessions.delete(key);
     }
 
@@ -245,6 +250,7 @@ export class TmuxDriver implements ClaudeDriver {
         : null,
       transcriptOffset: 0,
       watcher: null,
+      pollTimer: null,
       activeTurn: null,
       startedAt,
     };
@@ -289,6 +295,7 @@ export class TmuxDriver implements ClaudeDriver {
 
   private startTranscriptWatch(sess: TmuxSession): void {
     if (sess.watcher) sess.watcher.close();
+    if (sess.pollTimer) clearInterval(sess.pollTimer);
     const dir = join(this.projectsRoot, encodeCwd(sess.cwd));
     mkdirSync(dir, { recursive: true });
     const onChange = () => {
@@ -300,6 +307,21 @@ export class TmuxDriver implements ClaudeDriver {
     // fs.watch fires. On macOS this requires recursive: false (default).
     const watcher = fsWatch(dir, { persistent: false }, onChange);
     sess.watcher = watcher;
+    // fs.watch on macOS misses some create events for files appearing inside
+    // a watched dir. Poll as a fallback until we've located the transcript;
+    // once we have a path, fs.watch handles appends reliably and we stop.
+    let ticks = 0;
+    sess.pollTimer = setInterval(() => {
+      ticks++;
+      onChange();
+      // Stop polling once the transcript is located, or after ~30s.
+      if ((sess.transcriptPath && existsSync(sess.transcriptPath)) || ticks >= 120) {
+        if (sess.pollTimer) {
+          clearInterval(sess.pollTimer);
+          sess.pollTimer = null;
+        }
+      }
+    }, 250);
     // Kick off an initial drain in case events were already on disk.
     onChange();
   }

@@ -214,5 +214,6 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   // landed default to "headless" (the historical behavior).
   session.driverMode ??= "headless";
   session.tmuxSessionName ??= null;
+  session.topLevelTmuxAgent ??= null;
   return session;
 }

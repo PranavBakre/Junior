@@ -31,8 +31,9 @@ export async function evictIdleTmuxSessions(
 
     if (session.tmuxSessionName && now - session.lastActivity > opts.ttlMs) {
       if (opts.skipBusy && session.status === "busy") continue;
+      const topAgent = session.topLevelTmuxAgent ?? "lead";
       try {
-        await driver.close(threadId, "lead");
+        await driver.close(threadId, topAgent);
       } catch (err) {
         log.warn(
           "tmux-evict",
@@ -41,8 +42,9 @@ export async function evictIdleTmuxSessions(
         continue;
       }
       session.tmuxSessionName = null;
+      session.topLevelTmuxAgent = null;
       await store.set(threadId, session);
-      evicted.push(`${threadId}:lead`);
+      evicted.push(`${threadId}:${topAgent}`);
     }
 
     for (const agentSession of Object.values(session.agentSessions ?? {})) {

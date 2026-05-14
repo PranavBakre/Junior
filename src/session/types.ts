@@ -74,6 +74,13 @@ export interface ThreadSession {
   driverMode: DriverMode;
   /** Deterministic tmux session name for the top-level agent. Null until first tmux turn. */
   tmuxSessionName: string | null;
+  /**
+   * Which top-level agent owns the thread's tmux session — "lead" for support
+   * channels, "default" elsewhere. Persisted alongside `tmuxSessionName` so
+   * reconciliation/eviction can address the right (threadId, agentName) key
+   * without guessing. Null until the first tmux turn.
+   */
+  topLevelTmuxAgent: string | null;
 }
 
 export function createSession(
@@ -106,5 +113,6 @@ export function createSession(
     createdAt: Date.now(),
     driverMode,
     tmuxSessionName: null,
+    topLevelTmuxAgent: null,
   };
 }

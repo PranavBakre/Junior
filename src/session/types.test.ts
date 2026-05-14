@@ -123,6 +123,7 @@ describe("createSession", () => {
       "targetRepo",
       "threadId",
       "tmuxSessionName",
+      "topLevelTmuxAgent",
       "verbosity",
       "worktreePath",
       "worktreePaths",
