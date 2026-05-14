@@ -9,6 +9,7 @@ import type { SessionStore } from "./store/interface.ts";
 import type {
   AgentIdentity,
   AgentSession,
+  DriverMode,
   PendingMessage,
   ThreadSession,
 } from "./types.ts";
@@ -16,6 +17,7 @@ import type { AgentRouter } from "../agents/router.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
+import { createDrivers, type DriverMap } from "../claude/factory.ts";
 import { buildDispatchAllowBlock, identityForAgent } from "../support/agents.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
@@ -35,7 +37,7 @@ export class SessionManager {
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
   private seenMessages = new Set<string>();
-  private spawnClaude: SpawnClaudeFn;
+  private drivers: DriverMap;
 
   slackApp?: App;
   botUserId?: string;
@@ -52,10 +54,24 @@ export class SessionManager {
     store: SessionStore,
     config: Config,
     spawnClaude?: SpawnClaudeFn,
+    drivers?: DriverMap,
   ) {
     this.store = store;
     this.config = config;
-    this.spawnClaude = spawnClaude ?? defaultSpawnClaude;
+    // Existing tests pass a fake spawnClaude — wrap it in the headless
+    // driver so the legacy seam keeps working. New callers pass a full
+    // DriverMap instead.
+    this.drivers = drivers ?? createDrivers({ spawnFn: spawnClaude ?? defaultSpawnClaude });
+  }
+
+  /** Public for tests + reconciliation; the manager doesn't expose drivers otherwise. */
+  driverFor(mode: DriverMode | undefined): DriverMap[DriverMode] {
+    return this.drivers[mode ?? "headless"];
+  }
+
+  /** Used by shutdown — let lifecycle code walk tmux sessions without re-importing the driver. */
+  drivers_all(): DriverMap {
+    return this.drivers;
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
@@ -625,14 +641,17 @@ export class SessionManager {
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it
       // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
-      const rawHandle = this.spawnClaude(
-        runSession,
+      const driver = this.driverFor(session.driverMode);
+      const rawHandle = driver.send({
+        session: runSession,
         prompt,
-        this.config.claude,
+        config: this.config.claude,
         targetRepoCwd,
-        this.config.slack.botToken,
+        botToken: this.config.slack.botToken,
         agentIdentity,
-      );
+        threadId: session.threadId,
+        agentName,
+      });
       const handle = withTimeout(
         rawHandle,
         this.config.claude.timeoutMs,
@@ -820,6 +839,7 @@ export class SessionManager {
         event.threadId,
         event.channel,
         this.config.session.defaultVerbosity,
+        this.config.claude.defaultDriver,
       );
       // Apply channel-level default agent type (e.g. #bugs-backlog → lead)
       const channelDefault = this.config.channelDefaults[event.channel];
