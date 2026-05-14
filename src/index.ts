@@ -199,8 +199,12 @@ setInterval(() => {
     log.warn("boot", `Failed to resolve bot identity: ${err}`);
   }
 
-  registerEventHandlers(app, (event) => {
+  registerEventHandlers(app, async (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
+    // Attention gate FIRST: !aside/!listen and auto-dormant short-circuit
+    // before any routing happens. Returns true when the message is consumed
+    // here (do not dispatch).
+    if (await sessionManager.gateAttention(event)) return;
     // Universal dispatch: AgentDispatcher decides whether to dispatch a persistent
     // agent (any channel) or fall through to the single-session manager.
     supportRouter.handleMessage(event);

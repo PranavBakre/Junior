@@ -6,9 +6,10 @@
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `KNOWN_COMMANDS` (private set) | `slack/commands.ts` | `build, frontend, architect, cancel, reset, status, repo, branch, agent, quiet, verbose, normal, help, adhoc, bugs, mute, unmute` |
+| `KNOWN_COMMANDS` (private set) | `slack/commands.ts` | `build, frontend, architect, cancel, reset, status, repo, branch, agent, quiet, verbose, normal, help, adhoc, bugs, mute, unmute, aside, listen` |
 | `parseCommand(text)` | `slack/commands.ts` | Splits `!build fix auth` → `{ command: "build", text: "fix auth" }`. Returns `{ command: null, text }` for unknown or non-`!` input. |
 | `SessionManager.handleCommand(session, event)` | `session/manager.ts` | Dispatches by `event.command`; returns true if the command consumed the message (no Claude spawn), false if it should fall through |
+| `SessionManager.gateAttention(event)` | `session/manager.ts` | Runs before any routing in `index.ts`. Consumes `!aside` and `!listen`, drops everything while `session.dormant`, and fires the one-shot auto-dormant trigger when a second human posts without `@`-mentioning Junior. Returns `true` when the message is consumed. Auto-trigger channels (`channelDefaults[channel]`) are exempt. |
 
 ## Supported Commands
 
@@ -27,6 +28,8 @@
 | `!help` | Posts command reference | No |
 | `!adhoc <text>` / `!bugs <text>` | Calendar item via haiku model + `cwd = /tmp/junior-utility`; accepts `today\|tomorrow` prefix; reshapes `event.text` into a structured GCal task | Yes |
 | `!mute` / `!unmute` | **Admin-gated**. Toggles `session.muted`. Muted sessions discard buffered messages on drain. | No |
+| `!aside [text]` | Consumed in `gateAttention`. Drops the message, reacts 👀, no state change. Anyone. | No |
+| `!listen` | Consumed in `gateAttention`. Clears `session.dormant` (if set), reacts 👂. Sticky `dormantAnnounced` stays — no re-trigger. Anyone. | No |
 
 ## Admin Gating
 

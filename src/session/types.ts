@@ -44,6 +44,25 @@ export interface ThreadSession {
   pendingMessages: PendingMessage[];
   verbosity: SessionVerbosity;
   muted: boolean;
+  /**
+   * Auto-dormant when humans are talking to each other without addressing
+   * Junior. Set by the attention gate; cleared by @mention or `!listen`.
+   * Persists across restarts so a sidebar doesn't auto-resume.
+   */
+  dormant: boolean;
+  /**
+   * Sticky: set once when the attention gate fires its one-shot announcement
+   * for this thread, and never reset. Suppresses re-trigger thrashing after
+   * the human takes manual action (`!listen` / @mention). If they want to
+   * re-silence, that's `!aside` or `!mute`, not another auto-trigger.
+   */
+  dormantAnnounced: boolean;
+  /**
+   * Slack user IDs of humans who have posted in this thread (order of first
+   * post). Bots — Junior, its agents, foreign bots — are never recorded. Used
+   * by the attention gate to detect human-to-human sidebar.
+   */
+  humanParticipants: string[];
   model: string | null;
   cwd: string | null;
   pid: number | null;
@@ -75,6 +94,9 @@ export function createSession(
     pendingMessages: [],
     verbosity: defaultVerbosity,
     muted: false,
+    dormant: false,
+    dormantAnnounced: false,
+    humanParticipants: [],
     model: null,
     cwd: null,
     pid: null,

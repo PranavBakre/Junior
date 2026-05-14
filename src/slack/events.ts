@@ -59,7 +59,11 @@ export interface SlackMessageEvent {
   command: string | null;
   files?: SlackFileAttachment[];
   isSelfBot?: boolean;
+  /** Slack bot_id when the message came from any bot (self or foreign). Absent for human posts. */
+  botId?: string;
   botUsername?: string;
+  /** True when raw Slack text contained `<@selfUserId>` before mention stripping. */
+  mentionsJunior?: boolean;
   dedupeKey?: string;
 }
 
@@ -147,11 +151,17 @@ export function registerEventHandlers(
     const threadId =
       "thread_ts" in event && event.thread_ts ? event.thread_ts : event.ts;
 
+    const mentionsJunior = detectSelfMention(text, selfUserId);
     const cleanText = stripOwnMention(text, selfUserId);
     const parsed = parseCommand(cleanText);
 
     // Extract file attachments if present
     const files = extractFiles(event);
+
+    const botId =
+      "bot_id" in event && typeof (event as { bot_id?: unknown }).bot_id === "string"
+        ? (event as { bot_id: string }).bot_id
+        : undefined;
 
     onMessage({
       threadId,
@@ -162,6 +172,8 @@ export function registerEventHandlers(
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
       isSelfBot: !!isSelfBot,
+      botId,
+      mentionsJunior,
       botUsername:
         typeof (event as { username?: unknown }).username === "string"
           ? (event as { username: string }).username
@@ -182,6 +194,11 @@ export function registerEventHandlers(
 
     const threadId = event.thread_ts ?? event.ts;
 
+    // app_mention always implies mentionsJunior=true — Slack only fires this
+    // event when the bot's user ID is mentioned. Set the flag explicitly so
+    // the attention gate's wake-on-mention path works uniformly across both
+    // event sources.
+    const mentionsJunior = true;
     const cleanText = stripOwnMention(event.text, selfUserId);
     const parsed = parseCommand(cleanText);
 
@@ -196,8 +213,14 @@ export function registerEventHandlers(
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
+      mentionsJunior,
     });
   });
+}
+
+function detectSelfMention(text: string, selfUserId?: string): boolean {
+  if (!selfUserId) return false;
+  return text.includes(`<@${selfUserId}>`);
 }
 
 function stripOwnMention(text: string, selfUserId?: string): string {
