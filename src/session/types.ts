@@ -61,6 +61,13 @@ export interface ThreadSession {
    * Slack user IDs of humans who have posted in this thread (order of first
    * post). Bots — Junior, its agents, foreign bots — are never recorded. Used
    * by the attention gate to detect human-to-human sidebar.
+   *
+   * The gate only needs "is there any other human besides the current
+   * sender?" — an `O(1)` boolean would do the same work with bounded storage.
+   * The array carries names because (a) it's observable in `!status`, useful
+   * for debugging false triggers; (b) bounded in practice by channel
+   * membership; (c) leaves room for future per-user policy (e.g. wake only
+   * for the thread opener) without a data-shape migration.
    */
   humanParticipants: string[];
   model: string | null;

@@ -83,8 +83,20 @@ export class SessionManager {
    * input there, not a sidebar.
    */
   async gateAttention(event: SlackMessageEvent): Promise<boolean> {
-    // !aside: drop the message, no state change. Anyone in the thread.
+    // !aside: drop the message but still record the sender as a participant —
+    // they're a human in the room even if this message isn't for Junior. The
+    // alternative (skip tracking) creates a corner where U-B posts only
+    // asides, then a real non-mention message, and the gate fails to fire
+    // because U-B was never registered as present.
     if (event.command === "aside") {
+      const isHuman = !event.isSelfBot && !event.botId;
+      if (isHuman && event.user) {
+        const session = await this.store.get(event.threadId);
+        if (session && !session.humanParticipants.includes(event.user)) {
+          session.humanParticipants.push(event.user);
+          await this.store.set(event.threadId, session);
+        }
+      }
       this.onReaction?.(event, "eyes");
       return true;
     }
