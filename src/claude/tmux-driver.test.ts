@@ -31,6 +31,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     createdAt: Date.now(),
     driverMode: "tmux",
     tmuxSessionName: null,
+    topLevelTmuxAgent: null,
     ...overrides,
   };
 }

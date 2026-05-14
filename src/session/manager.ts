@@ -717,6 +717,7 @@ export class SessionManager {
         const tmuxName = tmuxSessionNameFor(session.threadId, agentName);
         if (isTopLevel) {
           session.tmuxSessionName = tmuxName;
+          session.topLevelTmuxAgent = agentName;
         } else if (agentSession) {
           agentSession.tmuxSessionName = tmuxName;
         }
