@@ -205,6 +205,17 @@ export function registerEventHandlers(
     // Extract file attachments if present
     const files = extractFiles(event);
 
+    // Must mirror the `message` handler's bot-flag extraction. The attention
+    // gate classifies humans vs bots from `botId` / `isSelfBot`; if a foreign
+    // bot @-mentions Junior, the event arrives here, and without these flags
+    // the bot's user_id would be added to `humanParticipants` as if it were a
+    // human — falsely arming the sidebar trigger.
+    const botId =
+      "bot_id" in event && typeof (event as { bot_id?: unknown }).bot_id === "string"
+        ? (event as { bot_id: string }).bot_id
+        : undefined;
+    const isSelfBot = !!(botId && selfBotId && botId === selfBotId);
+
     onMessage({
       threadId,
       channel: event.channel,
@@ -213,6 +224,8 @@ export function registerEventHandlers(
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
+      isSelfBot,
+      botId,
       mentionsJunior,
     });
   });

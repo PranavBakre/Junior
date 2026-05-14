@@ -959,6 +959,43 @@ describe("SessionManager", () => {
       expect(after.dormant).toBe(false);
     });
 
+    it("does not add foreign bots to humanParticipants even on @mention", async () => {
+      // Mimic the app_mention path: mentionsJunior=true, botId set, isSelfBot=false.
+      // Without symmetric flag population in the app_mention handler, this
+      // event would slip through as a human and pollute participants.
+      await manager.gateAttention(
+        makeEvent({
+          user: "B-FOREIGN",
+          botId: "B999",
+          isSelfBot: false,
+          mentionsJunior: true,
+          text: "ci ping",
+          ts: "ts-bot-mention",
+        }),
+      );
+      // gateAttention may fall through (the message would route normally),
+      // but participant tracking lives in getOrCreateSession — call it via
+      // the routed path to confirm the bot is filtered out there too.
+      await manager.handleMessage(
+        makeEvent({
+          user: "B-FOREIGN",
+          botId: "B999",
+          isSelfBot: false,
+          mentionsJunior: true,
+          text: "ci ping",
+          ts: "ts-bot-route",
+        }),
+      );
+      currentHandle._complete("ack");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const after = await store.get("thread-1");
+      // Session may or may not exist depending on whether the bot's message
+      // reached getOrCreateSession; the contract is just "B-FOREIGN is not
+      // in humanParticipants regardless."
+      expect(after?.humanParticipants ?? []).not.toContain("B-FOREIGN");
+    });
+
     it("does not count Junior or foreign bots as humans for the trigger", async () => {
       // Self-bot post → shouldn't add to participants
       await manager.handleMessage(
