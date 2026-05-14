@@ -484,6 +484,41 @@ describe("SessionManager", () => {
         expect(onReaction).not.toHaveBeenCalled();
         expect((await store.get("thread-1"))!.muted).toBe(true);
       });
+
+      it("admin listed in store.extraAdmins() is admitted", async () => {
+        store.extraAdmins = async () => new Set(["U-DB-ADMIN"]);
+        const adminManager = new SessionManager(store, adminConfig);
+        const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
+        adminManager.onReaction = onReaction;
+        await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+
+        await adminManager.handleMessage(
+          makeEvent({ user: "U-DB-ADMIN", command: "mute", text: "", ts: "ts-mute" }),
+        );
+
+        expect(onReaction).not.toHaveBeenCalled();
+        expect((await store.get("thread-1"))!.muted).toBe(true);
+      });
+
+      it("env unset but DB has admins → gate is CLOSED (not open-mode)", async () => {
+        // Regression test: a missing ADMIN_SLACK_USER_ID must NOT silently
+        // promote everyone when the admins table is populated. Open-mode
+        // only kicks in when neither tier is configured.
+        store.extraAdmins = async () => new Set(["U-DB-ADMIN"]);
+        const openConfig: Config = { ...testConfig, adminSlackUserId: null };
+        const adminManager = new SessionManager(store, openConfig);
+        const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
+        adminManager.onReaction = onReaction;
+        await adminManager.handleMessage(makeEvent({ user: "U-DB-ADMIN", text: "go" }));
+
+        await adminManager.handleMessage(
+          makeEvent({ user: "U-RANDOM", command: "mute", text: "", ts: "ts-mute" }),
+        );
+
+        expect(onReaction).toHaveBeenCalledTimes(1);
+        expect(onReaction.mock.calls[0][1]).toBe("x");
+        expect((await store.get("thread-1"))!.muted).toBe(false);
+      });
     });
   });
 
