@@ -18,6 +18,7 @@ import type { WorktreeManager } from "../worktree/manager.ts";
 import { createSession } from "./types.ts";
 import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
 import { createDrivers, type DriverMap } from "../claude/factory.ts";
+import { tmuxSessionNameFor } from "../claude/tmux-driver.ts";
 import { buildDispatchAllowBlock, identityForAgent } from "../support/agents.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
@@ -171,6 +172,16 @@ export class SessionManager {
         if (!key.startsWith(`${threadId}:`)) continue;
         handle.kill();
         this.handles.delete(key);
+      }
+      // Tear down any tmux state for this thread before deleting the row.
+      // The row is the only place we track tmuxSessionName, so close drivers
+      // first or we leak detached tmux sessions.
+      if (session.driverMode === "tmux") {
+        const tmux = this.driverFor("tmux");
+        await tmux.close(threadId, "lead").catch(() => undefined);
+        for (const agentSession of Object.values(session.agentSessions ?? {})) {
+          await tmux.close(threadId, agentSession.agentName).catch(() => undefined);
+        }
       }
     }
     await this.store.delete(threadId);
@@ -333,6 +344,8 @@ export class SessionManager {
           "`!bugs <text>` — Add bug item to calendar",
           "`!mute` — Stop responding until !unmute (admin only)",
           "`!unmute` — Resume responding (admin only)",
+          "`!stop` — Interrupt in-flight turn; keep session alive (tmux: Escape; headless: kill)",
+          "`!driver <headless|tmux>` — Switch this thread's Claude driver (admin only)",
           "`!help` — Show this help",
         ].join("\n");
         this.onCommandResponse?.(event, helpText);
@@ -453,6 +466,61 @@ export class SessionManager {
           `4. Reply with a one-line confirmation.`,
         ].join("\n");
         return false;
+      }
+
+      case "stop": {
+        // Halt the in-flight turn WITHOUT killing the driver session.
+        // Headless: kill the process (same as !cancel for one slot).
+        // Tmux: send Escape to the TUI — the persistent claude stays alive,
+        // input box clears, next message starts fresh.
+        const driver = this.driverFor(session.driverMode);
+        let touched = 0;
+        for (const [key, handle] of this.handles) {
+          if (!key.startsWith(`${session.threadId}:`)) continue;
+          const agentName = key.slice(session.threadId.length + 1);
+          await driver.interrupt(session.threadId, agentName).catch(() => undefined);
+          handle.kill();
+          this.handles.delete(key);
+          touched++;
+        }
+        session.status = "idle";
+        for (const agentSession of Object.values(session.agentSessions ?? {})) {
+          if (agentSession.status === "busy") agentSession.status = "idle";
+        }
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(
+          event,
+          touched === 0 ? "Nothing running." : `Interrupted (${touched} agent${touched === 1 ? "" : "s"}). Send a new message to continue.`,
+        );
+        return true;
+      }
+
+      case "driver": {
+        if (await this.denyIfNotAdmin(event)) return true;
+        const arg = event.text.trim().toLowerCase();
+        if (arg !== "headless" && arg !== "tmux") {
+          this.onCommandResponse?.(
+            event,
+            `Usage: \`!driver headless\` or \`!driver tmux\`. Current: *${session.driverMode}*.`,
+          );
+          return true;
+        }
+        if (session.driverMode === arg) {
+          this.onCommandResponse?.(event, `Already on *${arg}*.`);
+          return true;
+        }
+        // Tear down the outgoing driver's per-(thread,agent) state.
+        const outgoing = this.driverFor(session.driverMode);
+        for (const key of this.handles.keys()) {
+          if (!key.startsWith(`${session.threadId}:`)) continue;
+          const agentName = key.slice(session.threadId.length + 1);
+          await outgoing.close(session.threadId, agentName).catch(() => undefined);
+        }
+        session.driverMode = arg;
+        if (arg !== "tmux") session.tmuxSessionName = null;
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, `Driver set to *${arg}*. Next message starts on the new path.`);
+        return true;
       }
 
       case "mute": {
@@ -642,6 +710,18 @@ export class SessionManager {
       // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
       const driver = this.driverFor(session.driverMode);
+      // For tmux, persist the deterministic session name BEFORE first send so
+      // a crash mid-send leaves a recoverable trail. The driver computes the
+      // same name; storing it here lets reconciliation find it later.
+      if (session.driverMode === "tmux") {
+        const tmuxName = tmuxSessionNameFor(session.threadId, agentName);
+        if (isTopLevel) {
+          session.tmuxSessionName = tmuxName;
+        } else if (agentSession) {
+          agentSession.tmuxSessionName = tmuxName;
+        }
+        await this.store.set(session.threadId, session);
+      }
       const rawHandle = driver.send({
         session: runSession,
         prompt,
