@@ -109,6 +109,9 @@ describe("createSession", () => {
       "channel",
       "createdAt",
       "cwd",
+      "dormant",
+      "dormantAnnounced",
+      "humanParticipants",
       "lastActivity",
       "lastError",
       "leadSessionId",
@@ -125,5 +128,20 @@ describe("createSession", () => {
       "worktreePath",
       "worktreePaths",
     ]);
+  });
+
+  it("has dormant set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.dormant).toBe(false);
+  });
+
+  it("has dormantAnnounced set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.dormantAnnounced).toBe(false);
+  });
+
+  it("has humanParticipants as empty array by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.humanParticipants).toEqual([]);
   });
 });

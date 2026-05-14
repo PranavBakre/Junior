@@ -22,6 +22,8 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 - `!quiet` / `!normal` / `!verbose` — Set verbosity
 - `!mute` — Stop seeing or replying to any messages until `!unmute` (admin only)
 - `!unmute` — Resume normal operation (admin only)
+- `!aside [text]` — Drop just this message; everything else in the thread continues as normal. For human-to-human sidebar without leaving the thread.
+- `!listen` — Wake Junior back up from auto-dormant mode. Anyone in the thread can use it.
 - `!help` — List available commands
 
 ## Admin-only commands
@@ -109,6 +111,38 @@ The two most critical control commands.
 
 **Test:** `!repo example-frontend` then `!build fix styles` → worktree in example-frontend. `!branch staging` → next worktree branches from staging. `!repo nonexistent` → "Available repos: example-backend, example-frontend."
 **Defers:** !help, verbosity.
+
+### Iteration 4: !aside, auto-dormant, !listen (~45 min)
+
+The problem this solves: a thread that started with Junior often turns into a human-to-human conversation that Junior keeps replying to because the routing is still active. `!mute` exists but is admin-only and overkill — it silences the bot everywhere. We need a thread-local, anyone-can-use control surface for attention.
+
+**The signal that matters is "addressed to me", not "number of participants".** Counting humans is a tempting proxy but misfires both ways. The real trigger is whether the current message continues Junior's conversation or starts a sidebar between humans. See [learnings.md](../../learnings.md) — same principle generalises to any bot in a shared channel.
+
+**What it adds:**
+
+- `!aside [text]` — drop the current message before it reaches any agent. React with 👀 so the user knows it landed; do not spawn Claude. Anyone in the thread. Cheap, no state change.
+
+- **Auto-dormant trigger** — when a human posts a message that does NOT @mention Junior AND at least one other human has already posted in the thread, set `session.dormant = true`, post a single notice to the thread:
+  > Looks like a side conversation. I'll stay out — `@` me or `!listen` to bring me back.
+
+  After that, drop every message in the thread except:
+    - `!listen` (wake)
+    - `!aside` (still works — it's a no-op anyway)
+    - any message that @mentions Junior (wake)
+
+  Track `humanParticipants: string[]` on the session — append on every human message (not Junior, not its agents, not other bots). Decision rule: if the set already contains a user other than the current sender AND the current message doesn't @mention Junior → go dormant.
+
+- `!listen` — set `session.dormant = false`, react with 👂 (or post a short ack). Anyone in the thread.
+
+- **Bot identity rule** — Junior and its agents (lead, reproducer, thinker, scotty, uhura, bones, etc.) share the same Slack `bot_id` and are never participants. Other bots (Friday, Doraemon, CI webhooks, foreign assistants) are not counted either — they're not conversation partners.
+
+**Persistence:** `dormant: boolean` and `humanParticipants: string[]` are columns on the `sessions` table in SQLite. Survives restart so a dormant thread doesn't auto-resume on bot bounce.
+
+**Wake by @mention:** `app_mention` events always wake the thread before routing. The mention itself is the explicit "I'm talking to you again" signal.
+
+**Test:** Thread with one human + Junior — chats freely, never goes dormant. Second human joins and @mentions Junior — wakes (no-op, wasn't dormant). Second human posts without mention while first human is also present — dormant, notice posted once. Subsequent messages dropped silently. `!listen` from either human — wakes, next message routes normally. `!aside fyi I have to step out` — dropped, 👀 reaction, thread state unchanged.
+
+**Defers:** Per-user wake (only the thread owner can `!listen`), time-based auto-wake, configurable trigger threshold.
 
 ### Iteration 3: !quiet, !verbose, !normal, !help (~15 min)
 

@@ -771,4 +771,216 @@ describe("SessionManager", () => {
     const session = await manager.getSession("unknown");
     expect(session).toBeUndefined();
   });
+
+  // --- gateAttention ---
+
+  describe("gateAttention", () => {
+    it("!aside drops the message and reacts 👀", async () => {
+      const reactions: Array<{ ts: string; emoji: string }> = [];
+      manager.onReaction = (e, emoji) => reactions.push({ ts: e.ts, emoji });
+
+      const drop = await manager.gateAttention(
+        makeEvent({ command: "aside", text: "side comment", ts: "ts-aside" }),
+      );
+      expect(drop).toBe(true);
+      expect(reactions).toEqual([{ ts: "ts-aside", emoji: "eyes" }]);
+      // No session created, no state mutated
+      expect(await store.get("thread-1")).toBeUndefined();
+    });
+
+    it("!listen clears dormant and reacts 👂", async () => {
+      // Seed dormant session
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      const seeded = (await store.get("thread-1"))!;
+      seeded.dormant = true;
+      seeded.dormantAnnounced = true;
+      await store.set("thread-1", seeded);
+
+      const reactions: string[] = [];
+      manager.onReaction = (_e, emoji) => reactions.push(emoji);
+
+      const drop = await manager.gateAttention(
+        makeEvent({ command: "listen", user: "U-A", ts: "ts-listen" }),
+      );
+      expect(drop).toBe(true);
+      expect(reactions).toEqual(["ear"]);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+      // sticky flag stays — re-trigger is suppressed for life of thread
+      expect(after.dormantAnnounced).toBe(true);
+    });
+
+    it("@mention wakes dormant and falls through to routing", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      const seeded = (await store.get("thread-1"))!;
+      seeded.dormant = true;
+      seeded.dormantAnnounced = true;
+      await store.set("thread-1", seeded);
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-A", mentionsJunior: true, ts: "ts-mention" }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("drops everything while dormant if not waking", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      const seeded = (await store.get("thread-1"))!;
+      seeded.dormant = true;
+      seeded.dormantAnnounced = true;
+      await store.set("thread-1", seeded);
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-A", text: "hello", ts: "ts-drop" }),
+      );
+      expect(drop).toBe(true);
+    });
+
+    it("triggers dormancy when a second human posts without @mention", async () => {
+      // U-A starts the thread (creates session, adds to participants)
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const responses: string[] = [];
+      manager.onCommandResponse = (_e, r) => responses.push(r);
+
+      // U-B posts without @mention — sidebar trigger
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "lol", ts: "ts-trigger" }),
+      );
+      expect(drop).toBe(true);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(true);
+      expect(after.dormantAnnounced).toBe(true);
+      expect(after.humanParticipants).toContain("U-A");
+      expect(after.humanParticipants).toContain("U-B");
+      expect(responses.length).toBe(1);
+      expect(responses[0]).toContain("side conversation");
+    });
+
+    it("does not trigger when there is only one human participant", async () => {
+      // U-A starts — only A in participants
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-A", text: "follow-up", ts: "ts-followup" }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("does not trigger when the second human @mentions Junior", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const drop = await manager.gateAttention(
+        makeEvent({
+          user: "U-B",
+          mentionsJunior: true,
+          text: "addressing junior",
+          ts: "ts-mention2",
+        }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("does not re-trigger after manual !listen (sticky dormantAnnounced)", async () => {
+      // A and B in thread, trigger fired, then !listen
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "lol", ts: "ts-trigger" }),
+      );
+      await manager.gateAttention(
+        makeEvent({ command: "listen", user: "U-A", ts: "ts-listen" }),
+      );
+
+      const responses: string[] = [];
+      manager.onCommandResponse = (_e, r) => responses.push(r);
+
+      // Another non-mention post — should NOT re-trigger
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "more chat", ts: "ts-more" }),
+      );
+      expect(drop).toBe(false);
+      expect(responses.length).toBe(0);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("exempts auto-trigger channels — sidebar trigger never fires there", async () => {
+      // Build a manager whose config marks this channel as auto-trigger
+      const autoStore = new InMemorySessionStore();
+      const autoConfig: Config = {
+        ...testConfig,
+        channelDefaults: {
+          "C-BUGS": { agentType: "lead" },
+        },
+      };
+      const autoManager = new SessionManager(autoStore, autoConfig);
+
+      // Seed a session with one human already, in the auto-trigger channel
+      await autoManager.handleMessage(
+        makeEvent({ user: "U-A", channel: "C-BUGS" }),
+      );
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const responses: string[] = [];
+      autoManager.onCommandResponse = (_e, r) => responses.push(r);
+
+      const drop = await autoManager.gateAttention(
+        makeEvent({
+          user: "U-B",
+          channel: "C-BUGS",
+          text: "another bug",
+          ts: "ts-bugs",
+        }),
+      );
+      expect(drop).toBe(false);
+      expect(responses.length).toBe(0);
+      const after = (await autoStore.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("does not count Junior or foreign bots as humans for the trigger", async () => {
+      // Self-bot post → shouldn't add to participants
+      await manager.handleMessage(
+        makeEvent({ user: "U-A" }),
+      );
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      // Foreign bot post — shouldn't make trigger fire even though it's a
+      // different user, because bots aren't counted.
+      const drop = await manager.gateAttention(
+        makeEvent({
+          user: "B-FOREIGN",
+          botId: "B999",
+          text: "ci passed",
+          ts: "ts-bot",
+        }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+      expect(after.humanParticipants).toEqual(["U-A"]);
+    });
+  });
 });
