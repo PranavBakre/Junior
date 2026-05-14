@@ -20,6 +20,7 @@ Junior's session state lives in an in-memory `Map`. On restart — whether a cra
 ## Dependencies
 
 - Session Management ([session-management.md](session-management.md)) — owns the `ThreadSession` shape this persists.
+- Persistent Agents ([persistent-agents.md](persistent-agents.md)) — owns the `AgentSession` rows in `agent_sessions`.
 - Home Tab rendering ([slack/home.ts]) — consumes the windowed query.
 
 ## Design
@@ -40,7 +41,7 @@ Write volume: `updateActivity` and `set` are called on status transitions and tu
 
 ### Schema
 
-One row per thread for `sessions`, plus a small `admins` table colocated in the same DB:
+Three tables colocated in the same DB:
 
 ```sql
 CREATE TABLE sessions (
@@ -52,6 +53,20 @@ CREATE TABLE sessions (
 CREATE INDEX idx_sessions_last_activity ON sessions(last_activity);
 CREATE INDEX idx_sessions_status ON sessions(status);
 
+-- Per-agent rows for the persistent-agent substrate. One row per
+-- (thread_id, agent_name) — e.g. lead, reproducer, thinker on a bug
+-- pipeline thread. The parent ThreadSession's `agentSessions` map is
+-- rebuilt from these rows on load.
+CREATE TABLE agent_sessions (
+  thread_id      TEXT NOT NULL,
+  agent_name     TEXT NOT NULL,
+  session_id     TEXT,
+  status         TEXT DEFAULT 'idle',
+  last_activity  INTEGER,
+  PRIMARY KEY (thread_id, agent_name),
+  FOREIGN KEY (thread_id) REFERENCES sessions(thread_id)
+);
+
 -- Additional admins beyond the env-var bootstrap. Added by direct SQL.
 -- See thread-commands.md for the gate semantics.
 CREATE TABLE admins (
@@ -60,9 +75,10 @@ CREATE TABLE admins (
 );
 ```
 
-- `json` holds the full `ThreadSession` (including ephemeral `pendingMessages` — accepted as stale on restart per rule 11).
-- `last_activity` and `status` are denormalized columns for cheap queries (home window, orphan scan).
-- No migrations framework for MVP. Any schema change either: 1) adds a nullable column and backfills on read, or 2) nukes the db on a major bump.
+- `sessions.json` holds the full `ThreadSession` — including `muted`, `worktreePaths` (per-repo worktrees keyed by repo name), `defaultAgent` (the `!agent` override), and ephemeral `pendingMessages` (accepted as stale on restart per rule 11).
+- `last_activity` and `status` on `sessions` are denormalized for cheap queries (home window, orphan scan).
+- `agent_sessions` is the source of truth for each agent's `sessionId`, `status`, and `lastActivity`. `set()` resyncs the rows in a transaction; `get()`/`getAll()`/`getRecent()` reload them and overlay the JSON blob's `agentSessions` map (preserving in-memory-only fields `pendingMessages` and `pid`).
+- Migration story: schema is additive. `CREATE TABLE IF NOT EXISTS` brings up new tables on existing DBs. Field-level additions to `ThreadSession` are backfilled on read by `normalizeSession` (currently `leadSessionId`, `agentSessions`, `worktreePaths`, `muted`). Breaking changes nuke the db.
 
 PRAGMAs: `journal_mode=WAL`, `synchronous=NORMAL`. Standard for a single-writer SQLite embedded in a Bun server.
 

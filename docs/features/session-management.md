@@ -2,154 +2,91 @@
 
 ## Problem
 
-Each Slack thread needs its own Claude Code session — its own conversation history, its own working directory, its own status. When multiple messages arrive in the same thread, the bot needs to know whether Claude is busy (buffer the message) or idle (spawn a new turn). When Claude finishes, buffered messages get drained as a combined prompt.
+Each Slack thread is one `ThreadSession`, but a single thread can run several persistent agents concurrently (lead, reproducer, thinker, build, reviewer, …). The manager owns:
 
-**Who has this problem:** The bot server — it's the bridge between Slack events and Claude Code processes.
-**What happens today:** Nothing — core feature, no predecessor.
-**Painful part:** Concurrency. Two messages arrive 500ms apart. The first spawns Claude, the second must be buffered — not spawn a second process. Race conditions between "Claude just exited" and "drain buffer" must be airtight.
-**"Finally" moment:** Users send multiple messages while Claude works, get one coherent response addressing everything.
+- Per-thread lookup and creation
+- Per-agent run state, sessionId, pending buffer, pid
+- Buffer-on-busy / drain-on-exit semantics, applied independently per agent
+- Slash-command handling (see [thread-commands.md](thread-commands.md))
+- Spawn orchestration (see [claude-spawner.md](claude-spawner.md)) and event fan-out (see [stream-to-slack.md](stream-to-slack.md))
 
-## Full Vision
-
-- Session per thread: `Map<threadId, ThreadSession>`
-- Session states: `idle` → `busy` → `draining` → `idle`
-- Buffer messages when busy, acknowledge with eyes reaction
-- Drain buffer as combined prompt on process exit
-- Track session IDs for `--resume` continuity
-- Track worktree paths per session (for code-editing threads)
-- Track agent type per session (which `.claude/agents/` definition to use)
-- Stale session cleanup (24h timeout, warn on uncommitted changes)
-- Persistence: in-memory MVP, Redis adapter for production
-
-## Dependencies
-
-- Slack Event Handler (feature: [slack-event-handler.md](slack-event-handler.md)) — produces events
-- Claude CLI Spawner (feature: [claude-spawner.md](claude-spawner.md)) — consumes prompts, returns responses
-
-## Data Model
-
-```typescript
-interface ThreadSession {
-  threadId: string;
-  channel: string;
-  sessionId: string | null; // Claude Code session ID, null until first response
-  worktreePath: string | null; // null for non-code threads
-  targetRepo: string | null; // which repo this thread works on
-  agentType: string | null; // which .claude/agents/ definition to use
-  status: "idle" | "busy" | "draining";
-  pendingMessages: Array<{
-    user: string;
-    text: string;
-    ts: string;
-    command?: string;
-  }>;
-  lastActivity: number; // Date.now()
-  createdAt: number;
-}
-```
-
-## State Machine
+## Shape
 
 ```
-                  new message
-    ┌──────────┐ ──────────► ┌──────────┐
-    │   idle   │             │   busy   │ ◄── messages buffered here
-    └──────────┘ ◄────────── └──────────┘
-         ▲       no pending       │
-         │                        │ process exits + has pending
-         │                   ┌────▼─────┐
-         └───────────────────│ draining │ ── spawns new process with combined buffer
-                             └──────────┘
+ThreadSession                                 // one row per thread
+├── sessionId / leadSessionId                 // top-level (lead | default Junior)
+├── pendingMessages / status / pid            // top-level buffer + state machine
+├── agentSessions: Record<name, AgentSession> // every other persistent agent
+│     └── { sessionId, status, pendingMessages, pid, lastActivity }
+├── worktreePath / worktreePaths              // single vs. multi-repo (bug pipeline)
+├── targetRepo / baseRef
+├── agentType / defaultAgent                  // !build/!review/... and !agent override
+├── verbosity / muted / model / cwd
+└── lastError / lastActivity / createdAt
 ```
 
-Transitions:
-- `idle` → `busy`: New message arrives, spawn Claude process
-- `busy` + message: Buffer it, react with eyes
-- `busy` → `idle`: Process exits, no pending messages
-- `busy` → `draining`: Process exits, pending messages exist
-- `draining` → `busy`: Combined prompt spawned
-- `draining` → `idle`: Should not happen (draining always spawns)
+`AgentSession.status`: `idle | busy | done | failed`.
+`ThreadSession.status` (top-level only): `idle | busy | draining`.
 
-## Iterations
+See [persistent-agents.md](persistent-agents.md) for the agent substrate, [agent-routing.md](agent-routing.md) for how agent names resolve to definitions.
 
-### Iteration 0: Single-session proof (~20 min)
+## Routing
 
-Prove session lookup and status tracking works. No real Claude — mock spawner that echoes back after 2s delay.
+- `handleMessage` → top-level run with `agentName = "default"`
+- `handleLeadMessage` → top-level run with `agentName = "lead"` (shares `leadSessionId`)
+- `handleAgentMessage(name)` → per-agent run via `agentSessions[name]`; `"lead"`/`"default"` are short-circuited back to the top-level path
 
-**What it adds:** Session Map, `handleMessage()` that creates or looks up session, sets status to busy, calls mock spawner, sets status to idle on callback.
-**Test:** Send message → session created, status busy. Wait 2s → status idle, response posted. Send second message → same session reused (sessionId preserved).
-**Defers:** Buffering, draining, real Claude spawner, worktrees, persistence.
+Top-level (`lead` / `default`) uses `session.sessionId` + `session.pendingMessages`. Workers use their `AgentSession` slice. Dedupe is per `(ts, agentName)` for workers, per `ts` for top-level.
 
-### Iteration 1: Buffer and drain (~1h)
+## State Machine (per agent)
 
-The core concurrency feature. Messages that arrive while Claude is busy get batched into the next turn.
+```
+              new message
+   ┌───────┐ ───────────► ┌──────┐
+   │ idle  │              │ busy │ ◄── messages buffered here
+   └───────┘ ◄─────────── └──────┘
+       ▲   no pending        │
+       │                     │ process exits
+       │                ┌────▼──────┐
+       └────────────────│ draining* │
+                        └───────────┘
+*top-level only; workers re-enter busy directly with the combined prompt.
+Worker terminal states: done (clean) | failed (spawn/setup error).
+```
 
-**What it adds:**
-- Buffer messages when `status === "busy"`
-- React with eyes emoji on buffered messages
-- On process exit: check `pendingMessages.length`
-  - If 0 → set idle
-  - If >0 → set draining, combine as `[user]: text` format, spawn new turn
-- Attribution in combined prompt: `"Multiple messages arrived:\n[alice]: fix the tests\n[bob]: also check the linting"`
+- New message + idle → mark busy, spawn, persist.
+- New message + busy → push to that agent's `pendingMessages`, fire `onMessageBuffered`, persist.
+- On exit: refetch session (long-running agents go stale; concurrent agents may have written), drain that agent's buffer as `"[user]: text"` lines, or settle to terminal state. If the thread was muted mid-turn, discard the buffer.
+- `!cancel` kills every handle keyed under the thread and zeroes all buffers/pids.
+- `!reset <agent>` kills only that agent's handle and clears its slice; `!reset all` deletes the row. Run completions check ownership of `handles[threadId:agentName]` before writing — a discarded run never clobbers state or posts to Slack.
 
-**Test:** Send message A (spawns Claude). While busy, send message B and C. B and C get eyes reaction. When A finishes, B+C are combined and sent as one prompt. Response addresses both.
-**Defers:** Real Claude spawner, worktrees, cleanup, persistence.
+## Spawn Composition
 
-### Iteration 2: Agent type and worktree tracking (~30 min)
+For every run the manager:
 
-Sessions track which agent type and worktree to use.
+1. Creates a worktree if `targetRepo` is set and one doesn't exist (always, not just for `build`/`frontend`). Failure clears `targetRepo` for the run so cwd never lands in the shared origin repo.
+2. Resolves the agent definition to pick a context profile (see [agent-routing.md](agent-routing.md)).
+3. Builds the prompt: full preamble (workspace, thread context, persistent-agent state, image paths) on the first turn; on resumed turns only the workspace block, gated by the agent's context profile. `--resume` carries identity/history.
+4. Composes the system prompt: agent definition + per-agent Slack identity (`username`, `icon_emoji`, attribution suffix) + dispatch allow-list (which `!<agent>` directives this agent may emit).
+5. Spawns via `claude/spawner.ts`, stores the handle under `threadId:agentName`, wires `onEvent` → status pills / streaming, `result.then` → `onRunComplete`.
 
-**What it adds:**
-- `agentType` field set from slash command (`!build` → `"build"`, `!review` → `"review"`)
-- `targetRepo` field (default from config, overridable per thread)
-- `worktreePath` field — null initially, set when worktree manager creates one
-- Agent type persists across turns — set once, used for all subsequent `--resume` calls
-- Can be changed mid-thread with `!build` or `!review` command
+## Persistence
 
-**Test:** `!build fix auth` → session has `agentType: "build"`. Next message in same thread → still uses build agent. `!review` in same thread → switches to review agent.
-**Defers:** Actual worktree creation (that's worktree manager's job), MCP config.
+`SessionStore` interface (`src/session/store/interface.ts`): `get`, `set`, `delete`, `getAll`, `getRecent(sinceMs)`, `updateActivity`, `extraAdmins`. Two implementations:
 
-### Iteration 3: Stale cleanup (~30 min)
+- `InMemorySessionStore` — tests / `SESSION_STORE=memory`
+- `SqliteSessionStore` — production (`bun:sqlite`, `data/sessions.db`, override via `SESSION_DB_PATH`)
 
-Clean up sessions that haven't been active in a while.
+Factory in `store/factory.ts`. Pending messages are persisted but stale on restart — the Claude process they were queued behind is dead.
 
-**What it adds:**
-- `lastActivity` updated on every message
-- Background interval (every 15 min) scans all sessions
-- Sessions inactive for >24h with no worktree or clean worktree → removed
-- Sessions inactive for >24h with dirty worktree → post warning to Slack thread, give 1h grace period, then force remove
-- Configurable timeout via env var
+Admins: bootstrap one in `ADMIN_SLACK_USER_ID`; the rest live in the `admins` SQLite table and surface via `extraAdmins()`. Open mode (everyone admin) only when both tiers are empty.
 
-**Test:** Create session, don't interact for >24h (or set timeout to 10s for testing). Session gets cleaned up. With dirty worktree → warning posted first.
-**Defers:** Redis persistence, graceful shutdown.
+## Observability
 
-### Iteration 4: Persistence adapter (~1h)
+- Per-agent status pills stream via `onEvent` (see [stream-to-slack.md](stream-to-slack.md)).
+- HTTP dashboard reads `getRecent` and surfaces `defaultAgent` + `agentSessions`.
+- `!status` prints status, muted, agentType, defaultAgent, repo, worktree, last activity, pending count.
 
-Replace in-memory Map with a persistence interface. In-memory stays as default; Redis added as production option.
+## Cleanup
 
-**What it adds:**
-- `SessionStore` interface: `get(threadId)`, `set(threadId, session)`, `delete(threadId)`, `getAll()`, `updateActivity(threadId)`
-- `InMemorySessionStore` implements it (wraps the existing Map)
-- `RedisSessionStore` implements it (hset/hget with TTL)
-- Factory: `createSessionStore(config)` → returns the right implementation
-- Pending messages don't need persistence — if bot restarts, Claude process dies with it, user re-sends
-
-**Test:** Switch between in-memory and Redis via config. Sessions survive bot restart with Redis. In-memory still works as before.
-**Defers:** Session migration (in-memory → Redis without data loss during hot swap).
-
-## Shortcuts
-
-| Shortcut | Replaced in |
-|---|---|
-| In-memory Map only | Iteration 4 (Redis) |
-| No graceful shutdown (sessions lost on restart) | Iteration 4 |
-| Hardcoded 24h timeout | Iteration 3 (env var) |
-| No session metrics/logging | Post-MVP |
-
-## Cut List (true v2)
-
-- Session transfer between threads (move a session to a new thread)
-- Session forking (branch a conversation into two threads)
-- Session replay (re-run a session's prompts for debugging)
-- Multi-bot sessions (multiple Claude instances per thread)
-- Priority queue for buffered messages (urgent messages skip the line)
+Stale threads / worktrees are reaped by the lifecycle module — see [process-lifecycle.md](process-lifecycle.md). The home tab windows on `HOME_WINDOW_MS` (2 days default) via `getRecent`.

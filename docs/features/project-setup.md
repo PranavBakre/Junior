@@ -7,181 +7,174 @@ The bot needs environment configuration (Slack tokens, repo paths, timeouts) and
 **Who has this problem:** The first developer (Claude or human) who starts building.
 **What happens today:** Empty repo with CLAUDE.md and feature docs.
 **Painful part:** Getting the right TypeScript config, ESM vs CJS, which Slack SDK version, how to structure a CLI-spawning server. Wrong choices here cascade into every feature.
-**"Finally" moment:** `npm run dev` starts the bot server. Hot reload works. TypeScript compiles cleanly. Slack connects. Ready to build features.
+**"Finally" moment:** `bun run dev` starts the bot server. Hot reload works. TypeScript compiles cleanly. Slack connects. Ready to build features.
 
-## Full Vision
+## Tech Stack
 
-- Node.js or Bun runtime (decision needed)
-- TypeScript with strict mode
-- ESM modules
-- Slack Bolt SDK with Socket Mode
-- Environment variables via `.env` file (not committed)
-- Directory structure matching the feature boundaries
-- Dev server with hot reload
-- Build step for production
+- **Runtime:** Bun (built-in TS, `.env` loading, fast child spawning, `bun:sqlite`, built-in test runner).
+- **Slack SDK:** `@slack/bolt` v4 in Socket Mode — no public URL required.
+- **MCP:** `@modelcontextprotocol/sdk` + `@playwright/mcp` for the bot's own MCP server and browser tooling.
+- **TypeScript:** strict, ESM (`"type": "module"`).
+- **Persistence:** SQLite via `bun:sqlite` (default), in-memory store for tests.
+- **File locking:** `proper-lockfile` for cross-process worktree coordination.
 
-## Tech Stack Decisions
+## Entry Point
 
-### Runtime: Bun
+`src/index.ts` wires everything at boot, in this order:
 
-Bun over Node for this project:
-- Built-in TypeScript (no tsc compile step for dev)
-- Built-in .env loading (no dotenv)
-- Faster child process spawning (matters — we spawn a lot)
-- Built-in test runner
-- Single binary, simpler deployment
-
-Fallback to Node if Bun has issues with Slack Bolt or child_process edge cases.
-
-### Slack SDK: @slack/bolt
-
-Bolt is Slack's official framework. Socket Mode means no public URL needed — works from behind a firewall, on a laptop, anywhere.
-
-### Package Manager: bun
-
-If using Bun runtime, use its built-in package manager.
+1. `loadConfig()` — validates env, throws on missing required vars.
+2. Construct `SlackApp`, `SessionStore` (factory picks sqlite/memory), `SessionManager`, `AgentRouter`, `WorktreeManager`, `DevServerManager`, `DevServerQueue`.
+3. Start the internal MCP server (`startMcpServer`) so spawned Claude sessions can post back to threads.
+4. Build the `AgentDispatcher` (support router) over the subset of `CHANNEL_DEFAULTS` whose default agent is `lead`.
+5. Wire `SessionManager` callbacks → `SlackResponder` (`onResponse`, `onEvent`, `onMessageBuffered`, `onCommandResponse`, `onReaction`, `onError`). `prepareSlackResponse` strips the trailing `NO_SLACK_MESSAGE` sentinel; empty/sentinel-only replies are logged and suppressed.
+6. Register the App Home tab and graceful-shutdown hooks.
+7. Start two `setInterval` loops: orphan check (60s) and stale-session cleanup (`SESSION_CLEANUP_INTERVAL_MS`).
+8. Async bootstrap: `loadOverlayIdentities(".claude/agents-org")` merges private agent identities from frontmatter (`username`, `iconEmoji`) into `AGENT_IDENTITIES`; `devServerManager.bootstrap()` prepares dev-server worktrees. Both are non-fatal.
+9. `app.start()`, resolve bot identity via `auth.test`, register event handlers (every message goes through `supportRouter.handleMessage`).
+10. If `config.http.enabled`, dynamic-import `./http/server.ts` and start the localhost dashboard. Failure is non-fatal — logged so the bot keeps running.
 
 ## Configuration
 
+`src/config.ts` exports `loadConfig(): Config`. Shape:
+
 ```typescript
-// src/config.ts
 interface Config {
-  slack: {
-    botToken: string; // SLACK_BOT_TOKEN
-    appToken: string; // SLACK_APP_TOKEN
-    signingSecret: string; // SLACK_SIGNING_SECRET
-  };
-  claude: {
-    maxTurns: number; // CLAUDE_MAX_TURNS (default: 25)
-    timeoutMs: number; // CLAUDE_TIMEOUT_MS (default: 300000)
-    permissionMode: string; // CLAUDE_PERMISSION_MODE (default: "bypassPermissions")
-  };
-  repos: Array<{
-    name: string;
-    path: string;
-    defaultBase: string;
-  }>;
+  slack: { botToken; appToken; signingSecret };
+  claude: { maxTurns; timeoutMs; permissionMode; defaultModel: string | null };
+  repos: RepoConfig[];                  // JSON in REPOS env var
   session: {
-    staleTimeoutMs: number; // SESSION_STALE_TIMEOUT_MS (default: 86400000)
-    cleanupIntervalMs: number; // SESSION_CLEANUP_INTERVAL_MS (default: 900000)
+    staleTimeoutMs; cleanupIntervalMs;
+    store: "memory" | "sqlite";
+    sqlitePath; homeWindowMs;
+    defaultVerbosity: "quiet" | "normal" | "verbose";
   };
-  // Bootstrap admin Slack user ID. Additional admins live in the `admins`
-  // table in the session DB (added via direct SQL — see thread-commands.md).
-  // Gate is open only when env is unset AND the admins table is empty.
-  adminSlackUserId: string | null; // ADMIN_SLACK_USER_ID
-  redis?: {
-    url: string; // REDIS_URL (optional — in-memory if not set)
-  };
+  channelDefaults: Record<string, { agentType: string }>; // JSON
+  adminSlackUserId: string | null;       // bootstrap admin; rest live in admins table
+  http: { enabled: boolean; port: number };
 }
 ```
+
+`RepoConfig` carries `name`, `path`, `defaultBase`, and optional `worktreeSetupCommand`, `devCommand`, `devPort`, `readyUrl`. Repo paths have trailing slashes stripped on load.
+
+### Env vars (see `.env.example` for the full set)
+
+| Var | Required | Default | Notes |
+|---|---|---|---|
+| `SLACK_BOT_TOKEN` | yes | — | |
+| `SLACK_APP_TOKEN` | yes | — | Socket Mode `xapp-...` |
+| `SLACK_SIGNING_SECRET` | no | `""` | only needed if you ever switch to Events API |
+| `CLAUDE_MAX_TURNS` | no | `25` | |
+| `CLAUDE_TIMEOUT_MS` | no | `300000` | |
+| `CLAUDE_MODEL` | no | unset | passed through to `claude -p --model` |
+| `CLAUDE_PERMISSION_MODE` | no | `bypassPermissions` | |
+| `REPOS` | no | `[]` | JSON array of `RepoConfig` |
+| `CHANNEL_DEFAULTS` | no | `{"C05557KKV37":{"agentType":"lead"}}` | JSON, validated |
+| `SESSION_STORE` | no | `sqlite` | `sqlite` \| `memory` |
+| `SESSION_DB_PATH` | no | `data/sessions.db` | |
+| `SESSION_STALE_TIMEOUT_MS` | no | `86400000` | 24h |
+| `SESSION_CLEANUP_INTERVAL_MS` | no | `900000` | 15m |
+| `HOME_WINDOW_MS` | no | `172800000` | App Home visibility window (2 days) |
+| `SESSION_DEFAULT_VERBOSITY` | no | `normal` | `quiet` \| `normal` \| `verbose` |
+| `ADMIN_SLACK_USER_ID` | no | unset | bootstrap admin; further admins live in the `admins` SQLite table |
+| `HTTP_DASHBOARD_PORT` | no | unset | localhost dashboard; must be a positive integer 1–65535 or unset |
+| `MCP_PORT` | no | `3456` | internal Slack-bot MCP server |
+
+Validation rules (each throws on bad input):
+- `parseStoreKind` — must be `memory` or `sqlite`.
+- `parseVerbosity` — must be `quiet`/`normal`/`verbose`.
+- `parseChannelDefaults` — must be a JSON object of `{channelId: {agentType: string}}`.
+- `parseHttpDashboard` — unset/empty disables; otherwise must be an integer 1–65535.
 
 ## Directory Structure
 
 ```
 junior/
   src/
-    index.ts              -- entry point: start Slack app, wire everything
-    config.ts             -- env loading, config validation
+    index.ts              -- entry point: boot, wiring, intervals
+    config.ts             -- env loading + validation
+    logger.ts             -- structured logger
+    persona.ts            -- bot persona loader
     slack/
-      app.ts              -- Bolt app setup, Socket Mode
+      app.ts              -- Bolt app (Socket Mode)
       events.ts           -- event listeners, message routing
-      commands.ts         -- slash command parsing
-      formatting.ts       -- Slack message formatting, block kit
+      commands.ts         -- thread command parsing
+      formatting.ts       -- Slack formatting + NO_SLACK_MESSAGE sentinel handling
+      responder.ts        -- status/response posting
+      home.ts             -- App Home tab
+      files.ts            -- Slack file handling
+      thread-context.ts   -- prior-thread context extraction
     session/
-      manager.ts          -- session manager (state machine, buffer/drain)
-      types.ts            -- ThreadSession interface, event types
+      manager.ts          -- buffer/drain state machine
+      types.ts            -- ThreadSession, verbosity types
       store/
         interface.ts      -- SessionStore interface
+        factory.ts        -- createSessionStore(config)
         memory.ts         -- InMemorySessionStore
-        redis.ts          -- RedisSessionStore (production)
+        sqlite.ts         -- SqliteSessionStore (bun:sqlite)
     claude/
       spawner.ts          -- spawn claude -p, manage child process
       args.ts             -- build CLI args from session state
       parser.ts           -- stream-json line parser
-      types.ts            -- event types for stream-json
-    worktree/
-      manager.ts          -- create/remove/check worktrees
-      types.ts            -- RepoConfig, worktree state
+      types.ts            -- stream-json event types
     agents/
-      router.ts           -- load agent definitions, pick agent type
-      loader.ts           -- read .md files, parse frontmatter
+      router.ts           -- agent definition routing
+      loader.ts           -- read .md files, parse frontmatter (incl. identity)
+    worktree/
+      manager.ts          -- create/remove/check worktrees in target repos
+    support/
+      router.ts           -- AgentDispatcher: per-agent persistent sessions
+      agents.ts           -- overlay identity loading + per-agent context profile
+    mcp/
+      slack-server.ts     -- internal MCP server exposed to spawned sessions
+    http/
+      server.ts           -- localhost dashboard (HTTP_DASHBOARD_PORT)
+      routes/             -- dashboard route handlers
     lifecycle/
+      shutdown.ts         -- graceful shutdown
+      health.ts           -- orphan detection
+      cleanup.ts          -- stale-session cleanup
       timeout.ts          -- process timeout guard
-      health.ts           -- orphan detection, health check
-      shutdown.ts         -- graceful bot shutdown
+      process-utils.ts    -- shared spawn/kill helpers
+      dev-server.ts       -- per-repo dev-server manager
+      dev-server-queue.ts -- single-flight dev-server activation
   .claude/
-    agents/               -- agent definitions for this project
-      common/
-        building-philosophy.md
-      build.md
-      review.md
-      frontend.md
-      architect.md
-      pm.md
+    agents/               -- public agent definitions
+    agents-org/           -- private/overlay agents (identity in frontmatter)
+  data/
+    sessions.db           -- SQLite store (gitignored)
   docs/
-    features/             -- feature docs (this directory)
+    features/             -- feature docs
     code_index/           -- code indexes per module
     workflows/            -- ideation and building workflows
-  .env.example            -- required env vars (no values)
+  .env.example
   package.json
   tsconfig.json
   CLAUDE.md
   learnings.md
 ```
 
-## Iterations
+## Commands
 
-### Iteration 0: Hello world (~15 min)
-
-Prove Bun + Bolt + Socket Mode works.
-
-**What it adds:**
-- `package.json` with `@slack/bolt` dependency
-- `tsconfig.json` with strict mode, ESM
-- `src/index.ts` — Bolt app with Socket Mode, single `message` event listener that echoes
-- `.env.example` with required Slack tokens
-- `bun run dev` script
-
-**Test:** `bun run dev` → bot connects to Slack. Send message mentioning bot → bot echoes in thread.
-**Defers:** Everything except "it connects and responds."
-
-### Iteration 1: Directory structure and config (~20 min)
-
-**What it adds:**
-- Full directory structure (empty files with type exports)
-- `src/config.ts` — load and validate environment variables
-- Config validation: fail fast on missing required vars
-- Repo config from env (JSON string or individual vars)
-
-**Test:** Missing `SLACK_BOT_TOKEN` → clear error message on startup. All vars present → config loads cleanly. `import { config } from './config'` works from any module.
-**Defers:** Feature code (just structure and config).
-
-### Iteration 2: Dev tooling (~15 min)
-
-**What it adds:**
-- `bun run dev` — watch mode with `--watch` flag
-- `bun run build` — production build
-- `bun run typecheck` — type checking without emit
-- `.gitignore` — node_modules, .env, dist, `.claude/worktrees/` (used by other tooling like ultrareview/Agent isolation; junior itself stores worktrees in a sibling directory)
-- `.env.example` — all required and optional env vars documented
-
-**Test:** Edit a file → dev server reloads. `bun run typecheck` → clean. `.env` not tracked by git.
-**Defers:** CI/CD, Docker, deployment.
+```bash
+bun run dev         # hot-reload dev server (--watch)
+bun run start       # production start
+bun run typecheck   # tsc --noEmit
+bun test            # bun's built-in test runner
+```
 
 ## Shortcuts
 
 | Shortcut | Replaced in |
 |---|---|
 | Bun only (no Node fallback) | If Bun issues arise, switch to tsx + Node |
-| No production build optimization | Post-MVP |
+| No production build step (run TS directly via Bun) | Post-MVP |
 | No CI/CD | Post-MVP |
-| JSON repo config in env var | Post-MVP (config file) |
+| JSON repo + channel config in env vars | Post-MVP (config file) |
 
 ## Cut List (true v2)
 
 - Docker containerization
 - CI/CD pipeline (GitHub Actions)
 - Multi-environment config (dev/staging/prod)
-- Health check HTTP endpoint (for monitoring)
-- Structured logging (pino or similar)
+- Structured logging upgrade (pino or similar)
 - OpenTelemetry tracing
