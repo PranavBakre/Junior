@@ -84,6 +84,10 @@ ALTER TABLE agent_sessions ADD COLUMN tmux_session_name TEXT;
 
 ## Iterations
 
+> **Status (on `docs/interactive-driver-scoping`):** Iters 0–6 shipped. Iter 7
+> (production flip) is config-only and waiting on a real soak. The headless
+> path remains the default — `DEFAULT_CLAUDE_DRIVER=tmux` flips it.
+
 ### Iteration 0: Manual tmux + transcript-tail smoke test (~1h)
 
 Prove the substrate works end-to-end, outside the bot.

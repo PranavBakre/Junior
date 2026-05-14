@@ -55,6 +55,9 @@ interface Config {
     maxTurns: number; // CLAUDE_MAX_TURNS (default: 25)
     timeoutMs: number; // CLAUDE_TIMEOUT_MS (default: 300000)
     permissionMode: string; // CLAUDE_PERMISSION_MODE (default: "bypassPermissions")
+    defaultDriver: "headless" | "tmux"; // DEFAULT_CLAUDE_DRIVER (default: "headless")
+    tmuxIdleTtlMs: number;    // TMUX_IDLE_TTL_MS (default: 14400000 — 4h)
+    tmuxSweepIntervalMs: number; // TMUX_SWEEP_INTERVAL_MS (default: 900000 — 15min)
   };
   repos: Array<{
     name: string;
