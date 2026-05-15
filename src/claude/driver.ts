@@ -1,6 +1,6 @@
 import type { Config } from "../config.ts";
 import type { AgentIdentity, ThreadSession } from "../session/types.ts";
-import type { SpawnHandle } from "./types.ts";
+import type { SpawnHandle } from "../runners/types.ts";
 
 /**
  * Driver mode is a per-session choice (stored on `ThreadSession.driverMode`).
@@ -39,7 +39,7 @@ export interface ClaudeDriver {
    * Run one turn. Returns the same `SpawnHandle` shape the manager already
    * consumes — `result` resolves when the turn ends (process exit for
    * headless, `system.turn_duration` event for tmux), `onEvent` fires per
-   * StreamEvent, `kill` halts the in-flight turn.
+   * RunnerEvent, `kill` halts the in-flight turn.
    */
   send(input: DriverSendInput): SpawnHandle;
 

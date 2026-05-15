@@ -1,6 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
-import type { SpawnHandle, SpawnResult, StreamEvent } from "../claude/types.ts";
+import type { RunnerEvent, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
 import type {
   SlackMessageEvent,
   SlackFileAttachment,
@@ -15,8 +15,16 @@ import type {
 } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
-import { createSession } from "./types.ts";
-import { spawnClaude as defaultSpawnClaude } from "../claude/spawner.ts";
+import {
+  createSession,
+  isImplementedRunnerProvider,
+  isRunnerProvider,
+} from "./types.ts";
+import {
+  runnerTimeoutMs,
+  sessionProvider,
+  spawnRunner as defaultSpawnRunner,
+} from "../runners/index.ts";
 import { createDrivers, type DriverMap } from "../claude/factory.ts";
 import { tmuxSessionNameFor } from "../claude/tmux-driver.ts";
 import { buildDispatchAllowBlock, identityForAgent } from "../support/agents.ts";
@@ -31,13 +39,12 @@ import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loa
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 
-type SpawnClaudeFn = typeof defaultSpawnClaude;
-
 export class SessionManager {
   private store: SessionStore;
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
   private seenMessages = new Set<string>();
+  private spawnRunner: SpawnRunnerFn;
   private drivers: DriverMap;
 
   slackApp?: App;
@@ -45,7 +52,7 @@ export class SessionManager {
   agentRouter?: AgentRouter;
   worktreeManager?: WorktreeManager;
   onResponse?: (session: ThreadSession, response: string) => void;
-  onEvent?: (session: ThreadSession, event: StreamEvent) => void;
+  onEvent?: (session: ThreadSession, event: RunnerEvent) => void;
   onMessageBuffered?: (event: SlackMessageEvent) => void;
   onError?: (session: ThreadSession, error: string | null) => void;
   onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
@@ -54,15 +61,23 @@ export class SessionManager {
   constructor(
     store: SessionStore,
     config: Config,
-    spawnClaude?: SpawnClaudeFn,
+    spawnRunner?: SpawnRunnerFn,
     drivers?: DriverMap,
   ) {
     this.store = store;
     this.config = config;
-    // Existing tests pass a fake spawnClaude — wrap it in the headless
-    // driver so the legacy seam keeps working. New callers pass a full
-    // DriverMap instead.
-    this.drivers = drivers ?? createDrivers({ spawnFn: spawnClaude ?? defaultSpawnClaude });
+    this.spawnRunner = spawnRunner ?? defaultSpawnRunner;
+    this.drivers = drivers ?? createDrivers({
+      spawnFn: (session, prompt, _claudeConfig, targetRepoCwd, botToken, agentIdentity) =>
+        this.spawnRunner(
+          { ...session, provider: "claude" },
+          prompt,
+          this.config,
+          targetRepoCwd,
+          botToken,
+          agentIdentity,
+        ),
+    });
   }
 
   /** Public for tests + reconciliation; the manager doesn't expose drivers otherwise. */
@@ -219,7 +234,7 @@ export class SessionManager {
     session.lastActivity = agentSession.lastActivity;
     await this.store.set(session.threadId, session);
 
-    this.runClaudeWithAgent(session, event.text, event.ts, event.files, agentName);
+    this.runRunnerWithAgent(session, event.text, event.ts, event.files, agentName);
   }
 
   // Generic single-session path for "default" (any-channel @mentions) and the
@@ -259,7 +274,7 @@ export class SessionManager {
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
-    this.runClaudeWithAgent(session, event.text, event.ts, event.files, agentName);
+    this.runRunnerWithAgent(session, event.text, event.ts, event.files, agentName);
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -442,6 +457,7 @@ export class SessionManager {
           : "never";
         const lines = [
           `*Status:* ${session.status}`,
+          `*Provider:* ${session.provider ?? this.config.runner.provider}`,
           `*Muted:* ${session.muted ? "yes" : "no"}`,
           `*Dormant:* ${session.dormant ? "yes (auto)" : "no"}`,
           `*Agent:* ${session.agentType ?? "default"}`,
@@ -458,13 +474,14 @@ export class SessionManager {
       case "help": {
         const helpText = [
           "*Commands:*",
-          "`!build` — Build agent (continues to Claude)",
-          "`!frontend` — Frontend agent (continues to Claude)",
-          "`!review` — Review agent (continues to Claude)",
-          "`!architect` — Architect agent (continues to Claude)",
+          "`!build` — Build agent (continues to runner)",
+          "`!frontend` — Frontend agent (continues to runner)",
+          "`!review` — Review agent (continues to runner)",
+          "`!architect` — Architect agent (continues to runner)",
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
           "`!agent <junior|lead>` — Set thread default agent",
+          "`!provider <claude|opencode>` — Set runner provider for this thread",
           "`!cancel` — Kill running process, keep session",
           "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
           "`!status` — Show session status",
@@ -552,6 +569,61 @@ export class SessionManager {
         } else {
           this.onCommandResponse?.(event, `Unknown agent "${agentName}". Use \`!agent junior\` or \`!agent lead\`.`);
         }
+        return true;
+      }
+
+      case "provider": {
+        const provider = event.text.trim().toLowerCase();
+        if (isRunnerProvider(provider) && !isImplementedRunnerProvider(provider)) {
+          this.onCommandResponse?.(
+            event,
+            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\` or \`!provider opencode\`.`,
+          );
+          return true;
+        }
+        if (!isImplementedRunnerProvider(provider)) {
+          this.onCommandResponse?.(
+            event,
+            `Unknown provider "${provider}". Use \`!provider claude\` or \`!provider opencode\`.`,
+          );
+          return true;
+        }
+
+        const hasBusyAgent = Object.values(session.agentSessions ?? {}).some(
+          (a) => a.status === "busy",
+        );
+        if (session.status !== "idle" || hasBusyAgent) {
+          this.onCommandResponse?.(
+            event,
+            "Cannot change provider while a runner is active. Use `!cancel` first.",
+          );
+          return true;
+        }
+
+        const currentProvider = session.provider ?? this.config.runner.provider;
+        // A native session can live in any of three slots: the thread-level
+        // sessionId, the lead session id, or any persistent agent session
+        // (reproducer/thinker/lead/etc). Switching provider while ANY of
+        // these is set leaves mixed-provider state in one thread — the new
+        // provider drives fresh dispatches while existing agents continue
+        // resuming against the old provider. Block all three.
+        const hasAgentSession = Object.values(session.agentSessions ?? {}).some(
+          (a) => a.sessionId,
+        );
+        const hasNativeSession = Boolean(
+          session.sessionId || session.leadSessionId || hasAgentSession,
+        );
+        if (hasNativeSession && currentProvider !== provider) {
+          this.onCommandResponse?.(
+            event,
+            `This thread already has a ${currentProvider} session. Run \`!reset all\` before switching to *${provider}*.`,
+          );
+          return true;
+        }
+
+        session.provider = provider;
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, `Runner provider set to *${provider}*.`);
         return true;
       }
 
@@ -732,7 +804,7 @@ export class SessionManager {
     }
   }
 
-  private async runClaudeWithAgent(
+  private async runRunnerWithAgent(
     session: ThreadSession,
     prompt: string,
     latestTs: string | undefined,
@@ -846,15 +918,16 @@ export class SessionManager {
       }
 
       // Download image files from Slack and append their paths to the prompt
+      let imagePaths: string[] = [];
       if (files && files.length > 0) {
         try {
-          const localPaths = await downloadSlackFiles(
+          imagePaths = await downloadSlackFiles(
             files,
             session.threadId,
             this.config.slack.botToken,
           );
-          if (localPaths.length > 0) {
-            const pathList = localPaths.map((p) => `- ${p}`).join("\n");
+          if (imagePaths.length > 0) {
+            const pathList = imagePaths.map((p) => `- ${p}`).join("\n");
             prompt += `\n\nThe user shared images. They are saved at these paths — use the Read tool to view them:\n${pathList}`;
           }
         } catch (err) {
@@ -897,36 +970,50 @@ export class SessionManager {
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it
       // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
-      const driver = this.driverFor(session.driverMode);
-      // For tmux, persist the deterministic session name BEFORE first send so
-      // a crash mid-send leaves a recoverable trail. The driver computes the
-      // same name; storing it here lets reconciliation find it later.
-      if (session.driverMode === "tmux") {
-        const tmuxName = tmuxSessionNameFor(session.threadId, agentName);
-        if (isTopLevel) {
-          session.tmuxSessionName = tmuxName;
-          session.topLevelTmuxAgent = agentName;
-        } else if (agentSession) {
-          agentSession.tmuxSessionName = tmuxName;
+      const provider = sessionProvider(runSession, this.config);
+      let rawHandle: SpawnHandle;
+      if (provider === "claude") {
+        const driver = this.driverFor(session.driverMode);
+        // For tmux, persist the deterministic session name BEFORE first send so
+        // a crash mid-send leaves a recoverable trail. The driver computes the
+        // same name; storing it here lets reconciliation find it later.
+        if (session.driverMode === "tmux") {
+          const tmuxName = tmuxSessionNameFor(session.threadId, agentName);
+          if (isTopLevel) {
+            session.tmuxSessionName = tmuxName;
+            session.topLevelTmuxAgent = agentName;
+          } else if (agentSession) {
+            agentSession.tmuxSessionName = tmuxName;
+          }
+          await this.store.set(session.threadId, session);
         }
-        await this.store.set(session.threadId, session);
+        rawHandle = driver.send({
+          session: runSession,
+          prompt,
+          config: this.config.claude,
+          targetRepoCwd,
+          botToken: this.config.slack.botToken,
+          agentIdentity,
+          threadId: session.threadId,
+          agentName,
+        });
+      } else {
+        rawHandle = this.spawnRunner(
+          runSession,
+          prompt,
+          this.config,
+          targetRepoCwd,
+          this.config.slack.botToken,
+          agentIdentity,
+          imagePaths,
+        );
       }
-      const rawHandle = driver.send({
-        session: runSession,
-        prompt,
-        config: this.config.claude,
-        targetRepoCwd,
-        botToken: this.config.slack.botToken,
-        agentIdentity,
-        threadId: session.threadId,
-        agentName,
-      });
       const handle = withTimeout(
         rawHandle,
-        this.config.claude.timeoutMs,
+        runnerTimeoutMs(this.config, provider),
         () => {
           console.warn(
-            `[manager] Claude timed out for thread ${session.threadId}`,
+            `[manager] ${provider} timed out for thread ${session.threadId}`,
           );
         },
       );
@@ -938,13 +1025,15 @@ export class SessionManager {
         agentSession.pid = handle.pid;
       }
 
-      handle.onEvent((event: StreamEvent) => {
-        if (event.type === "system" && event.subtype === "init") {
+      handle.onEvent((event: RunnerEvent) => {
+        if (event.type === "init") {
           if (isTopLevel) {
-            session.sessionId = event.session_id;
-            session.leadSessionId = event.session_id;
+            session.sessionId = event.sessionId;
+            session.leadSessionId = event.sessionId;
+            session.provider = event.provider;
           } else if (agentSession) {
-            agentSession.sessionId = event.session_id;
+            agentSession.sessionId = event.sessionId;
+            agentSession.provider = event.provider;
           }
         }
         this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
@@ -954,6 +1043,7 @@ export class SessionManager {
         (result: SpawnResult) => this.onRunComplete(session, result, agentName, handle),
         (err: unknown) =>
           this.onRunComplete(session, {
+            provider,
             sessionId: null,
             response: "",
             events: [],
@@ -1023,8 +1113,10 @@ export class SessionManager {
       if (isTopLevel) {
         fresh.sessionId = result.sessionId;
         fresh.leadSessionId = result.sessionId;
+        fresh.provider = result.provider;
       } else if (agentSession) {
         agentSession.sessionId = result.sessionId;
+        agentSession.provider = result.provider;
       }
     }
 
@@ -1074,7 +1166,7 @@ export class SessionManager {
         agentSession.status = "busy";
       }
       await this.store.set(fresh.threadId, fresh);
-      this.runClaudeWithAgent(fresh, combined, undefined, undefined, agentName).catch(async (err) => {
+      this.runRunnerWithAgent(fresh, combined, undefined, undefined, agentName).catch(async (err) => {
         console.error("[manager] Drain failed:", err);
         // Refetch again — the failed drain may have run minutes after the
         // initial drain persist, and other agents may have updated the row.
@@ -1108,6 +1200,7 @@ export class SessionManager {
         event.threadId,
         event.channel,
         this.config.session.defaultVerbosity,
+        this.config.runner.provider,
         this.config.claude.defaultDriver,
       );
       // Apply channel-level default agent type (e.g. #bugs-backlog → lead)
@@ -1120,6 +1213,8 @@ export class SessionManager {
 
     session.leadSessionId ??= session.sessionId;
     session.agentSessions ??= {};
+    session.provider ??= "claude";
+    session.humanParticipants ??= [];
 
     // Track human participants for the attention gate. Bots — Junior, its
     // agents, and foreign bots — are excluded by design (see gateAttention).
@@ -1139,6 +1234,7 @@ export class SessionManager {
     session.agentSessions ??= {};
     session.agentSessions[agentName] ??= {
       agentName,
+      provider: session.provider ?? this.config.runner.provider,
       sessionId: null,
       status: "idle",
       pendingMessages: [],
@@ -1157,6 +1253,7 @@ export class SessionManager {
       return {
         ...session,
         sessionId: session.leadSessionId ?? session.sessionId,
+        provider: session.provider ?? this.config.runner.provider,
         activeAgentName: agentName,
         slackIdentity: agentIdentity,
         agentType: "lead",
@@ -1166,6 +1263,7 @@ export class SessionManager {
       return {
         ...session,
         sessionId: session.leadSessionId ?? session.sessionId,
+        provider: session.provider ?? this.config.runner.provider,
         activeAgentName: agentName,
         slackIdentity: agentIdentity,
       };
@@ -1175,6 +1273,7 @@ export class SessionManager {
     return {
       ...session,
       sessionId: agentSession.sessionId,
+      provider: agentSession.provider ?? session.provider ?? this.config.runner.provider,
       agentType: agentName,
       systemPrompt: null,
       status: agentSession.status === "busy" ? "busy" : "idle",

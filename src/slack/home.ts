@@ -177,6 +177,7 @@ function sessionBlock(
         : ":white_circle: Idle";
 
   const leadAgent = session.agentType ?? "default";
+  const provider = session.provider ?? "claude";
   const repo = session.targetRepo ?? "none";
   const ago = timeAgo(session.lastActivity);
   const pending = session.pendingMessages.length;
@@ -187,7 +188,7 @@ function sessionBlock(
 
   // Lead/primary session line
   const muteFlag = session.muted ? "  |  :no_bell: *Muted*" : "";
-  let text = `${title}\n${status}${muteFlag}  |  Agent: \`${leadAgent}\`  |  Repo: ${repo}\nLast activity: ${ago}`;
+  let text = `${title}\n${status}${muteFlag}  |  Agent: \`${leadAgent}\`  |  Provider: \`${provider}\`  |  Repo: ${repo}\nLast activity: ${ago}`;
 
   if (pending > 0) {
     text += `  |  Pending: ${pending}`;
@@ -196,7 +197,7 @@ function sessionBlock(
     text += `\nWorktree: \`${session.worktreePath}\``;
   }
   if (session.sessionId) {
-    text += `\nResume: \`claude --resume ${session.sessionId}\``;
+    text += `\nResume: \`${resumeCommand(provider, session.sessionId)}\``;
   }
 
   // Persistent agent sub-sessions (multi-agent threads — bug pipeline, etc.)
@@ -219,7 +220,7 @@ function sessionBlock(
         const agentAgo = timeAgo(a.lastActivity);
         let line = `  ${agentStatus} \`${a.agentName}\` — ${a.status}, last ${agentAgo}`;
         if (agentPending > 0) line += `, pending ${agentPending}`;
-        if (a.sessionId) line += `\n     Resume: \`claude --resume ${a.sessionId}\``;
+        if (a.sessionId) line += `\n     Resume: \`${resumeCommand(a.provider ?? provider, a.sessionId)}\``;
         return line;
       })
       .join("\n");
@@ -230,6 +231,18 @@ function sessionBlock(
     type: "section",
     text: { type: "mrkdwn", text },
   };
+}
+
+function resumeCommand(provider: string, sessionId: string): string {
+  switch (provider) {
+    case "opencode":
+      return `opencode run --session ${sessionId}`;
+    case "codex":
+      return `codex exec resume ${sessionId}`;
+    case "claude":
+    default:
+      return `claude --resume ${sessionId}`;
+  }
 }
 
 function timeAgo(timestamp: number): string {

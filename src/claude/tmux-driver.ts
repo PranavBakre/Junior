@@ -4,8 +4,10 @@ import { mkdirSync, existsSync, readdirSync, statSync, watch as fsWatch } from "
 import type { FSWatcher } from "node:fs";
 import { open } from "node:fs/promises";
 import type { ClaudeDriver, DriverMode, DriverSendInput } from "./driver.ts";
-import type { SpawnHandle, SpawnResult, StreamEvent } from "./types.ts";
+import type { StreamEvent } from "./types.ts";
+import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
 import { buildClaudeArgs } from "./args.ts";
+import { mapClaudeEvent } from "./spawner.ts";
 import { adaptTranscriptLine } from "./transcript-adapter.ts";
 
 /**
@@ -47,8 +49,8 @@ interface TmuxSession {
 }
 
 interface ActiveTurn {
-  listeners: Array<(event: StreamEvent) => void>;
-  events: StreamEvent[];
+  listeners: Array<(event: RunnerEvent) => void>;
+  events: RunnerEvent[];
   lastAssistantText: string;
   resultText: string;
   resolve: (result: SpawnResult) => void;
@@ -75,8 +77,8 @@ export class TmuxDriver implements ClaudeDriver {
 
   send(input: DriverSendInput): SpawnHandle {
     const key = handleKey(input.threadId, input.agentName);
-    const listeners: Array<(event: StreamEvent) => void> = [];
-    const events: StreamEvent[] = [];
+    const listeners: Array<(event: RunnerEvent) => void> = [];
+    const events: RunnerEvent[] = [];
 
     const turn: ActiveTurn = {
       listeners,
@@ -101,6 +103,7 @@ export class TmuxDriver implements ClaudeDriver {
         await this.pastePromptAndSubmit(session.name, input.prompt);
       } catch (err) {
         turn.resolve({
+          provider: "claude",
           sessionId: this.sessions.get(key)?.sessionId ?? null,
           response: "",
           events,
@@ -111,6 +114,7 @@ export class TmuxDriver implements ClaudeDriver {
     })();
 
     return {
+      provider: "claude",
       result: resultPromise,
       onEvent: (cb) => {
         listeners.push(cb);
@@ -122,6 +126,7 @@ export class TmuxDriver implements ClaudeDriver {
           this.sendKeys(sess.name, "Escape", "Escape").catch(() => undefined);
         }
         const result: SpawnResult = {
+          provider: "claude",
           sessionId: this.sessions.get(key)?.sessionId ?? null,
           response: turn.resultText || turn.lastAssistantText,
           events,
@@ -151,6 +156,7 @@ export class TmuxDriver implements ClaudeDriver {
     if (turn && !turn.rejected) {
       turn.rejected = true;
       turn.resolve({
+        provider: "claude",
         sessionId: sess.sessionId,
         response: turn.resultText || turn.lastAssistantText,
         events: turn.events,
@@ -173,6 +179,7 @@ export class TmuxDriver implements ClaudeDriver {
     if (turn && !turn.rejected) {
       turn.rejected = true;
       turn.resolve({
+        provider: "claude",
         sessionId: sess.sessionId,
         response: turn.resultText || turn.lastAssistantText,
         events: turn.events,
@@ -490,22 +497,26 @@ export class TmuxDriver implements ClaudeDriver {
     if (!turn) return;
 
     if (adapted.event) {
-      turn.events.push(adapted.event);
       if (adapted.event.type === "assistant") {
         const text = extractAssistantText(adapted.event);
         if (text) turn.lastAssistantText = text;
       }
-      for (const listener of turn.listeners) {
-        try {
-          listener(adapted.event);
-        } catch (err) {
-          console.warn("[tmux-driver] listener threw:", err);
+      const runnerEvents = mapClaudeEvent(adapted.event);
+      for (const runnerEvent of runnerEvents) {
+        turn.events.push(runnerEvent);
+        for (const listener of turn.listeners) {
+          try {
+            listener(runnerEvent);
+          } catch (err) {
+            console.warn("[tmux-driver] listener threw:", err);
+          }
         }
       }
     }
 
     if (adapted.turnDone) {
       const result: SpawnResult = {
+        provider: "claude",
         sessionId: sess.sessionId,
         response: turn.resultText || turn.lastAssistantText,
         events: turn.events,
