@@ -60,10 +60,16 @@ describe("parseCommand", () => {
       "status",
       "repo",
       "branch",
+      "agent",
+      "provider",
       "quiet",
       "verbose",
       "normal",
       "help",
+      "adhoc",
+      "bugs",
+      "mute",
+      "unmute",
     ];
 
     for (const cmd of knownCommands) {

@@ -1,4 +1,8 @@
-import type { SessionVerbosity } from "./session/types.ts";
+import {
+  isRunnerProvider,
+  type RunnerProvider,
+  type SessionVerbosity,
+} from "./session/types.ts";
 
 export interface RepoConfig {
   name: string;
@@ -49,6 +53,17 @@ export interface Config {
     permissionMode: string;
     defaultModel: string | null;
   };
+  runner: {
+    provider: RunnerProvider;
+  };
+  opencode: {
+    model: string | null;
+    timeoutMs: number;
+    permission: string;
+    mcpEnabled: boolean;
+    slackMcpEnabled: boolean;
+    playwrightMcpEnabled: boolean;
+  };
   repos: RepoConfig[];
   session: {
     staleTimeoutMs: number;
@@ -96,6 +111,20 @@ export function loadConfig(): Config {
       timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "300000")),
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
       defaultModel: process.env.CLAUDE_MODEL ?? null,
+    },
+    runner: {
+      provider: parseRunnerProvider(optional("RUNNER_PROVIDER", "claude")),
+    },
+    opencode: {
+      model: process.env.OPENCODE_MODEL ?? null,
+      timeoutMs: Number(optional("OPENCODE_TIMEOUT_MS", "300000")),
+      permission: optional("JUNIOR_OPENCODE_PERMISSION", "allow"),
+      mcpEnabled: parseBooleanEnv("OPENCODE_MCP_ENABLED", true),
+      slackMcpEnabled: parseBooleanEnv("OPENCODE_SLACK_MCP_ENABLED", true),
+      playwrightMcpEnabled: parseBooleanEnv(
+        "OPENCODE_PLAYWRIGHT_MCP_ENABLED",
+        true,
+      ),
     },
     repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({
       ...r,
@@ -154,6 +183,24 @@ function parseHttpDashboard(raw: string | undefined): { enabled: boolean; port: 
 function parseStoreKind(value: string): SessionStoreKind {
   if (value === "memory" || value === "sqlite") return value;
   throw new Error(`Invalid SESSION_STORE: ${value} (expected memory|sqlite)`);
+}
+
+function parseRunnerProvider(value: string): RunnerProvider {
+  if (isRunnerProvider(value)) return value;
+  throw new Error(
+    `Invalid RUNNER_PROVIDER: ${value} (expected claude|opencode|codex)`,
+  );
+}
+
+function parseBooleanEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (value == null || value === "") return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(
+    `Invalid ${name}: ${JSON.stringify(value)} (expected true|false)`,
+  );
 }
 
 function parseChannelDefaults(

@@ -7,9 +7,19 @@ export interface PendingMessage {
 }
 
 export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";
+export type RunnerProvider = "claude" | "opencode" | "codex";
+
+export function isRunnerProvider(value: unknown): value is RunnerProvider {
+  return value === "claude" || value === "opencode" || value === "codex";
+}
+
+export function normalizeRunnerProvider(value: unknown): RunnerProvider {
+  return isRunnerProvider(value) ? value : "claude";
+}
 
 export interface AgentSession {
   agentName: string;
+  provider?: RunnerProvider;
   sessionId: string | null;
   status: AgentSessionStatus;
   pendingMessages: PendingMessage[];
@@ -28,6 +38,7 @@ export type SessionVerbosity = "quiet" | "normal" | "verbose";
 export interface ThreadSession {
   threadId: string;
   channel: string;
+  provider?: RunnerProvider;
   sessionId: string | null;
   leadSessionId: string | null;
   agentSessions: Record<string, AgentSession>;
@@ -58,10 +69,12 @@ export function createSession(
   threadId: string,
   channel: string,
   defaultVerbosity: SessionVerbosity = "normal",
+  provider: RunnerProvider = "claude",
 ): ThreadSession {
   return {
     threadId,
     channel,
+    provider,
     sessionId: null,
     leadSessionId: null,
     agentSessions: {},

@@ -49,6 +49,9 @@ const IDLE_SWEEP_INTERVAL_MS = 60_000;
 /** Grace period for SIGINT before escalating to SIGKILL (ms). */
 const SIGINT_GRACE_MS = 5_000;
 
+/** After a kill, wait briefly for the listener to release its TCP port. */
+const PORT_RELEASE_TIMEOUT_MS = 5_000;
+
 export interface DevServerManagerOptions {
   /** Override the 20-min idle TTL. Tests use this to drive the sweeper. */
   idleTtlMs?: number;
@@ -195,6 +198,7 @@ export class DevServerManager {
 
     if (!isPidAlive(pid)) {
       log.info("dev-server", `kill repo=${repoName} pid=${pid} already dead`);
+      await this.waitForPortRelease(repoName);
       return;
     }
 
@@ -212,6 +216,7 @@ export class DevServerManager {
       await sleep(200);
       if (!isPidAlive(pid)) {
         log.info("dev-server", `kill repo=${repoName} pid=${pid} exited after SIGINT`);
+        await this.waitForPortRelease(repoName);
         return;
       }
     }
@@ -223,6 +228,7 @@ export class DevServerManager {
     } catch {
       // Already dead.
     }
+    await this.waitForPortRelease(repoName);
   }
 
   /** Kill all tracked dev servers in parallel. Called during shutdown. */
@@ -409,6 +415,22 @@ export class DevServerManager {
     await this.kill(repoName);
     throw new Error(
       `dev server for ${repoName} did not become ready within ${READY_TIMEOUT_MS / 1000}s (url=${readyUrl}, last error: ${lastErr})`,
+    );
+  }
+
+  private async waitForPortRelease(repoName: string): Promise<void> {
+    const repo = this.repos.find((r) => r.name === repoName);
+    if (repo?.devPort == null) return;
+
+    const deadline = Date.now() + PORT_RELEASE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (!(await isPortHeld(repo.devPort))) return;
+      await sleep(100);
+    }
+
+    log.warn(
+      "dev-server",
+      `port ${repo.devPort} for ${repoName} is still held after killing dev server`,
     );
   }
 

@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.ts";
 import { createSlackApp } from "./slack/app.ts";
 import { registerEventHandlers } from "./slack/events.ts";
-import { formatToolStatuses, extractAssistantText, prepareSlackResponse } from "./slack/formatting.ts";
+import { formatRunnerToolStatuses, extractRunnerMessageText, prepareSlackResponse } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { createSessionStore } from "./session/store/factory.ts";
@@ -78,13 +78,13 @@ sessionManager.onResponse = (session, response) => {
 
 sessionManager.onEvent = (session, event) => {
   const agentName = session.activeAgentName ?? "lead";
-  if (event.type === "system" && event.subtype === "init") {
-    log.info("session", `thread=${session.threadId} agent=${agentName} sessionId=${session.sessionId}`);
+  if (event.type === "init") {
+    log.info("session", `thread=${session.threadId} agent=${agentName} provider=${event.provider} sessionId=${event.sessionId}`);
   }
   if (session.verbosity === "quiet") return;
-  if (event.type === "assistant") {
+  if (event.type === "message") {
     // Show text content as live status (gets overwritten each turn)
-    const text = extractAssistantText(event);
+    const text = extractRunnerMessageText(event);
     if (text) {
       const prepared = prepareSlackResponse(text);
       if (prepared === null) {
@@ -96,9 +96,12 @@ sessionManager.onEvent = (session, event) => {
         responder.updateStatus(session.channel, session.threadId, prepared, agentName);
       }
     }
+    return;
+  }
 
+  if (event.type === "tool") {
     // Show tool use as status
-    const statuses = formatToolStatuses(event);
+    const statuses = formatRunnerToolStatuses(event);
     for (const status of statuses) {
       log.info("tool", `thread=${session.threadId} ${status}`);
       responder.updateStatus(session.channel, session.threadId, status, agentName);
