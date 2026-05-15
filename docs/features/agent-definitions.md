@@ -27,7 +27,7 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 | `common/merge-workflow.md` | Shared preamble — generic merge invariants (admin token, 3-way, branch from main). Org-specifics live in the overlay. |
 | `common/runtime-environment.md` | Shared preamble — generic runtime rules (image-reading, repo-locations meta-rule, MCP tool list, bug folder layout). Org-specifics live in the overlay. |
 
-**Private org overlay (`.claude/agents-org/`, mounted as a private submodule):**
+**Private org overlay (`agents-org/`, mounted as a private submodule):**
 
 Contains org-specific agents and common preamble files that don't belong in the public repo:
 - `common/merge-workflow.md` — concrete token name, credentials path, exact merge invocation, multi-stage release flow.
