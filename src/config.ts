@@ -1,4 +1,5 @@
 import {
+  isImplementedRunnerProvider,
   isRunnerProvider,
   type RunnerProvider,
   type SessionVerbosity,
@@ -186,9 +187,16 @@ function parseStoreKind(value: string): SessionStoreKind {
 }
 
 function parseRunnerProvider(value: string): RunnerProvider {
-  if (isRunnerProvider(value)) return value;
+  if (isImplementedRunnerProvider(value)) return value;
+  if (isRunnerProvider(value)) {
+    // Known provider, not yet implemented. Fail at config load with the real
+    // cause rather than throwing on the first message turn.
+    throw new Error(
+      `RUNNER_PROVIDER=${value} is a planned provider but is not yet implemented. Use claude or opencode.`,
+    );
+  }
   throw new Error(
-    `Invalid RUNNER_PROVIDER: ${value} (expected claude|opencode|codex)`,
+    `Invalid RUNNER_PROVIDER: ${value} (expected claude|opencode)`,
   );
 }
 

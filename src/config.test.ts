@@ -93,7 +93,15 @@ describe("loadConfig runner providers", () => {
     process.env.RUNNER_PROVIDER = "other";
 
     expect(() => loadConfig()).toThrow(
-      "Invalid RUNNER_PROVIDER: other (expected claude|opencode|codex)",
+      "Invalid RUNNER_PROVIDER: other (expected claude|opencode)",
+    );
+  });
+
+  it("rejects codex at config load with a not-implemented message", () => {
+    process.env.RUNNER_PROVIDER = "codex";
+
+    expect(() => loadConfig()).toThrow(
+      "RUNNER_PROVIDER=codex is a planned provider but is not yet implemented. Use claude or opencode.",
     );
   });
 });

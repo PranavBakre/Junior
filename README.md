@@ -124,7 +124,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
-| `RUNNER_PROVIDER` | `claude` | Default runner provider: `claude`, `opencode`, or `codex` |
+| `RUNNER_PROVIDER` | `claude` | Default runner provider: `claude` or `opencode` (codex is planned but not yet implemented) |
 | `CLAUDE_MAX_TURNS` | `25` | Max turns per `claude -p` invocation |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Per-turn timeout before SIGINT |
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |

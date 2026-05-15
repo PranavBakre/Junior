@@ -174,7 +174,19 @@ OpenCode adapter should map:
 - `step_finish.part.tokens` -> `done.usage`
 - tool events -> `tool` after capturing fixtures
 
-Open question: capture OpenCode JSON fixtures for bash/edit/read/MCP tool calls.
+**Status (2026-05-15):** init/message/done are mapped. Tool events are
+**deferred** — no real fixtures have been captured for bash/edit/read/MCP
+events, so the parser does not yet emit `RunnerEventTool` for OpenCode runs.
+Runtime impact: OpenCode threads receive Junior's final response correctly,
+but in-flight Slack status updates ("Running: …", "Reading …") are silent
+until tool events are mapped. The parser logs unknown event types at INFO
+(`opencode-parser`) so a real OpenCode run produces a fixture-capture trail
+in the daily log file.
+
+To finish this: spawn an OpenCode session that runs a shell command, an edit,
+and an MCP tool call; capture the JSON lines from the daily log; turn each
+into a parser fixture; extend `OpenCodeEvent` and the mapper.
+
 Do not guess the tool event schema from docs.
 
 ## OpenCode Prompt Strategy
@@ -225,7 +237,8 @@ Avoid for v1:
 
 ## OpenCode Generated Config
 
-Junior should not depend on a developer's global OpenCode config.
+Junior generates its own config per spawn and should not rely on a developer's
+global OpenCode config for correctness.
 
 Generate config with:
 
@@ -266,6 +279,44 @@ Sketch:
 
 Prefer `OPENCODE_CONFIG_CONTENT` for small configs. Use temp files via
 `OPENCODE_CONFIG` if config size, escaping, or auditability becomes awkward.
+
+### Known limitation: global config still merges
+
+OpenCode loads configuration from layered sources in order
+`~/.config/opencode/opencode.json` (global) → `OPENCODE_CONFIG` → project
+`opencode.json` → `.opencode/` → `OPENCODE_CONFIG_CONTENT` (managed last). The
+merge is *not* a replacement: `OPENCODE_CONFIG_CONTENT` wins only for keys it
+*sets*; every key it leaves unset is filled in from earlier layers if any of
+them define it. Junior's adapter cannot fully suppress the developer's
+`~/.config/opencode/opencode.json` because OpenCode exposes no
+`--ignore-user-config`-equivalent today.
+
+Practical consequences for operators running Junior alongside their own
+OpenCode setup:
+
+- A global `model` (or per-provider model) leaks in when Junior omits `model`
+  from its generated config.
+- Global `mcp.<name>` entries persist alongside Junior's. When Junior omits
+  `mcp` entirely (utility runs with no worktree), those globals become the
+  *only* MCPs the child sees.
+- Global `agent.<other>` definitions coexist with Junior's `agent.<name>`,
+  expanding the agent set available inside the spawn.
+- A shell-set `OPENCODE_CONFIG=/path/to/file` is inherited via the child's
+  environment and loads before `OPENCODE_CONFIG_CONTENT` with the same
+  merge semantics.
+
+Mitigations in code today:
+
+- The OpenCode spawner unsets `OPENCODE_CONFIG` on the child process so a
+  developer's shell override does not load.
+- The generated config sets `model` and `permission` explicitly when Junior
+  has a value; missing keys are the merge surface.
+
+If full isolation is required for a deployment (production, shared service
+accounts), run Junior with `HOME` / `XDG_CONFIG_HOME` pointed at an empty
+directory so OpenCode's global-config lookup hits nothing. For typical
+developer workstations the leakage is bounded by what the dev has in their
+own `opencode.json` and is acceptable.
 
 ## Permission Model
 

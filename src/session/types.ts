@@ -13,6 +13,21 @@ export function isRunnerProvider(value: unknown): value is RunnerProvider {
   return value === "claude" || value === "opencode" || value === "codex";
 }
 
+/**
+ * Subset of RunnerProvider that the runtime can actually spawn today. `codex`
+ * is in the union as a planned provider but is rejected at every user-facing
+ * boundary (env parse, `!provider` command) so an operator never reaches the
+ * point where `spawnRunner` throws mid-turn with the cause buried in a
+ * session-manager catch.
+ *
+ * Update this list when a new provider's spawner lands.
+ */
+export function isImplementedRunnerProvider(
+  value: unknown,
+): value is Exclude<RunnerProvider, "codex"> {
+  return value === "claude" || value === "opencode";
+}
+
 export function normalizeRunnerProvider(value: unknown): RunnerProvider {
   return isRunnerProvider(value) ? value : "claude";
 }

@@ -70,6 +70,11 @@ export function spawnOpenCode(
     config.env,
     { session, cwd: runtime.cwd, agentName },
   );
+  // OpenCode merges configs across layers (global, OPENCODE_CONFIG, project,
+  // OPENCODE_CONFIG_CONTENT). A developer's shell-set OPENCODE_CONFIG would
+  // load before Junior's inline config and contribute keys we don't override.
+  // Drop it so the only operator-supplied surface is the global rcfile.
+  delete env.OPENCODE_CONFIG;
   const args = buildOpenCodeArgs({
     cwd: runtime.cwd,
     agentName,
