@@ -32,6 +32,9 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     driverMode: "tmux",
     tmuxSessionName: null,
     topLevelTmuxAgent: null,
+    dormant: false,
+    dormantAnnounced: false,
+    humanParticipants: [],
     ...overrides,
   };
 }

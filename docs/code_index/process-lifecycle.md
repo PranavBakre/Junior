@@ -1,49 +1,67 @@
 # Code Index: Process Lifecycle
 
-Timeout guards, graceful shutdown, stale session cleanup, and orphan detection.
+Timeout guards, graceful shutdown, stale session cleanup, orphan detection, and dev-server slot management.
 
 ## Code Index
 
 ### src/lifecycle
 
-| Function | File | Purpose |
-|----------|------|---------|
-| `withTimeout(handle, timeoutMs)` | `timeout.ts` | Wraps SpawnHandle; kills process + returns error after timeout |
-| `setupGracefulShutdown(sessionManager, store)` | `shutdown.ts` | Registers SIGINT/SIGTERM; kills busy sessions, exits within 30s |
-| `cleanupStaleSessions(store, staleTimeoutMs)` | `cleanup.ts` | Removes idle/draining sessions older than threshold |
-| `checkOrphanedSessions(store)` | `health.ts` | Finds busy sessions whose process died (`kill(pid, 0)` throws) |
+| Symbol | File | Purpose |
+|---|---|---|
+| `withTimeout(handle, timeoutMs, onTimeout?)` | `timeout.ts` | Wraps `SpawnHandle`; kills + resolves with `error: "Process timed out..."` after timeout |
+| `setupGracefulShutdown(manager, store, devServerManager?)` | `shutdown.ts` | SIGINT/SIGTERM handler — `resetSession` busy threads, `killAll` dev servers, hard exit after 30s |
+| `cleanupStaleSessions(store, staleTimeoutMs)` | `cleanup.ts` | Deletes idle/draining sessions older than threshold (skips `busy`) |
+| `checkOrphanedSessions(store)` | `health.ts` | Marks `busy` sessions/agents idle when their pid is dead. Scans top-level pid + every `agentSessions[*].pid`. |
+| `isPidAlive(pid)` | `process-utils.ts` | `process.kill(pid, 0)` returns true if ESRCH not thrown |
+| `isPortHeld(port)` | `process-utils.ts` | Non-blocking TCP connect probe on `127.0.0.1:<port>`, 3s timeout |
+| `DevServerManager` | `dev-server.ts` | Per-repo dev-server lifecycle: spawn, branch switch via `git fetch + reset --hard`, readiness probe, idle TTL sweep, kill (SIGINT → SIGKILL with 5s grace) |
+| `DevServerManager.bootstrap()` | `dev-server.ts` | At startup: ensure dev-server worktree exists, write `.git/info/exclude` to hide lock files, self-heal legacy `.gitignore` overwrite, scan port for external listeners |
+| `DevServerQueue` | `dev-server-queue.ts` | Per-repo `proper-lockfile` serialization on top of `DevServerManager`; writes `.lock.meta.json` (holder) + `.queue` (NDJSON waiters); `acquire/release/readQueueDepth/stealStale/kill` |
+
+### Types
+
+| Type | File | Shape |
+|---|---|---|
+| `DevServerState` | `dev-server.ts` | `{ pid, branch, startedAt, lastUsedAt }` |
+| `DevServerInfo` | `dev-server.ts` | `{ pid, port, readyUrl }` |
+| `HolderMeta` | `dev-server-queue.ts` | `{ holderThreadId, holderPid, branch, acquiredAt }` |
+| `WaiterMeta` | `dev-server-queue.ts` | `{ threadId, branch, enqueuedAt }` |
+| `QueueDepth` | `dev-server-queue.ts` | `{ holder, waiters[] }` |
+| `AcquireResult` | `dev-server-queue.ts` | `{ release, info }` |
 
 ## Wiring in `index.ts`
 
 ```typescript
-// Timeout: applied per-spawn in SessionManager.handleMessage()
-withTimeout(spawnHandle, config.claude.timeoutMs)  // default 5 min
-
-// Health checks: every 60s
-setInterval(() => checkOrphanedSessions(store), 60_000);
-
-// Stale cleanup: every cleanupIntervalMs (default 15 min)
-setInterval(() => cleanupStaleSessions(store, staleTimeoutMs), cleanupIntervalMs);
-
-// Graceful shutdown: on SIGINT/SIGTERM
-setupGracefulShutdown(sessionManager, store);
+withTimeout(handle, config.claude.timeoutMs)                            // per-spawn, in SessionManager
+setInterval(() => checkOrphanedSessions(store), 60_000);                // health
+setInterval(() => cleanupStaleSessions(store, staleTimeoutMs), interval); // cleanup
+setupGracefulShutdown(sessionManager, store, devServerManager);
+devServerManager.bootstrap();  // ensures dev-server worktrees + port scan
 ```
 
 ## Key Concepts
 
-### Timeout Behavior
+### Timeout behavior
 
-On timeout: `handle.kill()` (SIGINT), result becomes `{ exitCode: -1, error: "timeout" }`. The session transitions to idle/error state. No retries — user re-sends.
+On timeout: `handle.kill()`, result resolves with `{ exitCode: null, error: "Process timed out after Xms" }`. Session transitions back to idle. No retries — user re-sends.
 
-### Orphan Detection
+### Orphan detection
 
-A session is "orphaned" when `status === "busy"` but `process.kill(pid, 0)` throws (process no longer exists). This can happen if the process crashes without triggering the exit handler. Orphaned sessions are marked idle with `lastError: "orphaned"`.
+A session/agent is "orphaned" when `status === "busy"` but `process.kill(pid, 0)` throws. `health.ts` walks both the top-level `session.pid` and every `agentSessions[*].pid`, marking each idle and recording `lastError: "orphaned"` on the parent session.
 
-### Stale Cleanup
+### Stale cleanup
 
-Skips `busy` sessions to avoid killing active work. Only removes `idle` and `draining` sessions past the timeout.
+Skips `busy` and `draining` sessions to avoid killing active work. Only removes `idle` sessions past `staleTimeoutMs` (default 24h).
+
+### Dev-server queue serialization
+
+`DevServerManager.ensure()` is NOT safe to call concurrently per repo — two parallel calls both miss the reuse branch and both spawn. `DevServerQueue.acquire()` wraps it with `proper-lockfile` (per-repo lock under the dev-server worktree directory). The `onCompromised` handler is synchronous (proper-lockfile won't await it) and fires `stealStale` to kill the orphan PID this caller is responsible for.
+
+### `expectedOrphanPid` race guard
+
+`stealStale(repoName, expectedOrphanPid)` only kills if the manager's tracked PID matches what this caller spawned. Without this, an `onCompromised` firing after another acquire has stolen the lock and replaced the server would kill the freshly-started PID.
 
 ## Dependencies
 
-- **Uses**: `session/store` (getAll, set, delete), `claude/types` (SpawnHandle)
-- **Used by**: `index.ts` (periodic intervals, shutdown handler), `SessionManager` (timeout wrapping)
+- **Uses**: `session/store`, `claude/types`, `proper-lockfile`, `worktree/manager`, `node:net` (port probe), `Bun.spawn` (git, dev-command)
+- **Used by**: `index.ts` (intervals + shutdown), `SessionManager` (timeout wrapping), `support/router` (`!devserver` handler)

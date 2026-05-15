@@ -215,5 +215,12 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   session.driverMode ??= "headless";
   session.tmuxSessionName ??= null;
   session.topLevelTmuxAgent ??= null;
+  // Migration: dormant / dormantAnnounced / humanParticipants added for the
+  // attention gate. Pre-existing sessions default to "awake, never announced,
+  // no recorded participants" — they re-accumulate naturally as new messages
+  // arrive.
+  session.dormant ??= false;
+  session.dormantAnnounced ??= false;
+  session.humanParticipants ??= [];
   return session;
 }

@@ -2,129 +2,68 @@
 
 ## Problem
 
-When Junior spawns a `claude -p` process, that process has zero knowledge of the Slack conversation it's responding to. It doesn't know its own name, can't see prior messages in the thread, can't see images users shared, and has no way to send files back. `--resume` gives Claude its own conversation history, but not the Slack thread's.
+When Junior spawns a `claude -p` process, that process has zero knowledge of the Slack conversation it's responding to. It doesn't know its own name, can't see prior messages, can't see images users shared, and has no way to send files back. `--resume` carries Claude's own history forward, but not the Slack thread's.
 
-**Who has this problem:** Every spawned Claude instance — they respond in a vacuum without thread context.
-**Painful part:** Without context, Claude hallucinates thread history, doesn't recognize other bots' messages, and gives generic responses to thread-specific questions.
-**"Finally" moment:** Claude knows it's Junior, sees the full thread history (including images), and can upload screenshots back to Slack.
+**Painful part:** Without context, Claude hallucinates thread history, doesn't recognize other bots' messages, and gives generic responses.
+**"Finally" moment:** Claude knows who it is, sees the thread (including images), knows which agents it may dispatch, and can post or upload back to Slack.
 
-## What It Does
+## What It Builds
 
-Before every Claude spawn, the session manager builds a prompt preamble with:
+`buildPromptPreamble()` assembles a first-turn preamble. Each block is gated by the resolved agent's `AgentContextProfile` (frontmatter `context.*` flags; defaults all-true).
 
-1. **Identity** — Junior's persona (SOUL.md + IDENTITY.md from `~/.openclaw/workspace/`)
-2. **Bot user ID** — so Claude recognizes its own messages in thread history
-3. **Channel & thread metadata** — channel name, thread_ts, with instruction not to search Slack
-4. **Thread history** — all prior messages fetched via `conversations.replies`, labeled by role
-5. **Mention resolution** — `<@U123>` tokens in thread history and incoming prompts are resolved to display names via `users.info` (cached per user ID)
-6. **Smart mention stripping** — only the bot's own @mention is stripped from incoming messages; other user mentions are preserved as readable `@displayname`
-7. **Image attachments** — downloaded to `/tmp/junior-files/<threadId>/`, paths appended to prompt
-8. **Historical file annotations** — `[shared image: filename.png]` in thread history
+1. **`<identity>`** — Junior's persona (see [agent-definitions](agent-definitions.md)) + the bot's Slack user ID so Claude can recognize its own messages.
+2. **`<slack-context>`** — channel name + ID, thread_ts, instruction not to search Slack, how to tag users via `<@USERID>`, the `NO_SLACK_MESSAGE` sentinel, and the no-double-post rule when `slack_send_message` was used.
+3. **`<workspace>`** — see Workspace Block below.
+4. **`<thread-context>`** — prior messages from `conversations.replies` (limit 100, excluding the current message), labeled `User(Name <@U…>)` or `Junior (you)`, with `[shared image: name]` annotations.
+5. **`<persistent-agent-state>`** — injected by the manager (not preamble itself) when the agent has `context.agentState`; lists per-thread agent sessions and pending counts.
+6. **`<dispatch-allow>`** — appended to the system prompt by the manager (`buildDispatchAllowBlock`) so every agent sees the authoritative list of `!<agent>` directives it may emit. See [agent-routing](agent-routing.md).
 
-## Architecture
+On **resumed turns** (sessionId already set), `--resume` carries identity/slack/history forward. The manager skips the full preamble and re-emits only the workspace block (cheap insurance for the worktree safety rule), when the agent declares `context.workspace`.
 
-```
-Slack message arrives
-    │
-    ▼
-SessionManager.handleMessage()
-    │
-    ├── buildPromptPreamble()          ← thread-context.ts
-    │     ├── loadPersona()            ← persona.ts (cached after first load)
-    │     ├── resolveChannelName()     ← cached per channel
-    │     ├── resolveSlackMentions()   ← resolves <@U123> → @displayname
-    │     └── fetchThreadHistory()     ← conversations.replies API
-    │
-    ├── downloadSlackFiles()           ← files.ts (images only)
-    │
-    ▼
-prompt = preamble + file paths + user message
-    │
-    ▼
-spawnClaude(session, prompt, config, cwd, botToken)
-    │
-    env: SLACK_CHANNEL, SLACK_THREAD_TS, SLACK_BOT_TOKEN
-    │
-    ▼
-Claude can upload files back via bin/slack-upload.sh
-```
+## Workspace Block
+
+`buildWorkspaceBlock()` renders one of two shapes:
+
+- **Multi-repo** (bug-pipeline threads with `session.worktreePaths`) — lists each repo's worktree path, bare-repo path (off-limits), branch (`slack/<threadId>`), and base (`origin/main` or `repo.defaultBase`). See [bug-pipeline-worktrees](bug-pipeline-worktrees.md).
+- **Single-repo** (`!repo` flow) — worktree path, repo path, branch, original bare-repo path.
+
+Both formats interpolate concrete paths into the rules so Claude can't hallucinate substitutes. Rules forbid writing/editing/`cd`-ing outside the worktree and require PRs (single-repo) / `!devserver` instead of running dev servers (multi-repo).
+
+Worktree creation is unconditional for target-repo threads — the manager creates one before building the workspace block so Claude never edits the shared origin repo.
+
+## Mention Resolution
+
+`resolveSlackMentions()` rewrites `<@U123>` tokens to `@DisplayName (<@U123>)` so Claude can read names AND tag back. It pre-resolves unique IDs in parallel and replaces in a single regex pass — repeated mentions of the same user no longer corrupt each other.
+
+Applied to:
+- Thread history (each message's `text`)
+- The incoming user prompt (`readablePrompt`)
+
+User and channel names are cached in module-level Maps.
+
+## File Handling
+
+- **Images on the message** — downloaded to `/tmp/junior-files/<threadId>/` via `files.ts`, then appended to the prompt as Read-tool paths. Image MIME only (png/jpeg/gif/webp).
+- **Historical images** — surfaced as `[shared image: name.png]` annotations in `<thread-context>` (no download).
+- **Outbound files** — the spawner exports `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `SLACK_BOT_TOKEN`; `bin/slack-upload.sh` and Playwright MCP screenshots use them with zero per-thread config.
 
 ## Key Files
 
 | File | Purpose |
 |---|---|
-| `src/slack/thread-context.ts` | Builds prompt preamble: identity, channel metadata, thread history |
-| `src/persona.ts` | Loads SOUL.md + IDENTITY.md from openclaw workspace (cached) |
-| `src/slack/files.ts` | Downloads Slack image attachments to local disk |
-| `src/slack/events.ts` | Extracts file attachments from Slack events |
-| `src/claude/spawner.ts` | Passes SLACK_CHANNEL/THREAD_TS/BOT_TOKEN env vars |
-| `bin/slack-upload.sh` | Uploads files to Slack thread (uses env vars) |
-| `.mcp.json` | Playwright MCP for browser automation (screenshots) |
+| `src/slack/thread-context.ts` | Preamble assembly, workspace block, mention resolution |
+| `src/persona.ts` | Loads identity files (cached) |
+| `src/agents/loader.ts` | `AgentContextProfile` + `DEFAULT_CONTEXT_PROFILE` |
+| `src/agents/router.ts` | Agent resolution with target-repo → org overlay → fallback search order |
+| `src/support/agents.ts` | `buildDispatchAllowBlock` (injected per agent) |
+| `src/slack/files.ts` | Image download |
+| `src/session/manager.ts` | Calls preamble on first turn, workspace-only on resume, appends agent-state + dispatch-allow |
+| `src/claude/spawner.ts` | Exports Slack env vars |
+| `bin/slack-upload.sh` | Outbound uploads via env vars |
 
-## Prompt Structure
+## Cross-References
 
-Every Claude spawn receives a prompt shaped like:
-
-```
-<identity>
-# IDENTITY.md - Who Am I?
-- Name: Junior
-- Vibe: Witty but direct. Indiana Jones Jr. energy.
-...
-
-# SOUL.md — Junior
-[full persona: core truths, communication style, failure signals, decision rules]
-
-Your Slack user ID is U12345. Messages from this user ID in the thread are yours.
-</identity>
-
-<slack-context>
-Channel: #eng-bots (C0123ABC)
-Thread: 1773749331.950109
-You are responding in this thread. You already have the full thread history below.
-Do NOT use Slack search or read tools to find this thread.
-</slack-context>
-
-<thread-context>
-User(Pranav Bakre): can you review the auth middleware?
-Junior (you): Sure, I'll take a look.
-User(Pranav Bakre): hey @Scotty check this too [shared image: screenshot.png]
-</thread-context>
-
-The user shared images. They are saved at these paths — use the Read tool to view them:
-- /tmp/junior-files/1773749331.950109/screenshot.png
-
-[actual user message here]
-```
-
-## Design Decisions
-
-### Persona from openclaw workspace, not hardcoded
-SOUL.md has 130+ lines of calibrated behavioral rules refined over months. Loading it preserves the full personality without maintaining a duplicate.
-
-### Thread context fetched server-side, not via MCP
-The orchestrator already has the bot token and thread_ts. Fetching via `conversations.replies` is one API call. Giving Claude a Slack MCP tool would add latency (Claude has to search for the thread) and token waste (20+ MCP calls observed in testing).
-
-### Channel and user name cached
-`resolveChannelName()` and `resolveUserName()` cache their results in module-level Maps to avoid repeated API calls. User names resolve display_name → real_name → name → raw user ID as fallback.
-
-### Identity matching by user_id only
-Slack's `bot_id` field is on ALL bot messages, not just ours. Only `m.user === botUserId` correctly identifies Junior's messages. Other bots (Friday, Doraemon) show as regular users in thread context.
-
-### Image files downloaded to /tmp
-Images are downloaded with the bot token as auth, saved to `/tmp/junior-files/<threadId>/`. Claude can `Read` these files natively. Only image MIME types (png, jpeg, gif, webp) are downloaded.
-
-### Env vars for outbound Slack access
-Spawned Claude processes get `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `SLACK_BOT_TOKEN` as env vars. This lets `bin/slack-upload.sh` work without any configuration — Claude just runs the script.
-
-## Browser Automation
-
-Playwright MCP (`.mcp.json`) gives Claude browser tools: navigate, click, scroll, type, screenshot. The workflow for sharing what it sees:
-
-1. Claude takes screenshot via Playwright MCP → saves to file
-2. Claude runs `bin/slack-upload.sh /tmp/screenshot.png "Here's what I found"`
-3. Image appears in the Slack thread
-
-## Message Deduplication
-
-Slack fires both `message` and `app_mention` for @mentions in threads. Without dedup, the same message gets processed twice (first spawns Claude, second gets buffered and drained as a duplicate). Fixed with a `Set<string>` keyed on message `ts` in `SessionManager.handleMessage()`.
+- Persona / agent .md files / overlay search path: [agent-definitions](agent-definitions.md), [agent-routing](agent-routing.md)
+- Worktree creation policy and paths: [worktree-manager](worktree-manager.md), [bug-pipeline-worktrees](bug-pipeline-worktrees.md)
+- Per-agent sessions surfaced in `<persistent-agent-state>`: [persistent-agents](persistent-agents.md)
+- Outbound posts and the `NO_SLACK_MESSAGE` sentinel: [stream-to-slack](stream-to-slack.md), [mcp-server](mcp-server.md)

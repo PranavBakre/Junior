@@ -1,45 +1,37 @@
 # Code Index: Session Management
 
-Core orchestrator: routes Slack messages to Claude, manages the buffer/drain state machine, composes prompts with context, and tracks session state per thread.
+Core orchestrator: routes Slack messages to Claude, manages the buffer/drain state machine (per-thread for lead/default, per-agent for workers), composes prompts with context, dispatches slash commands, and tracks session state.
 
 ## Code Index
 
 ### src/session
 
-| Function | File | Purpose |
-|----------|------|---------|
-| `SessionManager.handleMessage(event)` | `manager.ts` | Main entry: creates/looks up session, handles commands, buffers or spawns |
-| `SessionManager.getSession(threadId)` | `manager.ts` | Returns session or undefined |
-| `SessionManager.resetSession(threadId)` | `manager.ts` | Clears session state for `!reset` |
-| `createSession(threadId, channel)` | `types.ts` | Factory with idle defaults |
-| `SessionStore.get(id)` | `store/interface.ts` | Read session by thread ID |
-| `SessionStore.set(id, session)` | `store/interface.ts` | Write session |
-| `SessionStore.delete(id)` | `store/interface.ts` | Remove session |
-| `SessionStore.getAll()` | `store/interface.ts` | List all sessions (for health/cleanup) |
-| `InMemorySessionStore` | `store/memory.ts` | Map-based implementation |
+| Symbol | File | Purpose |
+|---|---|---|
+| `SessionManager(store, config, spawnClaude?)` | `manager.ts` | Constructor — `spawnClaude` injectable for tests |
+| `handleMessage(event)` | `manager.ts` | Default single-session entry — any-channel @mentions |
+| `handleLeadMessage(event)` | `manager.ts` | Single-session entry for the support `lead` agent (shares top-level session slot) |
+| `handleAgentMessage(event, agentName)` | `manager.ts` | Persistent-agent entry — per-agent buffer/drain via `session.agentSessions[name]` |
+| `getSession(threadId)` | `manager.ts` | Read accessor |
+| `resetSession(threadId)` | `manager.ts` | Kills handles for the thread, deletes the row |
+| `resetAgent(threadId, agentName)` | `manager.ts` | Resets one agent slice (`lead`/`default` clear top-level fields; others clear `agentSessions[name]`) |
+| `isAdmin(userId)` | `manager.ts` | Env bootstrap admin + `extraAdmins` from store. Open-mode only when both tiers are empty. |
+| `createSession(threadId, channel, defaultVerbosity?)` | `types.ts` | Factory with idle defaults |
 
-### SessionManager Callbacks
-
-Set externally in `index.ts`:
+### SessionManager callbacks (wired in `index.ts`)
 
 | Callback | When |
-|----------|------|
-| `onResponse(session, text)` | Claude turn completes with response |
-| `onEvent(session, event)` | Each stream-json event (for live status) |
-| `onMessageBuffered(event)` | Message buffered while busy |
-| `onCommandResponse(event, text)` | Command like `!status` returns text |
+|---|---|
+| `onResponse(session, text)` | Claude turn complete; `prepareSlackResponse` runs sentinel handling |
+| `onEvent(session, event)` | Each stream-json event (status updates) |
+| `onMessageBuffered(event)` | Message buffered while busy → `eyes` reaction |
+| `onCommandResponse(event, text)` | Command (`!status`, `!help`, etc.) returns text |
+| `onReaction(event, emoji)` | Used for admin-denied commands (`x` reaction) |
 | `onError(session, error)` | Spawn fails or times out |
 
-### SessionManager Dependencies
+### SessionManager dependencies
 
-Set externally in `index.ts`:
-
-| Property | Type | Purpose |
-|----------|------|---------|
-| `agentRouter` | `AgentRouter` | Routes agent type → system prompt |
-| `worktreeManager` | `WorktreeManager` | Creates worktrees for code threads |
-| `slackApp` | `App` | Used for thread context building |
-| `botUserId` | `string` | Identity in prompt preamble |
+`agentRouter`, `worktreeManager`, `slackApp`, `botUserId` — assigned externally in `index.ts`.
 
 ### Data Model
 
@@ -47,48 +39,80 @@ Set externally in `index.ts`:
 interface ThreadSession {
   threadId: string;
   channel: string;
-  sessionId: string | null;        // from Claude's init event
-  worktreePath: string | null;
+  sessionId: string | null;                // current run's session ID
+  leadSessionId: string | null;            // pinned to lead's resume target across re-routes
+  agentSessions: Record<string, AgentSession>;  // per-worker state
+  worktreePath: string | null;             // single-repo flow
+  worktreePaths: Record<string, string>;   // multi-repo (bug pipeline)
   targetRepo: string | null;
+  baseRef: string | null;
   agentType: string | null;
+  systemPrompt: string | null;
+  activeAgentName?: string;                // run-scoped, set by buildRunSession
+  slackIdentity?: AgentIdentity;           // run-scoped
   status: "idle" | "busy" | "draining";
   pendingMessages: PendingMessage[];
-  systemPrompt: string | null;
-  verbosity: "normal" | "quiet";
+  verbosity: "quiet" | "normal" | "verbose";
+  muted: boolean;
+  model: string | null;
+  cwd: string | null;                       // utility-command override
+  pid: number | null;
+  lastActivity: number; createdAt: number;
+  lastError: { type, message, timestamp } | null;
+  defaultAgent?: "junior" | "lead" | null;  // thread-level !agent override
+}
+
+interface AgentSession {
+  agentName: string;
+  sessionId: string | null;
+  status: "idle" | "busy" | "done" | "failed";
+  pendingMessages: PendingMessage[];
   lastActivity: number;
-  createdAt: number;
-  errorCount: number;
-  lastError: string | null;
   pid: number | null;
 }
 ```
 
 ## State Machine
 
+**Top-level** (`lead`/`default` agents — share `session.{status, sessionId, pendingMessages}`):
+
 ```
-idle ──[message]──► busy ──[exit, no pending]──► idle
-                      │
-                      ├──[message while busy]──► buffer + eyes reaction
-                      │
-                      └──[exit, has pending]──► draining ──[spawn combined]──► busy
+idle ──[msg]──► busy ──[exit, no pending]──► idle
+                  ├──[msg while busy]──► buffer (eyes reaction)
+                  └──[exit, pending]──► draining ──[combined drain]──► busy
 ```
 
-## Key Concepts
+**Per-agent** (workers — each `agentSessions[name]` is independent):
 
-### Prompt Composition
+```
+idle ──[msg]──► busy ──[exit, no pending]──► done|failed
+                  ├──[msg while busy]──► buffer (eyes reaction)
+                  └──[exit, pending]──► busy (combined drain stays in 'busy')
+```
 
-When spawning Claude, `handleMessage()` builds the prompt in order:
+## Commands
 
-1. `buildPromptPreamble()` — persona + channel metadata + thread history
-2. Image paths from `downloadSlackFiles()` appended as `[image: /tmp/junior-files/...]`
-3. User message text
-4. If draining: combined pending messages as `[user]: text` format
+Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, continue), `repo`, `branch`, `agent`, `cancel`, `reset` (admin), `status`, `help`, `quiet`/`normal`/`verbose`, `adhoc`/`bugs` (calendar tasks via haiku + cwd override), `mute`/`unmute` (admin). See `thread-commands.md`.
 
-### Buffer Drain
+## Prompt Composition (in `runClaudeWithAgent`)
 
-When Claude exits and `pendingMessages.length > 0`, all buffered messages are combined into a single prompt with attribution: `"Multiple messages arrived:\n[alice]: fix the tests\n[bob]: also check the linting"`.
+1. Resolve target repo + (always) create worktree if `targetRepo` set
+2. Resolve agent definition + context profile (defaults to all-true)
+3. First turn: `buildPromptPreamble(...)` injects enabled blocks
+4. Resumed turn: just `buildWorkspaceBlock` (cheap safety insurance) if workspace flag is on
+5. `resolveSlackMentions` rewrites `<@U…>` → `@Name (<@U…>)`
+6. Download image files → append paths
+7. `composeSystemPrompt` (common + agent body) + identity block + dispatch-allow block → `session.systemPrompt`
+8. Optional `<persistent-agent-state>` block when `context.agentState` is on
+9. `spawnClaude(runSession, prompt, ..., agentIdentity)` wrapped in `withTimeout`
+
+## Concurrency Guards
+
+- **Refetch-then-mutate in `onRunComplete`**: long-running agents may be minutes stale; refetch the row to avoid clobbering writes from other agents on the same thread.
+- **Handle ownership check**: if `this.handles.get(handleKey) !== ownHandle`, the run was replaced by `!reset` or a newer spawn — bail without writing or posting.
+- **`seenMessages` dedupe**: bounded set (cap 1000, drops oldest 500) keyed on `dedupeKey ?? ts`. Slack fires both `message` and `app_mention` for @mentions.
 
 ## Dependencies
 
-- **Uses**: `claude/spawner` (spawn), `slack/thread-context` (preamble), `slack/files` (downloads), `agents/router` (system prompts), `worktree/manager` (isolation), `lifecycle/timeout` (guard)
-- **Used by**: `index.ts` (event handler callback), `lifecycle/shutdown` (graceful kill), `lifecycle/cleanup` (stale removal)
+- **Uses**: `claude/spawner`, `lifecycle/timeout`, `slack/thread-context` (preamble, mention resolution), `slack/files` (image download), `agents/router`, `agents/loader` (context profile), `worktree/manager`, `support/agents` (identity, dispatch-allow), `session/store`
+- **Used by**: `support/router` (`AgentDispatcher` routes here), `index.ts` (wiring), `lifecycle/shutdown` + `lifecycle/cleanup`

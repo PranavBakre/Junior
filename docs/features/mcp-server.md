@@ -49,8 +49,13 @@ Junior main process
 | `slack_search` | `search.messages` | Search across channels (requires `search:read` scope) |
 | `slack_search_users` | `users.list` | Find users by name, email, or title |
 | `slack_upload_file` | `files.getUploadURLExternal` | Upload files to channels/threads |
+| `register_worktree` | (internal) | Create a per-thread worktree in a routed repo and persist its path on the session |
 
-All tools require explicit `channel_id` and `thread_ts` parameters. The spawned Claude already knows its thread coordinates from the prompt preamble built by `buildPromptPreamble()`.
+Slack tools require explicit `channel_id` and `thread_ts` parameters. The spawned Claude already knows its thread coordinates from the prompt preamble built by `buildPromptPreamble()`.
+
+`register_worktree` is wired to Junior's `SessionStore` and `WorktreeManager` (passed into `startMcpServer`). It's invoked by agents during intake — once per routed repo — and writes `session.worktreePaths[repo]`. The `branch` arg is a branch-name override (not a base ref); `createWorktree` keeps `branchOverride` distinct from `baseRef` so callers can name the branch without changing what it forks from. See [worktree-manager.md](./worktree-manager.md) and [session-management.md](./session-management.md).
+
+Status pill updates that agents post mid-run go through `slack_send_message` with a stable `username` / `icon_emoji` identity — the streaming layer keys pills per-agent off those fields. See [stream-to-slack.md](./stream-to-slack.md).
 
 ## Dependencies
 
@@ -74,8 +79,13 @@ All tools require explicit `channel_id` and `thread_ts` parameters. The spawned 
 
 ### Iteration 0: Core server with send/read tools (done)
 
-**What it adds:** HTTP MCP server started in `index.ts`, 6 tools registered, `.mcp.json` and settings updated, `--mcp-config` wired for worktree spawns.
+**What it adds:** HTTP MCP server started in `index.ts`, 6 Slack tools registered, `.mcp.json` and settings updated, `--mcp-config` wired for worktree spawns.
 **Test:** Start Junior, spawned Claude can send a message that appears as the bot. No event loop.
+
+### Iteration 0.1: register_worktree tool (done)
+
+**What it adds:** `register_worktree` tool so agents can request a per-thread worktree without shelling out. `startMcpServer` now takes `SessionStore` and `WorktreeManager` so the tool can persist `worktreePaths` on the session.
+**Test:** An agent calls `register_worktree` on intake; subsequent spawns in that thread use the persisted worktree path as cwd.
 
 ### Iteration 1: Thread-aware defaults (future)
 
