@@ -1,4 +1,4 @@
-import type { RunnerEvent } from "../runners/types.ts";
+import type { RunnerEvent, RunnerEventTool } from "../runners/types.ts";
 import { log } from "../logger.ts";
 
 export interface OpenCodeStepStartEvent {
@@ -28,17 +28,29 @@ export interface OpenCodeStepFinishEvent {
   [key: string]: unknown;
 }
 
-// Placeholder until real OpenCode tool fixtures are captured.
-export interface OpenCodeToolEventPlaceholder {
-  type: string;
+export interface OpenCodeToolUseEvent {
+  type: "tool_use";
   sessionID?: string;
+  part: {
+    type: "tool";
+    tool: string;
+    callID?: string;
+    state?: {
+      status?: string;
+      input?: unknown;
+      [key: string]: unknown;
+    };
+    input?: unknown;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 
 export type OpenCodeEvent =
   | OpenCodeStepStartEvent
   | OpenCodeTextEvent
-  | OpenCodeStepFinishEvent;
+  | OpenCodeStepFinishEvent
+  | OpenCodeToolUseEvent;
 
 export interface OpenCodeStreamParser {
   feed(chunk: string): OpenCodeEvent[];
@@ -55,12 +67,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// Known OpenCode event types the parser currently maps. Anything else (most
-// importantly tool/command events — those fixtures haven't been captured yet)
-// gets logged at INFO so the gap is visible at runtime instead of a silent
-// drop that looks indistinguishable from "no tool was used." Schema
-// mismatches on known types log at WARN — those are real protocol breaks.
-const KNOWN_EVENT_TYPES = new Set(["step_start", "text", "step_finish"]);
+// Known OpenCode event types the parser currently maps. Anything else gets
+// logged at INFO so the gap is visible at runtime instead of a silent drop.
+// Schema mismatches on known types log at WARN — those are real protocol breaks.
+const KNOWN_EVENT_TYPES = new Set(["step_start", "text", "step_finish", "tool_use"]);
 
 function isOpenCodeEvent(value: unknown): value is OpenCodeEvent {
   if (!isRecord(value) || typeof value.type !== "string") return false;
@@ -76,6 +86,11 @@ function isOpenCodeEvent(value: unknown): value is OpenCodeEvent {
 
   if (value.type === "step_finish") {
     return true;
+  }
+
+  if (value.type === "tool_use") {
+    if (!isRecord(value.part)) return false;
+    return value.part.type === "tool" && typeof value.part.tool === "string";
   }
 
   return false;
@@ -110,11 +125,10 @@ function parseLine(line: string): OpenCodeEvent | null {
         `Known event type "${parsed.type}" failed schema validation: ${trimmed.slice(0, 200)}`,
       );
     } else {
-      // Unknown event type — most likely a tool/command event that we
-      // haven't mapped yet. Log so operators can capture a fixture.
+      // Unknown event type. Log so operators can capture a fixture.
       log.info(
         "opencode-parser",
-        `Unmapped event type "${parsed.type}" (tool events are deferred): ${trimmed.slice(0, 200)}`,
+        `Unmapped event type "${parsed.type}": ${trimmed.slice(0, 200)}`,
       );
     }
   }
@@ -183,6 +197,8 @@ export function createOpenCodeEventMapper(): OpenCodeEventMapper {
       if (event.type === "text") {
         response += event.part.text;
         pendingText += event.part.text;
+      } else if (event.type === "tool_use") {
+        events.push(mapOpenCodeToolUse(event));
       } else if (event.type === "step_finish") {
         if (pendingText) {
           events.push({
@@ -205,4 +221,38 @@ export function createOpenCodeEventMapper(): OpenCodeEventMapper {
       return events;
     },
   };
+}
+
+function mapOpenCodeToolUse(event: OpenCodeToolUseEvent): RunnerEventTool {
+  const toolEvent: RunnerEventTool = {
+    type: "tool",
+    provider: "opencode",
+    name: normalizeOpenCodeToolName(event.part.tool),
+    input: getOpenCodeToolInput(event),
+  };
+  const status = getOpenCodeToolStatus(event.part.state?.status);
+  if (status) toolEvent.status = status;
+  return toolEvent;
+}
+
+function getOpenCodeToolInput(event: OpenCodeToolUseEvent): Record<string, unknown> {
+  const input = event.part.state?.input ?? event.part.input;
+  return isRecord(input) ? input : {};
+}
+
+function getOpenCodeToolStatus(status: string | undefined): RunnerEventTool["status"] | undefined {
+  return status === "started" || status === "completed" ? status : undefined;
+}
+
+function normalizeOpenCodeToolName(name: string): string {
+  const names: Record<string, string> = {
+    bash: "Bash",
+    read: "Read",
+    edit: "Edit",
+    write: "Write",
+    grep: "Grep",
+    glob: "Glob",
+    task: "Task",
+  };
+  return names[name.toLowerCase()] ?? name;
 }

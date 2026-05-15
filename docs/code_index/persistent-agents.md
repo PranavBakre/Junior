@@ -10,7 +10,7 @@ Multi-agent dispatch layer: registry of agent slack identities, orchestrator/wor
 |---|---|---|
 | `AGENT_IDENTITIES` | `agents.ts` | Mutable registry of `agentName → { username, iconEmoji }`. Core agents (`default`, `lead`, `reproducer`, `thinker`, `review`, `echo`) seeded in code. |
 | `registerAgentIdentity(name, identity)` | `agents.ts` | Add an overlay agent identity. Refuses to overwrite existing entries. |
-| `loadOverlayIdentities(dirPath)` | `agents.ts` | Scan `.claude/agents-org/*.md` and register identities for agents with both `username` + `iconEmoji` frontmatter. |
+| `loadOverlayIdentities(dirPath)` | `agents.ts` | Scan `agents-org/*.md` and register identities for agents with both `username` + `iconEmoji` frontmatter. |
 | `isOrchestratorAgent(name)` | `agents.ts` | `name ∈ {lead, default, junior}`. Orchestrators may dispatch any worker. |
 | `isPersistentAgent(name)` | `agents.ts` | Membership check in `AGENT_IDENTITIES`. |
 | `identityForAgent(name)` | `agents.ts` | Lookup; undefined if not registered. |
@@ -66,7 +66,7 @@ Handled by `AgentDispatcher`, not by spawning Claude. `acquire` calls `DevServer
 
 ### Overlay identities
 
-Private/org agents register slack identities via frontmatter (`username:` + `iconEmoji:`) in `.claude/agents-org/*.md`. Loaded at startup by `loadOverlayIdentities`. Core identities can't be overwritten — overlay can only add new names.
+Private/org agents register slack identities via frontmatter (`username:` + `iconEmoji:`) in `agents-org/*.md`. Loaded at startup by `loadOverlayIdentities`. Core identities can't be overwritten — overlay can only add new names.
 
 ## Dependencies
 

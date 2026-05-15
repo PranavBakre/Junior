@@ -1,8 +1,14 @@
 ---
-name: architect
 description: System architect. Use for design specs, data models, state machines, API contracts.
-tools: Read, Write, Edit, Grep, Glob, Bash(git *)
-model: opus
+mode: subagent
+permission:
+  read: allow
+  edit: allow
+  bash:
+    "*": ask
+    "git *": allow
+  glob: allow
+  grep: allow
 ---
 
 # architect -- System Architect

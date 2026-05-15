@@ -1,4 +1,5 @@
 export type OpenCodePermissionConfig = string | Record<string, unknown>;
+type OpenCodeAgentPermissionConfig = Record<string, unknown>;
 
 export interface OpenCodeMcpEntry {
   type?: string;
@@ -28,6 +29,7 @@ export interface OpenCodeGeneratedConfig {
     {
       description: string;
       mode: "primary";
+      permission: OpenCodeAgentPermissionConfig;
       prompt: string;
     }
   >;
@@ -48,6 +50,7 @@ export function buildOpenCodeConfig(
       [options.agentName]: {
         description: options.description ?? "Junior Slack runner",
         mode: "primary",
+        permission: toAgentPermissionConfig(options.permission ?? "allow"),
         prompt: options.agentPrompt,
       },
     },
@@ -68,4 +71,13 @@ export function buildOpenCodeConfigContent(
   options: BuildOpenCodeConfigOptions,
 ): string {
   return JSON.stringify(buildOpenCodeConfig(options));
+}
+
+function toAgentPermissionConfig(
+  permission: OpenCodePermissionConfig,
+): OpenCodeAgentPermissionConfig {
+  if (typeof permission === "string") {
+    return { "*": permission };
+  }
+  return permission;
 }

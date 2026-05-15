@@ -172,20 +172,13 @@ OpenCode adapter should map:
 - any first event with `sessionID` -> `init`
 - `text` -> `message`
 - `step_finish.part.tokens` -> `done.usage`
-- tool events -> `tool` after capturing fixtures
+- `tool_use.part` -> `tool`, using `part.tool`, `part.state.status`, and
+  `part.state.input`
 
-**Status (2026-05-15):** init/message/done are mapped. Tool events are
-**deferred** — no real fixtures have been captured for bash/edit/read/MCP
-events, so the parser does not yet emit `RunnerEventTool` for OpenCode runs.
-Runtime impact: OpenCode threads receive Junior's final response correctly,
-but in-flight Slack status updates ("Running: …", "Reading …") are silent
-until tool events are mapped. The parser logs unknown event types at INFO
-(`opencode-parser`) so a real OpenCode run produces a fixture-capture trail
-in the daily log file.
-
-To finish this: spawn an OpenCode session that runs a shell command, an edit,
-and an MCP tool call; capture the JSON lines from the daily log; turn each
-into a parser fixture; extend `OpenCodeEvent` and the mapper.
+**Status (2026-05-15):** init/message/tool/done are mapped. Tool fixtures have
+been captured for the observed OpenCode `tool_use` shape and now emit
+`RunnerEventTool` for Slack status updates. Unknown future event types still log
+at INFO (`opencode-parser`) so operators can capture additional fixtures.
 
 Do not guess the tool event schema from docs.
 
@@ -245,6 +238,9 @@ Generate config with:
 - `model` if thread/session selected one
 - `agent.<name>.prompt`
 - `agent.<name>.mode = "primary"`
+- `agent.<name>.permission` as an object override mirroring top-level
+  `permission` (for string top-level values, emit `{ "*": "allow" }`) so inline
+  runtime config overrides `.opencode/agents/<name>.md` frontmatter permissions
 - `permission`
 - `mcp`
 
@@ -259,6 +255,7 @@ Sketch:
     "junior-lead": {
       "description": "Junior Slack runner",
       "mode": "primary",
+      "permission": { "*": "allow" },
       "prompt": "<composed Junior system prompt>"
     }
   },
@@ -313,8 +310,10 @@ Mitigations in code today:
 
 - The OpenCode spawner unsets `OPENCODE_CONFIG` on the child process so a
   developer's shell override does not load.
-- The generated config sets `model` and `permission` explicitly when Junior
-  has a value; missing keys are the merge surface.
+- The generated config sets `model`, top-level `permission`, and
+  `agent.<name>.permission` explicitly when Junior has a value. Agent permission
+  is object-shaped because OpenCode does not accept the string shorthand at that
+  layer. Missing keys are the merge surface.
 
 If full isolation is required for a deployment (production, shared service
 accounts), run Junior with `HOME` / `XDG_CONFIG_HOME` pointed at an empty

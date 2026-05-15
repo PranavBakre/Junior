@@ -21,6 +21,7 @@ describe("OpenCode config generation", () => {
         "junior-lead": {
           description: "Junior Slack runner",
           mode: "primary",
+          permission: { "*": "allow" },
           prompt: "CUSTOM JUNIOR SYSTEM PROMPT",
         },
       },
@@ -68,10 +69,22 @@ describe("OpenCode config generation", () => {
       permission: { edit: "deny" },
       agent: {
         junior: {
+          permission: { edit: "deny" },
           prompt: "Prompt",
         },
       },
     });
+  });
+
+  it("copies string permission onto the generated agent as an object override", () => {
+    const config = buildOpenCodeConfig({
+      agentName: "review",
+      agentPrompt: "Prompt",
+      permission: "allow",
+    });
+
+    expect(config.permission).toBe("allow");
+    expect(config.agent.review.permission).toEqual({ "*": "allow" });
   });
 
   it("rejects blank agent names", () => {

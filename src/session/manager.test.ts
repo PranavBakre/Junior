@@ -12,7 +12,7 @@ import { createSession } from "./types.ts";
 // --- Mock setup ---
 
 interface MockHandle extends SpawnHandle {
-  _complete: (response?: string, sessionId?: string) => void;
+  _complete: (response?: string, sessionId?: string, events?: RunnerEvent[]) => void;
   _error: (errorMsg: string) => void;
 }
 
@@ -32,7 +32,7 @@ function createMockHandle(
     onEvent: (cb) => listeners.push(cb),
     kill: mock(() => {}),
     pid: 12345,
-    _complete: (resp?: string, sid?: string) => {
+    _complete: (resp?: string, sid?: string, resultEvents?: RunnerEvent[]) => {
       const finalResponse = resp ?? response;
       const finalSessionId = sid ?? sessionId;
       for (const l of listeners)
@@ -47,7 +47,7 @@ function createMockHandle(
         provider: "claude",
         sessionId: finalSessionId,
         response: finalResponse,
-        events: [],
+        events: resultEvents ?? [],
         exitCode: 0,
         error: null,
       });
@@ -308,6 +308,28 @@ describe("SessionManager", () => {
     const session = await store.get("thread-1");
     expect(session!.status).toBe("idle");
     expect(responses).toEqual(["Here is the answer"]);
+  });
+
+  it("suppresses final response that duplicates a Slack MCP post", async () => {
+    const responses: string[] = [];
+    manager.onResponse = (_session, response) => responses.push(response);
+
+    await manager.handleMessage(makeEvent({ text: "dispatch review" }));
+    currentHandle._complete("!review check PR 123", undefined, [
+      {
+        type: "tool",
+        provider: "claude",
+        name: "mcp__slack-bot__slack_send_message",
+        input: { text: "!review check PR 123" },
+        status: "started",
+      },
+    ]);
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const session = await store.get("thread-1");
+    expect(session!.status).toBe("idle");
+    expect(responses).toEqual([]);
   });
 
   it("captures sessionId from init event", async () => {

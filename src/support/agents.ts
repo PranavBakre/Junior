@@ -51,7 +51,7 @@ export function registerAgentIdentity(
 
 /**
  * Scan a directory of agent `.md` files (typically the org overlay at
- * `.claude/agents-org/`) and register slack identities for any agent that
+ * `agents-org/`) and register slack identities for any agent that
  * declares both `username` and `iconEmoji` in its frontmatter. Files
  * without those fields are skipped silently — agents are free to declare
  * just a prompt without a slack identity (e.g. they only run as Task-tool
