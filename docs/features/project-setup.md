@@ -33,6 +33,23 @@ The bot needs environment configuration (Slack tokens, repo paths, timeouts) and
 9. `app.start()`, resolve bot identity via `auth.test`, register event handlers (every message goes through `supportRouter.handleMessage`).
 10. If `config.http.enabled`, dynamic-import `./http/server.ts` and start the localhost dashboard. Failure is non-fatal — logged so the bot keeps running.
 
+## Private Org Overlay
+
+The private agent overlay is mounted at `agents-org/`, not under `.claude/`, because it is Junior-owned runtime data rather than a Claude Code native agent directory. Fresh clones initialize it with:
+
+```bash
+git submodule update --init agents-org
+```
+
+Existing checkouts that previously initialized `.claude/agents-org` should run:
+
+```bash
+git submodule deinit .claude/agents-org
+git submodule update --init agents-org
+```
+
+The overlay is optional for public-only development. Missing `agents-org/` degrades to public agent definitions and no private identities.
+
 ## Configuration
 
 `src/config.ts` exports `loadConfig(): Config`. Shape:

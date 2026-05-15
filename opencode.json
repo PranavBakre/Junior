@@ -2,13 +2,8 @@
   "$schema": "https://opencode.ai/config.json",
   "instructions": [
     "CLAUDE.md",
-    "/Users/psbakre/.claude/CLAUDE.md",
-    "/Users/psbakre/.claude/RTK.md",
     ".claude/agents/common/building-philosophy.md",
     ".claude/agents/common/merge-workflow.md",
-    ".claude/agents/common/runtime-environment.md",
-    "agents-org/common/merge-workflow.md",
-    "agents-org/common/orchestrator-dispatch.md",
-    "agents-org/common/runtime-environment.md"
+    ".claude/agents/common/runtime-environment.md"
   ]
 }

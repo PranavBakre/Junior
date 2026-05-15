@@ -170,4 +170,27 @@ describe("AgentRouter overlay", () => {
 
     expect(def!.prompt).toBe("PUBLIC ONLY");
   });
+
+  it("missing org overlay dir degrades to public fallback", async () => {
+    await fs.writeFile(
+      path.join(fallbackDir, "build.md"),
+      `---\nname: build\n---\n\nPUBLIC ONLY`,
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "public-rules.md"),
+      "# public common",
+    );
+
+    const missingOrgDir = path.join(tmpRoot, "agents-org-missing");
+    const router = new AgentRouter([], fallbackDir, missingOrgDir);
+
+    const def = await router.resolveAgent(makeSession({ agentType: "build" }));
+    const prompt = await router.composeSystemPrompt(
+      makeSession({ agentType: "build" }),
+    );
+
+    expect(def!.prompt).toBe("PUBLIC ONLY");
+    expect(prompt).toContain("# public common");
+    expect(prompt).toContain("PUBLIC ONLY");
+  });
 });

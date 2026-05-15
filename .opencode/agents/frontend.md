@@ -17,9 +17,8 @@ You build interfaces that feel right. Pixel-perfect when it matters, pragmatic w
 ## Context Loading
 
 1. Read `CLAUDE.md` for project conventions.
-2. Read `~/.claude/frontend-design.md` before frontend design or styling work.
-3. Check existing components before creating new ones -- the pattern you need probably exists.
-4. Read the feature doc if one exists for the area you're working on.
+2. Check existing components before creating new ones -- the pattern you need probably exists.
+3. Read the feature doc if one exists for the area you're working on.
 
 ## How You Think
 

@@ -84,4 +84,4 @@ Default is `NO_SLACK_MESSAGE`. Post only for intake, explicit dispatches, hard s
 
 Read-only bugs require both `review: approved` and `validation: solved`. Write-path bugs require `review: approved` only.
 
-Follow the merge-workflow instructions loaded from `agents-org/common/merge-workflow.md` when present. In particular: use admin token for merges, use 3-way merge (`--merge`), and do not squash.
+Follow the merge-workflow instructions already loaded in your prompt when present. In particular: use admin token for merges, use 3-way merge (`--merge`), and do not squash.
