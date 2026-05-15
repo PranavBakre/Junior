@@ -128,7 +128,7 @@ export function loadConfig(): Config {
       tmuxSweepIntervalMs: Number(optional("TMUX_SWEEP_INTERVAL_MS", "900000")), // 15min
     },
     runner: {
-      provider: parseRunnerProvider(optional("RUNNER_PROVIDER", "claude")),
+      provider: parseRunnerProvider(optional("RUNNER_PROVIDER", "opencode")),
     },
     opencode: {
       model: process.env.OPENCODE_MODEL ?? null,
@@ -206,11 +206,11 @@ function parseRunnerProvider(value: string): ImplementedRunnerProvider {
     // Known provider, not yet implemented. Fail at config load with the real
     // cause rather than throwing on the first message turn.
     throw new Error(
-      `RUNNER_PROVIDER=${value} is a planned provider but is not yet implemented. Use claude or opencode.`,
+      `RUNNER_PROVIDER=${value} is a planned provider but is not yet implemented. Use opencode or claude.`,
     );
   }
   throw new Error(
-    `Invalid RUNNER_PROVIDER: ${value} (expected claude|opencode)`,
+    `Invalid RUNNER_PROVIDER: ${value} (expected opencode|claude)`,
   );
 }
 

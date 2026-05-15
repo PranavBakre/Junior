@@ -80,7 +80,7 @@ interface Config {
 | `SLACK_BOT_TOKEN` | yes | — | |
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode `xapp-...` |
 | `SLACK_SIGNING_SECRET` | no | `""` | only needed if you ever switch to Events API |
-| `RUNNER_PROVIDER` | no | `claude` | `claude` \| `opencode`; `codex` is planned but rejected until implemented |
+| `RUNNER_PROVIDER` | no | `opencode` | `opencode` \| `claude`; `codex` is planned but rejected until implemented |
 | `CLAUDE_MAX_TURNS` | no | `25` | |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | |
 | `CLAUDE_MODEL` | no | unset | passed through to `claude -p --model` |

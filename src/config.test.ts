@@ -53,10 +53,10 @@ afterEach(() => {
 });
 
 describe("loadConfig runner providers", () => {
-  it("defaults to Claude runner and OpenCode defaults", () => {
+  it("defaults to OpenCode runner and OpenCode defaults", () => {
     const config = loadConfig();
 
-    expect(config.runner.provider).toBe("claude");
+    expect(config.runner.provider).toBe("opencode");
     expect(config.opencode).toEqual({
       model: null,
       timeoutMs: 300000,
@@ -93,7 +93,7 @@ describe("loadConfig runner providers", () => {
     process.env.RUNNER_PROVIDER = "other";
 
     expect(() => loadConfig()).toThrow(
-      "Invalid RUNNER_PROVIDER: other (expected claude|opencode)",
+      "Invalid RUNNER_PROVIDER: other (expected opencode|claude)",
     );
   });
 
@@ -101,7 +101,7 @@ describe("loadConfig runner providers", () => {
     process.env.RUNNER_PROVIDER = "codex";
 
     expect(() => loadConfig()).toThrow(
-      "RUNNER_PROVIDER=codex is a planned provider but is not yet implemented. Use claude or opencode.",
+      "RUNNER_PROVIDER=codex is a planned provider but is not yet implemented. Use opencode or claude.",
     );
   });
 });
