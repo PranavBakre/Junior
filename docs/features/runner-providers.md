@@ -362,7 +362,7 @@ Rules:
 Start with global config:
 
 ```env
-RUNNER_PROVIDER=claude|opencode|codex
+RUNNER_PROVIDER=claude|opencode
 ```
 
 Then add a thread command:
@@ -370,8 +370,11 @@ Then add a thread command:
 ```text
 !provider claude
 !provider opencode
-!provider codex
 ```
+
+`codex` stays in the internal `RunnerProvider` union as a planned provider, but
+is rejected at config load and at `!provider codex` until the Codex adapter
+lands.
 
 Home/status output should show:
 

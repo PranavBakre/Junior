@@ -41,7 +41,7 @@ The bot needs environment configuration (Slack tokens, repo paths, timeouts) and
 interface Config {
   slack: { botToken; appToken; signingSecret };
   claude: { maxTurns; timeoutMs; permissionMode; defaultModel: string | null };
-  runner: { provider: "claude" | "opencode" | "codex" };
+  runner: { provider: "claude" | "opencode" };
   opencode: {
     model: string | null;
     timeoutMs: number;
@@ -72,7 +72,7 @@ interface Config {
 | `SLACK_BOT_TOKEN` | yes | — | |
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode `xapp-...` |
 | `SLACK_SIGNING_SECRET` | no | `""` | only needed if you ever switch to Events API |
-| `RUNNER_PROVIDER` | no | `claude` | `claude` \| `opencode` \| `codex` |
+| `RUNNER_PROVIDER` | no | `claude` | `claude` \| `opencode`; `codex` is planned but rejected until implemented |
 | `CLAUDE_MAX_TURNS` | no | `25` | |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | |
 | `CLAUDE_MODEL` | no | unset | passed through to `claude -p --model` |
@@ -96,7 +96,7 @@ interface Config {
 | `MCP_PORT` | no | `3456` | internal Slack-bot MCP server |
 
 Validation rules (each throws on bad input):
-- `parseRunnerProvider` — must be `claude`, `opencode`, or `codex`.
+- `parseRunnerProvider` — must be `claude` or `opencode`; `codex` is a planned provider and currently rejected with a not-implemented error.
 - `parseStoreKind` — must be `memory` or `sqlite`.
 - `parseVerbosity` — must be `quiet`/`normal`/`verbose`.
 - `parseChannelDefaults` — must be a JSON object of `{channelId: {agentType: string}}`.
