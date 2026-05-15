@@ -238,6 +238,9 @@ Generate config with:
 - `model` if thread/session selected one
 - `agent.<name>.prompt`
 - `agent.<name>.mode = "primary"`
+- `agent.<name>.permission` as an object override mirroring top-level
+  `permission` (for string top-level values, emit `{ "*": "allow" }`) so inline
+  runtime config overrides `.opencode/agents/<name>.md` frontmatter permissions
 - `permission`
 - `mcp`
 
@@ -252,6 +255,7 @@ Sketch:
     "junior-lead": {
       "description": "Junior Slack runner",
       "mode": "primary",
+      "permission": { "*": "allow" },
       "prompt": "<composed Junior system prompt>"
     }
   },
@@ -306,8 +310,10 @@ Mitigations in code today:
 
 - The OpenCode spawner unsets `OPENCODE_CONFIG` on the child process so a
   developer's shell override does not load.
-- The generated config sets `model` and `permission` explicitly when Junior
-  has a value; missing keys are the merge surface.
+- The generated config sets `model`, top-level `permission`, and
+  `agent.<name>.permission` explicitly when Junior has a value. Agent permission
+  is object-shaped because OpenCode does not accept the string shorthand at that
+  layer. Missing keys are the merge surface.
 
 If full isolation is required for a deployment (production, shared service
 accounts), run Junior with `HOME` / `XDG_CONFIG_HOME` pointed at an empty

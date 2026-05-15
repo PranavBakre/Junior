@@ -3,6 +3,7 @@ import {
   extractRunnerMessageText,
   formatRunnerToolStatuses,
   formatToolStatuses,
+  isDuplicateSlackToolResponse,
   splitResponse,
 } from "./formatting.ts";
 import type { StreamEventAssistant } from "../claude/types.ts";
@@ -169,6 +170,67 @@ describe("extractRunnerMessageText", () => {
 
   it("returns null for non-message events", () => {
     expect(extractRunnerMessageText(makeToolEvent({ name: "Bash" }))).toBeNull();
+  });
+});
+
+describe("isDuplicateSlackToolResponse", () => {
+  it("detects final text already posted through slack_send_message", () => {
+    const events: RunnerEvent[] = [
+      makeToolEvent({
+        name: "mcp__slack-bot__slack_send_message",
+        input: { text: "!review check PR 123" },
+      }),
+    ];
+
+    expect(isDuplicateSlackToolResponse("!review check PR 123", events)).toBe(true);
+  });
+
+  it("treats a trailing sentinel as duplicate of posted content", () => {
+    const events: RunnerEvent[] = [
+      makeToolEvent({
+        name: "slack_send_message",
+        input: { text: "posted already" },
+      }),
+    ];
+
+    expect(isDuplicateSlackToolResponse("posted already\nNO_SLACK_MESSAGE", events)).toBe(true);
+  });
+
+  it("detects OpenCode MCP names that use single separators", () => {
+    const events: RunnerEvent[] = [
+      makeToolEvent({
+        name: "slack-bot_slack_send_message",
+        input: { text: "!review check PR 123" },
+      }),
+    ];
+
+    expect(isDuplicateSlackToolResponse("!review check PR 123", events)).toBe(true);
+  });
+
+  it("detects generic OpenCode MCP events with nested tool name and text", () => {
+    const events: RunnerEvent[] = [
+      makeToolEvent({
+        name: "mcp",
+        input: {
+          server: "slack-bot",
+          tool: "slack_send_message",
+          arguments: { text: "!review check PR 123" },
+        },
+      }),
+    ];
+
+    expect(isDuplicateSlackToolResponse("!review check PR 123", events)).toBe(true);
+  });
+
+  it("does not suppress different follow-up text", () => {
+    const events: RunnerEvent[] = [
+      makeToolEvent({
+        name: "mcp__slack-bot__slack_send_message",
+        input: { text: "posted already" },
+      }),
+    ];
+
+    expect(isDuplicateSlackToolResponse("additional context", events)).toBe(false);
   });
 });
 

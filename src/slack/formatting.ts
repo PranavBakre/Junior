@@ -78,6 +78,83 @@ export function prepareSlackResponse(text: string): string | null {
   return normalized;
 }
 
+/**
+ * Return true when the final runner response would duplicate text already sent
+ * via the Slack MCP post tool in the same turn.
+ *
+ * Agents are instructed to return NO_SLACK_MESSAGE after calling
+ * slack_send_message, but the failure mode is expensive: the MCP post lands,
+ * then Junior posts the identical final response again. Suppress only exact
+ * duplicate text so useful follow-up responses are still shown.
+ */
+export function isDuplicateSlackToolResponse(
+  text: string,
+  events: RunnerEvent[],
+): boolean {
+  const prepared = prepareSlackResponse(text);
+  if (prepared === null) return false;
+
+  const normalizedResponse = normalizeSlackPostText(prepared);
+  return events.some((event) => {
+    if (event.type !== "tool") return false;
+    if (!isSlackSendMessageEvent(event)) return false;
+    const postedText = findSlackPostText(event.input);
+    return (
+      typeof postedText === "string" &&
+      normalizeSlackPostText(postedText) === normalizedResponse
+    );
+  });
+}
+
+function normalizeSlackPostText(text: string): string {
+  return text.trim();
+}
+
+function isSlackSendMessageEvent(event: RunnerEventTool): boolean {
+  if (isSlackSendMessageToolName(event.name)) return true;
+
+  // Provider adapters don't all expose MCP tool names identically. Claude uses
+  // names like `mcp__slack-bot__slack_send_message`; OpenCode may surface MCP
+  // calls as a generic tool with the concrete name nested in the input.
+  const inputToolName = findToolName(event.input);
+  return !!inputToolName && isSlackSendMessageToolName(inputToolName);
+}
+
+function isSlackSendMessageToolName(toolName: string): boolean {
+  const normalized = toolName.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  return normalized === "slack_send_message" || normalized.endsWith("_slack_send_message");
+}
+
+function findToolName(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  for (const key of ["tool", "toolName", "tool_name", "name", "method"]) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && isSlackSendMessageToolName(candidate)) {
+      return candidate;
+    }
+  }
+  for (const nested of Object.values(value)) {
+    const candidate = findToolName(nested);
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+function findSlackPostText(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const direct = value.text;
+  if (typeof direct === "string") return direct;
+  for (const nested of Object.values(value)) {
+    const text = findSlackPostText(nested);
+    if (text) return text;
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function formatToolEvent(event: RunnerEventTool): string {
   const tool = event.name || "Unknown";
   const input = event.input ?? {};
