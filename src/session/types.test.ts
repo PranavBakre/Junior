@@ -114,6 +114,10 @@ describe("createSession", () => {
       "channel",
       "createdAt",
       "cwd",
+      "dormant",
+      "dormantAnnounced",
+      "driverMode",
+      "humanParticipants",
       "lastActivity",
       "lastError",
       "leadSessionId",
@@ -127,10 +131,27 @@ describe("createSession", () => {
       "systemPrompt",
       "targetRepo",
       "threadId",
+      "tmuxSessionName",
+      "topLevelTmuxAgent",
       "verbosity",
       "worktreePath",
       "worktreePaths",
     ]);
+  });
+
+  it("has dormant set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.dormant).toBe(false);
+  });
+
+  it("has dormantAnnounced set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.dormantAnnounced).toBe(false);
+  });
+
+  it("has humanParticipants as empty array by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.humanParticipants).toEqual([]);
   });
 });
 

@@ -40,7 +40,15 @@ The bot needs environment configuration (Slack tokens, repo paths, timeouts) and
 ```typescript
 interface Config {
   slack: { botToken; appToken; signingSecret };
-  claude: { maxTurns; timeoutMs; permissionMode; defaultModel: string | null };
+  claude: {
+    maxTurns;
+    timeoutMs;
+    permissionMode;
+    defaultModel: string | null;
+    defaultDriver: "headless" | "tmux"; // DEFAULT_CLAUDE_DRIVER (default: "headless")
+    tmuxIdleTtlMs: number;    // TMUX_IDLE_TTL_MS (default: 14400000 — 4h)
+    tmuxSweepIntervalMs: number; // TMUX_SWEEP_INTERVAL_MS (default: 900000 — 15min)
+  };
   runner: { provider: "claude" | "opencode" };
   opencode: {
     model: string | null;

@@ -128,7 +128,7 @@ export function spawnClaude(
   };
 }
 
-function mapClaudeEvent(event: StreamEvent): RunnerEvent[] {
+export function mapClaudeEvent(event: StreamEvent): RunnerEvent[] {
   switch (event.type) {
     case "system":
       if (event.subtype === "init") {

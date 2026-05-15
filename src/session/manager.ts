@@ -9,6 +9,7 @@ import type { SessionStore } from "./store/interface.ts";
 import type {
   AgentIdentity,
   AgentSession,
+  DriverMode,
   PendingMessage,
   ThreadSession,
 } from "./types.ts";
@@ -24,6 +25,8 @@ import {
   sessionProvider,
   spawnRunner as defaultSpawnRunner,
 } from "../runners/index.ts";
+import { createDrivers, type DriverMap } from "../claude/factory.ts";
+import { tmuxSessionNameFor } from "../claude/tmux-driver.ts";
 import { buildDispatchAllowBlock, identityForAgent } from "../support/agents.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
@@ -42,6 +45,7 @@ export class SessionManager {
   private handles = new Map<string, SpawnHandle>();
   private seenMessages = new Set<string>();
   private spawnRunner: SpawnRunnerFn;
+  private drivers: DriverMap;
 
   slackApp?: App;
   botUserId?: string;
@@ -58,14 +62,137 @@ export class SessionManager {
     store: SessionStore,
     config: Config,
     spawnRunner?: SpawnRunnerFn,
+    drivers?: DriverMap,
   ) {
     this.store = store;
     this.config = config;
     this.spawnRunner = spawnRunner ?? defaultSpawnRunner;
+    this.drivers = drivers ?? createDrivers({
+      spawnFn: (session, prompt, _claudeConfig, targetRepoCwd, botToken, agentIdentity) =>
+        this.spawnRunner(
+          { ...session, provider: "claude" },
+          prompt,
+          this.config,
+          targetRepoCwd,
+          botToken,
+          agentIdentity,
+        ),
+    });
+  }
+
+  /** Public for tests + reconciliation; the manager doesn't expose drivers otherwise. */
+  driverFor(mode: DriverMode | undefined): DriverMap[DriverMode] {
+    return this.drivers[mode ?? "headless"];
+  }
+
+  /** Used by shutdown — let lifecycle code walk tmux sessions without re-importing the driver. */
+  drivers_all(): DriverMap {
+    return this.drivers;
   }
 
   async handleMessage(event: SlackMessageEvent): Promise<void> {
     await this.runSingleSession(event, "default");
+  }
+
+  /**
+   * Attention gate. Runs before any routing and decides whether the message
+   * should reach an agent at all. Returns `true` when the message is consumed
+   * here (drop it; the caller must NOT route further) and `false` when normal
+   * routing should continue.
+   *
+   * Handles:
+   * - `!aside` — drop with 👀.
+   * - `!listen` — clear dormant (if set) and drop with 👂.
+   * - Wake on @mention — clear dormant and fall through to routing.
+   * - Drop everything while dormant.
+   * - One-shot auto-dormant trigger when a second human posts without
+   *   mentioning Junior. Announcement only fires once per thread (sticky
+   *   `dormantAnnounced` flag), so manual `!listen` is respected — re-silence
+   *   is `!aside` or `!mute`.
+   *
+   * Auto-trigger channels (any channel with a `channelDefaults` entry — e.g.
+   * `#bugs-backlog`) are exempt: humans-talking-to-humans is the intended
+   * input there, not a sidebar.
+   */
+  async gateAttention(event: SlackMessageEvent): Promise<boolean> {
+    // !aside: drop the message but still record the sender as a participant —
+    // they're a human in the room even if this message isn't for Junior. The
+    // alternative (skip tracking) creates a corner where U-B posts only
+    // asides, then a real non-mention message, and the gate fails to fire
+    // because U-B was never registered as present.
+    if (event.command === "aside") {
+      const isHuman = !event.isSelfBot && !event.botId;
+      if (isHuman && event.user) {
+        const session = await this.store.get(event.threadId);
+        if (session && !session.humanParticipants.includes(event.user)) {
+          session.humanParticipants.push(event.user);
+          await this.store.set(event.threadId, session);
+        }
+      }
+      this.onReaction?.(event, "eyes");
+      return true;
+    }
+
+    // Auto-trigger channels (e.g. #bugs-backlog) feed Junior every human
+    // message by design — the gate would falsely dormant them.
+    const isAutoTrigger = !!this.config.channelDefaults[event.channel];
+
+    const session = await this.store.get(event.threadId);
+
+    // !listen: wake from dormant if needed. Anyone in the thread.
+    if (event.command === "listen") {
+      if (session && session.dormant) {
+        session.dormant = false;
+        await this.store.set(event.threadId, session);
+      }
+      this.onReaction?.(event, "ear");
+      return true;
+    }
+
+    // @mention wakes a dormant thread, then falls through so the mention is
+    // processed normally.
+    if (event.mentionsJunior && session?.dormant) {
+      session.dormant = false;
+      await this.store.set(event.threadId, session);
+    }
+
+    // Dormant after the wake check → drop silently. No state change.
+    if (session?.dormant) {
+      return true;
+    }
+
+    if (isAutoTrigger) return false;
+
+    // Trigger: actor must be human (not Junior, not its agents, not any
+    // foreign bot). Session must exist with another human already recorded.
+    // Message must not @mention Junior. And the gate fires at most once per
+    // thread — once announced, dormancy is the human's call (`!aside` / `!mute`).
+    const isHuman = !event.isSelfBot && !event.botId;
+    if (
+      isHuman &&
+      session &&
+      !session.dormantAnnounced &&
+      !event.mentionsJunior
+    ) {
+      const otherHumans = session.humanParticipants.filter(
+        (u) => u !== event.user,
+      );
+      if (otherHumans.length > 0) {
+        session.dormant = true;
+        session.dormantAnnounced = true;
+        if (!session.humanParticipants.includes(event.user)) {
+          session.humanParticipants.push(event.user);
+        }
+        await this.store.set(event.threadId, session);
+        this.onCommandResponse?.(
+          event,
+          "Looks like a side conversation. I'll stay out — `@` me or `!listen` to bring me back.",
+        );
+        return true;
+      }
+    }
+
+    return false;
   }
 
   async handleLeadMessage(event: SlackMessageEvent): Promise<void> {
@@ -162,6 +289,22 @@ export class SessionManager {
         handle.kill();
         this.handles.delete(key);
       }
+      // Tear down any tmux state for this thread before deleting the row.
+      // The row is the only place we track tmuxSessionName, so close drivers
+      // first or we leak detached tmux sessions.
+      if (session.driverMode === "tmux") {
+        const tmux = this.driverFor("tmux");
+        if (session.tmuxSessionName) {
+          // topLevelTmuxAgent is "lead" in support channels and "default" elsewhere
+          // — pick from the row, not a literal, or non-support channels leak.
+          await tmux.close(threadId, session.topLevelTmuxAgent ?? "lead").catch(() => undefined);
+        }
+        for (const agentSession of Object.values(session.agentSessions ?? {})) {
+          if (agentSession.tmuxSessionName) {
+            await tmux.close(threadId, agentSession.agentName).catch(() => undefined);
+          }
+        }
+      }
     }
     await this.store.delete(threadId);
   }
@@ -187,15 +330,38 @@ export class SessionManager {
 
     let touched = false;
     if (agentName === "lead" || agentName === "default") {
-      if (session.sessionId || session.leadSessionId || session.pendingMessages.length > 0 || session.status !== "idle") {
+      if (
+        session.sessionId ||
+        session.leadSessionId ||
+        session.pendingMessages.length > 0 ||
+        session.status !== "idle" ||
+        session.tmuxSessionName
+      ) {
         touched = true;
+      }
+      // handle.kill() above only sends Escape inside the tmux pane — the tmux
+      // session itself survives. Without an explicit close the next turn
+      // adopts a stale `--resume <sessionId>` pointing at a session we just
+      // wiped, so the row and the live tmux session drift apart.
+      if (session.driverMode === "tmux" && session.tmuxSessionName) {
+        const tmux = this.driverFor("tmux");
+        await tmux
+          .close(threadId, session.topLevelTmuxAgent ?? agentName)
+          .catch(() => undefined);
       }
       session.sessionId = null;
       session.leadSessionId = null;
       session.pendingMessages = [];
       session.status = "idle";
       session.pid = null;
+      session.tmuxSessionName = null;
+      session.topLevelTmuxAgent = null;
     } else if (session.agentSessions?.[agentName]) {
+      const agentSession = session.agentSessions[agentName];
+      if (session.driverMode === "tmux" && agentSession.tmuxSessionName) {
+        const tmux = this.driverFor("tmux");
+        await tmux.close(threadId, agentName).catch(() => undefined);
+      }
       delete session.agentSessions[agentName];
       touched = true;
     }
@@ -293,6 +459,7 @@ export class SessionManager {
           `*Status:* ${session.status}`,
           `*Provider:* ${session.provider ?? this.config.runner.provider}`,
           `*Muted:* ${session.muted ? "yes" : "no"}`,
+          `*Dormant:* ${session.dormant ? "yes (auto)" : "no"}`,
           `*Agent:* ${session.agentType ?? "default"}`,
           `*Default Agent:* ${session.defaultAgent ?? "channel default"}`,
           `*Repo:* ${session.targetRepo ?? "none"}`,
@@ -325,6 +492,10 @@ export class SessionManager {
           "`!bugs <text>` — Add bug item to calendar",
           "`!mute` — Stop responding until !unmute (admin only)",
           "`!unmute` — Resume responding (admin only)",
+          "`!stop` — Interrupt in-flight turn; keep session alive (tmux: Escape; headless: kill)",
+          "`!driver <headless|tmux>` — Switch this thread's Claude driver (admin only)",
+          "`!aside [text]` — Drop just this message (side comment, humans only)",
+          "`!listen` — Wake from auto-dormant mode",
           "`!help` — Show this help",
         ].join("\n");
         this.onCommandResponse?.(event, helpText);
@@ -500,6 +671,116 @@ export class SessionManager {
           `4. Reply with a one-line confirmation.`,
         ].join("\n");
         return false;
+      }
+
+      case "stop": {
+        // Halt the in-flight turn WITHOUT killing the driver session.
+        // Headless: kill the process (same as !cancel for one slot).
+        // Tmux: send Escape to the TUI — the persistent claude stays alive,
+        // input box clears, next message starts fresh.
+        const driver = this.driverFor(session.driverMode);
+        let touched = 0;
+        for (const [key, handle] of this.handles) {
+          if (!key.startsWith(`${session.threadId}:`)) continue;
+          const agentName = key.slice(session.threadId.length + 1);
+          await driver.interrupt(session.threadId, agentName).catch(() => undefined);
+          handle.kill();
+          this.handles.delete(key);
+          touched++;
+        }
+        session.status = "idle";
+        for (const agentSession of Object.values(session.agentSessions ?? {})) {
+          if (agentSession.status === "busy") agentSession.status = "idle";
+        }
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(
+          event,
+          touched === 0 ? "Nothing running." : `Interrupted (${touched} agent${touched === 1 ? "" : "s"}). Send a new message to continue.`,
+        );
+        return true;
+      }
+
+      case "driver": {
+        if (await this.denyIfNotAdmin(event)) return true;
+        const arg = event.text.trim().toLowerCase();
+        if (arg !== "headless" && arg !== "tmux") {
+          this.onCommandResponse?.(
+            event,
+            `Usage: \`!driver headless\` or \`!driver tmux\`. Current: *${session.driverMode}*.`,
+          );
+          return true;
+        }
+        if (session.driverMode === arg) {
+          this.onCommandResponse?.(event, `Already on *${arg}*.`);
+          return true;
+        }
+        // Tear down the outgoing driver's per-(thread,agent) state. Delete
+        // the handle BEFORE close() so onRunComplete's `handles.get(key) !==
+        // ownHandle` guard trips when close() resolves the activeTurn —
+        // otherwise the resolved turn posts its partial text to Slack and
+        // auto-drains buffered messages onto the new driver, contradicting
+        // "Next message starts on the new path."
+        const outgoing = this.driverFor(session.driverMode);
+        for (const key of [...this.handles.keys()]) {
+          if (!key.startsWith(`${session.threadId}:`)) continue;
+          const agentName = key.slice(session.threadId.length + 1);
+          this.handles.delete(key);
+          await outgoing.close(session.threadId, agentName).catch(() => undefined);
+        }
+        // Between turns this.handles is empty — close the persisted tmux
+        // session(s) explicitly or nulling tmuxSessionName below orphans them
+        // (tmux-evict skips rows whose driverMode is no longer "tmux").
+        if (session.driverMode === "tmux") {
+          if (session.tmuxSessionName) {
+            await outgoing
+              .close(session.threadId, session.topLevelTmuxAgent ?? "lead")
+              .catch(() => undefined);
+          }
+          for (const agentSession of Object.values(session.agentSessions ?? {})) {
+            if (agentSession.tmuxSessionName) {
+              await outgoing
+                .close(session.threadId, agentSession.agentName)
+                .catch(() => undefined);
+              agentSession.tmuxSessionName = null;
+            }
+          }
+        }
+        session.driverMode = arg;
+        if (arg !== "tmux") {
+          session.tmuxSessionName = null;
+          session.topLevelTmuxAgent = null;
+        }
+        // `handleCommand` runs before the busy gate in `runSingleSession`, so
+        // !driver can fire mid-turn. The handle-delete-then-close loop above
+        // intentionally bails out of `onRunComplete` via the guard, but that
+        // guard skips the busy→idle flip too — so without this reset the row
+        // wedges at "busy" and every subsequent message buffers without a
+        // drain. !stop and !cancel both do the same flip for the same reason.
+        if (session.status === "busy") session.status = "idle";
+        for (const agentSession of Object.values(session.agentSessions ?? {})) {
+          if (agentSession.status === "busy") agentSession.status = "idle";
+        }
+        await this.store.set(session.threadId, session);
+        this.onCommandResponse?.(event, `Driver set to *${arg}*. Next message starts on the new path.`);
+        return true;
+      }
+
+      // `aside` and `listen` are normally consumed in gateAttention before
+      // routing reaches handleCommand. Defensive cases here keep them from
+      // accidentally falling through to Claude as plain prompts if the gate
+      // is bypassed (e.g. direct test invocations of handleMessage).
+      case "aside": {
+        this.onReaction?.(event, "eyes");
+        return true;
+      }
+
+      case "listen": {
+        if (session.dormant) {
+          session.dormant = false;
+          await this.store.set(session.threadId, session);
+        }
+        this.onReaction?.(event, "ear");
+        return true;
       }
 
       case "mute": {
@@ -689,16 +970,44 @@ export class SessionManager {
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it
       // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
-      const rawHandle = this.spawnRunner(
-        runSession,
-        prompt,
-        this.config,
-        targetRepoCwd,
-        this.config.slack.botToken,
-        agentIdentity,
-        imagePaths,
-      );
       const provider = sessionProvider(runSession, this.config);
+      let rawHandle: SpawnHandle;
+      if (provider === "claude") {
+        const driver = this.driverFor(session.driverMode);
+        // For tmux, persist the deterministic session name BEFORE first send so
+        // a crash mid-send leaves a recoverable trail. The driver computes the
+        // same name; storing it here lets reconciliation find it later.
+        if (session.driverMode === "tmux") {
+          const tmuxName = tmuxSessionNameFor(session.threadId, agentName);
+          if (isTopLevel) {
+            session.tmuxSessionName = tmuxName;
+            session.topLevelTmuxAgent = agentName;
+          } else if (agentSession) {
+            agentSession.tmuxSessionName = tmuxName;
+          }
+          await this.store.set(session.threadId, session);
+        }
+        rawHandle = driver.send({
+          session: runSession,
+          prompt,
+          config: this.config.claude,
+          targetRepoCwd,
+          botToken: this.config.slack.botToken,
+          agentIdentity,
+          threadId: session.threadId,
+          agentName,
+        });
+      } else {
+        rawHandle = this.spawnRunner(
+          runSession,
+          prompt,
+          this.config,
+          targetRepoCwd,
+          this.config.slack.botToken,
+          agentIdentity,
+          imagePaths,
+        );
+      }
       const handle = withTimeout(
         rawHandle,
         runnerTimeoutMs(this.config, provider),
@@ -892,6 +1201,7 @@ export class SessionManager {
         event.channel,
         this.config.session.defaultVerbosity,
         this.config.runner.provider,
+        this.config.claude.defaultDriver,
       );
       // Apply channel-level default agent type (e.g. #bugs-backlog → lead)
       const channelDefault = this.config.channelDefaults[event.channel];
@@ -904,6 +1214,16 @@ export class SessionManager {
     session.leadSessionId ??= session.sessionId;
     session.agentSessions ??= {};
     session.provider ??= "claude";
+    session.humanParticipants ??= [];
+
+    // Track human participants for the attention gate. Bots — Junior, its
+    // agents, and foreign bots — are excluded by design (see gateAttention).
+    const isHuman = !event.isSelfBot && !event.botId;
+    if (isHuman && event.user && !session.humanParticipants.includes(event.user)) {
+      session.humanParticipants.push(event.user);
+      await this.store.set(event.threadId, session);
+    }
+
     return session;
   }
 
