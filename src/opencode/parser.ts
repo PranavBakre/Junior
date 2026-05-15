@@ -1,4 +1,5 @@
 import type { RunnerEvent } from "../runners/types.ts";
+import { log } from "../logger.ts";
 
 export interface OpenCodeStepStartEvent {
   type: "step_start";
@@ -54,6 +55,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// Known OpenCode event types the parser currently maps. Anything else (most
+// importantly tool/command events — those fixtures haven't been captured yet)
+// gets logged at INFO so the gap is visible at runtime instead of a silent
+// drop that looks indistinguishable from "no tool was used." Schema
+// mismatches on known types log at WARN — those are real protocol breaks.
+const KNOWN_EVENT_TYPES = new Set(["step_start", "text", "step_finish"]);
+
 function isOpenCodeEvent(value: unknown): value is OpenCodeEvent {
   if (!isRecord(value) || typeof value.type !== "string") return false;
 
@@ -77,12 +85,41 @@ function parseLine(line: string): OpenCodeEvent | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
 
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(trimmed);
-    return isOpenCodeEvent(parsed) ? parsed : null;
-  } catch {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    // Real protocol breaks present identically to forward-compat noise
+    // (both produce null). Log once per malformed line so a breaking
+    // upstream change isn't invisible.
+    log.warn(
+      "opencode-parser",
+      `Dropped malformed JSON line (${(err as Error).message}): ${trimmed.slice(0, 200)}`,
+    );
     return null;
   }
+
+  if (isOpenCodeEvent(parsed)) return parsed;
+
+  // Recognized event-type string but failed schema validation: most likely
+  // OpenCode changed the shape under us. Surface it.
+  if (isRecord(parsed) && typeof parsed.type === "string") {
+    if (KNOWN_EVENT_TYPES.has(parsed.type)) {
+      log.warn(
+        "opencode-parser",
+        `Known event type "${parsed.type}" failed schema validation: ${trimmed.slice(0, 200)}`,
+      );
+    } else {
+      // Unknown event type — most likely a tool/command event that we
+      // haven't mapped yet. Log so operators can capture a fixture.
+      log.info(
+        "opencode-parser",
+        `Unmapped event type "${parsed.type}" (tool events are deferred): ${trimmed.slice(0, 200)}`,
+      );
+    }
+  }
+
+  return null;
 }
 
 export function createOpenCodeStreamParser(): OpenCodeStreamParser {

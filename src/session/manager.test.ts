@@ -590,6 +590,59 @@ describe("SessionManager", () => {
       expect(session!.provider).toBe("claude");
       expect(onCmd.mock.calls.at(-1)?.[1]).toContain("!reset all");
     });
+
+    it("requires reset when only an agent session exists (no top-level sessionId)", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      // Bug-pipeline-style state: no top-level sessionId, but a persistent
+      // agent has captured a native session.
+      const session = await store.get("thread-1");
+      const seeded = session
+        ? session
+        : (await manager.handleMessage(makeEvent({ text: "seed" })), await store.get("thread-1"));
+      seeded!.sessionId = null;
+      seeded!.leadSessionId = null;
+      seeded!.agentSessions = {
+        reproducer: {
+          agentName: "reproducer",
+          provider: "claude",
+          sessionId: "claude-reproducer-session",
+          status: "done",
+          pendingMessages: [],
+          lastActivity: Date.now(),
+          pid: null,
+        },
+      };
+      seeded!.status = "idle";
+      await store.set("thread-1", seeded!);
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "opencode",
+        ts: "ts-provider-agent",
+      }));
+
+      const after = await store.get("thread-1");
+      expect(after!.provider ?? "claude").toBe("claude");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("!reset all");
+    });
+
+    it("rejects codex with a not-implemented message", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "codex",
+        ts: "ts-provider-codex",
+      }));
+
+      const session = await store.get("thread-1");
+      // session.provider stays unchanged (undefined or claude)
+      expect(session?.provider ?? "claude").toBe("claude");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("not yet implemented");
+    });
   });
 
   describe("!build", () => {

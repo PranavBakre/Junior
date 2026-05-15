@@ -14,7 +14,11 @@ import type {
 } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
-import { createSession, isRunnerProvider } from "./types.ts";
+import {
+  createSession,
+  isImplementedRunnerProvider,
+  isRunnerProvider,
+} from "./types.ts";
 import {
   runnerTimeoutMs,
   sessionProvider,
@@ -310,7 +314,7 @@ export class SessionManager {
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
           "`!agent <junior|lead>` — Set thread default agent",
-          "`!provider <claude|opencode|codex>` — Set runner provider for this thread",
+          "`!provider <claude|opencode>` — Set runner provider for this thread",
           "`!cancel` — Kill running process, keep session",
           "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
           "`!status` — Show session status",
@@ -399,10 +403,17 @@ export class SessionManager {
 
       case "provider": {
         const provider = event.text.trim().toLowerCase();
-        if (!isRunnerProvider(provider)) {
+        if (isRunnerProvider(provider) && !isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Unknown provider "${provider}". Use \`!provider claude\`, \`!provider opencode\`, or \`!provider codex\`.`,
+            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\` or \`!provider opencode\`.`,
+          );
+          return true;
+        }
+        if (!isImplementedRunnerProvider(provider)) {
+          this.onCommandResponse?.(
+            event,
+            `Unknown provider "${provider}". Use \`!provider claude\` or \`!provider opencode\`.`,
           );
           return true;
         }
@@ -416,7 +427,18 @@ export class SessionManager {
         }
 
         const currentProvider = session.provider ?? this.config.runner.provider;
-        const hasNativeSession = Boolean(session.sessionId || session.leadSessionId);
+        // A native session can live in any of three slots: the thread-level
+        // sessionId, the lead session id, or any persistent agent session
+        // (reproducer/thinker/lead/etc). Switching provider while ANY of
+        // these is set leaves mixed-provider state in one thread — the new
+        // provider drives fresh dispatches while existing agents continue
+        // resuming against the old provider. Block all three.
+        const hasAgentSession = Object.values(session.agentSessions ?? {}).some(
+          (a) => a.sessionId,
+        );
+        const hasNativeSession = Boolean(
+          session.sessionId || session.leadSessionId || hasAgentSession,
+        );
         if (hasNativeSession && currentProvider !== provider) {
           this.onCommandResponse?.(
             event,
