@@ -860,6 +860,40 @@ describe("SessionManager", () => {
       expect(session!.tmuxSessionName).toBeNull();
       expect(session!.topLevelTmuxAgent).toBeNull();
     });
+
+    it("!driver mid-turn resets status busy→idle (would wedge thread otherwise)", async () => {
+      // handleCommand runs before the busy gate, so !driver is reachable
+      // while a turn is in flight. Without the explicit busy→idle flip in
+      // the !driver handler, the row sticks at "busy" forever — every
+      // subsequent message buffers with no drain ever firing.
+      const { drivers } = makeFakeDrivers();
+      manager = new SessionManager(store, testConfig, undefined, drivers);
+      await seedTmuxSession({ topAgent: "default" });
+
+      // Simulate mid-turn: flip status to busy + add an agent session also busy.
+      const seeded = (await store.get("thread-1"))!;
+      seeded.status = "busy";
+      seeded.agentSessions = {
+        reviewer: {
+          agentName: "reviewer",
+          sessionId: null,
+          status: "busy",
+          pendingMessages: [],
+          lastActivity: Date.now(),
+          pid: null,
+        },
+      };
+      await store.set("thread-1", seeded);
+
+      await manager.handleMessage(
+        makeEvent({ command: "driver", text: "headless", ts: "ts-drv-mid" }),
+      );
+
+      const after = (await store.get("thread-1"))!;
+      expect(after.driverMode).toBe("headless");
+      expect(after.status).toBe("idle");
+      expect(after.agentSessions.reviewer.status).toBe("idle");
+    });
   });
 
   // --- gateAttention ---

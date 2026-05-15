@@ -261,4 +261,43 @@ describe("TmuxDriver with stubbed exec", () => {
 
     expect(existsSync(transcriptPath)).toBe(true);
   });
+
+  it("tmuxSessionUsable: false when pane is sitting at a shell (claude exited)", async () => {
+    // Custom exec stub: has-session OK, display-message returns a shell.
+    const driver = new TmuxDriver({
+      projectsRoot: mkdtempSync(join(tmpdir(), "junior-tmux-test-")),
+      tmuxBin: "tmux",
+      exec: async (_cmd, args) => {
+        if (args[0] === "has-session") return "";
+        if (args[0] === "display-message") return "zsh\n";
+        return "";
+      },
+    });
+    expect(await driver.tmuxSessionUsable("junior-T1-lead")).toBe(false);
+  });
+
+  it("tmuxSessionUsable: true when pane reports claude/node", async () => {
+    const driver = new TmuxDriver({
+      projectsRoot: mkdtempSync(join(tmpdir(), "junior-tmux-test-")),
+      tmuxBin: "tmux",
+      exec: async (_cmd, args) => {
+        if (args[0] === "has-session") return "";
+        if (args[0] === "display-message") return "node\n";
+        return "";
+      },
+    });
+    expect(await driver.tmuxSessionUsable("junior-T1-lead")).toBe(true);
+  });
+
+  it("tmuxSessionUsable: false when the tmux session doesn't exist", async () => {
+    const driver = new TmuxDriver({
+      projectsRoot: mkdtempSync(join(tmpdir(), "junior-tmux-test-")),
+      tmuxBin: "tmux",
+      exec: async (_cmd, args) => {
+        if (args[0] === "has-session") throw new Error("no session");
+        return "";
+      },
+    });
+    expect(await driver.tmuxSessionUsable("junior-T1-lead")).toBe(false);
+  });
 });

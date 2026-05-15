@@ -141,6 +141,24 @@ export class TmuxDriver implements ClaudeDriver {
     const sess = this.sessions.get(handleKey(threadId, agentName));
     if (!sess) return;
     await this.sendKeys(sess.name, "Escape", "Escape");
+    // Resolve the in-flight turn (if any) — Escape stops the model but the
+    // `turn_duration` line may never arrive, leaving runClaudeWithAgent's
+    // `await` hung. Today only `!stop` calls interrupt and it pairs with
+    // handle.kill() which resolves separately, so the bug is latent — but a
+    // future caller that uses interrupt() alone would deadlock. Mirror the
+    // close() shape; kill the turn's result promise either way.
+    const turn = sess.activeTurn;
+    if (turn && !turn.rejected) {
+      turn.rejected = true;
+      turn.resolve({
+        sessionId: sess.sessionId,
+        response: turn.resultText || turn.lastAssistantText,
+        events: turn.events,
+        exitCode: null,
+        error: "interrupted",
+      });
+      sess.activeTurn = null;
+    }
   }
 
   async close(threadId: string, agentName: string): Promise<void> {
@@ -229,6 +247,37 @@ export class TmuxDriver implements ClaudeDriver {
     }
   }
 
+  /**
+   * "Has session" plus a wedged-pane check. tmux happily keeps the session
+   * alive after claude exits inside it (process crash, `/exit`, OOM) — the
+   * pane drops back to the shell prompt. Without this check we'd keep pasting
+   * prompts into a dead shell until the per-turn timeout each time. Treat a
+   * pane sitting at a known shell as "not usable, cold-start a fresh tmux."
+   */
+  async tmuxSessionUsable(name: string): Promise<boolean> {
+    if (!(await this.tmuxHasSession(name))) return false;
+    try {
+      const cmd = (
+        await this.execImpl(this.tmuxBin, [
+          "display-message",
+          "-p",
+          "-t",
+          name,
+          "#{pane_current_command}",
+        ])
+      ).trim();
+      // Known shells indicate claude has exited and we're at a prompt.
+      // Empty string (test stubs, older tmux) is treated as usable to avoid
+      // false-positive cold-starts.
+      const SHELLS = new Set(["bash", "zsh", "sh", "fish", "dash", "ksh"]);
+      return !SHELLS.has(cmd);
+    } catch {
+      // If display-message itself fails, fall back to the has-session result —
+      // we already know the session exists; we just couldn't probe the pane.
+      return true;
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────
   // Internals
   // ─────────────────────────────────────────────────────────────────────
@@ -236,12 +285,17 @@ export class TmuxDriver implements ClaudeDriver {
   private async ensureSession(input: DriverSendInput): Promise<void> {
     const key = handleKey(input.threadId, input.agentName);
     const existing = this.sessions.get(key);
-    if (existing && (await this.tmuxHasSession(existing.name))) {
+    // tmuxSessionUsable rejects panes where claude has exited and the pane is
+    // sitting at a shell — keeps us from pasting into a dead shell each turn.
+    if (existing && (await this.tmuxSessionUsable(existing.name))) {
       return;
     }
     if (existing) {
       existing.watcher?.close();
       if (existing.pollTimer) clearInterval(existing.pollTimer);
+      // Kill the wedged tmux session before we cold-start a fresh one with the
+      // same deterministic name — otherwise new-session collides.
+      await this.killTmuxSession(existing.name).catch(() => undefined);
       this.sessions.delete(key);
     }
 
@@ -458,7 +512,13 @@ export class TmuxDriver implements ClaudeDriver {
         exitCode: 0,
         error: null,
       };
-      sess.activeTurn = null;
+      // Only clear activeTurn if it's still the turn we captured at line 435.
+      // A delayed `turn_duration` for an earlier (already-killed) turn must
+      // not clobber the *next* turn that has since been assigned. The captured
+      // `turn` variable is still resolvable — we keep the new activeTurn intact.
+      if (sess.activeTurn === turn) {
+        sess.activeTurn = null;
+      }
       if (!turn.rejected) {
         turn.rejected = true;
         turn.resolve(result);

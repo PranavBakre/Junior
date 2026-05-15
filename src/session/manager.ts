@@ -678,6 +678,16 @@ export class SessionManager {
           session.tmuxSessionName = null;
           session.topLevelTmuxAgent = null;
         }
+        // `handleCommand` runs before the busy gate in `runSingleSession`, so
+        // !driver can fire mid-turn. The handle-delete-then-close loop above
+        // intentionally bails out of `onRunComplete` via the guard, but that
+        // guard skips the busy→idle flip too — so without this reset the row
+        // wedges at "busy" and every subsequent message buffers without a
+        // drain. !stop and !cancel both do the same flip for the same reason.
+        if (session.status === "busy") session.status = "idle";
+        for (const agentSession of Object.values(session.agentSessions ?? {})) {
+          if (agentSession.status === "busy") agentSession.status = "idle";
+        }
         await this.store.set(session.threadId, session);
         this.onCommandResponse?.(event, `Driver set to *${arg}*. Next message starts on the new path.`);
         return true;
