@@ -299,6 +299,10 @@ OpenCode setup:
 - Global `mcp.<name>` entries persist alongside Junior's. When Junior omits
   `mcp` entirely (utility runs with no worktree), those globals become the
   *only* MCPs the child sees.
+- Junior includes the local Slack MCP by default for OpenCode worktree-backed
+  runs, but Playwright MCP is opt-in via
+  `OPENCODE_PLAYWRIGHT_MCP_ENABLED=true` because `npx @playwright/mcp` is cold
+  per runner spawn.
 - Global `agent.<other>` definitions coexist with Junior's `agent.<name>`,
   expanding the agent set available inside the spawn.
 - A shell-set `OPENCODE_CONFIG=/path/to/file` is inherited via the child's

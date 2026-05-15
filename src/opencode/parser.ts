@@ -159,6 +159,7 @@ export function createOpenCodeStreamParser(): OpenCodeStreamParser {
 export function createOpenCodeEventMapper(): OpenCodeEventMapper {
   let sessionId: string | null = null;
   let response = "";
+  let pendingText = "";
 
   function maybeInit(event: OpenCodeEvent): RunnerEvent[] {
     if (sessionId) return [];
@@ -181,17 +182,24 @@ export function createOpenCodeEventMapper(): OpenCodeEventMapper {
 
       if (event.type === "text") {
         response += event.part.text;
-        events.push({
-          type: "message",
-          provider: "opencode",
-          text: event.part.text,
-        });
-      } else if (event.type === "step_finish" && event.part?.tokens) {
-        events.push({
+        pendingText += event.part.text;
+      } else if (event.type === "step_finish") {
+        if (pendingText) {
+          events.push({
+            type: "message",
+            provider: "opencode",
+            text: pendingText,
+          });
+          pendingText = "";
+        }
+        const done: RunnerEvent = {
           type: "done",
           provider: "opencode",
-          usage: event.part.tokens,
-        });
+        };
+        if (event.part?.tokens) {
+          done.usage = event.part.tokens;
+        }
+        events.push(done);
       }
 
       return events;

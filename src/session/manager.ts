@@ -418,7 +418,10 @@ export class SessionManager {
           return true;
         }
 
-        if (session.status !== "idle") {
+        const hasBusyAgent = Object.values(session.agentSessions ?? {}).some(
+          (a) => a.status === "busy",
+        );
+        if (session.status !== "idle" || hasBusyAgent) {
           this.onCommandResponse?.(
             event,
             "Cannot change provider while a runner is active. Use `!cancel` first.",

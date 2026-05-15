@@ -66,7 +66,7 @@ describe("SqliteSessionStore", () => {
     session.sessionId = "thread-session";
     session.agentSessions.worker = {
       agentName: "worker",
-      provider: "codex",
+      provider: "opencode",
       sessionId: "worker-session",
       status: "idle",
       pendingMessages: [],
@@ -79,8 +79,43 @@ describe("SqliteSessionStore", () => {
     const retrieved = await store.get("thread-1");
     expect(retrieved!.provider).toBe("opencode");
     expect(retrieved!.sessionId).toBe("thread-session");
-    expect(retrieved!.agentSessions.worker.provider).toBe("codex");
+    expect(retrieved!.agentSessions.worker.provider).toBe("opencode");
     expect(retrieved!.agentSessions.worker.sessionId).toBe("worker-session");
+  });
+
+  it("demotes persisted unimplemented providers to claude", async () => {
+    const now = Date.now();
+    const session = createSession("codex-thread", "channel-1");
+    session.provider = "codex";
+    session.agentSessions.worker = {
+      agentName: "worker",
+      provider: "codex",
+      sessionId: "worker-session",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: now,
+      pid: null,
+    };
+
+    const db = (store as unknown as { db: Database }).db;
+    db.query(
+      `INSERT INTO sessions (thread_id, json, last_activity, status)
+       VALUES (?, ?, ?, ?)`,
+    ).run(
+      session.threadId,
+      JSON.stringify(session),
+      session.lastActivity,
+      session.status,
+    );
+    db.query(
+      `INSERT INTO agent_sessions
+       (thread_id, agent_name, provider, session_id, status, last_activity)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("codex-thread", "worker", "codex", "worker-session", "idle", now);
+
+    const retrieved = await store.get("codex-thread");
+    expect(retrieved!.provider).toBe("claude");
+    expect(retrieved!.agentSessions.worker.provider).toBe("claude");
   });
 
   it("normalizes legacy sessions without provider fields to claude", async () => {

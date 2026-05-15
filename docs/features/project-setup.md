@@ -82,7 +82,7 @@ interface Config {
 | `JUNIOR_OPENCODE_PERMISSION` | no | `allow` | OpenCode permission mode in generated agent config |
 | `OPENCODE_MCP_ENABLED` | no | `true` | enables generated OpenCode MCP config for worktree-backed runs |
 | `OPENCODE_SLACK_MCP_ENABLED` | no | `true` | includes the local Slack MCP entry when MCP is enabled |
-| `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | no | `true` | includes Playwright MCP when MCP is enabled |
+| `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | no | `false` | opt-in Playwright MCP for OpenCode worktree-backed runs |
 | `REPOS` | no | `[]` | JSON array of `RepoConfig` |
 | `CHANNEL_DEFAULTS` | no | `{"C05557KKV37":{"agentType":"lead"}}` | JSON, validated |
 | `SESSION_STORE` | no | `sqlite` | `sqlite` \| `memory` |

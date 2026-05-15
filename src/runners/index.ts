@@ -53,6 +53,8 @@ export function spawnRunner(
   }
 
   if (provider === "codex") {
+    // Defense-in-depth: config parsing and !provider reject codex until its
+    // adapter lands, but stale persisted state should still fail loudly.
     throw new Error("Codex runner provider is not implemented yet");
   }
 
