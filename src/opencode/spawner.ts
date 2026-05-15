@@ -12,6 +12,7 @@ import {
   createOpenCodeStreamParser,
   type OpenCodeEvent,
 } from "./parser.ts";
+import { buildOpenCodeAgentPrompt } from "./prompt.ts";
 
 export interface OpenCodeEnvContext {
   session: ThreadSession;
@@ -52,11 +53,14 @@ export function spawnOpenCode(
     botToken,
     agentIdentity,
   });
-  const agentName = config.agentName ?? session.activeAgentName ?? "junior";
+  const agentName = config.agentName ?? "build";
   const model = session.model ?? config.defaultModel ?? null;
+  const agentPrompt = buildOpenCodeAgentPrompt({
+    juniorPrompt: config.agentPrompt ?? session.systemPrompt,
+  });
   const configContent = buildOpenCodeConfigContent({
     agentName,
-    agentPrompt: config.agentPrompt ?? session.systemPrompt ?? "",
+    agentPrompt,
     description: config.description,
     model,
     permission: config.permission,

@@ -20,7 +20,7 @@ specific needs because it has:
 - `--session <id>` for resume
 - `--dir <path>` for worktree cwd
 - `--file <path>` for attachments
-- `--agent <name>` and config-level agent prompts
+- `--agent build` and config-level agent prompts
 - native MCP config in `opencode.json`
 - `OPENCODE_CONFIG_CONTENT` / `OPENCODE_CONFIG` for deterministic generated
   runtime config
@@ -40,8 +40,8 @@ repo-local overlays. Claude handles that with `--append-system-prompt`.
 OpenCode has a credible provider-native replacement:
 
 - generate config per spawn with `OPENCODE_CONFIG_CONTENT` or `OPENCODE_CONFIG`
-- define a primary agent with `agent.<name>.prompt`
-- run `opencode run --agent <name>`
+- override the built-in `build` primary agent with `agent.build.prompt`
+- run `opencode run --agent build`
 
 Codex does not currently expose an equivalent system-prompt flag. Its realistic
 v1 option is to prepend Junior's agent prompt to the first user prompt, which is
@@ -145,18 +145,18 @@ The Claude adapter maps:
 
 ## OpenCode Mapping
 
-Verified locally with OpenCode `1.4.0`.
+Verified locally with OpenCode `1.14.48`.
 
 Fresh run:
 
 ```sh
-opencode run --format json --dir <worktree> --agent junior "<prompt>"
+opencode run --format json --dir <worktree> --agent build "<prompt>"
 ```
 
 Resume:
 
 ```sh
-opencode run --format json --dir <worktree> --session <sessionID> --agent junior "<prompt>"
+opencode run --format json --dir <worktree> --session <sessionID> --agent build "<prompt>"
 ```
 
 Observed JSON events:
@@ -216,9 +216,14 @@ Recommended v1:
 
 - Generate `OPENCODE_CONFIG_CONTENT` per spawn, or generate a temp config file
   and point `OPENCODE_CONFIG` at it.
-- Define a primary agent named for the Junior agent being run.
-- Set that agent's `prompt` to Junior's composed system prompt.
-- Run `opencode run --agent <generated-agent-name> ...`.
+- Override OpenCode's built-in `build` primary agent by default, instead of
+  generating a new provider agent per Junior agent. Local `opencode debug agent`
+  checks on OpenCode `1.14.48` show that custom-named generated agents resolve
+  as `native: false`, while `agent.build.prompt` keeps the native build agent
+  tool/permission surface.
+- Set that agent's `prompt` to a Junior-owned OpenCode prompt: a compact
+  provider baseline first, then Junior's composed dynamic persona/system prompt.
+- Run `opencode run --agent build ...`.
 - Keep first-turn Slack/thread preamble behavior in Junior's prompt builder.
 - On resumed turns, avoid re-injecting full Slack history unless OpenCode resume
   proves it does not preserve it.
@@ -243,8 +248,9 @@ global OpenCode config for correctness.
 Generate config with:
 
 - `model` if thread/session selected one
-- `agent.<name>.prompt`
-- `agent.<name>.mode = "primary"`
+- `agent.build.prompt`, composed by Junior as OpenCode provider baseline plus
+  dynamic Junior persona/system prompt
+- `agent.build.mode = "primary"`
 - `permission`
 - `mcp`
 
@@ -256,10 +262,10 @@ Sketch:
   "model": "openai/gpt-5.1",
   "permission": "allow",
   "agent": {
-    "junior-lead": {
+    "build": {
       "description": "Junior Slack runner",
       "mode": "primary",
-      "prompt": "<composed Junior system prompt>"
+      "prompt": "<OpenCode provider baseline>\n\n<junior-system-prompt>\n<dynamic Junior system prompt>\n</junior-system-prompt>"
     }
   },
   "mcp": {
@@ -303,8 +309,10 @@ OpenCode setup:
   runs, but Playwright MCP is opt-in via
   `OPENCODE_PLAYWRIGHT_MCP_ENABLED=true` because `npx @playwright/mcp` is cold
   per runner spawn.
-- Global `agent.<other>` definitions coexist with Junior's `agent.<name>`,
-  expanding the agent set available inside the spawn.
+- Global `agent.<other>` definitions coexist with Junior's `agent.build`
+  override. Global `build` customization may still contribute fields Junior
+  does not override, so the generated config must explicitly set Junior's
+  prompt, mode, and permission shape.
 - A shell-set `OPENCODE_CONFIG=/path/to/file` is inherited via the child's
   environment and loads before `OPENCODE_CONFIG_CONTENT` with the same
   merge semantics.
@@ -451,6 +459,9 @@ Exit criteria:
 
 - Add `src/opencode/spawner.ts`.
 - Generate config through `OPENCODE_CONFIG_CONTENT` or temp `OPENCODE_CONFIG`.
+- Compose `agent.build.prompt` with a Junior-owned OpenCode provider baseline
+  before appending the dynamic Junior system prompt; do not run OpenCode with
+  only the persona overlay.
 - Use the centralized Junior/Slack env contract.
 - Honor the centralized `session.cwd` MCP skip rule.
 - Set stdin ignored/closed.
