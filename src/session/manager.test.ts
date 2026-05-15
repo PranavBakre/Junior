@@ -7,6 +7,7 @@ import type {
 } from "../runners/types.ts";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { Config } from "../config.ts";
+import { createSession } from "./types.ts";
 
 // --- Mock setup ---
 
@@ -626,6 +627,34 @@ describe("SessionManager", () => {
       const after = await store.get("thread-1");
       expect(after!.provider ?? "claude").toBe("claude");
       expect(onCmd.mock.calls.at(-1)?.[1]).toContain("!reset all");
+    });
+
+    it("blocks provider changes while an agent session is busy before init", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      const session = createSession("thread-1", "C123");
+      session.status = "idle";
+      session.agentSessions.reproducer = {
+        agentName: "reproducer",
+        provider: "claude",
+        sessionId: null,
+        status: "busy",
+        pendingMessages: [],
+        lastActivity: Date.now(),
+        pid: 123,
+      };
+      await store.set("thread-1", session);
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "opencode",
+        ts: "ts-provider-busy-agent",
+      }));
+
+      const after = await store.get("thread-1");
+      expect(after!.provider ?? "claude").toBe("claude");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("runner is active");
     });
 
     it("rejects codex with a not-implemented message", async () => {

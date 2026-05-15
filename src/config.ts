@@ -1,7 +1,7 @@
 import {
   isImplementedRunnerProvider,
   isRunnerProvider,
-  type RunnerProvider,
+  type ImplementedRunnerProvider,
   type SessionVerbosity,
 } from "./session/types.ts";
 
@@ -55,7 +55,7 @@ export interface Config {
     defaultModel: string | null;
   };
   runner: {
-    provider: RunnerProvider;
+    provider: ImplementedRunnerProvider;
   };
   opencode: {
     model: string | null;
@@ -124,7 +124,7 @@ export function loadConfig(): Config {
       slackMcpEnabled: parseBooleanEnv("OPENCODE_SLACK_MCP_ENABLED", true),
       playwrightMcpEnabled: parseBooleanEnv(
         "OPENCODE_PLAYWRIGHT_MCP_ENABLED",
-        true,
+        false,
       ),
     },
     repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({
@@ -186,7 +186,7 @@ function parseStoreKind(value: string): SessionStoreKind {
   throw new Error(`Invalid SESSION_STORE: ${value} (expected memory|sqlite)`);
 }
 
-function parseRunnerProvider(value: string): RunnerProvider {
+function parseRunnerProvider(value: string): ImplementedRunnerProvider {
   if (isImplementedRunnerProvider(value)) return value;
   if (isRunnerProvider(value)) {
     // Known provider, not yet implemented. Fail at config load with the real

@@ -63,19 +63,20 @@ describe("createOpenCodeStreamParser", () => {
 });
 
 describe("createOpenCodeEventMapper", () => {
-  it("maps first sessionID to init, text to message, and usage to done", () => {
+  it("maps first sessionID to init, coalesced message, and done", () => {
     const parser = createOpenCodeStreamParser();
     const mapper = createOpenCodeEventMapper();
     const nativeEvents = parser.feed(
       '{"type":"step_start","sessionID":"ses_123"}\n' +
         '{"type":"text","sessionID":"ses_123","part":{"type":"text","text":"Hi"}}\n' +
+        '{"type":"text","sessionID":"ses_123","part":{"type":"text","text":" there"}}\n' +
         '{"type":"step_finish","sessionID":"ses_123","part":{"tokens":{"input":2,"output":3}}}\n',
     );
     const runnerEvents = nativeEvents.flatMap((event) => mapper.map(event));
 
     expect(runnerEvents).toEqual([
       { type: "init", provider: "opencode", sessionId: "ses_123" },
-      { type: "message", provider: "opencode", text: "Hi" },
+      { type: "message", provider: "opencode", text: "Hi there" },
       {
         type: "done",
         provider: "opencode",
@@ -83,7 +84,7 @@ describe("createOpenCodeEventMapper", () => {
       },
     ]);
     expect(mapper.sessionId).toBe("ses_123");
-    expect(mapper.response).toBe("Hi");
+    expect(mapper.response).toBe("Hi there");
   });
 
   it("can initialize from the first text event carrying sessionID", () => {
@@ -95,7 +96,21 @@ describe("createOpenCodeEventMapper", () => {
 
     expect(mapper.map(event)).toEqual([
       { type: "init", provider: "opencode", sessionId: "ses_text" },
-      { type: "message", provider: "opencode", text: "chunk" },
+    ]);
+  });
+
+  it("emits done even when step_finish has no usage", () => {
+    const parser = createOpenCodeStreamParser();
+    const mapper = createOpenCodeEventMapper();
+    const nativeEvents = parser.feed(
+      '{"type":"text","sessionID":"ses_done","part":{"type":"text","text":"OK"}}\n' +
+        '{"type":"step_finish","sessionID":"ses_done"}\n',
+    );
+
+    expect(nativeEvents.flatMap((event) => mapper.map(event))).toEqual([
+      { type: "init", provider: "opencode", sessionId: "ses_done" },
+      { type: "message", provider: "opencode", text: "OK" },
+      { type: "done", provider: "opencode" },
     ]);
   });
 });

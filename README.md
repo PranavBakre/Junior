@@ -132,6 +132,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `OPENCODE_TIMEOUT_MS` | `300000` | Per-turn OpenCode timeout before SIGINT |
 | `JUNIOR_OPENCODE_PERMISSION` | `allow` | OpenCode permission mode for generated agent config |
 | `OPENCODE_MCP_ENABLED` | `true` | Enables generated OpenCode MCP config for worktree-backed runs |
+| `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | `false` | Opt in to Playwright MCP for OpenCode worktree-backed runs |
 
 `REPOS` example:
 

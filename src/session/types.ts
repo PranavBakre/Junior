@@ -8,6 +8,7 @@ export interface PendingMessage {
 
 export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";
 export type RunnerProvider = "claude" | "opencode" | "codex";
+export type ImplementedRunnerProvider = Exclude<RunnerProvider, "codex">;
 
 export function isRunnerProvider(value: unknown): value is RunnerProvider {
   return value === "claude" || value === "opencode" || value === "codex";
@@ -24,7 +25,7 @@ export function isRunnerProvider(value: unknown): value is RunnerProvider {
  */
 export function isImplementedRunnerProvider(
   value: unknown,
-): value is Exclude<RunnerProvider, "codex"> {
+): value is ImplementedRunnerProvider {
   return value === "claude" || value === "opencode";
 }
 

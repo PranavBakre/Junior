@@ -63,7 +63,7 @@ describe("loadConfig runner providers", () => {
       permission: "allow",
       mcpEnabled: true,
       slackMcpEnabled: true,
-      playwrightMcpEnabled: true,
+      playwrightMcpEnabled: false,
     });
   });
 

@@ -2,8 +2,10 @@ import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import {
+  isImplementedRunnerProvider,
   normalizeRunnerProvider,
   type AgentSession,
+  type RunnerProvider,
   type ThreadSession,
 } from "../types.ts";
 import type { SessionStore } from "./interface.ts";
@@ -177,7 +179,9 @@ export class SqliteSessionStore implements SessionStore {
       const existing = session.agentSessions[row.agent_name];
       session.agentSessions[row.agent_name] = {
         agentName: row.agent_name,
-        provider: normalizeRunnerProvider(row.provider ?? existing?.provider),
+        provider: normalizePersistedRunnerProvider(
+          row.provider ?? existing?.provider,
+        ),
         sessionId: row.session_id,
         status: row.status,
         pendingMessages: existing?.pendingMessages ?? [],
@@ -206,7 +210,7 @@ export class SqliteSessionStore implements SessionStore {
         insert.run(
           threadId,
           agentSession.agentName,
-          normalizeRunnerProvider(agentSession.provider),
+          normalizePersistedRunnerProvider(agentSession.provider),
           agentSession.sessionId,
           agentSession.status,
           agentSession.lastActivity,
@@ -229,14 +233,21 @@ export class SqliteSessionStore implements SessionStore {
 }
 
 function normalizeSession(session: ThreadSession): ThreadSession {
-  session.provider = normalizeRunnerProvider(session.provider);
+  session.provider = normalizePersistedRunnerProvider(session.provider);
   session.leadSessionId ??= session.sessionId;
   session.agentSessions ??= {};
   for (const agentSession of Object.values(session.agentSessions)) {
-    agentSession.provider = normalizeRunnerProvider(agentSession.provider);
+    agentSession.provider = normalizePersistedRunnerProvider(
+      agentSession.provider,
+    );
   }
   // Migration: existing sessions before worktreePaths was added default to {}
   session.worktreePaths ??= {};
   session.muted ??= false;
   return session;
+}
+
+function normalizePersistedRunnerProvider(value: unknown): RunnerProvider {
+  const provider = normalizeRunnerProvider(value);
+  return isImplementedRunnerProvider(provider) ? provider : "claude";
 }
