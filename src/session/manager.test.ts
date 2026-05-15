@@ -77,12 +77,55 @@ mock.module("../lifecycle/timeout.ts", () => ({
 // Import after mocking
 const { SessionManager } = await import("./manager.ts");
 import { InMemorySessionStore } from "./store/memory.ts";
+import type { DriverMap } from "../claude/factory.ts";
+import type { ClaudeDriver } from "../claude/driver.ts";
+
+/**
+ * Minimal fake driver map for tmux teardown tests — records close() calls so
+ * the test can assert on (threadId, agentName) without booting a real tmux.
+ */
+function makeFakeDrivers(): {
+  drivers: DriverMap;
+  closeCalls: Array<{ mode: "headless" | "tmux"; threadId: string; agentName: string }>;
+} {
+  const closeCalls: Array<{ mode: "headless" | "tmux"; threadId: string; agentName: string }> = [];
+  const stub = (mode: "headless" | "tmux"): ClaudeDriver => ({
+    mode,
+    send: () => ({
+      provider: "claude",
+      result: Promise.resolve({
+        provider: "claude",
+        sessionId: null,
+        response: "",
+        events: [],
+        exitCode: 0,
+        error: null,
+      }),
+      onEvent: () => undefined,
+      kill: () => undefined,
+      pid: null,
+    }),
+    interrupt: async () => undefined,
+    close: async (threadId: string, agentName: string) => {
+      closeCalls.push({ mode, threadId, agentName });
+    },
+  });
+  return { drivers: { headless: stub("headless"), tmux: stub("tmux") }, closeCalls };
+}
 
 // --- Helpers ---
 
 const testConfig: Config = {
   slack: { botToken: "xoxb-test", appToken: "xapp-test", signingSecret: "s" },
-  claude: { maxTurns: 25, timeoutMs: 300000, permissionMode: "bypassPermissions", defaultModel: null },
+  claude: {
+    maxTurns: 25,
+    timeoutMs: 300000,
+    permissionMode: "bypassPermissions",
+    defaultModel: null,
+    defaultDriver: "headless",
+    tmuxIdleTtlMs: 14_400_000,
+    tmuxSweepIntervalMs: 900_000,
+  },
   runner: { provider: "claude" },
   opencode: {
     model: null,
@@ -902,5 +945,342 @@ describe("SessionManager", () => {
   it("getSession returns undefined for unknown thread", async () => {
     const session = await manager.getSession("unknown");
     expect(session).toBeUndefined();
+  });
+
+  // Regression coverage for the tmux teardown paths. The bug class: hardcoded
+  // agentName: "lead" in `close()` calls. In non-support channels the row's
+  // topLevelTmuxAgent is "default", so closing with "lead" no-ops and the tmux
+  // session leaks. These tests pin the close call against the row's value.
+  describe("tmux teardown paths", () => {
+    async function seedTmuxSession(opts: { topAgent: string }): Promise<void> {
+      const session = createSession("thread-1", "C123", "quiet", "tmux");
+      session.tmuxSessionName = `junior-thread-1-${opts.topAgent}`;
+      session.topLevelTmuxAgent = opts.topAgent;
+      await store.set("thread-1", session);
+    }
+
+    it("!reset all closes tmux using row's topLevelTmuxAgent (not literal 'lead')", async () => {
+      const { drivers, closeCalls } = makeFakeDrivers();
+      manager = new SessionManager(store, testConfig, undefined, drivers);
+      await seedTmuxSession({ topAgent: "default" });
+
+      await manager.handleMessage(makeEvent({ command: "reset", text: "all", ts: "ts-reset" }));
+
+      const tmuxCloses = closeCalls.filter((c) => c.mode === "tmux");
+      expect(tmuxCloses).toEqual([{ mode: "tmux", threadId: "thread-1", agentName: "default" }]);
+      expect(await store.get("thread-1")).toBeUndefined();
+    });
+
+    it("!driver headless closes the persisted tmux session before clearing tmuxSessionName", async () => {
+      const { drivers, closeCalls } = makeFakeDrivers();
+      manager = new SessionManager(store, testConfig, undefined, drivers);
+      await seedTmuxSession({ topAgent: "default" });
+
+      await manager.handleMessage(makeEvent({ command: "driver", text: "headless", ts: "ts-drv" }));
+
+      const tmuxCloses = closeCalls.filter((c) => c.mode === "tmux");
+      expect(tmuxCloses).toEqual([{ mode: "tmux", threadId: "thread-1", agentName: "default" }]);
+      const session = await store.get("thread-1");
+      expect(session!.driverMode).toBe("headless");
+      expect(session!.tmuxSessionName).toBeNull();
+      expect(session!.topLevelTmuxAgent).toBeNull();
+    });
+
+    it("!reset <lead|default> tears down tmux for the top-level agent", async () => {
+      const { drivers, closeCalls } = makeFakeDrivers();
+      manager = new SessionManager(store, testConfig, undefined, drivers);
+      await seedTmuxSession({ topAgent: "default" });
+
+      await manager.handleMessage(makeEvent({ command: "reset", text: "default", ts: "ts-reset" }));
+
+      const tmuxCloses = closeCalls.filter((c) => c.mode === "tmux");
+      expect(tmuxCloses).toEqual([{ mode: "tmux", threadId: "thread-1", agentName: "default" }]);
+      const session = await store.get("thread-1");
+      expect(session!.tmuxSessionName).toBeNull();
+      expect(session!.topLevelTmuxAgent).toBeNull();
+    });
+
+    it("!driver mid-turn resets status busy→idle (would wedge thread otherwise)", async () => {
+      // handleCommand runs before the busy gate, so !driver is reachable
+      // while a turn is in flight. Without the explicit busy→idle flip in
+      // the !driver handler, the row sticks at "busy" forever — every
+      // subsequent message buffers with no drain ever firing.
+      const { drivers } = makeFakeDrivers();
+      manager = new SessionManager(store, testConfig, undefined, drivers);
+      await seedTmuxSession({ topAgent: "default" });
+
+      // Simulate mid-turn: flip status to busy + add an agent session also busy.
+      const seeded = (await store.get("thread-1"))!;
+      seeded.status = "busy";
+      seeded.agentSessions = {
+        reviewer: {
+          agentName: "reviewer",
+          sessionId: null,
+          status: "busy",
+          pendingMessages: [],
+          lastActivity: Date.now(),
+          pid: null,
+        },
+      };
+      await store.set("thread-1", seeded);
+
+      await manager.handleMessage(
+        makeEvent({ command: "driver", text: "headless", ts: "ts-drv-mid" }),
+      );
+
+      const after = (await store.get("thread-1"))!;
+      expect(after.driverMode).toBe("headless");
+      expect(after.status).toBe("idle");
+      expect(after.agentSessions.reviewer.status).toBe("idle");
+    });
+  });
+
+  // --- gateAttention ---
+
+  describe("gateAttention", () => {
+    it("!aside drops the message and reacts 👀", async () => {
+      const reactions: Array<{ ts: string; emoji: string }> = [];
+      manager.onReaction = (e, emoji) => reactions.push({ ts: e.ts, emoji });
+
+      const drop = await manager.gateAttention(
+        makeEvent({ command: "aside", text: "side comment", ts: "ts-aside" }),
+      );
+      expect(drop).toBe(true);
+      expect(reactions).toEqual([{ ts: "ts-aside", emoji: "eyes" }]);
+      // No session created, no state mutated
+      expect(await store.get("thread-1")).toBeUndefined();
+    });
+
+    it("!listen clears dormant and reacts 👂", async () => {
+      // Seed dormant session
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      const seeded = (await store.get("thread-1"))!;
+      seeded.dormant = true;
+      seeded.dormantAnnounced = true;
+      await store.set("thread-1", seeded);
+
+      const reactions: string[] = [];
+      manager.onReaction = (_e, emoji) => reactions.push(emoji);
+
+      const drop = await manager.gateAttention(
+        makeEvent({ command: "listen", user: "U-A", ts: "ts-listen" }),
+      );
+      expect(drop).toBe(true);
+      expect(reactions).toEqual(["ear"]);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+      // sticky flag stays — re-trigger is suppressed for life of thread
+      expect(after.dormantAnnounced).toBe(true);
+    });
+
+    it("@mention wakes dormant and falls through to routing", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      const seeded = (await store.get("thread-1"))!;
+      seeded.dormant = true;
+      seeded.dormantAnnounced = true;
+      await store.set("thread-1", seeded);
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-A", mentionsJunior: true, ts: "ts-mention" }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("drops everything while dormant if not waking", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      const seeded = (await store.get("thread-1"))!;
+      seeded.dormant = true;
+      seeded.dormantAnnounced = true;
+      await store.set("thread-1", seeded);
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-A", text: "hello", ts: "ts-drop" }),
+      );
+      expect(drop).toBe(true);
+    });
+
+    it("triggers dormancy when a second human posts without @mention", async () => {
+      // U-A starts the thread (creates session, adds to participants)
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const responses: string[] = [];
+      manager.onCommandResponse = (_e, r) => responses.push(r);
+
+      // U-B posts without @mention — sidebar trigger
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "lol", ts: "ts-trigger" }),
+      );
+      expect(drop).toBe(true);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(true);
+      expect(after.dormantAnnounced).toBe(true);
+      expect(after.humanParticipants).toContain("U-A");
+      expect(after.humanParticipants).toContain("U-B");
+      expect(responses.length).toBe(1);
+      expect(responses[0]).toContain("side conversation");
+    });
+
+    it("does not trigger when there is only one human participant", async () => {
+      // U-A starts — only A in participants
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-A", text: "follow-up", ts: "ts-followup" }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("does not trigger when the second human @mentions Junior", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const drop = await manager.gateAttention(
+        makeEvent({
+          user: "U-B",
+          mentionsJunior: true,
+          text: "addressing junior",
+          ts: "ts-mention2",
+        }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("does not re-trigger after manual !listen (sticky dormantAnnounced)", async () => {
+      // A and B in thread, trigger fired, then !listen
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "lol", ts: "ts-trigger" }),
+      );
+      await manager.gateAttention(
+        makeEvent({ command: "listen", user: "U-A", ts: "ts-listen" }),
+      );
+
+      const responses: string[] = [];
+      manager.onCommandResponse = (_e, r) => responses.push(r);
+
+      // Another non-mention post — should NOT re-trigger
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "more chat", ts: "ts-more" }),
+      );
+      expect(drop).toBe(false);
+      expect(responses.length).toBe(0);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("exempts auto-trigger channels — sidebar trigger never fires there", async () => {
+      // Build a manager whose config marks this channel as auto-trigger
+      const autoStore = new InMemorySessionStore();
+      const autoConfig: Config = {
+        ...testConfig,
+        channelDefaults: {
+          "C-BUGS": { agentType: "lead" },
+        },
+      };
+      const autoManager = new SessionManager(autoStore, autoConfig);
+
+      // Seed a session with one human already, in the auto-trigger channel
+      await autoManager.handleMessage(
+        makeEvent({ user: "U-A", channel: "C-BUGS" }),
+      );
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const responses: string[] = [];
+      autoManager.onCommandResponse = (_e, r) => responses.push(r);
+
+      const drop = await autoManager.gateAttention(
+        makeEvent({
+          user: "U-B",
+          channel: "C-BUGS",
+          text: "another bug",
+          ts: "ts-bugs",
+        }),
+      );
+      expect(drop).toBe(false);
+      expect(responses.length).toBe(0);
+      const after = (await autoStore.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("does not add foreign bots to humanParticipants even on @mention", async () => {
+      // Mimic the app_mention path: mentionsJunior=true, botId set, isSelfBot=false.
+      // Without symmetric flag population in the app_mention handler, this
+      // event would slip through as a human and pollute participants.
+      await manager.gateAttention(
+        makeEvent({
+          user: "B-FOREIGN",
+          botId: "B999",
+          isSelfBot: false,
+          mentionsJunior: true,
+          text: "ci ping",
+          ts: "ts-bot-mention",
+        }),
+      );
+      // gateAttention may fall through (the message would route normally),
+      // but participant tracking lives in getOrCreateSession — call it via
+      // the routed path to confirm the bot is filtered out there too.
+      await manager.handleMessage(
+        makeEvent({
+          user: "B-FOREIGN",
+          botId: "B999",
+          isSelfBot: false,
+          mentionsJunior: true,
+          text: "ci ping",
+          ts: "ts-bot-route",
+        }),
+      );
+      currentHandle._complete("ack");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const after = await store.get("thread-1");
+      // Session may or may not exist depending on whether the bot's message
+      // reached getOrCreateSession; the contract is just "B-FOREIGN is not
+      // in humanParticipants regardless."
+      expect(after?.humanParticipants ?? []).not.toContain("B-FOREIGN");
+    });
+
+    it("does not count Junior or foreign bots as humans for the trigger", async () => {
+      // Self-bot post → shouldn't add to participants
+      await manager.handleMessage(
+        makeEvent({ user: "U-A" }),
+      );
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      // Foreign bot post — shouldn't make trigger fire even though it's a
+      // different user, because bots aren't counted.
+      const drop = await manager.gateAttention(
+        makeEvent({
+          user: "B-FOREIGN",
+          botId: "B999",
+          text: "ci passed",
+          ts: "ts-bot",
+        }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+      expect(after.humanParticipants).toEqual(["U-A"]);
+    });
   });
 });

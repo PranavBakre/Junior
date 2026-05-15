@@ -23,6 +23,13 @@ const KNOWN_COMMANDS = new Set([
   "bugs",
   "mute",
   "unmute",
+  // Driver controls — tmux substrate
+  "stop",
+  "driver",
+  // Attention-gate commands. Handled in SessionManager.gateAttention before
+  // any routing: `aside` drops the message; `listen` wakes from auto-dormant.
+  "aside",
+  "listen",
 ]);
 
 export interface ParsedCommand {

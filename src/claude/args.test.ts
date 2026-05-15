@@ -20,12 +20,18 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     pendingMessages: [],
     verbosity: "normal",
     muted: false,
+    dormant: false,
+    dormantAnnounced: false,
+    humanParticipants: [],
     model: null,
     cwd: null,
     pid: null,
     lastActivity: Date.now(),
     lastError: null,
     createdAt: Date.now(),
+    driverMode: "headless",
+    tmuxSessionName: null,
+    topLevelTmuxAgent: null,
     ...overrides,
   };
 }
@@ -36,6 +42,9 @@ function makeConfig(overrides: Partial<Config["claude"]> = {}): Config["claude"]
     timeoutMs: 300000,
     permissionMode: "bypassPermissions",
     defaultModel: null,
+    defaultDriver: "headless",
+    tmuxIdleTtlMs: 14_400_000,
+    tmuxSweepIntervalMs: 900_000,
     ...overrides,
   };
 }

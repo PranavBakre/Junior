@@ -41,6 +41,11 @@ export interface AgentSession {
   pendingMessages: PendingMessage[];
   lastActivity: number;
   pid: number | null;
+  /**
+   * Per-agent tmux session name. driverMode lives on the parent ThreadSession
+   * (thread-level decision); only the unique tmux session name is per-agent.
+   */
+  tmuxSessionName?: string | null;
 }
 
 export interface AgentIdentity {
@@ -50,6 +55,13 @@ export interface AgentIdentity {
 
 export type SessionStatus = "idle" | "busy" | "draining";
 export type SessionVerbosity = "quiet" | "normal" | "verbose";
+
+/**
+ * Mirror of `ClaudeDriver["mode"]`. Kept here as a string union to avoid
+ * importing from `claude/` into `session/types.ts` (the dependency arrow
+ * already runs the other way).
+ */
+export type DriverMode = "headless" | "tmux";
 
 export interface ThreadSession {
   threadId: string;
@@ -71,6 +83,32 @@ export interface ThreadSession {
   pendingMessages: PendingMessage[];
   verbosity: SessionVerbosity;
   muted: boolean;
+  /**
+   * Auto-dormant when humans are talking to each other without addressing
+   * Junior. Set by the attention gate; cleared by @mention or `!listen`.
+   * Persists across restarts so a sidebar doesn't auto-resume.
+   */
+  dormant: boolean;
+  /**
+   * Sticky: set once when the attention gate fires its one-shot announcement
+   * for this thread, and never reset. Suppresses re-trigger thrashing after
+   * the human takes manual action (`!listen` / @mention). If they want to
+   * re-silence, that's `!aside` or `!mute`, not another auto-trigger.
+   */
+  dormantAnnounced: boolean;
+  /**
+   * Slack user IDs of humans who have posted in this thread (order of first
+   * post). Bots — Junior, its agents, foreign bots — are never recorded. Used
+   * by the attention gate to detect human-to-human sidebar.
+   *
+   * The gate only needs "is there any other human besides the current
+   * sender?" — an `O(1)` boolean would do the same work with bounded storage.
+   * The array carries names because (a) it's observable in `!status`, useful
+   * for debugging false triggers; (b) bounded in practice by channel
+   * membership; (c) leaves room for future per-user policy (e.g. wake only
+   * for the thread opener) without a data-shape migration.
+   */
+  humanParticipants: string[];
   model: string | null;
   cwd: string | null;
   pid: number | null;
@@ -79,14 +117,39 @@ export interface ThreadSession {
   createdAt: number;
   /** Thread-specific default agent override. When set, overrides channel default (e.g., lead in support channels). */
   defaultAgent?: "junior" | "lead" | null;
+  /**
+   * Which Claude driver runs this thread's turns. "headless" is the
+   * historical default (`claude -p` per turn, billed as API credits under
+   * the new Anthropic terms). "tmux" runs a persistent interactive TUI
+   * inside a detached tmux session — stays under Max subscription.
+   * Thread-level decision; per-agent sub-sessions inherit.
+   */
+  driverMode: DriverMode;
+  /** Deterministic tmux session name for the top-level agent. Null until first tmux turn. */
+  tmuxSessionName: string | null;
+  /**
+   * Which top-level agent owns the thread's tmux session — "lead" for support
+   * channels, "default" elsewhere. Persisted alongside `tmuxSessionName` so
+   * reconciliation/eviction can address the right (threadId, agentName) key
+   * without guessing. Null until the first tmux turn.
+   */
+  topLevelTmuxAgent: string | null;
 }
 
 export function createSession(
   threadId: string,
   channel: string,
   defaultVerbosity: SessionVerbosity = "normal",
-  provider: RunnerProvider = "claude",
+  providerOrDriver: RunnerProvider | DriverMode = "claude",
+  driverMode: DriverMode = "headless",
 ): ThreadSession {
+  const provider = isRunnerProvider(providerOrDriver)
+    ? providerOrDriver
+    : "claude";
+  const resolvedDriverMode = isDriverMode(providerOrDriver)
+    ? providerOrDriver
+    : driverMode;
+
   return {
     threadId,
     channel,
@@ -104,11 +167,21 @@ export function createSession(
     pendingMessages: [],
     verbosity: defaultVerbosity,
     muted: false,
+    dormant: false,
+    dormantAnnounced: false,
+    humanParticipants: [],
     model: null,
     cwd: null,
     pid: null,
     lastActivity: Date.now(),
     lastError: null,
     createdAt: Date.now(),
+    driverMode: resolvedDriverMode,
+    tmuxSessionName: null,
+    topLevelTmuxAgent: null,
   };
+}
+
+function isDriverMode(value: unknown): value is DriverMode {
+  return value === "headless" || value === "tmux";
 }

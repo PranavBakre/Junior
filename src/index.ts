@@ -9,6 +9,9 @@ import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
 import { registerHomeTab } from "./slack/home.ts";
 import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
+import { reconcileTmuxSessions } from "./lifecycle/tmux-reconcile.ts";
+import { evictIdleTmuxSessions } from "./lifecycle/tmux-evict.ts";
+import type { TmuxDriver } from "./claude/tmux-driver.ts";
 import { AgentRouter } from "./agents/router.ts";
 import { AgentDispatcher } from "./support/router.ts";
 import { loadOverlayIdentities } from "./support/agents.ts";
@@ -156,6 +159,18 @@ setInterval(() => {
   });
 }, config.session.cleanupIntervalMs);
 
+// Eviction sweep — kill idle tmux sessions to bound RAM at active-thread scale.
+// Conversations resume on the next message via --resume <sessionId>.
+const tmuxDriver = sessionManager.driverFor("tmux") as TmuxDriver;
+setInterval(() => {
+  evictIdleTmuxSessions(store, tmuxDriver, {
+    ttlMs: config.claude.tmuxIdleTtlMs,
+    skipBusy: true,
+  }).catch((err) => {
+    log.warn("tmux-evict", `sweep error: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}, config.claude.tmuxSweepIntervalMs);
+
 (async () => {
   // Load private/overlay agent identities BEFORE accepting events. Each
   // `.claude/agents-org/*.md` file may declare `username` + `iconEmoji` in
@@ -184,6 +199,15 @@ setInterval(() => {
     );
   }
 
+  // Reconcile tmux sessions before accepting Slack events. Sessions whose
+  // tmux is still alive get reattached; sessions whose tmux died while the
+  // bot was down get downgraded so the next turn cold-starts with --resume.
+  try {
+    await reconcileTmuxSessions(store, tmuxDriver);
+  } catch (err) {
+    log.error("reconcile", `tmux reconcile threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   await app.start();
 
   // Resolve bot identity before registering event handlers
@@ -202,8 +226,12 @@ setInterval(() => {
     log.warn("boot", `Failed to resolve bot identity: ${err}`);
   }
 
-  registerEventHandlers(app, (event) => {
+  registerEventHandlers(app, async (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
+    // Attention gate FIRST: !aside/!listen and auto-dormant short-circuit
+    // before any routing happens. Returns true when the message is consumed
+    // here (do not dispatch).
+    if (await sessionManager.gateAttention(event)) return;
     // Universal dispatch: AgentDispatcher decides whether to dispatch a persistent
     // agent (any channel) or fall through to the single-session manager.
     supportRouter.handleMessage(event);

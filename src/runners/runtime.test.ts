@@ -23,12 +23,18 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     pendingMessages: [],
     verbosity: "normal",
     muted: false,
+    dormant: false,
+    dormantAnnounced: false,
+    humanParticipants: [],
     model: null,
     cwd: null,
     pid: null,
     lastActivity: Date.now(),
     lastError: null,
     createdAt: Date.now(),
+    driverMode: "headless",
+    tmuxSessionName: null,
+    topLevelTmuxAgent: null,
     ...overrides,
   };
 }

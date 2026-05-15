@@ -2,6 +2,7 @@ import {
   isImplementedRunnerProvider,
   isRunnerProvider,
   type ImplementedRunnerProvider,
+  type DriverMode,
   type SessionVerbosity,
 } from "./session/types.ts";
 
@@ -53,6 +54,16 @@ export interface Config {
     timeoutMs: number;
     permissionMode: string;
     defaultModel: string | null;
+    /**
+     * Default driver for new threads. Override per-thread via `!driver`.
+     * Set via `DEFAULT_CLAUDE_DRIVER` env (headless|tmux). Defaults to
+     * "headless" while the tmux path is being soaked.
+     */
+    defaultDriver: DriverMode;
+    /** Idle TTL before a tmux session is evicted (`tmux kill-session`). */
+    tmuxIdleTtlMs: number;
+    /** How often the eviction sweep runs. */
+    tmuxSweepIntervalMs: number;
   };
   runner: {
     provider: ImplementedRunnerProvider;
@@ -112,6 +123,9 @@ export function loadConfig(): Config {
       timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "300000")),
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
       defaultModel: process.env.CLAUDE_MODEL ?? null,
+      defaultDriver: parseDriverMode(optional("DEFAULT_CLAUDE_DRIVER", "headless")),
+      tmuxIdleTtlMs: Number(optional("TMUX_IDLE_TTL_MS", "14400000")), // 4h
+      tmuxSweepIntervalMs: Number(optional("TMUX_SWEEP_INTERVAL_MS", "900000")), // 15min
     },
     runner: {
       provider: parseRunnerProvider(optional("RUNNER_PROVIDER", "claude")),
@@ -209,6 +223,11 @@ function parseBooleanEnv(name: string, fallback: boolean): boolean {
   throw new Error(
     `Invalid ${name}: ${JSON.stringify(value)} (expected true|false)`,
   );
+}
+
+function parseDriverMode(value: string): DriverMode {
+  if (value === "headless" || value === "tmux") return value;
+  throw new Error(`Invalid DEFAULT_CLAUDE_DRIVER: ${value} (expected headless|tmux)`);
 }
 
 function parseChannelDefaults(
