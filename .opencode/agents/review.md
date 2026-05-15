@@ -2,6 +2,7 @@
 description: Code reviewer. Use for PR reviews, code quality checks, security audits.
 mode: subagent
 permission:
+  read: allow
   edit: deny
   bash:
     "*": ask
@@ -10,6 +11,8 @@ permission:
     "gh pr diff*": allow
     "gh api repos/*/pulls/*": allow
     "gh pr review*": ask
+  glob: allow
+  grep: allow
   webfetch: allow
 ---
 

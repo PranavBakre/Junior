@@ -2,10 +2,13 @@
 description: System architect. Use for design specs, data models, state machines, API contracts.
 mode: subagent
 permission:
-  edit: deny
+  read: allow
+  edit: allow
   bash:
     "*": ask
     "git *": allow
+  glob: allow
+  grep: allow
 ---
 
 # architect -- System Architect

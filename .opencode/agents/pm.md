@@ -2,8 +2,11 @@
 description: Product manager. Use for scoping features, planning iterations, making scope cuts.
 mode: subagent
 permission:
-  edit: deny
+  read: allow
+  edit: allow
   bash: deny
+  glob: allow
+  grep: allow
 ---
 
 # pm -- Product Manager

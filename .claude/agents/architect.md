@@ -1,7 +1,7 @@
 ---
 name: architect
 description: System architect. Use for design specs, data models, state machines, API contracts.
-tools: Read, Grep, Glob, Bash(git *)
+tools: Read, Write, Edit, Grep, Glob, Bash(git *)
 model: opus
 ---
 
