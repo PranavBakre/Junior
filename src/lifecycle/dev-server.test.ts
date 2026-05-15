@@ -97,24 +97,13 @@ describe("DevServerManager (integration)", () => {
     await spawnRun(["git", "add", "."], repoRoot);
     await spawnRun(["git", "commit", "-q", "-m", "init"], repoRoot);
 
-    // A `fix` branch for branch-change tests.
-    await spawnRun(["git", "checkout", "-q", "-b", "fix/test"], repoRoot);
-    writeFileSync(join(repoRoot, "FIX.md"), "fix\n");
-    await spawnRun(["git", "add", "."], repoRoot);
-    await spawnRun(["git", "commit", "-q", "-m", "fix"], repoRoot);
-    await spawnRun(["git", "checkout", "-q", "main"], repoRoot);
-
-    // Point origin at ourselves so git fetch works inside worktrees.
-    await spawnRun(["git", "remote", "add", "origin", repoRoot], repoRoot);
-    await spawnRun(["git", "fetch", "-q", "origin"], repoRoot);
-
     // Write a fake "dev server" using Node.js (always available alongside Bun).
     // It listens on a high port, responds HTTP 200 to every request, and exits
     // cleanly on SIGINT. No nc/socat needed — pure Node http module.
     //
     // IMPORTANT: the script must be committed to git so the worktree checkout
-    // includes it. After writing, commit and re-fetch so the dev-server worktree
-    // (created from origin/main) gets the script.
+    // includes it. Branch-change tests also checkout `fix/test`, so create
+    // that branch after this commit to keep the dev command available there.
     const serverScript = join(repoRoot, "fake-server.js");
     writeFileSync(
       serverScript,
@@ -134,6 +123,16 @@ process.on('SIGTERM', () => { server.close(); process.exit(0); });
     // Commit the script into git so the worktree picks it up.
     await spawnRun(["git", "add", "fake-server.js"], repoRoot);
     await spawnRun(["git", "commit", "-q", "-m", "add fake dev server"], repoRoot);
+
+    // A `fix` branch for branch-change tests.
+    await spawnRun(["git", "checkout", "-q", "-b", "fix/test"], repoRoot);
+    writeFileSync(join(repoRoot, "FIX.md"), "fix\n");
+    await spawnRun(["git", "add", "."], repoRoot);
+    await spawnRun(["git", "commit", "-q", "-m", "fix"], repoRoot);
+    await spawnRun(["git", "checkout", "-q", "main"], repoRoot);
+
+    // Point origin at ourselves so git fetch works inside worktrees.
+    await spawnRun(["git", "remote", "add", "origin", repoRoot], repoRoot);
     await spawnRun(["git", "fetch", "-q", "origin"], repoRoot);
 
     repos = [

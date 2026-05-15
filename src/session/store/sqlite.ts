@@ -210,6 +210,11 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   // Migration: existing sessions before worktreePaths was added default to {}
   session.worktreePaths ??= {};
   session.muted ??= false;
+  // Driver-mode migration — rows written before the driver abstraction
+  // landed default to "headless" (the historical behavior).
+  session.driverMode ??= "headless";
+  session.tmuxSessionName ??= null;
+  session.topLevelTmuxAgent ??= null;
   // Migration: dormant / dormantAnnounced / humanParticipants added for the
   // attention gate. Pre-existing sessions default to "awake, never announced,
   // no recorded participants" — they re-accumulate naturally as new messages
