@@ -6,66 +6,65 @@ Spawns `claude -p` as a child process, parses stream-json output, and collects s
 
 ### src/claude
 
-| Function | File | Purpose |
-|----------|------|---------|
-| `spawnClaude(session, prompt, config, targetRepoCwd?, botToken?)` | `spawner.ts` | Spawns CLI process, streams events, returns `SpawnHandle` |
-| `buildClaudeArgs(session, prompt, config, mcpConfigPath?)` | `args.ts` | Builds CLI arg array from session state |
-| `createStreamParser()` | `parser.ts` | Returns `{ feed(chunk): StreamEvent[] }` — buffers partial lines, validates JSON |
+| Symbol | File | Purpose |
+|---|---|---|
+| `spawnClaude(session, prompt, config, targetRepoCwd?, botToken?, agentIdentity?)` | `spawner.ts` | Spawn CLI process, stream events, return `SpawnHandle` |
+| `buildClaudeArgs(session, prompt, config, mcpConfigPath?)` | `args.ts` | Build CLI arg array from session state |
+| `createStreamParser()` | `parser.ts` | Returns `{ feed(chunk): StreamEvent[] }` — buffers partial lines, validates JSON, drops malformed/unknown |
 
 ### Types
 
-| Type | File | Purpose |
-|------|------|---------|
+| Type | File | Shape |
+|---|---|---|
 | `StreamEvent` | `types.ts` | Union: `StreamEventInit \| StreamEventAssistant \| StreamEventResult \| StreamEventUser \| StreamEventRateLimit` |
-| `SpawnResult` | `types.ts` | `{ sessionId, response, events[], exitCode, error }` |
-| `SpawnHandle` | `types.ts` | `{ result: Promise<SpawnResult>, onEvent(cb), kill(), pid }` |
 | `ContentBlock` | `types.ts` | Union: `ContentBlockText \| ContentBlockToolUse \| ContentBlockThinking` |
-
-### Constants
-
-| Constant | File | Purpose |
-|----------|------|---------|
-| `PROJECT_MCP_CONFIG` | `spawner.ts` | Resolved path to project `.mcp.json` (used for worktree spawns) |
+| `SpawnResult` | `types.ts` | `{ sessionId, response, events, exitCode, error }` |
+| `SpawnHandle` | `types.ts` | `{ result: Promise<SpawnResult>, onEvent(cb), kill(), pid }` |
 
 ## Data Flow
 
 ```
-buildClaudeArgs(session, prompt, config)
+buildClaudeArgs(session, prompt, config, mcpConfigPath?)
   │
   ▼
 Bun.spawn(["claude", ...args], { cwd, env })
   │
   ├── stdout ──► StreamParser.feed(chunk) ──► StreamEvent[]
-  │     ├── init event ──► extract sessionId
-  │     ├── assistant event ──► onEvent listeners
-  │     └── result event ──► extract response
+  │     ├── system+init  ──► capture sessionId
+  │     ├── assistant    ──► track lastAssistantText, notify listeners
+  │     └── result       ──► resultText
   │
-  └── proc.exited ──► SpawnResult { sessionId, response, events, exitCode, error }
+  └── proc.exited ──► SpawnResult { sessionId, response = result.text || lastAssistantText, events, exitCode, error }
 ```
 
 ## Key Concepts
 
-### Environment Variables Passed to Claude
+### cwd resolution
 
-`spawner.ts` sets these env vars on every spawned process:
+`session.cwd ?? session.worktreePath ?? targetRepoCwd ?? process.cwd()`. `session.cwd` is set by utility commands (e.g. `!adhoc`) and uses a dedicated temp dir.
+
+### Environment variables passed to Claude
 
 | Var | Purpose |
-|-----|---------|
+|---|---|
 | `JUNIOR_SPAWNED` | `"1"` — lets hooks/agents detect they're inside Junior |
 | `SLACK_CHANNEL` | Current thread's channel ID |
 | `SLACK_THREAD_TS` | Current thread's timestamp |
-| `SLACK_BOT_TOKEN` | Bot token for `bin/slack-upload.sh` |
+| `JUNIOR_AGENT_NAME` | `session.activeAgentName ?? "lead"` |
+| `JUNIOR_SLACK_USERNAME` | From `agentIdentity` (when present) |
+| `JUNIOR_SLACK_ICON_EMOJI` | From `agentIdentity` (when present) |
+| `SLACK_BOT_TOKEN` | When `botToken` arg passed — enables `bin/slack-upload.sh` |
 
-### MCP Config Injection
+### MCP config injection
 
-When `cwd` differs from project root (worktree/target repo), `spawner.ts` passes `--mcp-config` pointing to Junior's `.mcp.json`. This ensures the slack-bot MCP server is reachable regardless of working directory.
+Module-private constant `PROJECT_MCP_CONFIG` resolves to junior's `.mcp.json`. Passed as `--mcp-config` when `cwd` differs from project root AND `session.cwd` is not set. Utility-command spawns (`session.cwd` set) skip MCP — they use cloud integrations, not the local slack-bot MCP.
 
-### CLI Flags
+### CLI flags
 
-Always: `-p`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode bypassPermissions`.
-Conditional: `--resume` (if sessionId), `--append-system-prompt` (if systemPrompt), `--mcp-config` (if worktree).
+Always: `-p`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode`.
+Conditional: `--resume <sessionId>`, `--append-system-prompt`, `--model`, `--mcp-config`.
 
 ## Dependencies
 
-- **Uses**: Bun.spawn, `session/types` (ThreadSession), `config` (Claude settings)
-- **Used by**: `SessionManager.handleMessage()`, wrapped by `lifecycle/timeout.ts`
+- **Uses**: `Bun.spawn`, `session/types`, `config`, `claude/parser`, `claude/args`
+- **Used by**: `SessionManager.runClaudeWithAgent` (wrapped by `lifecycle/timeout.withTimeout`)

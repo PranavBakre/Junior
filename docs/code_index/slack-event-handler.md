@@ -1,70 +1,82 @@
 # Code Index: Slack Event Handler
 
-Slack Bolt app setup, event filtering, command parsing, message formatting, response posting, and Home tab rendering.
+Slack Bolt app setup, event filtering (with self-bot directive escape hatch), home tab, and file extraction. Posting/formatting live in `stream-to-slack.md` and `thread-context.md`.
 
 ## Code Index
 
 ### src/slack
 
-Event handling, formatting, and Slack API interaction.
-
-| Function | File | Purpose |
-|----------|------|---------|
-| `createSlackApp(config)` | `app.ts` | Factory: creates Bolt app with socket mode |
-| `registerEventHandlers(app, onMessage, store?, selfBotId?)` | `events.ts` | Wires `message` + `app_mention` handlers with filtering |
-| `extractFiles(event)` | `events.ts` | Pulls `url_private_download`, `name`, `mimetype` from event attachments |
-| `parseCommand(text)` | `commands.ts` | Splits `!build fix auth` → `{ command: "build", text: "fix auth" }` |
-| `formatToolStatuses(event)` | `formatting.ts` | Extracts tool names from assistant content blocks |
-| `extractAssistantText(event)` | `formatting.ts` | Concatenates text content blocks from assistant events |
-| `splitResponse(text, maxLen?)` | `formatting.ts` | Chunks by paragraph/line/code block boundaries (default 3000 chars) |
-| `SlackResponder.postResponse(channel, threadTs, text)` | `responder.ts` | Posts response, auto-splits if >3000 chars |
-| `SlackResponder.updateStatus(channel, threadTs, text)` | `responder.ts` | Debounced status message (1s min interval) |
-| `SlackResponder.deleteStatus(channel, threadTs)` | `responder.ts` | Removes status message when turn completes |
-| `SlackResponder.addReaction(channel, ts, emoji)` | `responder.ts` | Adds emoji reaction (e.g., eyes for buffered messages) |
-| `registerHomeTab(app, store)` | `home.ts` | Registers `app_home_opened` event |
-| `publishHomeTab(app, userId, store)` | `home.ts` | Builds home view with session stats |
+| Symbol | File | Purpose |
+|---|---|---|
+| `createSlackApp(config)` | `app.ts` | Bolt app with Socket Mode + `ignoreSelf: false` (lead's self-bot directives must be observed) |
+| `registerEventHandlers(app, onMessage, store?, selfBotId?, selfUserId?, autoTriggerChannels?)` | `events.ts` | Wires `message` + `app_mention` handlers with filtering |
+| `isForeignBotThinking(text)` | `events.ts` | Detects sibling Claude bots' streaming "✽ Thinking..." messages — drop those |
+| `extractFiles(event)` (private) | `events.ts` | Pulls `{ url_private_download, name, mimetype }` from `event.files` |
+| `registerHomeTab(app, store, windowMs)` | `home.ts` | `app_home_opened` listener |
+| `publishHomeTab(app, userId, store, windowMs)` | `home.ts` | Builds and publishes the home view |
 
 ### Types
 
-| Type | File | Purpose |
-|------|------|---------|
-| `SlackMessageEvent` | `events.ts` | `{ threadId, channel, user, text, ts, command, files? }` |
+| Type | File | Shape |
+|---|---|---|
+| `SlackMessageEvent` | `events.ts` | `{ threadId, channel, user, text, ts, command, files?, isSelfBot?, botUsername?, dedupeKey? }` |
 | `SlackFileAttachment` | `events.ts` | `{ url, name, mimetype }` |
-| `ParsedCommand` | `commands.ts` | `{ command: string | null, text: string }` |
+| `OnMessageCallback` | `events.ts` | `(event: SlackMessageEvent) => void` |
 
 ## Event Flow
 
 ```
 Slack WebSocket (Socket Mode)
   │
-  ├── message event
-  │     ├── filter: skip own bot_id (line 31)
-  │     ├── filter: must have text + user
-  │     ├── filter: must be thread reply OR DM
-  │     ├── filter: thread must have active session in store
-  │     ├── parseCommand() → extract !command
-  │     ├── extractFiles() → SlackFileAttachment[]
+  ├── message
+  │     ├── self-bot check:
+  │     │     ├── autoTriggerChannels → let through
+  │     │     ├── contains "!<persistent-agent>" line → let through (directive escape hatch)
+  │     │     └── else → drop (loop guard)
+  │     ├── no text / foreign-bot thinking → drop
+  │     ├── derive user (event.user → selfUserId if self-bot → bot_id if auto-trigger)
+  │     ├── must be thread reply, DM, or auto-trigger channel
+  │     ├── thread + non-auto-trigger + no session in store → drop
+  │     ├── stripOwnMention (uses selfUserId)
+  │     ├── parseCommand + extractFiles
   │     └── onMessage(SlackMessageEvent)
   │
-  └── app_mention event
-        ├── strip <@BOTID> from text
-        ├── parseCommand() + extractFiles()
+  └── app_mention
+        ├── no user / foreign-bot thinking → drop
+        ├── stripOwnMention + parseCommand + extractFiles
         └── onMessage(SlackMessageEvent)
 ```
 
+## Home Tab (`home.ts`)
+
+Reads `store.getRecent(windowMs)` then renders:
+
+- Summary section (active/idle/draining/errors/muted/total)
+- Active sessions list
+- Recent idle sessions (top 10 by lastActivity)
+- Recent errors (top 5)
+
+Each session block shows status, agent, repo, last-activity, pending count, worktree path, resume command, and any `agentSessions[*]` rows with their own sessionId/status/lastActivity/pending.
+
 ## Key Concepts
 
-### Loop Prevention
+### Loop prevention + directive escape
 
-`events.ts:31` — `if ("bot_id" in event && selfBotId && event.bot_id === selfBotId) return;`
+Bolt's default `ignoreSelf: true` is disabled so lead's posted `!<agent>` directives are observable. `events.ts` re-enforces the loop guard but lets through self-bot messages in auto-trigger channels OR messages with a `!<persistent-agent>` line.
 
-Messages from the bot MCP server carry Junior's `bot_id` and get filtered. The old Slack plugin sent as the user's OAuth identity (no `bot_id`), bypassing this filter.
+### Foreign-bot thinking filter
 
-### Status Debouncing
+Friday and Doraemon stream "✽ Thinking…" updates. `isForeignBotThinking` drops messages that start with `✽` — they're not user input.
 
-`SlackResponder` tracks `lastStatusTime` per thread. Updates within 1s of the last are skipped. This prevents Slack rate limits during rapid tool_use events.
+### Session-gated threads
+
+In a thread reply (not DM, not auto-trigger), the handler skips messages whose `thread_ts` has no row in the session store. This prevents random thread chatter from spawning Claude.
+
+### Dedupe via `dedupeKey`
+
+`SlackMessageEvent` carries an optional `dedupeKey`. `AgentDispatcher` sets it per-dispatched-agent so the same Slack message can fan out to multiple persistent agents in parallel without the `seenMessages` cache in `SessionManager` collapsing them.
 
 ## Dependencies
 
-- **Uses**: `@slack/bolt` (Bolt app, Socket Mode), session store (for thread filtering)
-- **Used by**: `SessionManager` (receives `SlackMessageEvent` via callback), `index.ts` (wiring)
+- **Uses**: `@slack/bolt`, `SessionStore` (thread-session lookup), `parseCommand`, `support/agents.isPersistentAgent`
+- **Used by**: `index.ts` (registration + dispatcher wiring)
