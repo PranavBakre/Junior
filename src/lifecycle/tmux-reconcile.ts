@@ -40,6 +40,19 @@ export async function reconcileTmuxSessions(
           tmuxSessionName: session.tmuxSessionName,
           sessionId: session.sessionId,
         });
+        // The bot died mid-turn but tmux survived. We have no activeTurn to
+        // resolve, so the next `turn_duration` event would be silently dropped
+        // and the row stays busy forever — flip back to idle so new messages
+        // can drain. Symmetric to the dead-tmux branch below.
+        if (session.status === "busy") {
+          session.status = "idle";
+          session.lastError = {
+            type: "tmux-adopted-mid-turn",
+            message: "bot restarted mid-turn; tmux session adopted, in-flight turn dropped",
+            timestamp: Date.now(),
+          };
+          await store.set(threadId, session);
+        }
         adopted++;
       } else {
         // The tmux session is gone but we kept the transcript — next send()
@@ -70,6 +83,10 @@ export async function reconcileTmuxSessions(
           tmuxSessionName: agentSession.tmuxSessionName,
           sessionId: agentSession.sessionId,
         });
+        if (agentSession.status === "busy") {
+          agentSession.status = "idle";
+          await store.set(threadId, session);
+        }
         adopted++;
       } else {
         agentSession.tmuxSessionName = null;

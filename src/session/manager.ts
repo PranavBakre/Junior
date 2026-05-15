@@ -178,9 +178,15 @@ export class SessionManager {
       // first or we leak detached tmux sessions.
       if (session.driverMode === "tmux") {
         const tmux = this.driverFor("tmux");
-        await tmux.close(threadId, "lead").catch(() => undefined);
+        if (session.tmuxSessionName) {
+          // topLevelTmuxAgent is "lead" in support channels and "default" elsewhere
+          // — pick from the row, not a literal, or non-support channels leak.
+          await tmux.close(threadId, session.topLevelTmuxAgent ?? "lead").catch(() => undefined);
+        }
         for (const agentSession of Object.values(session.agentSessions ?? {})) {
-          await tmux.close(threadId, agentSession.agentName).catch(() => undefined);
+          if (agentSession.tmuxSessionName) {
+            await tmux.close(threadId, agentSession.agentName).catch(() => undefined);
+          }
         }
       }
     }
@@ -208,15 +214,38 @@ export class SessionManager {
 
     let touched = false;
     if (agentName === "lead" || agentName === "default") {
-      if (session.sessionId || session.leadSessionId || session.pendingMessages.length > 0 || session.status !== "idle") {
+      if (
+        session.sessionId ||
+        session.leadSessionId ||
+        session.pendingMessages.length > 0 ||
+        session.status !== "idle" ||
+        session.tmuxSessionName
+      ) {
         touched = true;
+      }
+      // handle.kill() above only sends Escape inside the tmux pane — the tmux
+      // session itself survives. Without an explicit close the next turn
+      // adopts a stale `--resume <sessionId>` pointing at a session we just
+      // wiped, so the row and the live tmux session drift apart.
+      if (session.driverMode === "tmux" && session.tmuxSessionName) {
+        const tmux = this.driverFor("tmux");
+        await tmux
+          .close(threadId, session.topLevelTmuxAgent ?? agentName)
+          .catch(() => undefined);
       }
       session.sessionId = null;
       session.leadSessionId = null;
       session.pendingMessages = [];
       session.status = "idle";
       session.pid = null;
+      session.tmuxSessionName = null;
+      session.topLevelTmuxAgent = null;
     } else if (session.agentSessions?.[agentName]) {
+      const agentSession = session.agentSessions[agentName];
+      if (session.driverMode === "tmux" && agentSession.tmuxSessionName) {
+        const tmux = this.driverFor("tmux");
+        await tmux.close(threadId, agentName).catch(() => undefined);
+      }
       delete session.agentSessions[agentName];
       touched = true;
     }
@@ -516,8 +545,29 @@ export class SessionManager {
           const agentName = key.slice(session.threadId.length + 1);
           await outgoing.close(session.threadId, agentName).catch(() => undefined);
         }
+        // Between turns this.handles is empty — close the persisted tmux
+        // session(s) explicitly or nulling tmuxSessionName below orphans them
+        // (tmux-evict skips rows whose driverMode is no longer "tmux").
+        if (session.driverMode === "tmux") {
+          if (session.tmuxSessionName) {
+            await outgoing
+              .close(session.threadId, session.topLevelTmuxAgent ?? "lead")
+              .catch(() => undefined);
+          }
+          for (const agentSession of Object.values(session.agentSessions ?? {})) {
+            if (agentSession.tmuxSessionName) {
+              await outgoing
+                .close(session.threadId, agentSession.agentName)
+                .catch(() => undefined);
+              agentSession.tmuxSessionName = null;
+            }
+          }
+        }
         session.driverMode = arg;
-        if (arg !== "tmux") session.tmuxSessionName = null;
+        if (arg !== "tmux") {
+          session.tmuxSessionName = null;
+          session.topLevelTmuxAgent = null;
+        }
         await this.store.set(session.threadId, session);
         this.onCommandResponse?.(event, `Driver set to *${arg}*. Next message starts on the new path.`);
         return true;
