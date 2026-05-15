@@ -14,6 +14,7 @@ const KNOWN_COMMANDS = new Set([
   "repo",
   "branch",
   "agent",
+  "provider",
   "quiet",
   "verbose",
   "normal",

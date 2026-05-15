@@ -1,6 +1,6 @@
 import { spawnClaude as defaultSpawnClaude } from "./spawner.ts";
 import type { ClaudeDriver, DriverMode, DriverSendInput } from "./driver.ts";
-import type { SpawnHandle } from "./types.ts";
+import type { SpawnHandle } from "../runners/types.ts";
 
 export type SpawnClaudeFn = typeof defaultSpawnClaude;
 

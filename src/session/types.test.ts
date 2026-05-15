@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { createSession } from "./types.ts";
+import { createSession, normalizeRunnerProvider } from "./types.ts";
 
 describe("createSession", () => {
   it("returns correct shape with threadId and channel", () => {
@@ -16,6 +16,11 @@ describe("createSession", () => {
   it("has sessionId as null", () => {
     const session = createSession("t1", "C01");
     expect(session.sessionId).toBeNull();
+  });
+
+  it("has provider set to claude by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.provider).toBe("claude");
   });
 
   it("has leadSessionId as null", () => {
@@ -120,6 +125,7 @@ describe("createSession", () => {
       "muted",
       "pendingMessages",
       "pid",
+      "provider",
       "sessionId",
       "status",
       "systemPrompt",
@@ -146,5 +152,19 @@ describe("createSession", () => {
   it("has humanParticipants as empty array by default", () => {
     const session = createSession("t1", "C01");
     expect(session.humanParticipants).toEqual([]);
+  });
+});
+
+describe("normalizeRunnerProvider", () => {
+  it("keeps supported providers", () => {
+    expect(normalizeRunnerProvider("claude")).toBe("claude");
+    expect(normalizeRunnerProvider("opencode")).toBe("opencode");
+    expect(normalizeRunnerProvider("codex")).toBe("codex");
+  });
+
+  it("defaults missing or invalid values to claude", () => {
+    expect(normalizeRunnerProvider(undefined)).toBe("claude");
+    expect(normalizeRunnerProvider(null)).toBe("claude");
+    expect(normalizeRunnerProvider("unknown")).toBe("claude");
   });
 });

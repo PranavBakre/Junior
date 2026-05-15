@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import type {
+  RunnerEvent,
   SpawnHandle,
   SpawnResult,
-  StreamEvent,
-} from "../claude/types.ts";
+  SpawnRunnerFn,
+} from "../runners/types.ts";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { Config } from "../config.ts";
+import { createSession } from "./types.ts";
 
 // --- Mock setup ---
 
@@ -18,13 +20,14 @@ function createMockHandle(
   response: string = "ok",
   sessionId: string = "test-session",
 ): MockHandle {
-  const listeners: Array<(event: StreamEvent) => void> = [];
+  const listeners: Array<(event: RunnerEvent) => void> = [];
   let resolveResult!: (result: SpawnResult) => void;
   const result = new Promise<SpawnResult>((res) => {
     resolveResult = res;
   });
 
   return {
+    provider: "claude",
     result,
     onEvent: (cb) => listeners.push(cb),
     kill: mock(() => {}),
@@ -34,13 +37,14 @@ function createMockHandle(
       const finalSessionId = sid ?? sessionId;
       for (const l of listeners)
         l({
-          type: "system",
-          subtype: "init",
-          session_id: finalSessionId,
+          type: "init",
+          provider: "claude",
+          sessionId: finalSessionId,
         });
       for (const l of listeners)
-        l({ type: "result", subtype: "success", text: finalResponse });
+        l({ type: "done", provider: "claude" });
       resolveResult({
+        provider: "claude",
         sessionId: finalSessionId,
         response: finalResponse,
         events: [],
@@ -50,6 +54,7 @@ function createMockHandle(
     },
     _error: (errorMsg: string) => {
       resolveResult({
+        provider: "claude",
         sessionId: null,
         response: "",
         events: [],
@@ -60,15 +65,9 @@ function createMockHandle(
   };
 }
 
-let mockSpawnFn: ReturnType<typeof mock<(session: unknown, prompt: unknown, config: unknown) => MockHandle>> = mock(
-  (_session: unknown, _prompt: unknown, _config: unknown) => createMockHandle(),
+let mockSpawnFn: ReturnType<typeof mock<SpawnRunnerFn>> = mock(
+  () => createMockHandle(),
 );
-
-// Mock spawnClaude
-mock.module("../claude/spawner.ts", () => ({
-  spawnClaude: (session: unknown, prompt: unknown, config: unknown) =>
-    mockSpawnFn(session, prompt, config),
-}));
 
 // Mock withTimeout to pass through the handle as-is (no real timeout)
 mock.module("../lifecycle/timeout.ts", () => ({
@@ -78,7 +77,6 @@ mock.module("../lifecycle/timeout.ts", () => ({
 // Import after mocking
 const { SessionManager } = await import("./manager.ts");
 import { InMemorySessionStore } from "./store/memory.ts";
-import { createSession } from "./types.ts";
 import type { DriverMap } from "../claude/factory.ts";
 import type { ClaudeDriver } from "../claude/driver.ts";
 
@@ -94,7 +92,15 @@ function makeFakeDrivers(): {
   const stub = (mode: "headless" | "tmux"): ClaudeDriver => ({
     mode,
     send: () => ({
-      result: Promise.resolve({ sessionId: null, response: "", events: [], exitCode: 0, error: null }),
+      provider: "claude",
+      result: Promise.resolve({
+        provider: "claude",
+        sessionId: null,
+        response: "",
+        events: [],
+        exitCode: 0,
+        error: null,
+      }),
       onEvent: () => undefined,
       kill: () => undefined,
       pid: null,
@@ -119,6 +125,15 @@ const testConfig: Config = {
     defaultDriver: "headless",
     tmuxIdleTtlMs: 14_400_000,
     tmuxSweepIntervalMs: 900_000,
+  },
+  runner: { provider: "claude" },
+  opencode: {
+    model: null,
+    timeoutMs: 300000,
+    permission: "allow",
+    mcpEnabled: true,
+    slackMcpEnabled: true,
+    playwrightMcpEnabled: true,
   },
   repos: [
     { name: "junior", path: "/tmp/junior", defaultBase: "main" },
@@ -156,10 +171,14 @@ describe("SessionManager", () => {
 
   beforeEach(() => {
     store = new InMemorySessionStore();
-    manager = new SessionManager(store, testConfig);
 
     currentHandle = createMockHandle();
     mockSpawnFn = mock(() => currentHandle);
+    manager = new SessionManager(
+      store,
+      testConfig,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
   });
 
   // --- Session creation and basic flow ---
@@ -183,7 +202,7 @@ describe("SessionManager", () => {
     expect(session!.status).toBe("busy");
   });
 
-  it("calls spawnClaude with the prompt text", async () => {
+  it("calls spawnRunner with the prompt text", async () => {
     const event = makeEvent({ text: "Build me a feature" });
     await manager.handleMessage(event);
 
@@ -573,8 +592,128 @@ describe("SessionManager", () => {
       expect(onCmd).toHaveBeenCalledTimes(1);
       const response = onCmd.mock.calls[0][1] as string;
       expect(response).toContain("*Status:*");
+      expect(response).toContain("*Provider:*");
       expect(response).toContain("*Agent:*");
       expect(response).toContain("*Pending messages:*");
+    });
+  });
+
+  describe("!provider", () => {
+    it("sets provider when no native session exists", async () => {
+      manager.onCommandResponse = mock((_e: SlackMessageEvent, _r: string) => {});
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "opencode",
+        ts: "ts-provider",
+      }));
+
+      const session = await store.get("thread-1");
+      expect(session!.provider).toBe("opencode");
+      expect(manager.onCommandResponse).toHaveBeenCalledWith(
+        expect.anything(),
+        "Runner provider set to *opencode*.",
+      );
+    });
+
+    it("requires reset before switching provider after a native session exists", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      await manager.handleMessage(makeEvent({ text: "Start" }));
+      currentHandle._complete("Done", "claude-session");
+      await new Promise((r) => setTimeout(r, 10));
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "opencode",
+        ts: "ts-provider",
+      }));
+
+      const session = await store.get("thread-1");
+      expect(session!.provider).toBe("claude");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("!reset all");
+    });
+
+    it("requires reset when only an agent session exists (no top-level sessionId)", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      // Bug-pipeline-style state: no top-level sessionId, but a persistent
+      // agent has captured a native session.
+      const session = await store.get("thread-1");
+      const seeded = session
+        ? session
+        : (await manager.handleMessage(makeEvent({ text: "seed" })), await store.get("thread-1"));
+      seeded!.sessionId = null;
+      seeded!.leadSessionId = null;
+      seeded!.agentSessions = {
+        reproducer: {
+          agentName: "reproducer",
+          provider: "claude",
+          sessionId: "claude-reproducer-session",
+          status: "done",
+          pendingMessages: [],
+          lastActivity: Date.now(),
+          pid: null,
+        },
+      };
+      seeded!.status = "idle";
+      await store.set("thread-1", seeded!);
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "opencode",
+        ts: "ts-provider-agent",
+      }));
+
+      const after = await store.get("thread-1");
+      expect(after!.provider ?? "claude").toBe("claude");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("!reset all");
+    });
+
+    it("blocks provider changes while an agent session is busy before init", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      const session = createSession("thread-1", "C123");
+      session.status = "idle";
+      session.agentSessions.reproducer = {
+        agentName: "reproducer",
+        provider: "claude",
+        sessionId: null,
+        status: "busy",
+        pendingMessages: [],
+        lastActivity: Date.now(),
+        pid: 123,
+      };
+      await store.set("thread-1", session);
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "opencode",
+        ts: "ts-provider-busy-agent",
+      }));
+
+      const after = await store.get("thread-1");
+      expect(after!.provider ?? "claude").toBe("claude");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("runner is active");
+    });
+
+    it("rejects codex with a not-implemented message", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "codex",
+        ts: "ts-provider-codex",
+      }));
+
+      const session = await store.get("thread-1");
+      // session.provider stays unchanged (undefined or claude)
+      expect(session?.provider ?? "claude").toBe("claude");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("not yet implemented");
     });
   });
 
@@ -779,7 +918,7 @@ describe("SessionManager", () => {
   // --- onEvent forwarding ---
 
   it("forwards stream events via onEvent", async () => {
-    const events: StreamEvent[] = [];
+    const events: RunnerEvent[] = [];
     manager.onEvent = (_session, event) => events.push(event);
 
     await manager.handleMessage(makeEvent({ text: "Go" }));
@@ -789,8 +928,8 @@ describe("SessionManager", () => {
 
     // Should have received init + result events
     expect(events.length).toBe(2);
-    expect(events[0].type).toBe("system");
-    expect(events[1].type).toBe("result");
+    expect(events[0].type).toBe("init");
+    expect(events[1].type).toBe("done");
   });
 
   // --- getSession ---
