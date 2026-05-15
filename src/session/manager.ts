@@ -35,6 +35,7 @@ import {
   resolveSlackMentions,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
+import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
@@ -1133,7 +1134,12 @@ export class SessionManager {
       );
     }
 
-    if (result.response) {
+    if (result.response && isDuplicateSlackToolResponse(result.response, result.events)) {
+      _log.info(
+        "response",
+        `thread=${fresh.threadId} agent=${agentName} suppressed reason=duplicate-slack-tool-post`,
+      );
+    } else if (result.response) {
       this.onResponse?.(
         this.buildRunSession(fresh, agentName, agentIdentity),
         result.response,

@@ -14,7 +14,7 @@ Different Slack threads need different Claude Code personalities. A thread askin
 - Command selects agent type: `!build`, `!frontend`, `!review`, `!architect`, `!pm`, `!audit`, `!reproducer`, `!thinker`, …
 - Agent definitions resolved across a **layered search chain** — first match wins:
   1. Target repo's `.claude/agents/<type>.md`
-  2. Private org overlay's `<orgAgentsDir>/<type>.md` (e.g. `.claude/agents-org/`, a gitignored or submodule-mounted private repo)
+  2. Private org overlay's `<orgAgentsDir>/<type>.md` (e.g. `agents-org/`, a gitignored or submodule-mounted private repo)
   3. Junior's own `.claude/agents/<type>.md` (fallback)
 - Agent definition injected via `--append-system-prompt`
 - Agent type persists across turns in a thread; can be changed mid-thread with a new command
@@ -124,7 +124,7 @@ Different agent types get different MCP server configurations.
 Separate the public Junior repo from org-specific specifics, and let lightweight agents opt out of the heavy preamble.
 
 **What it adds:**
-- `AgentRouter` accepts a third constructor arg `orgAgentsDir` (e.g. `.claude/agents-org/`) — a gitignored or submodule-mounted private repo.
+- `AgentRouter` accepts a third constructor arg `orgAgentsDir` (e.g. `agents-org/`) — a gitignored or submodule-mounted private repo.
 - `resolveAgent`: search order becomes target repo → org overlay → public fallback (first match wins).
 - `composeSystemPrompt`: org overlay's `common/*.md` is appended **additively** after the public/target common — so org-wide invariants (credential paths, merge protocol, infra URLs) reach every agent regardless of which repo's common loaded first.
 - `composeSystemPrompt` also now returns the common preamble alone when no agent definition resolves — covers the default `@junior` path so it picks up the same invariants.

@@ -29,9 +29,26 @@ The bot needs environment configuration (Slack tokens, repo paths, timeouts) and
 5. Wire `SessionManager` callbacks → `SlackResponder` (`onResponse`, `onEvent`, `onMessageBuffered`, `onCommandResponse`, `onReaction`, `onError`). `prepareSlackResponse` strips the trailing `NO_SLACK_MESSAGE` sentinel; empty/sentinel-only replies are logged and suppressed.
 6. Register the App Home tab and graceful-shutdown hooks.
 7. Start two `setInterval` loops: orphan check (60s) and stale-session cleanup (`SESSION_CLEANUP_INTERVAL_MS`).
-8. Async bootstrap: `loadOverlayIdentities(".claude/agents-org")` merges private agent identities from frontmatter (`username`, `iconEmoji`) into `AGENT_IDENTITIES`; `devServerManager.bootstrap()` prepares dev-server worktrees. Both are non-fatal.
+8. Async bootstrap: `loadOverlayIdentities("agents-org")` merges private agent identities from frontmatter (`username`, `iconEmoji`) into `AGENT_IDENTITIES`; `devServerManager.bootstrap()` prepares dev-server worktrees. Both are non-fatal.
 9. `app.start()`, resolve bot identity via `auth.test`, register event handlers (every message goes through `supportRouter.handleMessage`).
 10. If `config.http.enabled`, dynamic-import `./http/server.ts` and start the localhost dashboard. Failure is non-fatal — logged so the bot keeps running.
+
+## Private Org Overlay
+
+The private agent overlay is mounted at `agents-org/`, not under `.claude/`, because it is Junior-owned runtime data rather than a Claude Code native agent directory. Fresh clones initialize it with:
+
+```bash
+git submodule update --init agents-org
+```
+
+Existing checkouts that previously initialized `.claude/agents-org` should run:
+
+```bash
+git submodule deinit .claude/agents-org
+git submodule update --init agents-org
+```
+
+The overlay is optional for public-only development. Missing `agents-org/` degrades to public agent definitions and no private identities.
 
 ## Configuration
 
@@ -165,7 +182,7 @@ junior/
       dev-server-queue.ts -- single-flight dev-server activation
   .claude/
     agents/               -- public agent definitions
-    agents-org/           -- private/overlay agents (identity in frontmatter)
+  agents-org/             -- private/overlay agents (identity in frontmatter)
   data/
     sessions.db           -- SQLite store (gitignored)
   docs/

@@ -1,6 +1,6 @@
 # Code Index: Stream to Slack
 
-Formats Claude stream events as Slack status messages, posts final responses (with sentinel handling), and parses the underlying stream-json.
+Formats normalized runner stream events as Slack status messages, posts final responses (with sentinel handling), and parses provider stream JSON.
 
 ## Code Index
 
@@ -18,9 +18,11 @@ Formats Claude stream events as Slack status messages, posts final responses (wi
 
 | Symbol | Purpose |
 |---|---|
-| `formatToolStatuses(event)` | Extracts `tool_use` blocks from an assistant event; renders each with tool-specific formatting (Bash → first 80 chars of command, Read/Edit/Write → file_path, Grep/Glob → pattern, Task → subagent_type, multi-Task → aggregated "Calling X, Y (N in progress)") |
+| `formatToolStatuses(event)` | Legacy Claude helper: extracts `tool_use` blocks from an assistant event, normalizes them, and delegates to `formatRunnerToolStatuses` |
+| `formatRunnerToolStatuses(events)` | Renders normalized runner tool events with tool-specific formatting (Bash → first 80 chars of command, Read/Edit/Write → file_path, Grep/Glob → pattern, Task → subagent_type, multi-Task → aggregated "Calling X, Y (N in progress)") |
 | `extractAssistantText(event)` | Concatenates all `text` content blocks from an assistant event |
 | `prepareSlackResponse(text)` | Sentinel handler: returns null for empty/`NO_SLACK_MESSAGE`/trailing-only-sentinel; strips trailing sentinel from real content |
+| `isDuplicateSlackToolResponse(text, events)` | Detects exact final-response duplicates of text already sent through `slack_send_message`/`mcp__...__slack_send_message` in the same turn so Junior suppresses the second post |
 | `splitResponse(text, maxLength = 4000)` | Chunks long responses; prefers paragraph (`\n\n`) → line → code-block boundaries; avoids splitting inside fenced code blocks |
 | `NO_SLACK_MESSAGE` | Sentinel constant — agents return this to skip Slack post |
 
@@ -30,6 +32,13 @@ Formats Claude stream events as Slack status messages, posts final responses (wi
 |---|---|
 | `createStreamParser()` | Returns `{ feed(chunk): StreamEvent[] }`. Buffers partial lines, JSON-parses, validates shape via `isStreamEvent`, silently skips malformed/unknown |
 
+### src/opencode/parser.ts
+
+| Symbol | Purpose |
+|---|---|
+| `createOpenCodeStreamParser()` | Buffers OpenCode JSONL chunks, validates `step_start`, `text`, `tool_use`, and `step_finish`, and logs malformed/unknown lines |
+| `createOpenCodeEventMapper()` | Maps OpenCode events into normalized `RunnerEvent` records: `init`, coalesced `message`, `tool`, and `done` |
+
 ## Live Update Flow
 
 ```
@@ -37,13 +46,14 @@ spawner.onEvent(event)
   │
   ├── system+init               → log session start
   │
-  ├── assistant + text content  → extractAssistantText → prepareSlackResponse
+  ├── message text              → extractRunnerMessageText → prepareSlackResponse
   │                                 ├── null → log + suppress
   │                                 └── text → responder.updateStatus(..., agentName)
   │
-  ├── assistant + tool_use      → formatToolStatuses → updateStatus(... per status)
+  ├── tool event                → formatRunnerToolStatuses → updateStatus(... per status)
   │
   └── result (turn done) — onRunComplete:
+        ├── exact duplicate of same-turn slack_send_message? → suppress
         ├── deleteStatus(channel, thread, agentName)
         ├── prepareSlackResponse(response)
         │     ├── null → log "response suppressed"
@@ -56,6 +66,8 @@ spawner.onEvent(event)
 ### Sentinel handling
 
 Agents that decide a turn doesn't warrant a reply return exactly `NO_SLACK_MESSAGE`. `prepareSlackResponse` also strips a trailing sentinel from real content (agent intended to reply and habitually appended the sentinel). Both `onResponse` and `onEvent`'s status path run through it.
+
+If an agent calls `slack_send_message` and then returns the same text as its final response, `SessionManager` suppresses the final response before `onResponse` so the thread does not receive an MCP post plus a responder post. The suppression is exact-text only; different follow-up text is still posted.
 
 ### Per-agent status keys
 

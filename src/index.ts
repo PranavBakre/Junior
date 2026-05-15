@@ -30,7 +30,7 @@ const sessionManager = new SessionManager(store, config);
 const agentRouter = new AgentRouter(
   config.repos,
   ".claude/agents",
-  ".claude/agents-org",
+  "agents-org",
 );
 const worktreeManager = new WorktreeManager(config.repos);
 const devServerManager = new DevServerManager(config.repos, worktreeManager);
@@ -173,12 +173,12 @@ setInterval(() => {
 
 (async () => {
   // Load private/overlay agent identities BEFORE accepting events. Each
-  // `.claude/agents-org/*.md` file may declare `username` + `iconEmoji` in
+  // `agents-org/*.md` files may declare `username` + `iconEmoji` in
   // frontmatter; those get merged into `AGENT_IDENTITIES` so dispatch,
   // `agentForUsername`, and slack posting all see them. Failure is
   // non-fatal — overlay is optional.
   try {
-    await loadOverlayIdentities(".claude/agents-org");
+    await loadOverlayIdentities("agents-org");
   } catch (err) {
     log.error(
       "boot",

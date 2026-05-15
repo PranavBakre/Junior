@@ -1,8 +1,12 @@
 ---
-name: pm
 description: Product manager. Use for scoping features, planning iterations, making scope cuts.
-tools: Read, Write, Edit, Grep, Glob
-model: opus
+mode: subagent
+permission:
+  read: allow
+  edit: allow
+  bash: deny
+  glob: allow
+  grep: allow
 ---
 
 # pm -- Product Manager

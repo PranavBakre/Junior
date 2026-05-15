@@ -50,7 +50,7 @@ Entry point, configuration, logging, persona loading, and boot sequence.
  2. createSlackApp(config)              ← Bolt + Socket Mode, ignoreSelf=false
  3. createSessionStore(config)
  4. SessionManager(store, config)
- 5. AgentRouter(repos, ".claude/agents", ".claude/agents-org")
+ 5. AgentRouter(repos, ".claude/agents", "agents-org")
  6. WorktreeManager(repos)
  7. DevServerManager(repos, worktreeManager)
  8. DevServerQueue(devServerManager, repos)
@@ -62,7 +62,7 @@ Entry point, configuration, logging, persona loading, and boot sequence.
 14. registerHomeTab(app, store, homeWindowMs)
 15. setupGracefulShutdown(sessionManager, store, devServerManager)
 16. Intervals: orphan health (60s), stale cleanup (cleanupIntervalMs)
-17. await loadOverlayIdentities(".claude/agents-org")   ← non-fatal
+17. await loadOverlayIdentities("agents-org")   ← non-fatal
 18. await devServerManager.bootstrap()                  ← non-fatal
 19. await app.start()                                   ← Socket Mode connect
 20. auth.test()  → sessionManager.botUserId, selfBotId

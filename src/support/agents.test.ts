@@ -257,8 +257,8 @@ body
     expect(AGENT_IDENTITIES["Anonymous"]).toBeUndefined();
   });
 
-  it("does not throw when the overlay directory is missing", async () => {
-    const missing = path.join(import.meta.dir, "__definitely_not_here");
+  it("does not throw when the configured agents-org overlay directory is missing", async () => {
+    const missing = path.join(import.meta.dir, "agents-org-missing");
     await expect(loadOverlayIdentities(missing)).resolves.toBeUndefined();
   });
 });

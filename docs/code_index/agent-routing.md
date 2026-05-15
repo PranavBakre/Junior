@@ -8,7 +8,7 @@ Resolves agent definitions across a layered search chain (target repo → privat
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `AgentRouter(repos, fallbackAgentsDir, orgAgentsDir?)` | `router.ts` | Constructor. `orgAgentsDir` is the optional private-overlay mount (e.g. `.claude/agents-org/`); omit for public-only. |
+| `AgentRouter(repos, fallbackAgentsDir, orgAgentsDir?)` | `router.ts` | Constructor. `orgAgentsDir` is the optional private-overlay mount (e.g. `agents-org/`); omit for public-only. |
 | `AgentRouter.resolveAgent(session)` | `router.ts` | Searches target repo → org overlay → public fallback. First match wins. Returns `AgentDefinition \| null`. |
 | `AgentRouter.composeSystemPrompt(session)` | `router.ts` | Builds the system prompt = common preamble + agent body. Common is `(target_repo_common OR public_common)` plus the org overlay's common (always additive). |
 | `loadAgentDefinition(filePath)` | `loader.ts` | Reads a `.md` file, parses frontmatter (flat `key: value`, dot-notation `context.<flag>`, quoted-value strip). Returns `null` if missing. |
