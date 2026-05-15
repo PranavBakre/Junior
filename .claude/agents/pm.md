@@ -1,7 +1,7 @@
 ---
 name: pm
 description: Product manager. Use for scoping features, planning iterations, making scope cuts.
-tools: Read, Grep, Glob
+tools: Read, Write, Edit, Grep, Glob
 model: opus
 ---
 
