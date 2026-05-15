@@ -22,7 +22,7 @@ Core orchestrator: routes Slack messages to Claude, manages the buffer/drain sta
 
 | Callback | When |
 |---|---|
-| `onResponse(session, text)` | Claude turn complete; `prepareSlackResponse` runs sentinel handling |
+| `onResponse(session, text)` | Claude turn complete; duplicate Slack-tool posts are suppressed first, then `prepareSlackResponse` runs sentinel handling |
 | `onEvent(session, event)` | Each stream-json event (status updates) |
 | `onMessageBuffered(event)` | Message buffered while busy → `eyes` reaction |
 | `onCommandResponse(event, text)` | Command (`!status`, `!help`, etc.) returns text |
@@ -110,6 +110,7 @@ Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, c
 
 - **Refetch-then-mutate in `onRunComplete`**: long-running agents may be minutes stale; refetch the row to avoid clobbering writes from other agents on the same thread.
 - **Handle ownership check**: if `this.handles.get(handleKey) !== ownHandle`, the run was replaced by `!reset` or a newer spawn — bail without writing or posting.
+- **Slack tool duplicate suppression**: if a runner used `slack_send_message` and its final response is the exact same text, skip `onResponse` to avoid double-posting the same Slack reply.
 - **`seenMessages` dedupe**: bounded set (cap 1000, drops oldest 500) keyed on `dedupeKey ?? ts`. Slack fires both `message` and `app_mention` for @mentions.
 
 ## Dependencies
