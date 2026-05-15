@@ -62,6 +62,107 @@ export class SessionManager {
     await this.runSingleSession(event, "default");
   }
 
+  /**
+   * Attention gate. Runs before any routing and decides whether the message
+   * should reach an agent at all. Returns `true` when the message is consumed
+   * here (drop it; the caller must NOT route further) and `false` when normal
+   * routing should continue.
+   *
+   * Handles:
+   * - `!aside` — drop with 👀.
+   * - `!listen` — clear dormant (if set) and drop with 👂.
+   * - Wake on @mention — clear dormant and fall through to routing.
+   * - Drop everything while dormant.
+   * - One-shot auto-dormant trigger when a second human posts without
+   *   mentioning Junior. Announcement only fires once per thread (sticky
+   *   `dormantAnnounced` flag), so manual `!listen` is respected — re-silence
+   *   is `!aside` or `!mute`.
+   *
+   * Auto-trigger channels (any channel with a `channelDefaults` entry — e.g.
+   * `#bugs-backlog`) are exempt: humans-talking-to-humans is the intended
+   * input there, not a sidebar.
+   */
+  async gateAttention(event: SlackMessageEvent): Promise<boolean> {
+    // !aside: drop the message but still record the sender as a participant —
+    // they're a human in the room even if this message isn't for Junior. The
+    // alternative (skip tracking) creates a corner where U-B posts only
+    // asides, then a real non-mention message, and the gate fails to fire
+    // because U-B was never registered as present.
+    if (event.command === "aside") {
+      const isHuman = !event.isSelfBot && !event.botId;
+      if (isHuman && event.user) {
+        const session = await this.store.get(event.threadId);
+        if (session && !session.humanParticipants.includes(event.user)) {
+          session.humanParticipants.push(event.user);
+          await this.store.set(event.threadId, session);
+        }
+      }
+      this.onReaction?.(event, "eyes");
+      return true;
+    }
+
+    // Auto-trigger channels (e.g. #bugs-backlog) feed Junior every human
+    // message by design — the gate would falsely dormant them.
+    const isAutoTrigger = !!this.config.channelDefaults[event.channel];
+
+    const session = await this.store.get(event.threadId);
+
+    // !listen: wake from dormant if needed. Anyone in the thread.
+    if (event.command === "listen") {
+      if (session && session.dormant) {
+        session.dormant = false;
+        await this.store.set(event.threadId, session);
+      }
+      this.onReaction?.(event, "ear");
+      return true;
+    }
+
+    // @mention wakes a dormant thread, then falls through so the mention is
+    // processed normally.
+    if (event.mentionsJunior && session?.dormant) {
+      session.dormant = false;
+      await this.store.set(event.threadId, session);
+    }
+
+    // Dormant after the wake check → drop silently. No state change.
+    if (session?.dormant) {
+      return true;
+    }
+
+    if (isAutoTrigger) return false;
+
+    // Trigger: actor must be human (not Junior, not its agents, not any
+    // foreign bot). Session must exist with another human already recorded.
+    // Message must not @mention Junior. And the gate fires at most once per
+    // thread — once announced, dormancy is the human's call (`!aside` / `!mute`).
+    const isHuman = !event.isSelfBot && !event.botId;
+    if (
+      isHuman &&
+      session &&
+      !session.dormantAnnounced &&
+      !event.mentionsJunior
+    ) {
+      const otherHumans = session.humanParticipants.filter(
+        (u) => u !== event.user,
+      );
+      if (otherHumans.length > 0) {
+        session.dormant = true;
+        session.dormantAnnounced = true;
+        if (!session.humanParticipants.includes(event.user)) {
+          session.humanParticipants.push(event.user);
+        }
+        await this.store.set(event.threadId, session);
+        this.onCommandResponse?.(
+          event,
+          "Looks like a side conversation. I'll stay out — `@` me or `!listen` to bring me back.",
+        );
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   async handleLeadMessage(event: SlackMessageEvent): Promise<void> {
     await this.runSingleSession(event, "lead");
   }
@@ -286,6 +387,7 @@ export class SessionManager {
         const lines = [
           `*Status:* ${session.status}`,
           `*Muted:* ${session.muted ? "yes" : "no"}`,
+          `*Dormant:* ${session.dormant ? "yes (auto)" : "no"}`,
           `*Agent:* ${session.agentType ?? "default"}`,
           `*Default Agent:* ${session.defaultAgent ?? "channel default"}`,
           `*Repo:* ${session.targetRepo ?? "none"}`,
@@ -317,6 +419,8 @@ export class SessionManager {
           "`!bugs <text>` — Add bug item to calendar",
           "`!mute` — Stop responding until !unmute (admin only)",
           "`!unmute` — Resume responding (admin only)",
+          "`!aside [text]` — Drop just this message (side comment, humans only)",
+          "`!listen` — Wake from auto-dormant mode",
           "`!help` — Show this help",
         ].join("\n");
         this.onCommandResponse?.(event, helpText);
@@ -437,6 +541,24 @@ export class SessionManager {
           `4. Reply with a one-line confirmation.`,
         ].join("\n");
         return false;
+      }
+
+      // `aside` and `listen` are normally consumed in gateAttention before
+      // routing reaches handleCommand. Defensive cases here keep them from
+      // accidentally falling through to Claude as plain prompts if the gate
+      // is bypassed (e.g. direct test invocations of handleMessage).
+      case "aside": {
+        this.onReaction?.(event, "eyes");
+        return true;
+      }
+
+      case "listen": {
+        if (session.dormant) {
+          session.dormant = false;
+          await this.store.set(session.threadId, session);
+        }
+        this.onReaction?.(event, "ear");
+        return true;
       }
 
       case "mute": {
@@ -831,6 +953,15 @@ export class SessionManager {
 
     session.leadSessionId ??= session.sessionId;
     session.agentSessions ??= {};
+
+    // Track human participants for the attention gate. Bots — Junior, its
+    // agents, and foreign bots — are excluded by design (see gateAttention).
+    const isHuman = !event.isSelfBot && !event.botId;
+    if (isHuman && event.user && !session.humanParticipants.includes(event.user)) {
+      session.humanParticipants.push(event.user);
+      await this.store.set(event.threadId, session);
+    }
+
     return session;
   }
 
