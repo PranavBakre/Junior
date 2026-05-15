@@ -538,11 +538,17 @@ export class SessionManager {
           this.onCommandResponse?.(event, `Already on *${arg}*.`);
           return true;
         }
-        // Tear down the outgoing driver's per-(thread,agent) state.
+        // Tear down the outgoing driver's per-(thread,agent) state. Delete
+        // the handle BEFORE close() so onRunComplete's `handles.get(key) !==
+        // ownHandle` guard trips when close() resolves the activeTurn —
+        // otherwise the resolved turn posts its partial text to Slack and
+        // auto-drains buffered messages onto the new driver, contradicting
+        // "Next message starts on the new path."
         const outgoing = this.driverFor(session.driverMode);
-        for (const key of this.handles.keys()) {
+        for (const key of [...this.handles.keys()]) {
           if (!key.startsWith(`${session.threadId}:`)) continue;
           const agentName = key.slice(session.threadId.length + 1);
+          this.handles.delete(key);
           await outgoing.close(session.threadId, agentName).catch(() => undefined);
         }
         // Between turns this.handles is empty — close the persisted tmux
