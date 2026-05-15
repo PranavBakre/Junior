@@ -52,6 +52,27 @@ describe("createOpenCodeStreamParser", () => {
     expect(events[0]).toMatchObject({ type: "step_start", sessionID: "ses_1" });
   });
 
+  it("parses observed OpenCode tool_use events", () => {
+    const parser = createOpenCodeStreamParser();
+    const events = parser.feed(
+      '{"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","tool":"bash","callID":"call_1","state":{"status":"completed","input":{"command":"bun test"}}}}\n',
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "tool_use",
+      sessionID: "ses_1",
+      part: {
+        type: "tool",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: { command: "bun test" },
+        },
+      },
+    });
+  });
+
   it("flushes a final valid line without trailing newline", () => {
     const parser = createOpenCodeStreamParser();
 
@@ -111,6 +132,26 @@ describe("createOpenCodeEventMapper", () => {
       { type: "init", provider: "opencode", sessionId: "ses_done" },
       { type: "message", provider: "opencode", text: "OK" },
       { type: "done", provider: "opencode" },
+    ]);
+  });
+
+  it("maps OpenCode tool_use events to runner tool events", () => {
+    const parser = createOpenCodeStreamParser();
+    const mapper = createOpenCodeEventMapper();
+    const nativeEvents = parser.feed(
+      '{"type":"step_start","sessionID":"ses_tool"}\n' +
+        '{"type":"tool_use","sessionID":"ses_tool","part":{"type":"tool","tool":"read","callID":"call_1","state":{"status":"completed","input":{"file_path":"src/opencode/parser.ts"}}}}\n',
+    );
+
+    expect(nativeEvents.flatMap((event) => mapper.map(event))).toEqual([
+      { type: "init", provider: "opencode", sessionId: "ses_tool" },
+      {
+        type: "tool",
+        provider: "opencode",
+        name: "Read",
+        input: { file_path: "src/opencode/parser.ts" },
+        status: "completed",
+      },
     ]);
   });
 });
