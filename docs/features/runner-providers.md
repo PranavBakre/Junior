@@ -366,8 +366,10 @@ Rules:
 Start with global config:
 
 ```env
-RUNNER_PROVIDER=claude|opencode
+RUNNER_PROVIDER=opencode|claude
 ```
+
+Default when unset: `opencode`.
 
 Then add a thread command:
 

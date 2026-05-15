@@ -1,10 +1,10 @@
 # junior
 
-A Slack bot that acts as the control plane for [Claude Code](https://claude.com/claude-code) sessions. Each Slack thread maps to its own short-lived `claude -p` subprocess. Across turns, conversation continuity comes from `--resume <sessionId>` rather than a long-lived process.
+A Slack bot that acts as the control plane for headless coding-agent sessions. OpenCode is the default runner provider; Claude Code remains available as a fallback provider. Each Slack thread maps to its own short-lived runner subprocess, and continuity comes from the provider's native resume session ID rather than a long-lived process.
 
-Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](https://github.com/PranavBakre/openclaw-agents) — same role (orchestrator + sub-agent dispatcher), rebuilt on top of Claude Code's CLI.
+Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](https://github.com/PranavBakre/openclaw-agents) — same role (orchestrator + sub-agent dispatcher), rebuilt on top of coding-agent CLIs.
 
-**Stack:** Bun, TypeScript, [@slack/bolt](https://github.com/slackapi/bolt-js) (Socket Mode), Claude Code CLI authenticated via Max subscription, SQLite for session persistence.
+**Stack:** Bun, TypeScript, [@slack/bolt](https://github.com/slackapi/bolt-js) (Socket Mode), OpenCode by default with Claude Code as an alternate provider, SQLite for session persistence.
 
 For deep architecture and the canonical "critical rules" list, see [CLAUDE.md](./CLAUDE.md). This README is the on-ramp.
 
@@ -124,7 +124,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
-| `RUNNER_PROVIDER` | `claude` | Default runner provider: `claude` or `opencode` (codex is planned but not yet implemented) |
+| `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode` or `claude` (codex is planned but not yet implemented) |
 | `CLAUDE_MAX_TURNS` | `25` | Max turns per `claude -p` invocation |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Per-turn timeout before SIGINT |
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |
