@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import type {
+  RunnerEvent,
   SpawnHandle,
   SpawnResult,
-  StreamEvent,
-} from "../claude/types.ts";
+  SpawnRunnerFn,
+} from "../runners/types.ts";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { Config } from "../config.ts";
 
@@ -18,13 +19,14 @@ function createMockHandle(
   response: string = "ok",
   sessionId: string = "test-session",
 ): MockHandle {
-  const listeners: Array<(event: StreamEvent) => void> = [];
+  const listeners: Array<(event: RunnerEvent) => void> = [];
   let resolveResult!: (result: SpawnResult) => void;
   const result = new Promise<SpawnResult>((res) => {
     resolveResult = res;
   });
 
   return {
+    provider: "claude",
     result,
     onEvent: (cb) => listeners.push(cb),
     kill: mock(() => {}),
@@ -34,13 +36,14 @@ function createMockHandle(
       const finalSessionId = sid ?? sessionId;
       for (const l of listeners)
         l({
-          type: "system",
-          subtype: "init",
-          session_id: finalSessionId,
+          type: "init",
+          provider: "claude",
+          sessionId: finalSessionId,
         });
       for (const l of listeners)
-        l({ type: "result", subtype: "success", text: finalResponse });
+        l({ type: "done", provider: "claude" });
       resolveResult({
+        provider: "claude",
         sessionId: finalSessionId,
         response: finalResponse,
         events: [],
@@ -50,6 +53,7 @@ function createMockHandle(
     },
     _error: (errorMsg: string) => {
       resolveResult({
+        provider: "claude",
         sessionId: null,
         response: "",
         events: [],
@@ -60,15 +64,9 @@ function createMockHandle(
   };
 }
 
-let mockSpawnFn: ReturnType<typeof mock<(session: unknown, prompt: unknown, config: unknown) => MockHandle>> = mock(
-  (_session: unknown, _prompt: unknown, _config: unknown) => createMockHandle(),
+let mockSpawnFn: ReturnType<typeof mock<SpawnRunnerFn>> = mock(
+  () => createMockHandle(),
 );
-
-// Mock spawnClaude
-mock.module("../claude/spawner.ts", () => ({
-  spawnClaude: (session: unknown, prompt: unknown, config: unknown) =>
-    mockSpawnFn(session, prompt, config),
-}));
 
 // Mock withTimeout to pass through the handle as-is (no real timeout)
 mock.module("../lifecycle/timeout.ts", () => ({
@@ -84,6 +82,15 @@ import { InMemorySessionStore } from "./store/memory.ts";
 const testConfig: Config = {
   slack: { botToken: "xoxb-test", appToken: "xapp-test", signingSecret: "s" },
   claude: { maxTurns: 25, timeoutMs: 300000, permissionMode: "bypassPermissions", defaultModel: null },
+  runner: { provider: "claude" },
+  opencode: {
+    model: null,
+    timeoutMs: 300000,
+    permission: "allow",
+    mcpEnabled: true,
+    slackMcpEnabled: true,
+    playwrightMcpEnabled: true,
+  },
   repos: [
     { name: "junior", path: "/tmp/junior", defaultBase: "main" },
     { name: "frontend", path: "/tmp/frontend", defaultBase: "main" },
@@ -120,10 +127,14 @@ describe("SessionManager", () => {
 
   beforeEach(() => {
     store = new InMemorySessionStore();
-    manager = new SessionManager(store, testConfig);
 
     currentHandle = createMockHandle();
     mockSpawnFn = mock(() => currentHandle);
+    manager = new SessionManager(
+      store,
+      testConfig,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
   });
 
   // --- Session creation and basic flow ---
@@ -147,7 +158,7 @@ describe("SessionManager", () => {
     expect(session!.status).toBe("busy");
   });
 
-  it("calls spawnClaude with the prompt text", async () => {
+  it("calls spawnRunner with the prompt text", async () => {
     const event = makeEvent({ text: "Build me a feature" });
     await manager.handleMessage(event);
 
@@ -537,8 +548,47 @@ describe("SessionManager", () => {
       expect(onCmd).toHaveBeenCalledTimes(1);
       const response = onCmd.mock.calls[0][1] as string;
       expect(response).toContain("*Status:*");
+      expect(response).toContain("*Provider:*");
       expect(response).toContain("*Agent:*");
       expect(response).toContain("*Pending messages:*");
+    });
+  });
+
+  describe("!provider", () => {
+    it("sets provider when no native session exists", async () => {
+      manager.onCommandResponse = mock((_e: SlackMessageEvent, _r: string) => {});
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "opencode",
+        ts: "ts-provider",
+      }));
+
+      const session = await store.get("thread-1");
+      expect(session!.provider).toBe("opencode");
+      expect(manager.onCommandResponse).toHaveBeenCalledWith(
+        expect.anything(),
+        "Runner provider set to *opencode*.",
+      );
+    });
+
+    it("requires reset before switching provider after a native session exists", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      await manager.handleMessage(makeEvent({ text: "Start" }));
+      currentHandle._complete("Done", "claude-session");
+      await new Promise((r) => setTimeout(r, 10));
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "opencode",
+        ts: "ts-provider",
+      }));
+
+      const session = await store.get("thread-1");
+      expect(session!.provider).toBe("claude");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("!reset all");
     });
   });
 
@@ -743,7 +793,7 @@ describe("SessionManager", () => {
   // --- onEvent forwarding ---
 
   it("forwards stream events via onEvent", async () => {
-    const events: StreamEvent[] = [];
+    const events: RunnerEvent[] = [];
     manager.onEvent = (_session, event) => events.push(event);
 
     await manager.handleMessage(makeEvent({ text: "Go" }));
@@ -753,8 +803,8 @@ describe("SessionManager", () => {
 
     // Should have received init + result events
     expect(events.length).toBe(2);
-    expect(events[0].type).toBe("system");
-    expect(events[1].type).toBe("result");
+    expect(events[0].type).toBe("init");
+    expect(events[1].type).toBe("done");
   });
 
   // --- getSession ---

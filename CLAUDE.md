@@ -4,7 +4,7 @@
 
 junior is a Slack bot that acts as the control plane for Claude Code sessions. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents) — same role (Junior the orchestrator), rebuilt on Claude Code as a subprocess instead of OpenClaw.
 
-The server owns the lifecycle. When a Slack message arrives in a thread, the bot either spawns a new Claude Code CLI process or routes the message to an existing session. Each thread gets its own isolated session with its own worktree, skills, and MCP config.
+The server owns the lifecycle. When a Slack message arrives in a thread, the bot either spawns a new Claude Code CLI process or routes the message to an existing session. Each thread gets its own isolated session and optional target-repo worktree; runner processes use Junior's project MCP config for worktree-backed target-repo runs.
 
 **Stack:** Node.js / Bun, TypeScript, Slack Event API, Claude Code CLI (Max subscription auth)
 
@@ -57,7 +57,7 @@ Slack Bot Server (Node.js / Bun)
     |
     +-- Claude Code CLI Process (short-lived, one per message turn)
           claude -p "<prompt>" --resume <session_id> --worktree "slack-<threadId>"
-            --output-format stream-json --mcp-config <per-thread> --max-turns 25
+            --output-format stream-json --mcp-config .mcp.json --max-turns 25
 ```
 
 ## Critical Rules
@@ -70,7 +70,7 @@ Slack Bot Server (Node.js / Bun)
 6. **Stream events for status.** Parse `--output-format stream-json` events (tool_use, text, result) and post incremental Slack updates. The final `result` event is the response to post.
 7. **Session state is authoritative.** The session map (thread_id -> session) is the single source of truth for whether a thread is idle/busy, what its session ID is, and what messages are pending.
 8. **Cleanup stale threads.** Worktrees and sessions for inactive threads (24h default) must be cleaned up. Check for uncommitted changes before force-removing a worktree.
-9. **MCP config is per-thread.** Pass `--mcp-config <path>` to scope each thread's available tools. Global MCP servers are NOT loaded when this flag is present.
+9. **Runner MCP contract.** Worktree-backed target-repo runs use Junior's project `.mcp.json` via `--mcp-config` so spawned runners can reach local tools such as the Slack MCP server. Runs with an explicit `session.cwd` skip Junior's project MCP wiring because utility commands need their own cloud integrations. Keep this aligned with [docs/features/runner-providers.md](docs/features/runner-providers.md).
 10. **No `--input-format stream-json` in production.** The bidirectional streaming flag exists but is undocumented and unstable. Use `--resume` for multi-turn until the protocol is specified.
 11. **SQLite for persistence.** Sessions persist in a SQLite file via `bun:sqlite` (`data/sessions.db` by default, `SESSION_DB_PATH` to override). Single-writer, no extra service, survives restarts. `SESSION_STORE=memory` switches to the in-memory store for tests/dev. The home tab shows only sessions active in the last `HOME_WINDOW_MS` (2 days default); cleanup and health still scan all rows. Pending messages are persisted but treated as stale on restart — the Claude process they were queued behind is dead.
 12. **Always handle zombie processes.** Set a timeout guard (5 min default). Kill with SIGINT on timeout. Handle process errors. Clear the timeout on exit.

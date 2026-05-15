@@ -1,4 +1,5 @@
 import type { ContentBlockToolUse, ContentBlockText, StreamEventAssistant } from "../claude/types.ts";
+import type { RunnerEvent, RunnerEventMessage, RunnerEventTool } from "../runners/types.ts";
 
 /**
  * Extract tool_use content blocks from an assistant event and format as status lines.
@@ -7,18 +8,30 @@ export function formatToolStatuses(event: StreamEventAssistant): string[] {
   const toolBlocks = event.message.content.filter(
     (c): c is ContentBlockToolUse => c.type === "tool_use",
   );
-  const taskBlocks = toolBlocks.filter((block) => block.name === "Task");
-  const otherBlocks = toolBlocks.filter((block) => block.name !== "Task");
+  return formatRunnerToolStatuses(toolBlocks.map(toClaudeRunnerToolEvent));
+}
+
+/**
+ * Extract normalized tool events and format them as Slack status lines.
+ */
+export function formatRunnerToolStatuses(
+  events: RunnerEvent | RunnerEvent[],
+): string[] {
+  const toolEvents = (Array.isArray(events) ? events : [events]).filter(
+    (event): event is RunnerEventTool => event.type === "tool",
+  );
+  const taskBlocks = toolEvents.filter((event) => event.name === "Task");
+  const otherBlocks = toolEvents.filter((event) => event.name !== "Task");
 
   const statuses: string[] = [];
   if (taskBlocks.length > 1) {
     const names = taskBlocks.map(getTaskSubagentName);
     statuses.push(`Calling ${names.join(", ")} (${names.length} in progress)`);
   } else if (taskBlocks.length === 1) {
-    statuses.push(formatToolBlock(taskBlocks[0]));
+    statuses.push(formatToolEvent(taskBlocks[0]));
   }
 
-  statuses.push(...otherBlocks.map(formatToolBlock));
+  statuses.push(...otherBlocks.map(formatToolEvent));
   return statuses;
 }
 
@@ -30,6 +43,13 @@ export function extractAssistantText(event: StreamEventAssistant): string | null
     .filter((c): c is ContentBlockText => c.type === "text" && !!c.text)
     .map((c) => c.text);
   return texts.length > 0 ? texts.join("") : null;
+}
+
+/**
+ * Extract text from a normalized runner message event, if any.
+ */
+export function extractRunnerMessageText(event: RunnerEvent): string | null {
+  return isRunnerMessageEvent(event) && event.text ? event.text : null;
 }
 
 export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
@@ -58,13 +78,13 @@ export function prepareSlackResponse(text: string): string | null {
   return normalized;
 }
 
-function formatToolBlock(block: ContentBlockToolUse): string {
-  const tool = block.name ?? "Unknown";
-  const input = block.input ?? {};
+function formatToolEvent(event: RunnerEventTool): string {
+  const tool = event.name || "Unknown";
+  const input = event.input ?? {};
 
   switch (tool) {
     case "Task": {
-      return `Calling ${getTaskSubagentName(block)}`;
+      return `Calling ${getTaskSubagentName(event)}`;
     }
     case "Bash": {
       const cmd = typeof input.command === "string" ? input.command : "";
@@ -93,9 +113,22 @@ function formatToolBlock(block: ContentBlockToolUse): string {
   }
 }
 
-function getTaskSubagentName(block: ContentBlockToolUse): string {
-  const input = block.input ?? {};
+function getTaskSubagentName(event: RunnerEventTool): string {
+  const input = event.input ?? {};
   return typeof input.subagent_type === "string" ? input.subagent_type : "agent";
+}
+
+function toClaudeRunnerToolEvent(block: ContentBlockToolUse): RunnerEventTool {
+  return {
+    type: "tool",
+    provider: "claude",
+    name: block.name ?? "Unknown",
+    input: block.input ?? {},
+  };
+}
+
+function isRunnerMessageEvent(event: RunnerEvent): event is RunnerEventMessage {
+  return event.type === "message";
 }
 
 const DEFAULT_MAX_LENGTH = 4000;

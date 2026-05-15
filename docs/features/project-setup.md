@@ -41,6 +41,15 @@ The bot needs environment configuration (Slack tokens, repo paths, timeouts) and
 interface Config {
   slack: { botToken; appToken; signingSecret };
   claude: { maxTurns; timeoutMs; permissionMode; defaultModel: string | null };
+  runner: { provider: "claude" | "opencode" | "codex" };
+  opencode: {
+    model: string | null;
+    timeoutMs: number;
+    permission: string;
+    mcpEnabled: boolean;
+    slackMcpEnabled: boolean;
+    playwrightMcpEnabled: boolean;
+  };
   repos: RepoConfig[];                  // JSON in REPOS env var
   session: {
     staleTimeoutMs; cleanupIntervalMs;
@@ -63,10 +72,17 @@ interface Config {
 | `SLACK_BOT_TOKEN` | yes | — | |
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode `xapp-...` |
 | `SLACK_SIGNING_SECRET` | no | `""` | only needed if you ever switch to Events API |
+| `RUNNER_PROVIDER` | no | `claude` | `claude` \| `opencode` \| `codex` |
 | `CLAUDE_MAX_TURNS` | no | `25` | |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | |
 | `CLAUDE_MODEL` | no | unset | passed through to `claude -p --model` |
 | `CLAUDE_PERMISSION_MODE` | no | `bypassPermissions` | |
+| `OPENCODE_MODEL` | no | unset | passed through to `opencode run --model` |
+| `OPENCODE_TIMEOUT_MS` | no | `300000` | |
+| `JUNIOR_OPENCODE_PERMISSION` | no | `allow` | OpenCode permission mode in generated agent config |
+| `OPENCODE_MCP_ENABLED` | no | `true` | enables generated OpenCode MCP config for worktree-backed runs |
+| `OPENCODE_SLACK_MCP_ENABLED` | no | `true` | includes the local Slack MCP entry when MCP is enabled |
+| `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | no | `true` | includes Playwright MCP when MCP is enabled |
 | `REPOS` | no | `[]` | JSON array of `RepoConfig` |
 | `CHANNEL_DEFAULTS` | no | `{"C05557KKV37":{"agentType":"lead"}}` | JSON, validated |
 | `SESSION_STORE` | no | `sqlite` | `sqlite` \| `memory` |
@@ -80,10 +96,12 @@ interface Config {
 | `MCP_PORT` | no | `3456` | internal Slack-bot MCP server |
 
 Validation rules (each throws on bad input):
+- `parseRunnerProvider` — must be `claude`, `opencode`, or `codex`.
 - `parseStoreKind` — must be `memory` or `sqlite`.
 - `parseVerbosity` — must be `quiet`/`normal`/`verbose`.
 - `parseChannelDefaults` — must be a JSON object of `{channelId: {agentType: string}}`.
 - `parseHttpDashboard` — unset/empty disables; otherwise must be an integer 1–65535.
+- OpenCode boolean env vars accept `true`/`false`, `1`/`0`, `yes`/`no`, or `on`/`off`.
 
 ## Directory Structure
 

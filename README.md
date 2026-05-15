@@ -124,9 +124,14 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
+| `RUNNER_PROVIDER` | `claude` | Default runner provider: `claude`, `opencode`, or `codex` |
 | `CLAUDE_MAX_TURNS` | `25` | Max turns per `claude -p` invocation |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Per-turn timeout before SIGINT |
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |
+| `OPENCODE_MODEL` | *(unset)* | Override default OpenCode model |
+| `OPENCODE_TIMEOUT_MS` | `300000` | Per-turn OpenCode timeout before SIGINT |
+| `JUNIOR_OPENCODE_PERMISSION` | `allow` | OpenCode permission mode for generated agent config |
+| `OPENCODE_MCP_ENABLED` | `true` | Enables generated OpenCode MCP config for worktree-backed runs |
 
 `REPOS` example:
 
@@ -163,6 +168,7 @@ Slash-style commands are parsed in [`src/slack/commands.ts`](src/slack/commands.
 !status                    -- show this thread's session state
 !repo <name>               -- pin this thread to a target repo
 !branch <name>             -- pin this thread to a base ref
+!provider <name>           -- switch this thread's runner provider
 !quiet | !normal | !verbose -- per-thread verbosity
 !mute | !unmute            -- silence/unsilence this thread
 !adhoc / !bugs / !help     -- channel-specific entry points
@@ -190,10 +196,11 @@ AgentDispatcher (src/support/router.ts)
     +-- (default)   -> SessionManager.handleLeadMessage / handleMessage
                           |
                           v
-                  Spawn `claude -p`
-                    --resume <sessionId>          (continuity)
-                    --output-format stream-json   (tool/text/result events)
-                    --mcp-config <per-thread>     (Slack MCP)
+                  Spawn runner provider
+                    claude -p / opencode run      (per-thread provider)
+                    native resume id              (continuity)
+                    normalized runner events      (tool/text/result events)
+                    project MCP config            (worktree-backed runs)
                     cwd = worktree per (repo, thread)
                           |
                           v
@@ -203,8 +210,8 @@ AgentDispatcher (src/support/router.ts)
 
 Three invariants that the rest of the code hangs off (see [CLAUDE.md](./CLAUDE.md) for the full list):
 
-1. **One `claude -p` process per turn.** Spawn → respond → exit. No long-lived processes between messages.
-2. **`--resume` for continuity.** Session IDs are extracted from the first stream-json event and cached.
+1. **One runner process per turn.** Spawn → respond → exit. No long-lived processes between messages.
+2. **Native resume for continuity.** Session IDs are extracted from provider events and cached with their provider.
 3. **Buffer, don't interrupt.** Messages arriving during a turn are queued and drained as a combined prompt afterwards.
 
 ---

@@ -1,6 +1,12 @@
 import { describe, it, expect } from "bun:test";
-import { formatToolStatuses, splitResponse } from "./formatting.ts";
+import {
+  extractRunnerMessageText,
+  formatRunnerToolStatuses,
+  formatToolStatuses,
+  splitResponse,
+} from "./formatting.ts";
 import type { StreamEventAssistant } from "../claude/types.ts";
+import type { RunnerEvent, RunnerEventTool } from "../runners/types.ts";
 
 function makeAssistantEvent(
   tools: Array<{ name?: string; input?: Record<string, unknown> }>,
@@ -18,83 +24,119 @@ function makeAssistantEvent(
   };
 }
 
-describe("formatToolStatuses", () => {
+function makeToolEvent(
+  overrides: Partial<RunnerEventTool> = {},
+): RunnerEventTool {
+  return {
+    type: "tool",
+    provider: "claude",
+    name: "Unknown",
+    input: {},
+    ...overrides,
+  };
+}
+
+describe("formatRunnerToolStatuses", () => {
   it("formats Bash with command", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Bash", input: { command: "git diff" } }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Bash", input: { command: "git diff" } }));
     expect(result).toEqual(["Running: `git diff`"]);
   });
 
   it("truncates Bash command longer than 80 chars", () => {
     const longCmd = "a".repeat(100);
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Bash", input: { command: longCmd } }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Bash", input: { command: longCmd } }));
     expect(result[0]).toBe(`Running: \`${"a".repeat(77)}...\``);
   });
 
   it("does not truncate Bash command of exactly 80 chars", () => {
     const cmd = "b".repeat(80);
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Bash", input: { command: cmd } }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Bash", input: { command: cmd } }));
     expect(result[0]).toBe(`Running: \`${cmd}\``);
   });
 
   it("formats Read with file_path", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Read", input: { file_path: "src/auth.ts" } }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Read", input: { file_path: "src/auth.ts" } }));
     expect(result).toEqual(["Reading `src/auth.ts`"]);
   });
 
   it("formats Edit with file_path", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Edit", input: { file_path: "src/index.ts" } }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Edit", input: { file_path: "src/index.ts" } }));
     expect(result).toEqual(["Editing `src/index.ts`"]);
   });
 
   it("formats Write with file_path", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Write", input: { file_path: "src/new.ts" } }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Write", input: { file_path: "src/new.ts" } }));
     expect(result).toEqual(["Editing `src/new.ts`"]);
   });
 
   it("formats Grep with pattern", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Grep", input: { pattern: "TODO" } }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Grep", input: { pattern: "TODO" } }));
     expect(result).toEqual(["Searching for `TODO`"]);
   });
 
   it("formats Glob with pattern", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Glob", input: { pattern: "**/*.ts" } }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Glob", input: { pattern: "**/*.ts" } }));
     expect(result).toEqual(["Searching for `**/*.ts`"]);
   });
 
   it("formats unknown tool with tool name", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "WebSearch" }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "WebSearch" }));
     expect(result).toEqual(["Using WebSearch"]);
   });
 
   it("formats Task with subagent_type", () => {
-    const result = formatToolStatuses(makeAssistantEvent([
-      { name: "Task", input: { subagent_type: "nr-research" } },
-    ]));
+    const result = formatRunnerToolStatuses(makeToolEvent({
+      name: "Task",
+      input: { subagent_type: "nr-research" },
+    }));
     expect(result).toEqual(["Calling nr-research"]);
   });
 
   it("rolls up parallel Task calls", () => {
-    const result = formatToolStatuses(makeAssistantEvent([
-      { name: "Task", input: { subagent_type: "nr-research" } },
-      { name: "Task", input: { subagent_type: "sentry-fetch" } },
-      { name: "Task", input: { subagent_type: "vercel-status" } },
-    ]));
+    const result = formatRunnerToolStatuses([
+      makeToolEvent({ name: "Task", input: { subagent_type: "nr-research" } }),
+      makeToolEvent({ name: "Task", input: { subagent_type: "sentry-fetch" } }),
+      makeToolEvent({ name: "Task", input: { subagent_type: "vercel-status" } }),
+    ]);
     expect(result).toEqual([
       "Calling nr-research, sentry-fetch, vercel-status (3 in progress)",
     ]);
   });
 
   it("handles missing input", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{ name: "Bash" }]));
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "Bash" }));
     expect(result).toEqual(["Running: ``"]);
   });
 
-  it("handles missing name", () => {
-    const result = formatToolStatuses(makeAssistantEvent([{}]));
+  it("handles blank name", () => {
+    const result = formatRunnerToolStatuses(makeToolEvent({ name: "" }));
     expect(result).toEqual(["Using Unknown"]);
   });
 
-  it("returns empty for text-only events", () => {
+  it("returns empty for non-tool events", () => {
+    const event: RunnerEvent = { type: "message", provider: "claude", text: "hello" };
+    expect(formatRunnerToolStatuses(event)).toEqual([]);
+  });
+
+  it("handles multiple tool events", () => {
+    const result = formatRunnerToolStatuses([
+      makeToolEvent({ name: "Read", input: { file_path: "a.ts" } }),
+      makeToolEvent({ name: "Read", input: { file_path: "b.ts" } }),
+    ]);
+    expect(result).toHaveLength(2);
+  });
+});
+
+describe("formatToolStatuses", () => {
+  it("preserves Claude assistant-event status labels", () => {
+    const result = formatToolStatuses(makeAssistantEvent([
+      { name: "Bash", input: { command: "git diff" } },
+      { name: "Read", input: { file_path: "src/auth.ts" } },
+    ]));
+    expect(result).toEqual(["Running: `git diff`", "Reading `src/auth.ts`"]);
+  });
+
+  it("preserves Claude text-only filtering", () => {
     const event: StreamEventAssistant = {
       type: "assistant",
       message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
@@ -102,12 +144,31 @@ describe("formatToolStatuses", () => {
     expect(formatToolStatuses(event)).toEqual([]);
   });
 
-  it("handles multiple tool_use blocks", () => {
-    const result = formatToolStatuses(makeAssistantEvent([
-      { name: "Read", input: { file_path: "a.ts" } },
-      { name: "Read", input: { file_path: "b.ts" } },
-    ]));
-    expect(result).toHaveLength(2);
+  it("preserves Claude missing name fallback", () => {
+    const result = formatToolStatuses(makeAssistantEvent([{}]));
+    expect(result).toEqual(["Using Unknown"]);
+  });
+});
+
+describe("extractRunnerMessageText", () => {
+  it("extracts normalized message text", () => {
+    expect(extractRunnerMessageText({
+      type: "message",
+      provider: "claude",
+      text: "hello",
+    })).toBe("hello");
+  });
+
+  it("returns null for empty message text", () => {
+    expect(extractRunnerMessageText({
+      type: "message",
+      provider: "claude",
+      text: "",
+    })).toBeNull();
+  });
+
+  it("returns null for non-message events", () => {
+    expect(extractRunnerMessageText(makeToolEvent({ name: "Bash" }))).toBeNull();
   });
 });
 

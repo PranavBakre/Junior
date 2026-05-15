@@ -1,7 +1,11 @@
 import { Database } from "bun:sqlite";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
-import type { AgentSession, ThreadSession } from "../types.ts";
+import {
+  normalizeRunnerProvider,
+  type AgentSession,
+  type ThreadSession,
+} from "../types.ts";
 import type { SessionStore } from "./interface.ts";
 
 export class SqliteSessionStore implements SessionStore {
@@ -30,6 +34,7 @@ export class SqliteSessionStore implements SessionStore {
       CREATE TABLE IF NOT EXISTS agent_sessions (
         thread_id TEXT NOT NULL,
         agent_name TEXT NOT NULL,
+        provider TEXT DEFAULT 'claude',
         session_id TEXT,
         status TEXT DEFAULT 'idle',
         last_activity INTEGER,
@@ -37,6 +42,7 @@ export class SqliteSessionStore implements SessionStore {
         FOREIGN KEY (thread_id) REFERENCES sessions(thread_id)
       )
     `);
+    this.ensureAgentSessionProviderColumn();
     // Extra admins beyond the env-var bootstrap. Added by direct SQL.
     // isAdmin() reads from this table on each call (no cache), so inserts
     // take effect on the next command without a restart.
@@ -75,7 +81,12 @@ export class SqliteSessionStore implements SessionStore {
            last_activity = excluded.last_activity,
            status = excluded.status`,
       )
-      .run(threadId, JSON.stringify(session), session.lastActivity, session.status);
+      .run(
+        threadId,
+        JSON.stringify(session),
+        session.lastActivity,
+        session.status,
+      );
     this.syncAgentSessions(threadId, session.agentSessions);
   }
 
@@ -150,13 +161,14 @@ export class SqliteSessionStore implements SessionStore {
       .query<
         {
           agent_name: string;
+          provider: string | null;
           session_id: string | null;
           status: AgentSession["status"];
           last_activity: number | null;
         },
         [string]
       >(
-        "SELECT agent_name, session_id, status, last_activity FROM agent_sessions WHERE thread_id = ?",
+        "SELECT agent_name, provider, session_id, status, last_activity FROM agent_sessions WHERE thread_id = ?",
       )
       .all(session.threadId);
 
@@ -165,6 +177,7 @@ export class SqliteSessionStore implements SessionStore {
       const existing = session.agentSessions[row.agent_name];
       session.agentSessions[row.agent_name] = {
         agentName: row.agent_name,
+        provider: normalizeRunnerProvider(row.provider ?? existing?.provider),
         sessionId: row.session_id,
         status: row.status,
         pendingMessages: existing?.pendingMessages ?? [],
@@ -183,8 +196,8 @@ export class SqliteSessionStore implements SessionStore {
     );
     const insert = this.db.query(
       `INSERT INTO agent_sessions
-       (thread_id, agent_name, session_id, status, last_activity)
-       VALUES (?, ?, ?, ?, ?)`,
+       (thread_id, agent_name, provider, session_id, status, last_activity)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
 
     const txn = this.db.transaction((sessions: AgentSession[]) => {
@@ -193,6 +206,7 @@ export class SqliteSessionStore implements SessionStore {
         insert.run(
           threadId,
           agentSession.agentName,
+          normalizeRunnerProvider(agentSession.provider),
           agentSession.sessionId,
           agentSession.status,
           agentSession.lastActivity,
@@ -202,11 +216,25 @@ export class SqliteSessionStore implements SessionStore {
 
     txn(Object.values(agentSessions));
   }
+
+  private ensureAgentSessionProviderColumn(): void {
+    const columns = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(agent_sessions)")
+      .all();
+    if (columns.some((column) => column.name === "provider")) return;
+    this.db.run(
+      "ALTER TABLE agent_sessions ADD COLUMN provider TEXT DEFAULT 'claude'",
+    );
+  }
 }
 
 function normalizeSession(session: ThreadSession): ThreadSession {
+  session.provider = normalizeRunnerProvider(session.provider);
   session.leadSessionId ??= session.sessionId;
   session.agentSessions ??= {};
+  for (const agentSession of Object.values(session.agentSessions)) {
+    agentSession.provider = normalizeRunnerProvider(agentSession.provider);
+  }
   // Migration: existing sessions before worktreePaths was added default to {}
   session.worktreePaths ??= {};
   session.muted ??= false;

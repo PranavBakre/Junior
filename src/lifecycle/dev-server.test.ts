@@ -134,6 +134,13 @@ process.on('SIGTERM', () => { server.close(); process.exit(0); });
     // Commit the script into git so the worktree picks it up.
     await spawnRun(["git", "add", "fake-server.js"], repoRoot);
     await spawnRun(["git", "commit", "-q", "-m", "add fake dev server"], repoRoot);
+
+    // The branch-change test resets the same dev-server worktree to fix/test.
+    // Keep the fake server present on that branch too; otherwise the restart
+    // path correctly spawns `node fake-server.js`, but the script is missing.
+    await spawnRun(["git", "checkout", "-q", "fix/test"], repoRoot);
+    await spawnRun(["git", "merge", "-q", "main"], repoRoot);
+    await spawnRun(["git", "checkout", "-q", "main"], repoRoot);
     await spawnRun(["git", "fetch", "-q", "origin"], repoRoot);
 
     repos = [

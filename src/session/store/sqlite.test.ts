@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -43,6 +44,7 @@ describe("SqliteSessionStore", () => {
     const session = createSession("thread-1", "channel-1");
     session.agentSessions.echo = {
       agentName: "echo",
+      provider: "opencode",
       sessionId: "echo-session",
       status: "busy",
       pendingMessages: [{ user: "U1", text: "next", ts: "2.3" }],
@@ -56,6 +58,65 @@ describe("SqliteSessionStore", () => {
     expect(retrieved!.agentSessions.echo).toEqual(
       session.agentSessions.echo,
     );
+  });
+
+  it("persists provider beside thread and agent session ids", async () => {
+    const session = createSession("thread-1", "channel-1");
+    session.provider = "opencode";
+    session.sessionId = "thread-session";
+    session.agentSessions.worker = {
+      agentName: "worker",
+      provider: "codex",
+      sessionId: "worker-session",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: 12345,
+      pid: null,
+    };
+
+    await store.set("thread-1", session);
+
+    const retrieved = await store.get("thread-1");
+    expect(retrieved!.provider).toBe("opencode");
+    expect(retrieved!.sessionId).toBe("thread-session");
+    expect(retrieved!.agentSessions.worker.provider).toBe("codex");
+    expect(retrieved!.agentSessions.worker.sessionId).toBe("worker-session");
+  });
+
+  it("normalizes legacy sessions without provider fields to claude", async () => {
+    const now = Date.now();
+    const legacy = createSession("legacy-thread", "channel-1");
+    legacy.sessionId = "legacy-session";
+    legacy.agentSessions.worker = {
+      agentName: "worker",
+      sessionId: "worker-session",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: now,
+      pid: null,
+    };
+    delete legacy.provider;
+    delete legacy.agentSessions.worker.provider;
+
+    const db = (store as unknown as { db: Database }).db;
+    db.query(
+      `INSERT INTO sessions (thread_id, json, last_activity, status)
+       VALUES (?, ?, ?, ?)`,
+    ).run(
+      legacy.threadId,
+      JSON.stringify(legacy),
+      legacy.lastActivity,
+      legacy.status,
+    );
+    db.query(
+      `INSERT INTO agent_sessions
+       (thread_id, agent_name, session_id, status, last_activity)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run("legacy-thread", "worker", "worker-session", "idle", now);
+
+    const retrieved = await store.get("legacy-thread");
+    expect(retrieved!.provider).toBe("claude");
+    expect(retrieved!.agentSessions.worker.provider).toBe("claude");
   });
 
   it("set on existing threadId upserts", async () => {

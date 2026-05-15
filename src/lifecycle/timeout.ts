@@ -1,4 +1,4 @@
-import type { SpawnHandle, SpawnResult } from "../claude/types.ts";
+import type { SpawnHandle, SpawnResult } from "../runners/types.ts";
 
 export function withTimeout(
   handle: SpawnHandle,
@@ -13,6 +13,7 @@ export function withTimeout(
       handle.kill();
       onTimeout?.();
       resolve({
+        provider: handle.provider,
         sessionId: null,
         response: "",
         events: [],
@@ -30,6 +31,7 @@ export function withTimeout(
   });
 
   return {
+    provider: handle.provider,
     result,
     onEvent: handle.onEvent,
     kill: handle.kill,
