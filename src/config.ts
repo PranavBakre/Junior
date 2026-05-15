@@ -1,4 +1,4 @@
-import type { SessionVerbosity } from "./session/types.ts";
+import type { DriverMode, SessionVerbosity } from "./session/types.ts";
 
 export interface RepoConfig {
   name: string;
@@ -48,6 +48,16 @@ export interface Config {
     timeoutMs: number;
     permissionMode: string;
     defaultModel: string | null;
+    /**
+     * Default driver for new threads. Override per-thread via `!driver`.
+     * Set via `DEFAULT_CLAUDE_DRIVER` env (headless|tmux). Defaults to
+     * "headless" while the tmux path is being soaked.
+     */
+    defaultDriver: DriverMode;
+    /** Idle TTL before a tmux session is evicted (`tmux kill-session`). */
+    tmuxIdleTtlMs: number;
+    /** How often the eviction sweep runs. */
+    tmuxSweepIntervalMs: number;
   };
   repos: RepoConfig[];
   session: {
@@ -96,6 +106,9 @@ export function loadConfig(): Config {
       timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "300000")),
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
       defaultModel: process.env.CLAUDE_MODEL ?? null,
+      defaultDriver: parseDriverMode(optional("DEFAULT_CLAUDE_DRIVER", "headless")),
+      tmuxIdleTtlMs: Number(optional("TMUX_IDLE_TTL_MS", "14400000")), // 4h
+      tmuxSweepIntervalMs: Number(optional("TMUX_SWEEP_INTERVAL_MS", "900000")), // 15min
     },
     repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({
       ...r,
@@ -154,6 +167,11 @@ function parseHttpDashboard(raw: string | undefined): { enabled: boolean; port: 
 function parseStoreKind(value: string): SessionStoreKind {
   if (value === "memory" || value === "sqlite") return value;
   throw new Error(`Invalid SESSION_STORE: ${value} (expected memory|sqlite)`);
+}
+
+function parseDriverMode(value: string): DriverMode {
+  if (value === "headless" || value === "tmux") return value;
+  throw new Error(`Invalid DEFAULT_CLAUDE_DRIVER: ${value} (expected headless|tmux)`);
 }
 
 function parseChannelDefaults(

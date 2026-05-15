@@ -28,6 +28,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How do thread commands (!build, !reset, !status) work? | [docs/features/thread-commands.md](docs/features/thread-commands.md) |
 | How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
 | How does the bot Slack MCP server work? | [docs/features/mcp-server.md](docs/features/mcp-server.md) |
+| Headless vs tmux driver, why two paths exist, how tmux runs the TUI? | [docs/features/interactive-driver.md](docs/features/interactive-driver.md) |
 | How do persistent agents (lead, reproducer, thinker, …) work? | [docs/features/persistent-agents.md](docs/features/persistent-agents.md) |
 | How are bug-pipeline worktrees laid out? | [docs/features/bug-pipeline-worktrees.md](docs/features/bug-pipeline-worktrees.md) |
 | How do sessions persist across restarts? | [docs/features/session-persistence.md](docs/features/session-persistence.md) |
