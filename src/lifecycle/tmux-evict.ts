@@ -26,11 +26,19 @@ export async function evictIdleTmuxSessions(
   const now = Date.now();
   const evicted: string[] = [];
 
-  for (const [threadId, session] of sessions) {
-    if (session.driverMode !== "tmux") continue;
+  for (const [threadId, snapshot] of sessions) {
+    if (snapshot.driverMode !== "tmux") continue;
 
-    if (session.tmuxSessionName && now - session.lastActivity > opts.ttlMs) {
+    if (snapshot.tmuxSessionName && now - snapshot.lastActivity > opts.ttlMs) {
+      // Re-read inside the critical section. `sessions` is a snapshot taken
+      // at the top of the function; by the time we get here a new turn may
+      // have started, flipping status to "busy" or bumping lastActivity. The
+      // initial skipBusy check was correct then but stale now.
+      const session = await store.get(threadId);
+      if (!session || session.driverMode !== "tmux" || !session.tmuxSessionName) continue;
       if (opts.skipBusy && session.status === "busy") continue;
+      if (now - session.lastActivity <= opts.ttlMs) continue;
+
       const topAgent = session.topLevelTmuxAgent ?? "lead";
       try {
         await driver.close(threadId, topAgent);
@@ -47,10 +55,16 @@ export async function evictIdleTmuxSessions(
       evicted.push(`${threadId}:${topAgent}`);
     }
 
-    for (const agentSession of Object.values(session.agentSessions ?? {})) {
-      if (!agentSession.tmuxSessionName) continue;
-      if (now - agentSession.lastActivity <= opts.ttlMs) continue;
+    for (const snapshotAgent of Object.values(snapshot.agentSessions ?? {})) {
+      if (!snapshotAgent.tmuxSessionName) continue;
+      if (now - snapshotAgent.lastActivity <= opts.ttlMs) continue;
+      if (opts.skipBusy && snapshotAgent.status === "busy") continue;
+      // Same re-read for per-agent state.
+      const session = await store.get(threadId);
+      const agentSession = session?.agentSessions?.[snapshotAgent.agentName];
+      if (!agentSession || !agentSession.tmuxSessionName) continue;
       if (opts.skipBusy && agentSession.status === "busy") continue;
+      if (now - agentSession.lastActivity <= opts.ttlMs) continue;
       try {
         await driver.close(threadId, agentSession.agentName);
       } catch (err) {
