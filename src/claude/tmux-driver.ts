@@ -40,6 +40,10 @@ interface TmuxSession {
   activeTurn: ActiveTurn | null;
   /** Wall-clock cutoff for transcript-file selection — only files mtime >= this match. */
   startedAt: number;
+  /** Serializes drainTranscript — fs.watch and the poll timer both fire it. */
+  drainInFlight: boolean;
+  /** Set when a drain request arrives while one is already running. */
+  drainPending: boolean;
 }
 
 interface ActiveTurn {
@@ -143,6 +147,21 @@ export class TmuxDriver implements ClaudeDriver {
     const key = handleKey(threadId, agentName);
     const sess = this.sessions.get(key);
     if (!sess) return;
+    // Symmetric to kill(): if a turn is mid-flight, resolve its result
+    // promise. Otherwise runClaudeWithAgent's `await` hangs forever and the
+    // session stays status="busy" — !driver and !reset would deadlock the
+    // thread if they tear down during a turn.
+    const turn = sess.activeTurn;
+    if (turn && !turn.rejected) {
+      turn.rejected = true;
+      turn.resolve({
+        sessionId: sess.sessionId,
+        response: turn.resultText || turn.lastAssistantText,
+        events: turn.events,
+        exitCode: null,
+        error: "driver-closed",
+      });
+    }
     sess.watcher?.close();
     if (sess.pollTimer) clearInterval(sess.pollTimer);
     sess.activeTurn = null;
@@ -187,12 +206,18 @@ export class TmuxDriver implements ClaudeDriver {
       pollTimer: null,
       activeTurn: null,
       startedAt: Date.now() - 86_400_000, // Adopt anything that already exists.
+      drainInFlight: false,
+      drainPending: false,
     };
     this.sessions.set(key, sess);
+    // Skip past the existing transcript on disk — we're picking up mid-session
+    // and only care about new content. If the file isn't there yet (sessionId
+    // null at adopt time, or the path moved), the watcher's findLatestTranscript
+    // fallback locates it on the next file event.
     if (transcriptPath && existsSync(transcriptPath)) {
       sess.transcriptOffset = statSync(transcriptPath).size;
-      this.startTranscriptWatch(sess);
     }
+    this.startTranscriptWatch(sess);
   }
 
   async tmuxHasSession(name: string): Promise<boolean> {
@@ -253,6 +278,8 @@ export class TmuxDriver implements ClaudeDriver {
       pollTimer: null,
       activeTurn: null,
       startedAt,
+      drainInFlight: false,
+      drainPending: false,
     };
     this.sessions.set(key, sess);
     this.startTranscriptWatch(sess);
@@ -306,6 +333,11 @@ export class TmuxDriver implements ClaudeDriver {
     // Watch the directory — when the transcript file is created or appended,
     // fs.watch fires. On macOS this requires recursive: false (default).
     const watcher = fsWatch(dir, { persistent: false }, onChange);
+    // Without an 'error' handler an EPERM/ENOENT (e.g., the worktree dir is
+    // removed during teardown) becomes an unhandled event and crashes the bot.
+    watcher.on("error", (err) => {
+      console.warn("[tmux-driver] watcher error:", err);
+    });
     sess.watcher = watcher;
     // fs.watch on macOS misses some create events for files appearing inside
     // a watched dir. Poll as a fallback until we've located the transcript;
@@ -327,6 +359,25 @@ export class TmuxDriver implements ClaudeDriver {
   }
 
   private async drainTranscript(sess: TmuxSession): Promise<void> {
+    // fs.watch and the 250ms poll timer both call this — without serialization
+    // they race on (read offset → stat → write offset) and dispatch duplicate
+    // assistant events (double Slack updates).
+    if (sess.drainInFlight) {
+      sess.drainPending = true;
+      return;
+    }
+    sess.drainInFlight = true;
+    try {
+      do {
+        sess.drainPending = false;
+        await this.drainTranscriptOnce(sess);
+      } while (sess.drainPending);
+    } finally {
+      sess.drainInFlight = false;
+    }
+  }
+
+  private async drainTranscriptOnce(sess: TmuxSession): Promise<void> {
     if (!sess.transcriptPath || !existsSync(sess.transcriptPath)) {
       sess.transcriptPath = this.findLatestTranscript(sess);
       if (!sess.transcriptPath) return;

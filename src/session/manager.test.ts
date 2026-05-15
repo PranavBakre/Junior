@@ -78,6 +78,34 @@ mock.module("../lifecycle/timeout.ts", () => ({
 // Import after mocking
 const { SessionManager } = await import("./manager.ts");
 import { InMemorySessionStore } from "./store/memory.ts";
+import { createSession } from "./types.ts";
+import type { DriverMap } from "../claude/factory.ts";
+import type { ClaudeDriver } from "../claude/driver.ts";
+
+/**
+ * Minimal fake driver map for tmux teardown tests — records close() calls so
+ * the test can assert on (threadId, agentName) without booting a real tmux.
+ */
+function makeFakeDrivers(): {
+  drivers: DriverMap;
+  closeCalls: Array<{ mode: "headless" | "tmux"; threadId: string; agentName: string }>;
+} {
+  const closeCalls: Array<{ mode: "headless" | "tmux"; threadId: string; agentName: string }> = [];
+  const stub = (mode: "headless" | "tmux"): ClaudeDriver => ({
+    mode,
+    send: () => ({
+      result: Promise.resolve({ sessionId: null, response: "", events: [], exitCode: 0, error: null }),
+      onEvent: () => undefined,
+      kill: () => undefined,
+      pid: null,
+    }),
+    interrupt: async () => undefined,
+    close: async (threadId: string, agentName: string) => {
+      closeCalls.push({ mode, threadId, agentName });
+    },
+  });
+  return { drivers: { headless: stub("headless"), tmux: stub("tmux") }, closeCalls };
+}
 
 // --- Helpers ---
 
@@ -778,5 +806,59 @@ describe("SessionManager", () => {
   it("getSession returns undefined for unknown thread", async () => {
     const session = await manager.getSession("unknown");
     expect(session).toBeUndefined();
+  });
+
+  // Regression coverage for the tmux teardown paths. The bug class: hardcoded
+  // agentName: "lead" in `close()` calls. In non-support channels the row's
+  // topLevelTmuxAgent is "default", so closing with "lead" no-ops and the tmux
+  // session leaks. These tests pin the close call against the row's value.
+  describe("tmux teardown paths", () => {
+    async function seedTmuxSession(opts: { topAgent: string }): Promise<void> {
+      const session = createSession("thread-1", "C123", "quiet", "tmux");
+      session.tmuxSessionName = `junior-thread-1-${opts.topAgent}`;
+      session.topLevelTmuxAgent = opts.topAgent;
+      await store.set("thread-1", session);
+    }
+
+    it("!reset all closes tmux using row's topLevelTmuxAgent (not literal 'lead')", async () => {
+      const { drivers, closeCalls } = makeFakeDrivers();
+      manager = new SessionManager(store, testConfig, undefined, drivers);
+      await seedTmuxSession({ topAgent: "default" });
+
+      await manager.handleMessage(makeEvent({ command: "reset", text: "all", ts: "ts-reset" }));
+
+      const tmuxCloses = closeCalls.filter((c) => c.mode === "tmux");
+      expect(tmuxCloses).toEqual([{ mode: "tmux", threadId: "thread-1", agentName: "default" }]);
+      expect(await store.get("thread-1")).toBeUndefined();
+    });
+
+    it("!driver headless closes the persisted tmux session before clearing tmuxSessionName", async () => {
+      const { drivers, closeCalls } = makeFakeDrivers();
+      manager = new SessionManager(store, testConfig, undefined, drivers);
+      await seedTmuxSession({ topAgent: "default" });
+
+      await manager.handleMessage(makeEvent({ command: "driver", text: "headless", ts: "ts-drv" }));
+
+      const tmuxCloses = closeCalls.filter((c) => c.mode === "tmux");
+      expect(tmuxCloses).toEqual([{ mode: "tmux", threadId: "thread-1", agentName: "default" }]);
+      const session = await store.get("thread-1");
+      expect(session!.driverMode).toBe("headless");
+      expect(session!.tmuxSessionName).toBeNull();
+      expect(session!.topLevelTmuxAgent).toBeNull();
+    });
+
+    it("!reset <lead|default> tears down tmux for the top-level agent", async () => {
+      const { drivers, closeCalls } = makeFakeDrivers();
+      manager = new SessionManager(store, testConfig, undefined, drivers);
+      await seedTmuxSession({ topAgent: "default" });
+
+      await manager.handleMessage(makeEvent({ command: "reset", text: "default", ts: "ts-reset" }));
+
+      const tmuxCloses = closeCalls.filter((c) => c.mode === "tmux");
+      expect(tmuxCloses).toEqual([{ mode: "tmux", threadId: "thread-1", agentName: "default" }]);
+      const session = await store.get("thread-1");
+      expect(session!.tmuxSessionName).toBeNull();
+      expect(session!.topLevelTmuxAgent).toBeNull();
+    });
   });
 });
