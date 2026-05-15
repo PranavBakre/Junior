@@ -236,7 +236,7 @@ function sessionBlock(
 function resumeCommand(provider: string, sessionId: string): string {
   switch (provider) {
     case "opencode":
-      return `opencode run --session ${sessionId}`;
+      return `opencode --session ${sessionId}`;
     case "codex":
       return `codex exec resume ${sessionId}`;
     case "claude":
