@@ -10,20 +10,5 @@
     "agents-org/common/merge-workflow.md",
     "agents-org/common/orchestrator-dispatch.md",
     "agents-org/common/runtime-environment.md"
-  ],
-  "agent": {
-    "onboard-member": {
-      "description": "Onboards a GrowthX user to MEMBERSHIP_PRO / GX_FOREVER via gx-backend migration scripts. Three phases: find, plan + human gate, execute + verify.",
-      "mode": "subagent",
-      "prompt": "{file:./agents-org/onboard-member.md}",
-      "permission": {
-        "read": "allow",
-        "edit": "ask",
-        "bash": "ask",
-        "glob": "allow",
-        "grep": "allow",
-        "mcp__mongodb__*": "allow"
-      }
-    }
-  }
+  ]
 }
