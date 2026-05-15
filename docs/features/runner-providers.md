@@ -56,8 +56,8 @@ Configuration ergonomics also favor OpenCode:
   work or a generated Codex home.
 - OpenCode permissions are config-level and per-agent; Codex splits sandbox mode
   from approval policy and is sensitive to flag position.
-- OpenCode resume is `opencode run --session <id>`, which fits Junior's
-  existing "one process per Slack turn" shape directly.
+- OpenCode headless resume is `opencode run --session <id>`, which fits
+  Junior's existing "one process per Slack turn" shape directly.
 
 Risk profile matters. The Codex CLI surface has moved quickly, and the
 Codex-specific doc already caught flag drift. The first non-Claude adapter should
@@ -386,13 +386,13 @@ Home/status output should show:
 
 - provider
 - native session id
-- provider-specific resume command
+- provider-specific interactive resume command
 
-Resume hints:
+Interactive resume hints:
 
 ```text
 claude --resume <id>
-opencode run --session <id>
+opencode --session <id>
 codex exec resume <id>
 ```
 
