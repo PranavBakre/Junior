@@ -1,6 +1,6 @@
 # Code Index: Stream to Slack
 
-Formats Claude stream events as Slack status messages, posts final responses (with sentinel handling), and parses the underlying stream-json.
+Formats normalized runner stream events as Slack status messages, posts final responses (with sentinel handling), and parses provider stream JSON.
 
 ## Code Index
 
@@ -18,7 +18,8 @@ Formats Claude stream events as Slack status messages, posts final responses (wi
 
 | Symbol | Purpose |
 |---|---|
-| `formatToolStatuses(event)` | Extracts `tool_use` blocks from an assistant event; renders each with tool-specific formatting (Bash → first 80 chars of command, Read/Edit/Write → file_path, Grep/Glob → pattern, Task → subagent_type, multi-Task → aggregated "Calling X, Y (N in progress)") |
+| `formatToolStatuses(event)` | Legacy Claude helper: extracts `tool_use` blocks from an assistant event, normalizes them, and delegates to `formatRunnerToolStatuses` |
+| `formatRunnerToolStatuses(events)` | Renders normalized runner tool events with tool-specific formatting (Bash → first 80 chars of command, Read/Edit/Write → file_path, Grep/Glob → pattern, Task → subagent_type, multi-Task → aggregated "Calling X, Y (N in progress)") |
 | `extractAssistantText(event)` | Concatenates all `text` content blocks from an assistant event |
 | `prepareSlackResponse(text)` | Sentinel handler: returns null for empty/`NO_SLACK_MESSAGE`/trailing-only-sentinel; strips trailing sentinel from real content |
 | `splitResponse(text, maxLength = 4000)` | Chunks long responses; prefers paragraph (`\n\n`) → line → code-block boundaries; avoids splitting inside fenced code blocks |
@@ -30,6 +31,13 @@ Formats Claude stream events as Slack status messages, posts final responses (wi
 |---|---|
 | `createStreamParser()` | Returns `{ feed(chunk): StreamEvent[] }`. Buffers partial lines, JSON-parses, validates shape via `isStreamEvent`, silently skips malformed/unknown |
 
+### src/opencode/parser.ts
+
+| Symbol | Purpose |
+|---|---|
+| `createOpenCodeStreamParser()` | Buffers OpenCode JSONL chunks, validates `step_start`, `text`, `tool_use`, and `step_finish`, and logs malformed/unknown lines |
+| `createOpenCodeEventMapper()` | Maps OpenCode events into normalized `RunnerEvent` records: `init`, coalesced `message`, `tool`, and `done` |
+
 ## Live Update Flow
 
 ```
@@ -37,11 +45,11 @@ spawner.onEvent(event)
   │
   ├── system+init               → log session start
   │
-  ├── assistant + text content  → extractAssistantText → prepareSlackResponse
+  ├── message text              → extractRunnerMessageText → prepareSlackResponse
   │                                 ├── null → log + suppress
   │                                 └── text → responder.updateStatus(..., agentName)
   │
-  ├── assistant + tool_use      → formatToolStatuses → updateStatus(... per status)
+  ├── tool event                → formatRunnerToolStatuses → updateStatus(... per status)
   │
   └── result (turn done) — onRunComplete:
         ├── deleteStatus(channel, thread, agentName)
