@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import {
   buildOpenCodeAgentPrompt,
+  FALLBACK_JUNIOR_CORE_PROMPT,
   OPENCODE_JUNIOR_CORE_PROMPT,
   OPENCODE_PROVIDER_AGENT,
   OPENCODE_PROVIDER_BASE_PROMPT,
@@ -10,6 +11,10 @@ import {
 describe("buildOpenCodeAgentPrompt", () => {
   it("uses the native OpenCode build provider agent", () => {
     expect(OPENCODE_PROVIDER_AGENT).toBe("build");
+  });
+
+  it("keeps the fallback Junior core prompt in sync with the bundled core file", () => {
+    expect(FALLBACK_JUNIOR_CORE_PROMPT).toBe(OPENCODE_JUNIOR_CORE_PROMPT);
   });
 
   it("returns a complete provider baseline even without a Junior prompt", () => {

@@ -18,7 +18,7 @@ OpenCode-specific constraint: Junior now has an OpenCode-specific prompt surface
 Current main after PR #32:
 
 - `.opencode/agents/{lead,thinker,reproducer,review,build,frontend,architect,pm}.md` exists as a first OpenCode agent overlay, but it is not the Junior Slack runtime source of truth unless the generator explicitly reads or mirrors it.
-- `opencode.json` now loads only `.claude/agents/common/core.md` as a compact OpenCode instruction baseline.
+- `opencode.json` now carries no prompt instructions; OpenCode runtime receives `core.md` only through generated `agent.build.prompt`.
 - `spawnOpenCode()` generates `OPENCODE_CONFIG_CONTENT` per run with `agent.build.prompt`, `mode = "primary"`, and generated permission/MCP config. Because OpenCode merges config layers, this generated agent config is the runtime-authoritative OpenCode prompt surface.
 - `agents-org` is now the org overlay path.
 - OpenCode parser/Slack formatting maps tool-use events and suppresses duplicate Slack tool posts more robustly.
@@ -160,14 +160,14 @@ Use narrower common files:
 | File | Inject into | Purpose |
 |---|---|---|
 | `common/core.md` | all agents | short universal rules: action classifier, workspace safety, read repo rules |
-| `common/building-philosophy.md` | build/frontend/thinker/default | verification and implementation rules |
+| `common/building-philosophy.md` | build/frontend/thinker | verification and implementation rules |
 | `common/merge-workflow.md` | lead/thinker only when merge/PR work is possible | branch, PR, merge invariants |
-| `common/runtime-environment.md` | lead/thinker/reproducer/default | long environment notes, credentials paths, dev URLs |
+| `common/runtime-environment.md` | lead/thinker/reproducer | long environment notes, credentials paths, dev URLs |
 | `common/orchestrator-dispatch.md` | lead/default | persistent-agent dispatch rules |
 
 The always-on `core` preamble should stay very small.
 
-V1 deliberately leaves `default` on the heaviest common profile because broad Slack asks can turn into repo work, PR work, or orchestration without a slash command. Phase 7 should reduce this with context flags or on-demand common injection so `merge-workflow.md` and `runtime-environment.md` are not always present.
+V1 keeps `default` deliberately light: `core,orchestrator-dispatch`. Broad Slack asks that turn into repo work, PR work, or bug-pipeline work should route or act from the explicit task context instead of always carrying merge/runtime reference files.
 
 Selection mechanism — required, not optional:
 
@@ -389,6 +389,21 @@ This prevents prompt drift back toward large-context, Opus-dependent behavior.
 
 ## Implementation Plan
 
+PR #33 implements the infrastructure slice of this plan: Phases 1-3, the default-agent artifact from Phase 4, and selected tests from Phase 8. Phases 5-7 and the remaining prompt-lint work are backlog items, not shipped behavior in this PR.
+
+| Phase | PR #33 status |
+|---|---|
+| 0. Branch and PR handling | In progress via PR #33 |
+| 1. Core prompt architecture | Implemented |
+| 2. OpenCode prompt source of truth | Implemented |
+| 3. Provider-neutral agent metadata | Implemented |
+| 4. Default Junior routing | Partially implemented: `default.md` exists and is explicit; deeper routing/body rewrites remain follow-up |
+| 5. Lead state machine | Backlog |
+| 6. Worker prompt rewrites | Backlog |
+| 7. Context budget controls | Backlog |
+| 8. Prompt linting and tests | Partially implemented |
+| 9. Verification | Implemented for focused prompt/OpenCode suite; full suite remains blocked by unrelated dev-server fixture |
+
 ### Decision
 
 Do the full prompt overhaul now from current `main` after PR #32. Supersede [PranavBakre/Junior#31](https://github.com/PranavBakre/Junior/pull/31) as a standalone PR unless it is explicitly rebased and converted into this overhaul.
@@ -435,13 +450,13 @@ Create a compact universal prompt layer and make it the first common preamble lo
   - `common/orchestrator-dispatch.md`
 - Add `common:` frontmatter parsing to agent definitions, using comma-separated file stems such as `core,building-philosophy`.
 - Update prompt composition so `core` is injected before agent-specific content and only profile-selected common files are loaded. Do not glob every `common/*.md` into every agent.
-- Update `opencode.json` so OpenCode loads the same `common/core.md` first, before broad reference files.
+- Keep `opencode.json` free of prompt instructions so `agent.build.prompt` remains the single OpenCode prompt source of truth.
 - Apply the same selected common profile to org overlay common files so private specifics remain targeted instead of universally appended.
 
 Exit criteria:
 
 - A composed prompt for `default`, `lead`, `thinker`, and `review` includes the action classifier.
-- OpenCode instruction loading includes `common/core.md`.
+- Generated OpenCode `agent.build.prompt` includes `common/core.md` in `<junior-core>`.
 - `common/core.md` is small, universal, and provider-neutral.
 - Long runtime/reference material is not injected into agents that do not need it.
 - A test proves adding an unreferenced common file does not automatically inject it into `pm` or `review` unless their common profile requests it.
@@ -541,7 +556,7 @@ Exit criteria:
 - Broad requests can be answered by table/state, not personality prose.
 - Default Junior knows when to dispatch and when to ask one clarifying question.
 
-### Phase 5 — Lead State Machine
+### Backlog Phase 5 — Lead State Machine
 
 Rewrite `lead.md` around explicit states and transitions:
 
@@ -567,7 +582,7 @@ Exit criteria:
 - State transitions cover human gate and write-path skip rules.
 - The parallel observability instruction remains explicit.
 
-### Phase 6 — Worker Prompt Rewrites
+### Backlog Phase 6 — Worker Prompt Rewrites
 
 Rewrite public worker prompts into checklist-first workflows:
 
@@ -595,7 +610,7 @@ Exit criteria:
 - Review/reproducer/thinker output templates are preserved or tightened.
 - No worker prompt relies on "be smart" prose where a state transition or checklist is needed.
 
-### Phase 7 — Context Budget Controls
+### Backlog Phase 7 — Context Budget Controls
 
 Apply context reductions after the prompt shape is clear:
 
@@ -619,7 +634,7 @@ Exit criteria:
 - Agent prompts still include enough context to act without Slack search.
 - Existing first-turn/resume behavior remains safe.
 
-### Phase 8 — Prompt Linting and Tests
+### Backlog Phase 8 — Prompt Linting and Tests
 
 Add a small lint/test surface for prompt invariants:
 
