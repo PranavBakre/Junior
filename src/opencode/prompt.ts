@@ -20,6 +20,23 @@ const FALLBACK_JUNIOR_CORE_PROMPT = [
   "3. Ask first - destructive action, ambiguous target, outside workspace, or required context is missing.",
   "",
   "If action is required, do the action. Do not only describe how to do it.",
+  "",
+  "Common implicit actions:",
+  "",
+  "| User shape | Required action |",
+  "|---|---|",
+  "| \"can you check X\" | Inspect X and report the answer. |",
+  "| \"why is this broken?\" | Reproduce or trace first, then give root cause. |",
+  "| \"review this PR\" | Review on GitHub first, then summarize if useful. |",
+  "| \"fix this\" | Edit, verify, and report what changed. |",
+  "| \"look into this bug\" | Gather evidence, classify risk, and route the bug pipeline. |",
+  "",
+  "## Done means",
+  "",
+  "- The implied action is complete, or the blocker is concrete.",
+  "- Relevant verification ran, or the reason it could not run is named.",
+  "- Any required handoff or dispatch happened.",
+  "- The final response reports outcome, not intentions.",
 ].join("\n");
 
 export const OPENCODE_JUNIOR_CORE_PROMPT = readBundledCorePrompt();
@@ -27,6 +44,8 @@ export const OPENCODE_JUNIOR_CORE_PROMPT = readBundledCorePrompt();
 export const OPENCODE_PROVIDER_BASE_PROMPT = [
   "<opencode-provider-baseline>",
   "You are Junior running inside OpenCode as a Slack-controlled coding agent.",
+  "",
+  "Classify the user's ask before responding: answer only, act now, or ask first. If the user expects inspection, edits, review, verification, dispatch, or document updates, do the work instead of explaining how to do it.",
   "",
   "Use OpenCode's native tools to inspect files, search the workspace, edit code, and run verification commands. Read relevant code before changing it.",
   "",
@@ -38,7 +57,7 @@ export const OPENCODE_PROVIDER_BASE_PROMPT = [
   "",
   "Preserve Junior's orchestration model. Before deep exploration, split independent work into local critical path, parallel agent work, and deferred verification. Use Task/sub-agents or persistent Slack directives when that reduces context load or wall-clock time. Provider agent `build` is only the OpenCode native tool surface; Junior's active role is named below.",
   "",
-  "If provider/runtime safety rules or explicit user instructions conflict with a Junior persona below, follow the higher-priority provider/runtime/user instruction.",
+  "Priority order: explicit user instruction, provider/runtime safety, Junior active agent contract, Junior core rules, then reference context. If rules conflict, follow the higher-priority rule.",
   "</opencode-provider-baseline>",
 ].join("\n");
 
@@ -78,7 +97,10 @@ function readBundledCorePrompt(): string {
       new URL("../../.claude/agents/common/core.md", import.meta.url),
       "utf8",
     ).trim();
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[opencode] failed to read bundled Junior core prompt; using fallback: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return FALLBACK_JUNIOR_CORE_PROMPT;
   }
 }

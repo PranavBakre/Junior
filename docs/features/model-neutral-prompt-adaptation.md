@@ -27,7 +27,7 @@ Current main after PR #32:
 Implemented in this overhaul so far:
 
 - Public Claude-style agents have provider-neutral frontmatter and selected `common:` profiles.
-- `.claude/agents/common/core.md` is the compact universal action/context/delegation contract.
+- `.claude/agents/common/core.md` is the compact universal action/context contract; `orchestrator-dispatch.md` carries delegation rules for coordinator agents.
 - `.claude/agents/default.md` is the explicit default Junior orchestrator.
 - `AgentRouter` resolves `default` for top-level default runs and loads only profile-selected common files.
 - OpenCode runtime uses generated `agent.build.prompt` on provider agent `build`; static `.opencode/agents/*` are marked manual-dev only.
@@ -167,6 +167,8 @@ Use narrower common files:
 
 The always-on `core` preamble should stay very small.
 
+V1 deliberately leaves `default` on the heaviest common profile because broad Slack asks can turn into repo work, PR work, or orchestration without a slash command. Phase 7 should reduce this with context flags or on-demand common injection so `merge-workflow.md` and `runtime-environment.md` are not always present.
+
 Selection mechanism — required, not optional:
 
 Before this overhaul, `AgentRouter.composeSystemPrompt()` loaded every `*.md` in the selected `common/` directory. Splitting files without changing the loader would not have reduced context. The overhaul replaces glob-all common loading with an explicit common profile:
@@ -180,11 +182,11 @@ common: core,building-philosophy
 
 Rules:
 
-1. Pick the common root the same way as today: target repo common if present, otherwise Junior fallback common. Org overlay common remains additive.
+1. Load each selected file from target repo common first; if that file is absent, load the same file from Junior fallback common. Org overlay common remains additive.
 2. Load `core.md` first when it exists, even if the agent's `common:` profile omits or misorders it.
 3. Then load files named by the agent's `common:` profile, in declared order, de-duplicating `core`.
 4. Apply the same selected filenames to org overlay common files when the overlay is configured; do not append every overlay `common/*.md` by default.
-5. If an agent has no definition, use the `default` agent profile (see below) rather than falling back to all common files.
+5. Top-level default runs resolve `default.md`; unknown unresolved agents fall back to `core` only rather than all common files.
 6. Future prompt lint should fail if a public common file is not referenced by any profile and is not explicitly marked reference-only.
 
 ### 5. Reduce thread-history injection

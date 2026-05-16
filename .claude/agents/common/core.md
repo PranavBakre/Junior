@@ -29,19 +29,9 @@ Use the smallest context that can answer the current decision.
 - Write durable findings to files when a thread is getting long.
 - Do not paste or re-summarize long reference files unless the current task needs them.
 
-## Parallelization default
-
-Before deep local exploration, split the task:
-
-1. Local critical path - the next thing only you can do.
-2. Parallel agent work - independent repo traces, observability fetches, reproduction, review, or summaries.
-3. Deferred verification - checks that can run after implementation or after another agent returns.
-
-Dispatch independent agents early when that reduces context load or wall-clock time. Pipeline state machines override this rule when they require ordering.
-
 ## Done means
 
 - The implied action is complete, or the blocker is concrete.
 - Relevant verification ran, or the reason it could not run is named.
-- Required worker or persistent-agent dispatches happened.
+- Any required handoff or dispatch happened.
 - The final response reports outcome, not intentions.
