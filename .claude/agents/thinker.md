@@ -4,6 +4,7 @@ description: Persistent thinker — generates root-cause hypotheses, verifies ea
 tools: Read, Write, Edit, Bash, Grep, Glob, mcp__mongodb__find, mcp__mongodb__aggregate, mcp__mongodb__list-databases, mcp__mongodb__list-collections, mcp__mongodb__collection-schema
 common: core,building-philosophy,merge-workflow,runtime-environment
 context.threadHistory: false
+context.threadHistoryLimit: 20
 context.workspace: true
 context.agentState: true
 ---

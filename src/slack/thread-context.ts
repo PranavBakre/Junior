@@ -184,7 +184,14 @@ export async function buildPromptPreamble(
     contextProfile.identity ? loadPersona() : Promise.resolve(""),
     contextProfile.slack ? resolveChannelName(app, channel) : Promise.resolve(channel),
     contextProfile.threadHistory
-      ? fetchThreadHistory(app, channel, threadTs, latestTs, botUserId)
+      ? fetchThreadHistory(
+          app,
+          channel,
+          threadTs,
+          latestTs,
+          botUserId,
+          contextProfile.threadHistoryLimit,
+        )
       : Promise.resolve(""),
   ]);
 
@@ -238,13 +245,14 @@ async function fetchThreadHistory(
   threadTs: string,
   latestTs: string,
   botUserId?: string,
+  limit = DEFAULT_CONTEXT_PROFILE.threadHistoryLimit,
 ): Promise<string | null> {
   try {
     const result = await app.client.conversations.replies({
       channel,
       ts: threadTs,
       inclusive: true,
-      limit: 100,
+      limit,
     });
 
     if (!result.messages || result.messages.length <= 1) {

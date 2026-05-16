@@ -1,5 +1,4 @@
 import { describe, it, expect } from "bun:test";
-import { loadAgentDefinition } from "./loader.ts";
 import path from "node:path";
 import fs from "node:fs/promises";
 
@@ -20,6 +19,10 @@ const ALL_PUBLIC_AGENTS = [
 ];
 
 describe("prompt lint", () => {
+  async function readAgent(name: string): Promise<string> {
+    return fs.readFile(path.join(agentsDir, `${name}.md`), "utf-8");
+  }
+
   describe("core.md budget", () => {
     const CORE_BUDGET_CHARS = 2500;
 
@@ -38,34 +41,36 @@ describe("prompt lint", () => {
 
   describe("all public agents declare context budget", () => {
     it.each(ALL_PUBLIC_AGENTS)("%s has context.threadHistory frontmatter", async (name) => {
-      const def = await loadAgentDefinition(path.join(agentsDir, `${name}.md`));
-      expect(def).not.toBeNull();
-      expect(def!.context.threadHistory).toEqual(expect.any(Boolean));
+      const content = await readAgent(name);
+      expect(content).toMatch(/^context\.threadHistory:\s*(true|false)\s*$/m);
+    });
+
+    it.each(ALL_PUBLIC_AGENTS)("%s has context.threadHistoryLimit frontmatter", async (name) => {
+      const content = await readAgent(name);
+      expect(content).toMatch(/^context\.threadHistoryLimit:\s*[1-9]\d*\s*$/m);
     });
 
     it.each(ALL_PUBLIC_AGENTS)("%s has context.workspace frontmatter", async (name) => {
-      const def = await loadAgentDefinition(path.join(agentsDir, `${name}.md`));
-      expect(def).not.toBeNull();
-      expect(def!.context.workspace).toEqual(expect.any(Boolean));
+      const content = await readAgent(name);
+      expect(content).toMatch(/^context\.workspace:\s*(true|false)\s*$/m);
     });
 
     it.each(ALL_PUBLIC_AGENTS)("%s has context.agentState frontmatter", async (name) => {
-      const def = await loadAgentDefinition(path.join(agentsDir, `${name}.md`));
-      expect(def).not.toBeNull();
-      expect(def!.context.agentState).toEqual(expect.any(Boolean));
+      const content = await readAgent(name);
+      expect(content).toMatch(/^context\.agentState:\s*(true|false)\s*$/m);
     });
   });
 
   describe("all public agents have Done means section", () => {
     it.each(ALL_PUBLIC_AGENTS)("%s.md contains '## Done means'", async (name) => {
-      const content = await fs.readFile(path.join(agentsDir, `${name}.md`), "utf-8");
+      const content = await readAgent(name);
       expect(content).toContain("## Done means");
     });
   });
 
   describe("bug-pipeline agents have output templates", () => {
     it.each(BUG_PIPELINE_AGENTS)("%s.md contains output format section", async (name) => {
-      const content = await fs.readFile(path.join(agentsDir, `${name}.md`), "utf-8");
+      const content = await readAgent(name);
       // Each pipeline agent should document its output format
       const hasOutputSection =
         content.includes("## Output") ||

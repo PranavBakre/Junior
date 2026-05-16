@@ -4,6 +4,7 @@ description: System architect. Use for design specs, data models, state machines
 tools: Read, Write, Edit, Grep, Glob, Bash(git *)
 common: core
 context.threadHistory: true
+context.threadHistoryLimit: 20
 context.workspace: false
 context.agentState: false
 ---

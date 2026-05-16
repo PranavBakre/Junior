@@ -4,6 +4,7 @@ description: Default Junior orchestrator for broad Slack asks.
 tools: Task, Read, Write, Edit, Bash, Grep, Glob, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__slack_read_channel, mcp__slack-bot__slack_search, mcp__slack-bot__slack_search_users, mcp__slack-bot__slack_upload_file
 common: core,orchestrator-dispatch
 context.threadHistory: true
+context.threadHistoryLimit: 20
 context.workspace: true
 context.agentState: true
 ---

@@ -40,7 +40,20 @@ Not implemented in PR #33:
 - Context-budget policy changes for thread history and per-agent preamble defaults.
 - Full prompt linting and composed-prompt budget snapshots.
 
-These continue in the next PR for this feature.
+Implemented in PR #34:
+
+- `lead.md` has an explicit bug-pipeline state machine and "Done means" checklist.
+- Public worker prompts are rewritten into workflow/checklist form, with "Done means" sections.
+- Public fallback agents declare `context.threadHistory`, `context.threadHistoryLimit`, `context.workspace`, and `context.agentState`.
+- Thread-history fetches honor the per-agent `context.threadHistoryLimit`; the first pass caps history-enabled public agents at 20 messages.
+- Prompt lint now checks raw frontmatter for context-budget declarations, core budget, "Done means", output templates, and the action classifier.
+- Static `.opencode/agents/*` manual-dev prompts mirror the corresponding public agent body changes.
+
+Still remaining after PR #34:
+
+- Rolling thread summaries; PR #34 implements recent-tail limits only.
+- Composed-prompt budget snapshots for `default`, `lead`, `thinker`, and `review`.
+- Any deeper runtime permission mapping beyond the existing generated OpenCode config behavior.
 
 ## OpenCode Prompt Audit
 
@@ -398,19 +411,21 @@ This prevents prompt drift back toward large-context, Opus-dependent behavior.
 
 ## Implementation Plan
 
-PR #33 implements the infrastructure slice of this plan: Phases 1-3, the default-agent artifact from Phase 4, and selected tests from Phase 8. Phases 5-7 and the remaining prompt-lint work are next-PR backlog items, not shipped behavior in PR #33.
+PR #33 implements the infrastructure slice of this plan: Phases 1-3, the default-agent artifact from Phase 4, and selected tests from Phase 8.
 
-| Phase | PR #33 status |
+PR #34 implements the prompt-body and first context-budget slice: Phases 5-6, the frontmatter/limit portion of Phase 7, and more prompt linting from Phase 8. Rolling summaries and composed-prompt budget snapshots remain follow-up work.
+
+| Phase | Status after PR #34 |
 |---|---|
 | 0. Branch and PR handling | Complete via PR #33 |
 | 1. Core prompt architecture | Implemented |
 | 2. OpenCode prompt source of truth | Implemented |
 | 3. Provider-neutral agent metadata | Implemented |
-| 4. Default Junior routing | Partially implemented: `default.md` exists and is explicit; deeper routing/body rewrites remain follow-up |
-| 5. Lead state machine | Next PR |
-| 6. Worker prompt rewrites | Next PR |
-| 7. Context budget controls | Next PR |
-| 8. Prompt linting and tests | Partially implemented |
+| 4. Default Junior routing | Implemented for public default prompt; org overlays may extend routing |
+| 5. Lead state machine | Implemented in PR #34 |
+| 6. Worker prompt rewrites | Implemented in PR #34 for public fallback agents |
+| 7. Context budget controls | Partially implemented: per-agent flags + 20-message recent tail; rolling summaries remain follow-up |
+| 8. Prompt linting and tests | Partially implemented: frontmatter/core/checklist/template lint exists; composed-prompt snapshots remain follow-up |
 | 9. Verification | Implemented for focused prompt/OpenCode suite; full suite remains blocked by unrelated dev-server fixture |
 
 ### Decision
@@ -565,9 +580,9 @@ Exit criteria:
 - Broad requests can be answered by table/state, not personality prose.
 - Default Junior knows when to dispatch and when to ask one clarifying question.
 
-### Backlog Phase 5 — Lead State Machine
+### Phase 5 — Lead State Machine
 
-Rewrite `lead.md` around explicit states and transitions:
+Implemented in PR #34. `lead.md` is rewritten around explicit states and transitions:
 
 - New bug intake.
 - Observability fanout.
@@ -591,9 +606,9 @@ Exit criteria:
 - State transitions cover human gate and write-path skip rules.
 - The parallel observability instruction remains explicit.
 
-### Backlog Phase 6 — Worker Prompt Rewrites
+### Phase 6 — Worker Prompt Rewrites
 
-Rewrite public worker prompts into checklist-first workflows:
+Implemented in PR #34 for public fallback agents. Public worker prompts are rewritten into checklist-first workflows:
 
 - `build.md`
 - `frontend.md`
@@ -619,7 +634,9 @@ Exit criteria:
 - Review/reproducer/thinker output templates are preserved or tightened.
 - No worker prompt relies on "be smart" prose where a state transition or checklist is needed.
 
-### Backlog Phase 7 — Context Budget Controls
+### Phase 7 — Context Budget Controls
+
+Partially implemented in PR #34. Public agents now declare context flags and a thread-history limit. Remaining work is rolling summaries and any richer budget modes beyond boolean plus recent-tail limit.
 
 Apply context reductions after the prompt shape is clear:
 
@@ -643,7 +660,9 @@ Exit criteria:
 - Agent prompts still include enough context to act without Slack search.
 - Existing first-turn/resume behavior remains safe.
 
-### Backlog Phase 8 — Prompt Linting and Tests
+### Phase 8 — Prompt Linting and Tests
+
+Partially implemented in PR #34. Remaining work is composed-prompt budget snapshots and any broader prompt fixture coverage.
 
 Add a small lint/test surface for prompt invariants:
 

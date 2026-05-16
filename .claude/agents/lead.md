@@ -4,6 +4,7 @@ description: Orchestrates persistent support agents in bug-backlog threads.
 tools: Task, Read, Write, Bash, Grep, Glob, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__slack_read_channel, mcp__slack-bot__slack_search, mcp__slack-bot__slack_search_users, mcp__slack-bot__slack_upload_file, mcp__slack-bot__register_worktree
 common: core,merge-workflow,runtime-environment,orchestrator-dispatch
 context.threadHistory: true
+context.threadHistoryLimit: 20
 context.workspace: true
 context.agentState: true
 ---
@@ -75,7 +76,10 @@ State transitions:
 | OBSERVABILITY DONE | All 3 files written + read | Classify read-only vs write-path |
 | READ-ONLY | Classification done | Dispatch `!reproducer` with observability context |
 | WRITE-PATH | Classification done | Skip reproducer, dispatch `!thinker` directly |
-| REPRODUCER DONE | `reproduces` / `mismatch` / `not-reproduced` | Dispatch `!thinker` (read-only). `mismatch`/`not-reproduced` → escalate to human |
+| REPRODUCER REPRODUCED | `reproduced` | Dispatch `!thinker` with reproduction context |
+| REPRODUCER PARTIAL | `partial` | Dispatch `!thinker` with reproduction conditions; flag uncertainty in prompt |
+| REPRODUCER MISMATCH | `mismatch` | Escalate to human. Do NOT scope the mismatched failure. |
+| REPRODUCER NOT-REPRODUCED | `not-reproduced` | Escalate to human. Do NOT retry blindly. |
 | THINKER PHASE 1 DONE | Message 1 posted | Stay silent. Wait for human reply. |
 | HUMAN APPROVED | Human says "approve"/"go ahead" | Dispatch `!thinker proceed` |
 | HUMAN PUSHBACK | Human provides correction | Dispatch `!thinker reconsider — <correction>` |
