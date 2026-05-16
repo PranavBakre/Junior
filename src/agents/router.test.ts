@@ -40,6 +40,7 @@ describe("AgentRouter overlay", () => {
     orgDir = path.join(tmpRoot, "org");
     await fs.mkdir(path.join(fallbackDir, "common"), { recursive: true });
     await fs.mkdir(path.join(orgDir, "common"), { recursive: true });
+    await fs.writeFile(path.join(fallbackDir, "common", "core.md"), "# public core");
   });
 
   afterEach(async () => {
@@ -78,10 +79,7 @@ describe("AgentRouter overlay", () => {
     expect(def!.prompt).toBe("ORG VERSION");
   });
 
-  it("composeSystemPrompt appends org common to target-repo common (skipping public common)", async () => {
-    // Asymmetric load chain: target-repo OR public is exclusive; overlay is
-    // additive. Regression guard for the case where a target repo has its own
-    // common dir — public common is bypassed but overlay still appends.
+  it("composeSystemPrompt appends org common to target-repo common when selected", async () => {
     const targetRepoDir = path.join(tmpRoot, "target-repo");
     await fs.mkdir(path.join(targetRepoDir, ".claude/agents/common"), { recursive: true });
     await fs.writeFile(
@@ -119,6 +117,70 @@ describe("AgentRouter overlay", () => {
     expect(prompt!.indexOf("# target-repo common")).toBeLessThan(
       prompt!.indexOf("# org common"),
     );
+  });
+
+  it("falls back to public common per selected file when target repo overrides only part of the profile", async () => {
+    const targetRepoDir = path.join(tmpRoot, "target-repo");
+    await fs.mkdir(path.join(targetRepoDir, ".claude/agents/common"), { recursive: true });
+    await fs.writeFile(
+      path.join(targetRepoDir, ".claude/agents/common/core.md"),
+      "# target core",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "building-philosophy.md"),
+      "# public building",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "build.md"),
+      `---\nname: build\ncommon: core,building-philosophy\n---\n\nBUILD BODY`,
+    );
+
+    const router = new AgentRouter(
+      [{ name: "target-repo", path: targetRepoDir, defaultBase: "origin/main" }],
+      fallbackDir,
+      orgDir,
+    );
+    const prompt = await router.composeSystemPrompt(
+      makeSession({ targetRepo: "target-repo", agentType: "build" }),
+    );
+
+    expect(prompt).toContain("# target core");
+    expect(prompt).toContain("# public building");
+    expect(prompt).toContain("BUILD BODY");
+    expect(prompt!.indexOf("# target core")).toBeLessThan(
+      prompt!.indexOf("# public building"),
+    );
+  });
+
+  it("skips nonexistent common profile entries while warning about the missing file", async () => {
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "core.md"),
+      "# core common",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "build.md"),
+      `---\nname: build\ncommon: core,fictional-module\n---\n\nBUILD BODY`,
+    );
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown) => {
+      warnings.push(String(message));
+    };
+
+    try {
+      const router = new AgentRouter([], fallbackDir, orgDir);
+      const prompt = await router.composeSystemPrompt(
+        makeSession({ agentType: "build" }),
+      );
+
+      expect(prompt).toContain("# core common");
+      expect(prompt).toContain("BUILD BODY");
+      expect(prompt).not.toContain("fictional-module");
+      expect(warnings.some((msg) => msg.includes("fictional-module.md"))).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   it("composeSystemPrompt appends org common files additively to public common", async () => {

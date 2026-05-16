@@ -21,7 +21,7 @@ Different Slack threads need different Claude Code personalities. A thread askin
 - Lead and the default `@junior` path also flow through this composition (`lead.md` and `default.md` are explicit public fallback agents).
 - Common preamble is selected by each agent's `common:` frontmatter profile:
   - `core.md` is the tiny always-on operating contract.
-  - Target repo common is checked first; if none of the selected files exist, Junior's fallback common is used.
+  - Target repo common is checked first per selected file; missing selected files fall back individually to Junior's public common.
   - Org overlay common is additive, but only for the selected filenames. Junior no longer appends every `common/*.md` to every agent.
 - **Per-agent context profile** (frontmatter flags) lets lightweight task agents opt out of preamble blocks (`identity`, `slack`, `workspace`, `threadHistory`, `agentState`). Defaults are all-true; missing or invalid flags preserve the heavy preamble.
 
@@ -85,7 +85,7 @@ Load and prepend the common preamble that all agents share.
 **What it adds:**
 - Check for `<repoPath>/.claude/agents/common/` directory
 - Load only common files named by the agent's `common:` profile and prepend them to the agent prompt
-- Order: `core` first, then profile order, then agent-specific prompt
+- Order: `core` first, then profile order, with per-file fallback from target repo common to Junior public common, then agent-specific prompt
 - example-backend already has `common/building-philosophy.md` — this gets loaded for all example-backend agents
 
 **Test:** Load "build" agent for example-backend → prompt starts with building-philosophy.md content, then build.md content.

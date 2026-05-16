@@ -30,7 +30,7 @@ describe("OpenCode config generation", () => {
 
   it("includes optional MCP entries", () => {
     const config = buildOpenCodeConfig({
-      agentName: "junior",
+      agentName: "build",
       agentPrompt: "Prompt",
       mcp: {
         "slack-bot": {
