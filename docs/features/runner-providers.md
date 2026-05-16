@@ -20,7 +20,7 @@ specific needs because it has:
 - `--session <id>` for resume
 - `--dir <path>` for worktree cwd
 - `--file <path>` for attachments
-- `--agent <name>` and config-level agent prompts
+- `--agent build` and config-level agent prompts
 - native MCP config in `opencode.json`
 - `OPENCODE_CONFIG_CONTENT` / `OPENCODE_CONFIG` for deterministic generated
   runtime config
@@ -40,8 +40,8 @@ repo-local overlays. Claude handles that with `--append-system-prompt`.
 OpenCode has a credible provider-native replacement:
 
 - generate config per spawn with `OPENCODE_CONFIG_CONTENT` or `OPENCODE_CONFIG`
-- define a primary agent with `agent.<name>.prompt`
-- run `opencode run --agent <name>`
+- override the built-in `build` primary agent with `agent.build.prompt`
+- run `opencode run --agent build`
 
 Codex does not currently expose an equivalent system-prompt flag. Its realistic
 v1 option is to prepend Junior's agent prompt to the first user prompt, which is
@@ -145,18 +145,18 @@ The Claude adapter maps:
 
 ## OpenCode Mapping
 
-Verified locally with OpenCode `1.4.0`.
+Verified locally with OpenCode `1.14.48`.
 
 Fresh run:
 
 ```sh
-opencode run --format json --dir <worktree> --agent junior "<prompt>"
+opencode run --format json --dir <worktree> --agent build "<prompt>"
 ```
 
 Resume:
 
 ```sh
-opencode run --format json --dir <worktree> --session <sessionID> --agent junior "<prompt>"
+opencode run --format json --dir <worktree> --session <sessionID> --agent build "<prompt>"
 ```
 
 Observed JSON events:
@@ -189,8 +189,9 @@ This is the main reason to prefer OpenCode over Codex.
 Issue [anomalyco/opencode#7101](https://github.com/anomalyco/opencode/issues/7101)
 and PR [#7264](https://github.com/anomalyco/opencode/pull/7264) show that direct
 custom system prompt directories were requested but the PR was closed unmerged.
-The useful finding is in the discussion: `agent.<name>.prompt` in OpenCode
-config appears to replace the base/provider prompt for that agent.
+The useful finding is in the discussion: OpenCode agent prompts can be
+overridden from config and appear to replace the base/provider prompt for that
+agent.
 
 Local check:
 
@@ -209,15 +210,39 @@ Recommended v1:
 
 - Generate `OPENCODE_CONFIG_CONTENT` per spawn, or generate a temp config file
   and point `OPENCODE_CONFIG` at it.
-- Define a primary agent named for the Junior agent being run.
-- Set that agent's `prompt` to Junior's composed system prompt.
-- Run `opencode run --agent <generated-agent-name> ...`.
+- Override the built-in `build` primary agent with `agent.build.prompt`.
+- Set `agent.build.prompt` to a complete prompt: OpenCode provider baseline,
+  shared Junior core rules, and Junior's composed dynamic agent prompt.
+- Run `opencode run --agent build ...`.
 - Keep first-turn Slack/thread preamble behavior in Junior's prompt builder.
 - On resumed turns, avoid re-injecting full Slack history unless OpenCode resume
   proves it does not preserve it.
 
 This gets closer to Claude's `--append-system-prompt` than Codex does, while
 staying out of OpenCode's experimental plugin hooks.
+
+Audit result from 2026-05-16:
+
+- Static `.opencode/agents/lead.md` resolves as `native: false`, `mode:
+  subagent`, with its static prompt.
+- Generated `OPENCODE_CONFIG_CONTENT` for the same agent name wins for
+  `prompt`, `mode`, and `description`.
+- Permissions merge as ordered rules, but generated rules affect the effective
+  tool surface.
+- Static `.opencode/agents/build.md` resolves as `native: true`, and generated
+  `agent.build.prompt` also stays `native: true`.
+- Custom generated agents such as `junior` resolve as `native: false`.
+
+Therefore Junior runtime should treat generated `OPENCODE_CONFIG_CONTENT` as
+the source of truth and use provider agent `build` unless a future OpenCode
+release changes the native-agent behavior.
+
+This does **not** mean Junior should run as a monolithic build agent. Provider
+agent `build` is the native OpenCode surface that preserves tools/permissions;
+Junior's generated prompt still owns orchestration. The main agent must keep the
+ability to parallelize independent work through Task/sub-agents or persistent
+Slack directives so smaller-context models do not try to hold every repo,
+observability trace, review, and reproduction path in one turn.
 
 Avoid for v1:
 
@@ -236,11 +261,12 @@ global OpenCode config for correctness.
 Generate config with:
 
 - `model` if thread/session selected one
-- `agent.<name>.prompt`
-- `agent.<name>.mode = "primary"`
-- `agent.<name>.permission` as an object override mirroring top-level
+- `agent.build.prompt`
+- `agent.build.mode = "primary"`
+- `agent.build.permission` as an object override mirroring top-level
   `permission` (for string top-level values, emit `{ "*": "allow" }`) so inline
-  runtime config overrides `.opencode/agents/<name>.md` frontmatter permissions
+  runtime config has an explicit effective permission surface
+- Task/sub-agent permissions enabled for roles that need parallel fanout
 - `permission`
 - `mcp`
 
@@ -252,11 +278,11 @@ Sketch:
   "model": "openai/gpt-5.1",
   "permission": "allow",
   "agent": {
-    "junior-lead": {
+    "build": {
       "description": "Junior Slack runner",
       "mode": "primary",
       "permission": { "*": "allow" },
-      "prompt": "<composed Junior system prompt>"
+      "prompt": "<OpenCode provider baseline>\n\n<Junior core>\n\n<composed Junior system prompt>"
     }
   },
   "mcp": {
@@ -300,7 +326,7 @@ OpenCode setup:
   runs, but Playwright MCP is opt-in via
   `OPENCODE_PLAYWRIGHT_MCP_ENABLED=true` because `npx @playwright/mcp` is cold
   per runner spawn.
-- Global `agent.<other>` definitions coexist with Junior's `agent.<name>`,
+- Global `agent.<other>` definitions coexist with Junior's `agent.build`,
   expanding the agent set available inside the spawn.
 - A shell-set `OPENCODE_CONFIG=/path/to/file` is inherited via the child's
   environment and loads before `OPENCODE_CONFIG_CONTENT` with the same
@@ -311,7 +337,7 @@ Mitigations in code today:
 - The OpenCode spawner unsets `OPENCODE_CONFIG` on the child process so a
   developer's shell override does not load.
 - The generated config sets `model`, top-level `permission`, and
-  `agent.<name>.permission` explicitly when Junior has a value. Agent permission
+  `agent.build.permission` explicitly when Junior has a value. Agent permission
   is object-shaped because OpenCode does not accept the string shorthand at that
   layer. Missing keys are the merge surface.
 

@@ -11,11 +11,11 @@ import type { AgentDefinition } from "./loader.ts";
  *   2. org overlay dir (private submodule mount, if configured)
  *   3. fallback dir (junior's public .claude/agents)
  *
- * Common preamble files load in this order:
- *   - target repo's .claude/agents/common/*.md (if any), OR fallback common/*.md
- *   - then org overlay common/*.md is appended additively (so org-wide
- *     invariants like the merge-workflow rules reach every agent regardless
- *     of which repo the public common came from)
+ * Common preamble files are selected by each agent's `common:` profile and
+ * load in declared order:
+ *   - selected files from target repo common, if present
+ *   - otherwise selected files from fallback common
+ *   - then matching org overlay common files add additively
  */
 export class AgentRouter {
   private repos: RepoConfig[];
@@ -35,20 +35,21 @@ export class AgentRouter {
   async resolveAgent(
     session: ThreadSession,
   ): Promise<AgentDefinition | null> {
-    if (!session.agentType) return null;
+    const agentName = agentNameForSession(session);
+    if (!agentName) return null;
 
     const candidates: string[] = [];
 
     if (session.targetRepo) {
       const repo = this.repos.find((r) => r.name === session.targetRepo);
       if (repo) {
-        candidates.push(`${repo.path}/.claude/agents/${session.agentType}.md`);
+        candidates.push(`${repo.path}/.claude/agents/${agentName}.md`);
       }
     }
     if (this.orgAgentsDir) {
-      candidates.push(`${this.orgAgentsDir}/${session.agentType}.md`);
+      candidates.push(`${this.orgAgentsDir}/${agentName}.md`);
     }
-    candidates.push(`${this.fallbackAgentsDir}/${session.agentType}.md`);
+    candidates.push(`${this.fallbackAgentsDir}/${agentName}.md`);
 
     for (const path of candidates) {
       const definition = await loadAgentDefinition(path);
@@ -61,32 +62,35 @@ export class AgentRouter {
     session: ThreadSession,
   ): Promise<string | null> {
     const definition = await this.resolveAgent(session);
+    const commonProfile = definition?.common ?? ["core"];
 
     const preambleParts: string[] = [];
 
-    // Load common preamble from target repo
+    // Load selected common preamble from target repo.
     if (session.targetRepo) {
       const repo = this.repos.find((r) => r.name === session.targetRepo);
       if (repo) {
         const repoCommonDir = `${repo.path}/.claude/agents/common`;
-        const repoFiles = await readMarkdownFiles(repoCommonDir);
+        const repoFiles = await readSelectedMarkdownFiles(repoCommonDir, commonProfile);
         preambleParts.push(...repoFiles);
       }
     }
 
-    // Load common preamble from fallback only if target repo didn't have any
+    // Load selected common preamble from fallback only if target repo didn't
+    // have any selected files. This preserves the old target-or-fallback
+    // common-root behavior while avoiding a glob-all common prompt.
     if (preambleParts.length === 0) {
       const fallbackCommonDir = `${this.fallbackAgentsDir}/common`;
-      const fallbackFiles = await readMarkdownFiles(fallbackCommonDir);
+      const fallbackFiles = await readSelectedMarkdownFiles(fallbackCommonDir, commonProfile);
       preambleParts.push(...fallbackFiles);
     }
 
-    // Always append org overlay common files (additive). This keeps org-wide
-    // invariants — credentials, merge protocol, infra paths — visible to every
-    // agent regardless of which repo's public common loaded above.
+    // Append matching org overlay common files additively. Unlike the previous
+    // implementation, this uses the same common profile instead of appending
+    // every org common file to every agent.
     if (this.orgAgentsDir) {
       const orgCommonDir = `${this.orgAgentsDir}/common`;
-      const orgFiles = await readMarkdownFiles(orgCommonDir);
+      const orgFiles = await readSelectedMarkdownFiles(orgCommonDir, commonProfile);
       preambleParts.push(...orgFiles);
     }
 
@@ -101,21 +105,25 @@ export class AgentRouter {
   }
 }
 
-async function readMarkdownFiles(dirPath: string): Promise<string[]> {
+function agentNameForSession(session: ThreadSession): string | null {
+  if (session.agentType) return session.agentType;
+  if (session.activeAgentName === "default") return "default";
+  return null;
+}
+
+async function readSelectedMarkdownFiles(
+  dirPath: string,
+  names: string[],
+): Promise<string[]> {
   const results: string[] = [];
+  const seen = new Set<string>();
 
   try {
-    const glob = new Bun.Glob("*.md");
-    const entries: string[] = [];
-
-    for await (const entry of glob.scan({ cwd: dirPath })) {
-      entries.push(entry);
-    }
-
-    entries.sort();
-
-    for (const entry of entries) {
-      const file = Bun.file(`${dirPath}/${entry}`);
+    for (const name of names) {
+      const stem = name.replace(/\.md$/, "");
+      if (!stem || seen.has(stem)) continue;
+      seen.add(stem);
+      const file = Bun.file(`${dirPath}/${stem}.md`);
       const exists = await file.exists();
       if (exists) {
         const content = await file.text();

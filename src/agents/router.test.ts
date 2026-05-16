@@ -96,6 +96,10 @@ describe("AgentRouter overlay", () => {
       path.join(fallbackDir, "common", "public-rules.md"),
       "# public common (should NOT appear when target has its own common)",
     );
+    await fs.writeFile(
+      path.join(fallbackDir, "lead.md"),
+      `---\nname: lead\ncommon: repo-rules,org-rules\n---\n\nLEAD BODY`,
+    );
 
     const router = new AgentRouter(
       [{ name: "target-repo", path: targetRepoDir, defaultBase: "origin/main" }],
@@ -103,13 +107,14 @@ describe("AgentRouter overlay", () => {
       orgDir,
     );
     const prompt = await router.composeSystemPrompt(
-      makeSession({ targetRepo: "target-repo" }),
+      makeSession({ targetRepo: "target-repo", agentType: "lead" }),
     );
 
     expect(prompt).not.toBeNull();
     expect(prompt!).toContain("# target-repo common");
     expect(prompt!).toContain("# org common");
     expect(prompt!).not.toContain("# public common");
+    expect(prompt!).toContain("LEAD BODY");
     // Order: target-repo common first, then overlay.
     expect(prompt!.indexOf("# target-repo common")).toBeLessThan(
       prompt!.indexOf("# org common"),
@@ -127,7 +132,7 @@ describe("AgentRouter overlay", () => {
     );
     await fs.writeFile(
       path.join(fallbackDir, "lead.md"),
-      `---\nname: lead\n---\n\nLEAD BODY`,
+      `---\nname: lead\ncommon: philosophy,merge-workflow\n---\n\nLEAD BODY`,
     );
 
     const router = new AgentRouter([], fallbackDir, orgDir);
@@ -145,24 +150,41 @@ describe("AgentRouter overlay", () => {
     );
   });
 
-  it("returns only common preamble when no agent definition resolves", async () => {
+  it("returns selected fallback common preamble when no agent definition resolves", async () => {
     await fs.writeFile(
-      path.join(fallbackDir, "common", "philosophy.md"),
-      "# only common",
+      path.join(fallbackDir, "common", "core.md"),
+      "# core common",
     );
 
     const router = new AgentRouter([], fallbackDir, orgDir);
-    // No agentType → no agent definition; composeSystemPrompt should still
-    // emit the common preamble (this is the default-agent path).
     const prompt = await router.composeSystemPrompt(makeSession());
 
-    expect(prompt).toBe("# only common");
+    expect(prompt).toBe("# core common");
+  });
+
+  it("resolves explicit default agent for top-level default runs", async () => {
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "core.md"),
+      "# core common",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "default.md"),
+      `---\nname: default\ncommon: core\n---\n\nDEFAULT BODY`,
+    );
+
+    const router = new AgentRouter([], fallbackDir, orgDir);
+    const prompt = await router.composeSystemPrompt(
+      makeSession({ activeAgentName: "default" }),
+    );
+
+    expect(prompt).toContain("# core common");
+    expect(prompt).toContain("DEFAULT BODY");
   });
 
   it("no org dir configured → still works, just no overlay", async () => {
     await fs.writeFile(
       path.join(fallbackDir, "build.md"),
-      `---\nname: build\n---\n\nPUBLIC ONLY`,
+      `---\nname: build\ncommon: public-rules\n---\n\nPUBLIC ONLY`,
     );
 
     const router = new AgentRouter([], fallbackDir);
@@ -174,7 +196,7 @@ describe("AgentRouter overlay", () => {
   it("missing org overlay dir degrades to public fallback", async () => {
     await fs.writeFile(
       path.join(fallbackDir, "build.md"),
-      `---\nname: build\n---\n\nPUBLIC ONLY`,
+      `---\nname: build\ncommon: public-rules\n---\n\nPUBLIC ONLY`,
     );
     await fs.writeFile(
       path.join(fallbackDir, "common", "public-rules.md"),

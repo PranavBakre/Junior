@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { loadAgentDefinition, DEFAULT_CONTEXT_PROFILE } from "./loader.ts";
 import path from "node:path";
+import fs from "node:fs/promises";
 
 const agentsDir = path.resolve(
   import.meta.dir,
@@ -23,7 +24,7 @@ describe("loadAgentDefinition", () => {
     expect(def).toBeNull();
   });
 
-  it("parses frontmatter correctly (name, description, tools, model)", async () => {
+  it("parses frontmatter correctly (name, description, tools, common)", async () => {
     const def = await loadAgentDefinition(path.join(agentsDir, "build.md"));
     expect(def).not.toBeNull();
     expect(def!.name).toBe("build");
@@ -31,7 +32,8 @@ describe("loadAgentDefinition", () => {
       "Backend engineer. Use for building features, fixing bugs, refactoring code.",
     );
     expect(def!.tools).toBe("Read, Edit, Write, Bash, Grep, Glob, Agent");
-    expect(def!.model).toBe("opus");
+    expect(def!.model).toBeNull();
+    expect(def!.common).toEqual(["core", "building-philosophy"]);
   });
 
   it("parses optional username + iconEmoji frontmatter fields", async () => {
@@ -55,6 +57,19 @@ body`;
       const fs = await import("node:fs/promises");
       await fs.unlink(tmpPath).catch(() => {});
     }
+  });
+
+  it("public fallback agents do not hardcode Opus model frontmatter", async () => {
+    const entries = await fs.readdir(agentsDir);
+    const offenders: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.endsWith(".md")) continue;
+      const content = await Bun.file(path.join(agentsDir, entry)).text();
+      if (/^model:\s*opus\s*$/m.test(content)) offenders.push(entry);
+    }
+
+    expect(offenders).toEqual([]);
   });
 
   it("identity fields are null when not declared", async () => {
@@ -86,6 +101,7 @@ body`;
       expect(def!.description).toBe("");
       expect(def!.tools).toBeNull();
       expect(def!.model).toBeNull();
+      expect(def!.common).toEqual(["core"]);
       expect(def!.prompt).toBe("Just some content without frontmatter.");
     } finally {
       const fs = await import("node:fs/promises");
@@ -95,11 +111,12 @@ body`;
 
   it("handles frontmatter with quoted values", async () => {
     const tmpPath = path.join(import.meta.dir, "__test_quoted.md");
-    const content = `---
+      const content = `---
 name: "test-agent"
 description: 'A test agent'
 tools: "Read, Write"
 model: "sonnet"
+common: "core,building"
 ---
 
 Test body content.`;
@@ -112,9 +129,72 @@ Test body content.`;
       expect(def!.description).toBe("A test agent");
       expect(def!.tools).toBe("Read, Write");
       expect(def!.model).toBe("sonnet");
+      expect(def!.common).toEqual(["core", "building"]);
       expect(def!.prompt).toBe("Test body content.");
     } finally {
       const fs = await import("node:fs/promises");
+      await fs.unlink(tmpPath).catch(() => {});
+    }
+  });
+
+  it("parses comma-separated common profile", async () => {
+    const tmpPath = path.join(import.meta.dir, "__test_common.md");
+    const content = `---
+name: common-test
+common: core, building, runtime-environment
+---
+
+body`;
+    await Bun.write(tmpPath, content);
+
+    try {
+      const def = await loadAgentDefinition(tmpPath);
+      expect(def!.common).toEqual([
+        "core",
+        "building",
+        "runtime-environment",
+      ]);
+    } finally {
+      await fs.unlink(tmpPath).catch(() => {});
+    }
+  });
+
+  it("injects core first even when common profile omits or misorders it", async () => {
+    const tmpPath = path.join(import.meta.dir, "__test_common_core_first.md");
+    const content = `---
+name: common-test
+common: runtime-environment, core, building
+---
+
+body`;
+    await Bun.write(tmpPath, content);
+
+    try {
+      const def = await loadAgentDefinition(tmpPath);
+      expect(def!.common).toEqual([
+        "core",
+        "runtime-environment",
+        "building",
+      ]);
+    } finally {
+      await fs.unlink(tmpPath).catch(() => {});
+    }
+  });
+
+  it("injects core when common profile omits it", async () => {
+    const tmpPath = path.join(import.meta.dir, "__test_common_omit_core.md");
+    const content = `---
+name: common-test
+common: building
+---
+
+body`;
+    await Bun.write(tmpPath, content);
+
+    try {
+      const def = await loadAgentDefinition(tmpPath);
+      expect(def!.common).toEqual(["core", "building"]);
+    } finally {
       await fs.unlink(tmpPath).catch(() => {});
     }
   });

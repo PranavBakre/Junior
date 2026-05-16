@@ -12,11 +12,13 @@ import {
   createOpenCodeStreamParser,
   type OpenCodeEvent,
 } from "./parser.ts";
+import { buildOpenCodeAgentPrompt, OPENCODE_PROVIDER_AGENT } from "./prompt.ts";
 
 export interface OpenCodeEnvContext {
   session: ThreadSession;
   cwd: string;
   agentName: string;
+  juniorAgentName: string;
 }
 
 export type OpenCodeEnvExtension =
@@ -52,11 +54,16 @@ export function spawnOpenCode(
     botToken,
     agentIdentity,
   });
-  const agentName = config.agentName ?? session.activeAgentName ?? "junior";
+  const juniorAgentName = juniorAgentNameForSession(session);
+  const agentName = config.agentName ?? OPENCODE_PROVIDER_AGENT;
   const model = session.model ?? config.defaultModel ?? null;
+  const agentPrompt = buildOpenCodeAgentPrompt({
+    juniorAgentName,
+    juniorPrompt: config.agentPrompt ?? session.systemPrompt,
+  });
   const configContent = buildOpenCodeConfigContent({
     agentName,
-    agentPrompt: config.agentPrompt ?? session.systemPrompt ?? "",
+    agentPrompt,
     description: config.description,
     model,
     permission: config.permission,
@@ -68,7 +75,7 @@ export function spawnOpenCode(
       OPENCODE_CONFIG_CONTENT: configContent,
     },
     config.env,
-    { session, cwd: runtime.cwd, agentName },
+    { session, cwd: runtime.cwd, agentName, juniorAgentName },
   );
   // OpenCode merges configs across layers (global, OPENCODE_CONFIG, project,
   // OPENCODE_CONFIG_CONTENT). A developer's shell-set OPENCODE_CONFIG would
@@ -144,6 +151,10 @@ export function spawnOpenCode(
     },
     pid: proc.pid,
   };
+}
+
+function juniorAgentNameForSession(session: ThreadSession): string {
+  return session.agentType ?? session.activeAgentName ?? "default";
 }
 
 function emitMappedEvents(
