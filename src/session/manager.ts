@@ -936,10 +936,8 @@ export class SessionManager {
         }
       }
 
-      // Compose agent system prompt. Note: composeSystemPrompt now returns
-      // the common preamble even when no agent .md resolves (e.g. the
-      // "default" agent has no definition file but should still receive
-      // junior's invariants like the merge-workflow rules).
+      // Compose agent system prompt. The explicit default agent receives the
+      // same selected-common prompt path as named worker agents.
       if (this.agentRouter) {
         const composed =
           (await this.agentRouter.composeSystemPrompt(runSession)) ?? null;

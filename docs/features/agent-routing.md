@@ -18,10 +18,11 @@ Different Slack threads need different Claude Code personalities. A thread askin
   3. Junior's own `.claude/agents/<type>.md` (fallback)
 - Agent definition injected via `--append-system-prompt`
 - Agent type persists across turns in a thread; can be changed mid-thread with a new command
-- Lead and the default `@junior` path also flow through this composition (the public `lead.md` is the lead's system prompt; the default agent gets common preamble only since no `default.md` exists)
-- Common preamble loaded alongside agent definition:
-  - **Exclusive tier:** target repo's `common/*.md` if any, else junior's public `common/*.md`
-  - **Additive tier:** the org overlay's `common/*.md` is **always** appended after the exclusive tier, so org-wide invariants (credential paths, merge protocol, infra URLs) reach every agent regardless of which repo's common loaded first
+- Lead and the default `@junior` path also flow through this composition (`lead.md` and `default.md` are explicit public fallback agents).
+- Common preamble is selected by each agent's `common:` frontmatter profile:
+  - `core.md` is the tiny always-on operating contract.
+  - Target repo common is checked first per selected file; missing selected files fall back individually to Junior's public common.
+  - Org overlay common is additive, but only for the selected filenames. Junior no longer appends every `common/*.md` to every agent.
 - **Per-agent context profile** (frontmatter flags) lets lightweight task agents opt out of preamble blocks (`identity`, `slack`, `workspace`, `threadHistory`, `agentState`). Defaults are all-true; missing or invalid flags preserve the heavy preamble.
 
 ## Dependencies
@@ -39,7 +40,7 @@ Agent definitions are markdown files with YAML frontmatter:
 name: build
 description: Senior backend engineer for the Example Org monorepo.
 tools: Read, Edit, Write, Bash, Grep, Glob, Agent
-model: opus
+common: core,building-philosophy
 ---
 
 # build — Backend Engineer
@@ -50,8 +51,8 @@ Role: A senior engineer who knows the Example Org monorepo architecture...
 
 The bot:
 1. Reads the `.md` file from the target repo
-2. Strips frontmatter, extracts `tools` for `--allowedTools`
-3. Passes the markdown body as `--append-system-prompt`
+2. Strips frontmatter, extracts `tools`, context flags, and `common:`
+3. Composes selected common files + markdown body as the system prompt
 
 ## Iterations
 
@@ -83,8 +84,8 @@ Load and prepend the common preamble that all agents share.
 
 **What it adds:**
 - Check for `<repoPath>/.claude/agents/common/` directory
-- Load all `.md` files in common/ and prepend to agent prompt
-- Order: common preamble first, then agent-specific prompt
+- Load only common files named by the agent's `common:` profile and prepend them to the agent prompt
+- Order: `core` first, then profile order, with per-file fallback from target repo common to Junior public common, then agent-specific prompt
 - example-backend already has `common/building-philosophy.md` — this gets loaded for all example-backend agents
 
 **Test:** Load "build" agent for example-backend → prompt starts with building-philosophy.md content, then build.md content.
