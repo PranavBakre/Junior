@@ -220,9 +220,23 @@ This has no closing delimiter`;
 
   describe("context profile", () => {
     it("defaults all flags to true when no context.* keys are declared", async () => {
-      const def = await loadAgentDefinition(path.join(agentsDir, "build.md"));
-      expect(def).not.toBeNull();
-      expect(def!.context).toEqual(DEFAULT_CONTEXT_PROFILE);
+      const tmpPath = path.join(import.meta.dir, "__test_ctx_defaults.md");
+      const content = `---
+name: no-ctx-agent
+description: No context frontmatter declared
+---
+
+body`;
+      await Bun.write(tmpPath, content);
+
+      try {
+        const def = await loadAgentDefinition(tmpPath);
+        expect(def).not.toBeNull();
+        expect(def!.context).toEqual(DEFAULT_CONTEXT_PROFILE);
+      } finally {
+        const fs = await import("node:fs/promises");
+        await fs.unlink(tmpPath).catch(() => {});
+      }
     });
 
     it("parses individual context.* flags as overrides", async () => {
