@@ -20,6 +20,7 @@ export interface AgentContextProfile {
   slack: boolean;
   workspace: boolean;
   threadHistory: boolean;
+  threadHistoryLimit: number;
   agentState: boolean;
 }
 
@@ -28,6 +29,9 @@ export const DEFAULT_CONTEXT_PROFILE: AgentContextProfile = {
   slack: true,
   workspace: true,
   threadHistory: true,
+  // Fallback for agents that do not declare `context.threadHistoryLimit`.
+  // Public fallback agents are linted to declare a stricter explicit budget.
+  threadHistoryLimit: 100,
   agentState: true,
 };
 
@@ -94,6 +98,9 @@ function readContextProfile(
     workspace: parseBool(fm["context.workspace"]) ?? DEFAULT_CONTEXT_PROFILE.workspace,
     threadHistory:
       parseBool(fm["context.threadHistory"]) ?? DEFAULT_CONTEXT_PROFILE.threadHistory,
+    threadHistoryLimit:
+      parsePositiveInt(fm["context.threadHistoryLimit"]) ??
+      DEFAULT_CONTEXT_PROFILE.threadHistoryLimit,
     agentState: parseBool(fm["context.agentState"]) ?? DEFAULT_CONTEXT_PROFILE.agentState,
   };
 }
@@ -104,6 +111,13 @@ function parseBool(value: string | undefined): boolean | undefined {
   if (v === "true") return true;
   if (v === "false") return false;
   return undefined;
+}
+
+function parsePositiveInt(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number.parseInt(value.trim(), 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
+  return parsed;
 }
 
 function parseFrontmatter(content: string): {

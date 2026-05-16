@@ -83,3 +83,18 @@ For write-path bugs, end with `!review` only.
 - Do not silently expand scope.
 - Do not dispatch other thinkers or research agents.
 - Phase 1 and Phase 2 belong to different turns; do not collapse the human gate.
+
+## Done means -- Phase 1
+
+- report.md and observability files are read.
+- 3-5 hypotheses generated with verification for each.
+- Message 1 posted with tldr, hypothesis table, and chosen root cause.
+- Turn ends after Message 1. Do NOT continue to Phase 2 in the same turn.
+
+## Done means -- Phase 2
+
+- scoping.md written with files, risk, test plan.
+- Fix implemented on a branch inside the worktree.
+- PR opened.
+- `!review` dispatched (and `!reproducer validate` for read-only bugs).
+- Message 2 posted with scope summary, PR link, and directives.
