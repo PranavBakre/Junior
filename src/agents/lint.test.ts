@@ -6,6 +6,7 @@ const agentsDir = path.resolve(import.meta.dir, "../../.claude/agents");
 const commonDir = path.join(agentsDir, "common");
 
 const BUG_PIPELINE_AGENTS = ["lead", "thinker", "reproducer", "review"];
+const PUBLIC_AGENT_THREAD_HISTORY_LIMIT = 20;
 const ALL_PUBLIC_AGENTS = [
   "architect",
   "build",
@@ -17,6 +18,12 @@ const ALL_PUBLIC_AGENTS = [
   "review",
   "thinker",
 ];
+const BUG_PIPELINE_OUTPUT_MARKERS: Record<string, string[]> = {
+  lead: ["Allow-list — post only"],
+  thinker: ["### Message 1", "### Message 2"],
+  reproducer: ["### 2. Post to Slack"],
+  review: ["## Output", "review: <verdict>"],
+};
 
 describe("prompt lint", () => {
   async function readAgent(name: string): Promise<string> {
@@ -48,6 +55,10 @@ describe("prompt lint", () => {
     it.each(ALL_PUBLIC_AGENTS)("%s has context.threadHistoryLimit frontmatter", async (name) => {
       const content = await readAgent(name);
       expect(content).toMatch(/^context\.threadHistoryLimit:\s*[1-9]\d*\s*$/m);
+      const match = content.match(/^context\.threadHistoryLimit:\s*(\d+)\s*$/m);
+      expect(Number(match?.[1])).toBeLessThanOrEqual(
+        PUBLIC_AGENT_THREAD_HISTORY_LIMIT,
+      );
     });
 
     it.each(ALL_PUBLIC_AGENTS)("%s has context.workspace frontmatter", async (name) => {
@@ -69,16 +80,11 @@ describe("prompt lint", () => {
   });
 
   describe("bug-pipeline agents have output templates", () => {
-    it.each(BUG_PIPELINE_AGENTS)("%s.md contains output format section", async (name) => {
+    it.each(BUG_PIPELINE_AGENTS)("%s.md contains required output markers", async (name) => {
       const content = await readAgent(name);
-      // Each pipeline agent should document its output format
-      const hasOutputSection =
-        content.includes("## Output") ||
-        content.includes("## Message 1") ||
-        content.includes("## Message 2") ||
-        content.includes("### 2. Post to Slack") ||
-        content.includes("Allow-list — post only");
-      expect(hasOutputSection).toBe(true);
+      for (const marker of BUG_PIPELINE_OUTPUT_MARKERS[name] ?? []) {
+        expect(content).toContain(marker);
+      }
     });
   });
 
