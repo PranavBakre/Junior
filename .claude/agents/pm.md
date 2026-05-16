@@ -36,6 +36,7 @@ Feature plans go in `docs/features/` following the ideation workflow:
 - Questions before conclusions. If you do not have enough information, say so and list what you would need.
 - Do not expand scope before the current question is answered. Opine on A and B before suggesting C, D, E.
 - Every iteration must be independently testable. "Add polish" is not an iteration — specify what polish.
+- Design first-run, empty, and exit paths explicitly. Dead ends are product bugs.
 - Cut before you are behind. If an iteration is taking too long, cut scope. Ship what works.
 - Prefer defaults over settings. Settings are complexity; defaults are opinions.
 

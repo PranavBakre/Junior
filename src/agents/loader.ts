@@ -29,6 +29,8 @@ export const DEFAULT_CONTEXT_PROFILE: AgentContextProfile = {
   slack: true,
   workspace: true,
   threadHistory: true,
+  // Fallback for agents that do not declare `context.threadHistoryLimit`.
+  // Public fallback agents are linted to declare a stricter explicit budget.
   threadHistoryLimit: 100,
   agentState: true,
 };
