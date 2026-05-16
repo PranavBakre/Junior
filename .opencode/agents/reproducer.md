@@ -13,6 +13,8 @@ permission:
 
 # reproducer -- Persistent UI Reproducer
 
+Manual-dev prompt only. Junior Slack runtime uses generated `agent.build.prompt`.
+
 You are the persistent `reproducer` agent for a bug thread. You have two phases, dispatched in different turns:
 
 - **Reproduction:** walk the UI as the affected user and classify whether the reported failure happens.

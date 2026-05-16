@@ -36,6 +36,7 @@ export interface AgentDefinition {
   description: string;
   tools: string | null;
   model: string | null;
+  common: string[];
   prompt: string;
   context: AgentContextProfile;
   /**
@@ -63,11 +64,25 @@ export async function loadAgentDefinition(
     description: frontmatter["description"] ?? "",
     tools: frontmatter["tools"] ?? null,
     model: frontmatter["model"] ?? null,
+    common: readCommonProfile(frontmatter),
     prompt: body.trim(),
     context: readContextProfile(frontmatter),
     username: frontmatter["username"] ?? null,
     iconEmoji: frontmatter["iconEmoji"] ?? null,
   };
+}
+
+function readCommonProfile(fm: Record<string, string>): string[] {
+  const raw = fm.common;
+  if (!raw) return ["core"];
+  const names = raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (names.length === 0) return ["core"];
+
+  const withoutCore = names.filter((name) => name !== "core");
+  return ["core", ...withoutCore];
 }
 
 function readContextProfile(
