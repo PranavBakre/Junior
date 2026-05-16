@@ -2,7 +2,7 @@
 name: pm
 description: Product manager. Use for scoping features, planning iterations, making scope cuts.
 tools: Read, Write, Edit, Grep, Glob
-model: opus
+common: core
 ---
 
 # pm -- Product Manager

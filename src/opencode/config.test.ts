@@ -8,7 +8,7 @@ describe("OpenCode config generation", () => {
   it("generates config with model, permission, and primary agent prompt", () => {
     expect(
       buildOpenCodeConfig({
-        agentName: "junior-lead",
+        agentName: "build",
         agentPrompt: "CUSTOM JUNIOR SYSTEM PROMPT",
         model: "openai/gpt-5.1",
         permission: "allow",
@@ -18,7 +18,7 @@ describe("OpenCode config generation", () => {
       model: "openai/gpt-5.1",
       permission: "allow",
       agent: {
-        "junior-lead": {
+        build: {
           description: "Junior Slack runner",
           mode: "primary",
           permission: { "*": "allow" },
@@ -30,7 +30,7 @@ describe("OpenCode config generation", () => {
 
   it("includes optional MCP entries", () => {
     const config = buildOpenCodeConfig({
-      agentName: "junior",
+      agentName: "build",
       agentPrompt: "Prompt",
       mcp: {
         "slack-bot": {
@@ -60,7 +60,7 @@ describe("OpenCode config generation", () => {
 
   it("serializes OPENCODE_CONFIG_CONTENT JSON", () => {
     const content = buildOpenCodeConfigContent({
-      agentName: "junior",
+      agentName: "build",
       agentPrompt: "Prompt",
       permission: { edit: "deny" },
     });
@@ -68,7 +68,7 @@ describe("OpenCode config generation", () => {
     expect(JSON.parse(content)).toMatchObject({
       permission: { edit: "deny" },
       agent: {
-        junior: {
+        build: {
           permission: { edit: "deny" },
           prompt: "Prompt",
         },
@@ -78,13 +78,13 @@ describe("OpenCode config generation", () => {
 
   it("copies string permission onto the generated agent as an object override", () => {
     const config = buildOpenCodeConfig({
-      agentName: "review",
+      agentName: "build",
       agentPrompt: "Prompt",
       permission: "allow",
     });
 
     expect(config.permission).toBe("allow");
-    expect(config.agent.review.permission).toEqual({ "*": "allow" });
+    expect(config.agent.build.permission).toEqual({ "*": "allow" });
   });
 
   it("rejects blank agent names", () => {
