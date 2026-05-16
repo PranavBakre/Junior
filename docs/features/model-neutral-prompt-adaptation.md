@@ -24,7 +24,7 @@ Current main after PR #32:
 - OpenCode parser/Slack formatting maps tool-use events and suppresses duplicate Slack tool posts more robustly.
 - PR #31 still contains useful generated-prompt discovery, but it is no longer the only OpenCode prompt-quality branch.
 
-Implemented in this overhaul so far:
+Implemented in PR #33:
 
 - Public Claude-style agents have provider-neutral frontmatter and selected `common:` profiles.
 - `.claude/agents/common/core.md` is the compact universal action/context contract; `orchestrator-dispatch.md` carries delegation rules for coordinator agents.
@@ -32,6 +32,15 @@ Implemented in this overhaul so far:
 - `AgentRouter` resolves `default` for top-level default runs and loads only profile-selected common files.
 - OpenCode runtime uses generated `agent.build.prompt` on provider agent `build`; static `.opencode/agents/*` are marked manual-dev only.
 - Generated OpenCode prompts include provider baseline, `<junior-core>`, `<junior-active-agent>`, and the dynamic Junior prompt.
+
+Not implemented in PR #33:
+
+- Lead prompt state-machine rewrite.
+- Worker prompt rewrites into compact checklist workflows.
+- Context-budget policy changes for thread history and per-agent preamble defaults.
+- Full prompt linting and composed-prompt budget snapshots.
+
+These continue in the next PR for this feature.
 
 ## OpenCode Prompt Audit
 
@@ -389,24 +398,24 @@ This prevents prompt drift back toward large-context, Opus-dependent behavior.
 
 ## Implementation Plan
 
-PR #33 implements the infrastructure slice of this plan: Phases 1-3, the default-agent artifact from Phase 4, and selected tests from Phase 8. Phases 5-7 and the remaining prompt-lint work are backlog items, not shipped behavior in this PR.
+PR #33 implements the infrastructure slice of this plan: Phases 1-3, the default-agent artifact from Phase 4, and selected tests from Phase 8. Phases 5-7 and the remaining prompt-lint work are next-PR backlog items, not shipped behavior in PR #33.
 
 | Phase | PR #33 status |
 |---|---|
-| 0. Branch and PR handling | In progress via PR #33 |
+| 0. Branch and PR handling | Complete via PR #33 |
 | 1. Core prompt architecture | Implemented |
 | 2. OpenCode prompt source of truth | Implemented |
 | 3. Provider-neutral agent metadata | Implemented |
 | 4. Default Junior routing | Partially implemented: `default.md` exists and is explicit; deeper routing/body rewrites remain follow-up |
-| 5. Lead state machine | Backlog |
-| 6. Worker prompt rewrites | Backlog |
-| 7. Context budget controls | Backlog |
+| 5. Lead state machine | Next PR |
+| 6. Worker prompt rewrites | Next PR |
+| 7. Context budget controls | Next PR |
 | 8. Prompt linting and tests | Partially implemented |
 | 9. Verification | Implemented for focused prompt/OpenCode suite; full suite remains blocked by unrelated dev-server fixture |
 
 ### Decision
 
-Do the full prompt overhaul now from current `main` after PR #32. Supersede [PranavBakre/Junior#31](https://github.com/PranavBakre/Junior/pull/31) as a standalone PR unless it is explicitly rebased and converted into this overhaul.
+Complete the prompt overhaul in staged PRs from current `main` after PR #32. PR #33 owns the infrastructure slice and supersedes [PranavBakre/Junior#31](https://github.com/PranavBakre/Junior/pull/31) as a standalone generated-prompt PR.
 
 [PranavBakre/Junior#31](https://github.com/PranavBakre/Junior/pull/31) contains useful discovery and should be used as source material, not merged independently:
 
@@ -420,7 +429,7 @@ PR #32 contains the current applied prompt surface:
 - `opencode.json` instruction wiring
 - OpenCode tool-use mapping and duplicate Slack-post suppression
 
-The overhaul should consolidate these directions: keep PR #32's applied OpenCode agent-overlay work, close or absorb PR #31, and decide whether OpenCode's long-term prompt source is static `.opencode/agents/*`, generated `agent.build.prompt`, or a deliberately combined model.
+The overhaul consolidates these directions: keep PR #32's applied OpenCode agent-overlay work, absorb PR #31's generated-prompt findings, and use generated `agent.build.prompt` as the runtime source of truth while static `.opencode/agents/*` remain manual-dev prompts.
 
 ### Phase 0 — Branch and PR Handling
 
