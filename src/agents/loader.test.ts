@@ -220,9 +220,23 @@ This has no closing delimiter`;
 
   describe("context profile", () => {
     it("defaults all flags to true when no context.* keys are declared", async () => {
-      const def = await loadAgentDefinition(path.join(agentsDir, "build.md"));
-      expect(def).not.toBeNull();
-      expect(def!.context).toEqual(DEFAULT_CONTEXT_PROFILE);
+      const tmpPath = path.join(import.meta.dir, "__test_ctx_defaults.md");
+      const content = `---
+name: no-ctx-agent
+description: No context frontmatter declared
+---
+
+body`;
+      await Bun.write(tmpPath, content);
+
+      try {
+        const def = await loadAgentDefinition(tmpPath);
+        expect(def).not.toBeNull();
+        expect(def!.context).toEqual(DEFAULT_CONTEXT_PROFILE);
+      } finally {
+        const fs = await import("node:fs/promises");
+        await fs.unlink(tmpPath).catch(() => {});
+      }
     });
 
     it("parses individual context.* flags as overrides", async () => {
@@ -232,6 +246,7 @@ name: pr-summarize
 description: Summarize a PR in one sentence.
 context.workspace: false
 context.threadHistory: false
+context.threadHistoryLimit: 12
 ---
 
 body`;
@@ -244,6 +259,7 @@ body`;
         expect(def!.context.slack).toBe(true);
         expect(def!.context.workspace).toBe(false);
         expect(def!.context.threadHistory).toBe(false);
+        expect(def!.context.threadHistoryLimit).toBe(12);
         expect(def!.context.agentState).toBe(true);
       } finally {
         const fs = await import("node:fs/promises");
@@ -257,6 +273,7 @@ body`;
 name: bad
 context.workspace: maybe
 context.threadHistory: 0
+context.threadHistoryLimit: nope
 ---
 body`;
       await Bun.write(tmpPath, content);
@@ -266,6 +283,9 @@ body`;
         // Bad values fall back to default (true) — safe-but-heavy.
         expect(def!.context.workspace).toBe(true);
         expect(def!.context.threadHistory).toBe(true);
+        expect(def!.context.threadHistoryLimit).toBe(
+          DEFAULT_CONTEXT_PROFILE.threadHistoryLimit,
+        );
       } finally {
         const fs = await import("node:fs/promises");
         await fs.unlink(tmpPath).catch(() => {});

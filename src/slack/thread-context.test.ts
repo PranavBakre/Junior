@@ -1,5 +1,10 @@
 import { describe, it, expect } from "bun:test";
-import { buildWorkspaceBlock, type WorkspaceContext } from "./thread-context.ts";
+import {
+  buildPromptPreamble,
+  buildWorkspaceBlock,
+  type WorkspaceContext,
+} from "./thread-context.ts";
+import type { App } from "@slack/bolt";
 import type { RepoConfig } from "../config.ts";
 
 const repos: RepoConfig[] = [
@@ -86,5 +91,42 @@ describe("buildWorkspaceBlock", () => {
     const block = buildWorkspaceBlock(undefined, paths, repos);
 
     expect(block).toContain("branch:                 slack/<thread>");
+  });
+});
+
+describe("buildPromptPreamble", () => {
+  it("uses the per-agent thread history limit", async () => {
+    let observedLimit: number | undefined;
+    const app = {
+      client: {
+        conversations: {
+          replies: async (args: { limit?: number }) => {
+            observedLimit = args.limit;
+            return { messages: [{ ts: "1", user: "U1", text: "root" }] };
+          },
+        },
+      },
+    } as unknown as App;
+
+    await buildPromptPreamble(
+      app,
+      "C1",
+      "1",
+      "2",
+      "UBOT",
+      null,
+      undefined,
+      undefined,
+      {
+        identity: false,
+        slack: false,
+        workspace: false,
+        threadHistory: true,
+        threadHistoryLimit: 12,
+        agentState: false,
+      },
+    );
+
+    expect(observedLimit).toBe(12);
   });
 });

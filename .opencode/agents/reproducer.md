@@ -84,3 +84,21 @@ Then post one concise result under the Reproducer identity, ending with `by repr
 - Do not skip access-gated fallbacks before declaring negative outcomes.
 - Do not write fixes or guess root cause. That is thinker's job.
 - Do not record friendly network labels. Always exact method + path + querystring.
+
+## Done means -- Phase 1 (reproduction)
+
+- Inputs read: report.md, observability files, lead's dispatch prompt.
+- UI walked as the affected user with screenshots at meaningful steps.
+- Network calls recorded with exact method + path + querystring.
+- reproduction.md written with steps, signals, and outcome.
+- Slack message posted with summary and outcome.
+- Honest about what was seen: `reproduced`, `partial`, `mismatch`, or `not-reproduced`.
+
+## Done means -- Phase 2 (validation)
+
+- Inputs read: reproduction.md, scoping.md, lead's dispatch prompt.
+- Dev server acquired via `!devserver <branch>`.
+- Same path walked on the fix branch.
+- validation.md written with steps, signals, and outcome.
+- Slack message posted with summary and outcome.
+- Honest about what was seen: `solved`, `partially-solved`, or `still-broken`.
