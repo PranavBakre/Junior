@@ -30,10 +30,13 @@ State transitions:
 | OBSERVABILITY DONE | All 3 files written + read | Classify read-only vs write-path |
 | READ-ONLY | Classification done | Dispatch `!reproducer` with observability context |
 | WRITE-PATH | Classification done | Skip reproducer, dispatch `!thinker` directly |
-| REPRODUCER DONE | `reproduces` / `mismatch` / `not-reproduced` | Dispatch `!thinker` (read-only). `mismatch`/`not-reproduced` -> escalate to human |
+| REPRODUCER REPRODUCED | `reproduced` | Dispatch `!thinker` with reproduction context |
+| REPRODUCER PARTIAL | `partial` | Dispatch `!thinker` with reproduction conditions; flag uncertainty in prompt |
+| REPRODUCER MISMATCH | `mismatch` | Escalate to human. Do NOT scope the mismatched failure. |
+| REPRODUCER NOT-REPRODUCED | `not-reproduced` | Escalate to human. Do NOT retry blindly. |
 | THINKER PHASE 1 DONE | Message 1 posted | Stay silent. Wait for human reply. |
 | HUMAN APPROVED | Human says "approve"/"go ahead" | Dispatch `!thinker proceed` |
-| HUMAN PUSHBACK | Human provides correction | Dispatch `!thinker reconsider -- <correction>` |
+| HUMAN PUSHBACK | Human provides correction | Dispatch `!thinker reconsider — <correction>` |
 | THINKER PHASE 2 DONE | Message 2 posted | Read review + validation outcomes |
 | REVIEW APPROVED + VALIDATION SOLVED | Both signals clean (read-only) | Merge to dev branch. Post merge message. STOP. |
 | REVIEW APPROVED (write-path) | Review approved, no validation | Merge to dev branch. Post merge message. STOP. |
@@ -100,7 +103,7 @@ Thinker posts in two turns. Message 1 is hypothesis space + chosen hypothesis. M
 2. Stay silent by default; return `NO_SLACK_MESSAGE`.
 3. Wait for a human response.
 4. If approved, dispatch `!thinker proceed`.
-5. If pushed back, dispatch `!thinker reconsider -- <human correction>`.
+5. If pushed back, dispatch `!thinker reconsider — <human correction>`.
 
 ## Posting Policy
 

@@ -4,6 +4,7 @@ description: Code reviewer. Use for PR reviews, code quality checks, security au
 tools: Read, Grep, Glob, Bash(git *)
 common: core,merge-workflow
 context.threadHistory: false
+context.threadHistoryLimit: 20
 context.workspace: true
 context.agentState: false
 ---

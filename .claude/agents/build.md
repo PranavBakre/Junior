@@ -4,6 +4,7 @@ description: Backend engineer. Use for building features, fixing bugs, refactori
 tools: Read, Edit, Write, Bash, Grep, Glob, Agent
 common: core,building-philosophy
 context.threadHistory: true
+context.threadHistoryLimit: 20
 context.workspace: true
 context.agentState: false
 ---

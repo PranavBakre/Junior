@@ -4,6 +4,7 @@ description: Frontend engineer. Use for UI work, component building, styling, fr
 tools: Read, Edit, Write, Bash, Grep, Glob, Agent
 common: core,building-philosophy
 context.threadHistory: true
+context.threadHistoryLimit: 20
 context.workspace: true
 context.agentState: false
 ---
