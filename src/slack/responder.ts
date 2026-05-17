@@ -17,12 +17,14 @@ export class SlackResponder {
   private app: App;
   private statusMessages = new Map<string, StatusEntry>();
   /**
-   * Keys for which the final response has already been posted. Prevents a
-   * race where an in-flight `updateStatus` completes *after* `deleteStatus`
-   * ran as a noop (because the status map entry hadn't been set yet) and
-   * posts a duplicate message alongside the final response.
+   * In-flight `postMessage` promises for first-call status posts. When
+   * `deleteStatus` is called while a status `postMessage` is still in flight,
+   * it awaits the pending promise so it can find and delete the resulting
+   * message. This prevents a race where `deleteStatus` runs as a noop (the
+   * status map entry hasn't been set yet) and the in-flight `postMessage` then
+   * creates a duplicate alongside the final response.
    */
-  private completed = new Set<string>();
+  private pendingStatusPosts = new Map<string, Promise<unknown>>();
 
   constructor(app: App) {
     this.app = app;
@@ -76,47 +78,32 @@ export class SlackResponder {
     const existing = this.statusMessages.get(key);
 
     if (!existing) {
-      // Race guard: if the final response has already been posted for this
-      // thread/agent, the in-flight status update is stale. Skip posting
-      // and, if the completed flag is set, delete any status message that
-      // slipped through.
-      if (this.completed.has(key)) {
-        log.info(
-          "responder",
-          `status.skip thread=${threadTs} agent=${agentName} reason=response-already-posted`,
-        );
-        return;
-      }
+      // First call: post a new status message.
+      // Track the in-flight post so deleteStatus can await it if needed.
+      const postPromise = this.app.client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text,
+      });
+      this.pendingStatusPosts.set(key, postPromise);
 
-      // First call: post a new status message
       try {
-        const result = await this.app.client.chat.postMessage({
-          channel,
-          thread_ts: threadTs,
-          text,
-        });
+        const result = await postPromise;
         if (result.ts) {
-          // Double-check: final response may have been posted while we
-          // were in flight. If so, delete the stale status message.
-          if (this.completed.has(key)) {
-            try {
-              await this.app.client.chat.delete({ channel, ts: result.ts });
-              log.info(
-                "responder",
-                `status.retract thread=${threadTs} agent=${agentName} ts=${result.ts} reason=response-posted-while-inflight`,
-              );
-            } catch {
-              // Best-effort delete; message may have already been removed
-            }
+          // If deleteStatus already claimed this pending post (removed it
+          // from the map), the message has been or will be deleted — skip
+          // adding to statusMessages to avoid a stale entry.
+          if (!this.pendingStatusPosts.has(key)) {
+            log.info(
+              "responder",
+              `status.superseded thread=${threadTs} agent=${agentName} ts=${result.ts}`,
+            );
             return;
           }
           this.statusMessages.set(key, {
             messageTs: result.ts,
             lastUpdateTime: Date.now(),
           });
-          // New status message created — clear any stale completed flag so
-          // subsequent edits within the same turn are not blocked.
-          this.completed.delete(key);
           log.info(
             "responder",
             `status.post thread=${threadTs} agent=${agentName} ts=${result.ts} preview="${preview(text)}"`,
@@ -127,6 +114,8 @@ export class SlackResponder {
           "responder",
           `status.post.fail thread=${threadTs} err=${err instanceof Error ? err.message : String(err)}`,
         );
+      } finally {
+        this.pendingStatusPosts.delete(key);
       }
       return;
     }
@@ -167,14 +156,32 @@ export class SlackResponder {
   ): Promise<void> {
     const key = this.statusKey(threadTs, agentName);
 
-    // Mark this thread/agent as completed so that any in-flight updateStatus
-    // call knows not to post a duplicate after the final response lands.
-    this.completed.add(key);
-    // Prevent unbounded growth — completed flags are short-lived but guard
-    // against a leak if threads accumulate without status updates.
-    if (this.completed.size > 1000) {
-      const entries = [...this.completed];
-      for (let i = 0; i < 500; i++) this.completed.delete(entries[i]);
+    // If a status postMessage is still in flight, await it so we can find
+    // and delete the resulting message. Without this, deleteStatus runs as
+    // a noop (the status map entry hasn't been set yet), and the in-flight
+    // postMessage creates a stale status message alongside the final
+    // response.
+    const pending = this.pendingStatusPosts.get(key);
+    if (pending) {
+      // Claim the pending post: remove from map so updateStatus knows its
+      // message will be deleted and skips adding a stale statusMessages entry.
+      this.pendingStatusPosts.delete(key);
+      try {
+        const result = await pending;
+        if (result && typeof result === "object" && "ts" in result && result.ts) {
+          try {
+            await this.app.client.chat.delete({ channel, ts: result.ts as string });
+            log.info(
+              "responder",
+              `status.delete.inflight thread=${threadTs} agent=${agentName} ts=${result.ts as string}`,
+            );
+          } catch {
+            // Best-effort delete; message may have already been removed.
+          }
+        }
+      } catch {
+        // postMessage failed — nothing to clean up.
+      }
     }
 
     const existing = this.statusMessages.get(key);
