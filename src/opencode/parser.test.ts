@@ -108,6 +108,38 @@ describe("createOpenCodeEventMapper", () => {
     expect(mapper.response).toBe("Hi there");
   });
 
+  it("uses the latest completed text step as the final response", () => {
+    const parser = createOpenCodeStreamParser();
+    const mapper = createOpenCodeEventMapper();
+    const nativeEvents = parser.feed(
+      '{"type":"step_start","sessionID":"ses_steps"}\n' +
+        '{"type":"text","sessionID":"ses_steps","part":{"type":"text","text":"Let me inspect the diff first."}}\n' +
+        '{"type":"step_finish","sessionID":"ses_steps"}\n' +
+        '{"type":"step_start","sessionID":"ses_steps"}\n' +
+        '{"type":"text","sessionID":"ses_steps","part":{"type":"text","text":"review: approved — clean to ship"}}\n' +
+        '{"type":"step_finish","sessionID":"ses_steps"}\n',
+    );
+
+    const runnerEvents = nativeEvents.flatMap((event) => mapper.map(event));
+
+    expect(runnerEvents).toEqual([
+      { type: "init", provider: "opencode", sessionId: "ses_steps" },
+      {
+        type: "message",
+        provider: "opencode",
+        text: "Let me inspect the diff first.",
+      },
+      { type: "done", provider: "opencode" },
+      {
+        type: "message",
+        provider: "opencode",
+        text: "review: approved — clean to ship",
+      },
+      { type: "done", provider: "opencode" },
+    ]);
+    expect(mapper.response).toBe("review: approved — clean to ship");
+  });
+
   it("can initialize from the first text event carrying sessionID", () => {
     const parser = createOpenCodeStreamParser();
     const mapper = createOpenCodeEventMapper();
