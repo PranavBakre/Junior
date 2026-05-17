@@ -1,4 +1,16 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": "allow"
+  "permission": "allow",
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "@playwright/mcp", "--headless"],
+      "enabled": true
+    },
+    "slack-bot": {
+      "type": "remote",
+      "url": "http://localhost:3456/mcp",
+      "enabled": true
+    }
+  }
 }
