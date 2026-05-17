@@ -24,7 +24,7 @@ A single Slack thread can host multiple agents at once. The dispatcher is in [`s
 
 | Agent | Username | Emoji | Use |
 | --- | --- | --- | --- |
-| `lead` | Junior | :face_with_cowboy_hat: | Default in support channels — orchestrator / rubber duck |
+| `lead` | Junior | 🤠 | Default in support channels — orchestrator / rubber duck |
 | `reproducer` | Reproducer | :mag: | Reproduce a reported bug deterministically |
 | `thinker` | Thinker | :wrench: | Form and mock-test a hypothesis |
 | `review` | Reviewer | :eyes: | Code review |
