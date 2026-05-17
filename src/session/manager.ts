@@ -1300,7 +1300,9 @@ export class SessionManager {
       const isOrchestrator = agentName === "lead" || agentName === "default";
       const identityPrompt = [
         `You are the "${agentName}" agent in this Slack thread.`,
-        `When posting through slack_send_message, pass username="${identity.username}" and icon_emoji="${identity.iconEmoji}".`,
+        identity.iconEmoji
+          ? `When posting through slack_send_message, pass username="${identity.username}" and icon_emoji="${identity.iconEmoji}".`
+          : `When posting through slack_send_message, pass username="${identity.username}". Do NOT set icon_emoji — the bot's default profile picture is correct for your role.`,
         // Orchestrators (lead, default Junior) post as Junior's voice and
         // don't append a "by <agent>" suffix — that's a worker convention so
         // humans can tell workers' posts apart from the orchestrator's.
