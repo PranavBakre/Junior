@@ -17,12 +17,17 @@ export class SlackResponder {
   private app: App;
   private statusMessages = new Map<string, StatusEntry>();
   /**
-   * In-flight `postMessage` promises for first-call status posts. When
-   * `deleteStatus` is called while a status `postMessage` is still in flight,
-   * it awaits the pending promise so it can find and delete the resulting
-   * message. This prevents a race where `deleteStatus` runs as a noop (the
-   * status map entry hasn't been set yet) and the in-flight `postMessage` then
-   * creates a duplicate alongside the final response.
+   * In-flight `postMessage` promises for first-call status posts. Used for
+   * two purposes:
+   *
+   * 1. **Coalescing:** When concurrent `updateStatus` calls both see no
+   *    existing entry, the second awaits the first's in-flight post and
+   *    updates the resulting message instead of creating a duplicate.
+   *
+   * 2. **Race guard:** When `deleteStatus` is called while a status
+   *    `postMessage` is still in flight, it awaits the pending promise so
+   *    it can find and delete the resulting message, preventing a duplicate
+   *    alongside the final response.
    */
   private pendingStatusPosts = new Map<string, Promise<unknown>>();
 
@@ -78,8 +83,51 @@ export class SlackResponder {
     const existing = this.statusMessages.get(key);
 
     if (!existing) {
-      // First call: post a new status message.
-      // Track the in-flight post so deleteStatus can await it if needed.
+      // If a first-call postMessage is already in flight for this key,
+      // coalesce: await the pending post and update the resulting message
+      // instead of creating a duplicate.
+      const pending = this.pendingStatusPosts.get(key);
+      if (pending) {
+        try {
+          const result = await pending;
+          if (result && typeof result === "object" && "ts" in result && result.ts) {
+            const entry = this.statusMessages.get(key);
+            if (entry) {
+              // The first post resolved and set a statusMessages entry.
+              // Update it with the newer status text.
+              try {
+                await this.app.client.chat.update({
+                  channel,
+                  ts: entry.messageTs,
+                  text,
+                });
+                entry.lastUpdateTime = Date.now();
+                log.info(
+                  "responder",
+                  `status.coalesced thread=${threadTs} agent=${agentName} ts=${entry.messageTs} preview="${preview(text)}"`,
+                );
+              } catch (err) {
+                log.error(
+                  "responder",
+                  `status.coalesce.update.fail thread=${threadTs} ts=${entry.messageTs} err=${err instanceof Error ? err.message : String(err)}`,
+                );
+              }
+            } else {
+              // Entry was removed (e.g., by deleteStatus claiming the pending
+              // post). The message has been or will be deleted — skip.
+              log.info(
+                "responder",
+                `status.coalesce.skip thread=${threadTs} agent=${agentName}`,
+              );
+            }
+          }
+        } catch {
+          // The pending post failed — nothing to coalesce.
+        }
+        return;
+      }
+
+      // No in-flight first post — start a new one.
       const postPromise = this.app.client.chat.postMessage({
         channel,
         thread_ts: threadTs,
