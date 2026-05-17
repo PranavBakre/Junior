@@ -82,4 +82,15 @@ describe("runner runtime", () => {
     expect(env.JUNIOR_SLACK_ICON_EMOJI).toBe(":eyes:");
     expect(env.SLACK_BOT_TOKEN).toBe("xoxb-test");
   });
+
+  it("omits JUNIOR_SLACK_ICON_EMOJI when identity has no iconEmoji (default agent)", () => {
+    const env = buildRunnerEnv(
+      makeSession({ activeAgentName: "default" }),
+      "xoxb-test",
+      { username: "Junior" },
+    );
+
+    expect(env.JUNIOR_SLACK_USERNAME).toBe("Junior");
+    expect(env.JUNIOR_SLACK_ICON_EMOJI).toBeUndefined();
+  });
 });

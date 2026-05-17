@@ -51,7 +51,9 @@ export function buildRunnerEnv(
     ...(agentIdentity
       ? {
           JUNIOR_SLACK_USERNAME: agentIdentity.username,
-          JUNIOR_SLACK_ICON_EMOJI: agentIdentity.iconEmoji,
+          ...(agentIdentity.iconEmoji
+            ? { JUNIOR_SLACK_ICON_EMOJI: agentIdentity.iconEmoji }
+            : {}),
         }
       : {}),
     ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),

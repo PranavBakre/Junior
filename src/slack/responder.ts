@@ -16,6 +16,15 @@ function preview(text: string, n = 80): string {
 export class SlackResponder {
   private app: App;
   private statusMessages = new Map<string, StatusEntry>();
+  /**
+   * In-flight `postMessage` promises for first-call status posts. When
+   * `deleteStatus` is called while a status `postMessage` is still in flight,
+   * it awaits the pending promise so it can find and delete the resulting
+   * message. This prevents a race where `deleteStatus` runs as a noop (the
+   * status map entry hasn't been set yet) and the in-flight `postMessage` then
+   * creates a duplicate alongside the final response.
+   */
+  private pendingStatusPosts = new Map<string, Promise<unknown>>();
 
   constructor(app: App) {
     this.app = app;
@@ -40,7 +49,10 @@ export class SlackResponder {
           thread_ts: threadTs,
           text: chunk,
           ...(identity
-            ? { username: identity.username, icon_emoji: identity.iconEmoji }
+            ? {
+                username: identity.username,
+                ...(identity.iconEmoji ? { icon_emoji: identity.iconEmoji } : {}),
+              }
             : {}),
         });
         log.info(
@@ -66,14 +78,28 @@ export class SlackResponder {
     const existing = this.statusMessages.get(key);
 
     if (!existing) {
-      // First call: post a new status message
+      // First call: post a new status message.
+      // Track the in-flight post so deleteStatus can await it if needed.
+      const postPromise = this.app.client.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text,
+      });
+      this.pendingStatusPosts.set(key, postPromise);
+
       try {
-        const result = await this.app.client.chat.postMessage({
-          channel,
-          thread_ts: threadTs,
-          text,
-        });
+        const result = await postPromise;
         if (result.ts) {
+          // If deleteStatus already claimed this pending post (removed it
+          // from the map), the message has been or will be deleted — skip
+          // adding to statusMessages to avoid a stale entry.
+          if (!this.pendingStatusPosts.has(key)) {
+            log.info(
+              "responder",
+              `status.superseded thread=${threadTs} agent=${agentName} ts=${result.ts}`,
+            );
+            return;
+          }
           this.statusMessages.set(key, {
             messageTs: result.ts,
             lastUpdateTime: Date.now(),
@@ -88,6 +114,8 @@ export class SlackResponder {
           "responder",
           `status.post.fail thread=${threadTs} err=${err instanceof Error ? err.message : String(err)}`,
         );
+      } finally {
+        this.pendingStatusPosts.delete(key);
       }
       return;
     }
@@ -127,6 +155,35 @@ export class SlackResponder {
     agentName: string = "lead",
   ): Promise<void> {
     const key = this.statusKey(threadTs, agentName);
+
+    // If a status postMessage is still in flight, await it so we can find
+    // and delete the resulting message. Without this, deleteStatus runs as
+    // a noop (the status map entry hasn't been set yet), and the in-flight
+    // postMessage creates a stale status message alongside the final
+    // response.
+    const pending = this.pendingStatusPosts.get(key);
+    if (pending) {
+      // Claim the pending post: remove from map so updateStatus knows its
+      // message will be deleted and skips adding a stale statusMessages entry.
+      this.pendingStatusPosts.delete(key);
+      try {
+        const result = await pending;
+        if (result && typeof result === "object" && "ts" in result && result.ts) {
+          try {
+            await this.app.client.chat.delete({ channel, ts: result.ts as string });
+            log.info(
+              "responder",
+              `status.delete.inflight thread=${threadTs} agent=${agentName} ts=${result.ts as string}`,
+            );
+          } catch {
+            // Best-effort delete; message may have already been removed.
+          }
+        }
+      } catch {
+        // postMessage failed — nothing to clean up.
+      }
+    }
+
     const existing = this.statusMessages.get(key);
     if (!existing) {
       log.info(
