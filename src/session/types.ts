@@ -50,7 +50,7 @@ export interface AgentSession {
 
 export interface AgentIdentity {
   username: string;
-  iconEmoji: string;
+  iconEmoji?: string;
 }
 
 export type SessionStatus = "idle" | "busy" | "draining";

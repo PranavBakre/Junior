@@ -17,7 +17,10 @@ import type { AgentIdentity } from "../session/types.ts";
  */
 export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   // Default Junior — the bot's main face, responds to @mentions in any channel.
-  default: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
+  // No iconEmoji: uses the Slack app's configured profile picture instead of
+  // overriding it with an emoji. Workers and lead use emoji to distinguish
+  // their posts from default Junior.
+  default: { username: "Junior" },
   // Lead — the bug-pipeline orchestrator. Keeps the Junior brand association
   // but disambiguates from default Junior so `agentForUsername` can resolve
   // self-bot posts back to the right role.
