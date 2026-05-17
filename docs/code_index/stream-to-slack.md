@@ -37,7 +37,7 @@ Formats normalized runner stream events as Slack status messages, posts final re
 | Symbol | Purpose |
 |---|---|
 | `createOpenCodeStreamParser()` | Buffers OpenCode JSONL chunks, validates `step_start`, `text`, `tool_use`, and `step_finish`, and logs malformed/unknown lines |
-| `createOpenCodeEventMapper()` | Maps OpenCode events into normalized `RunnerEvent` records: `init`, coalesced `message`, `tool`, and `done` |
+| `createOpenCodeEventMapper()` | Maps OpenCode events into normalized `RunnerEvent` records: `init`, coalesced `message`, `tool`, and `done`; tracks final response as the latest completed text step so intermediate working-note/status text is not concatenated into Slack's final post |
 
 ## Live Update Flow
 

@@ -195,12 +195,12 @@ export function createOpenCodeEventMapper(): OpenCodeEventMapper {
       const events = maybeInit(event);
 
       if (event.type === "text") {
-        response += event.part.text;
         pendingText += event.part.text;
       } else if (event.type === "tool_use") {
         events.push(mapOpenCodeToolUse(event));
       } else if (event.type === "step_finish") {
         if (pendingText) {
+          response = pendingText;
           events.push({
             type: "message",
             provider: "opencode",
