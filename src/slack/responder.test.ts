@@ -274,6 +274,145 @@ describe("SlackResponder", () => {
     });
   });
 
+  describe("concurrent first-call updateStatus (coalescing)", () => {
+    it("coalesces two concurrent first-call updateStatus into one post + one update", async () => {
+      let resolveFirst: (value: unknown) => void;
+      const firstPostPromise = new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+
+      const calls: Array<{ method: string; args: Record<string, unknown> }> =
+        [];
+      const app = {
+        client: {
+          chat: {
+            postMessage: vi.fn(async (args: Record<string, unknown>) => {
+              calls.push({ method: "postMessage", args });
+              // First call hangs; subsequent calls resolve immediately.
+              if (calls.filter((c) => c.method === "postMessage").length === 1) {
+                await firstPostPromise;
+              }
+              return { ts: "status-ts-concurrent" };
+            }),
+            delete: vi.fn(async (args: Record<string, unknown>) => {
+              calls.push({ method: "delete", args });
+              return { ok: true };
+            }),
+            update: vi.fn(async (args: Record<string, unknown>) => {
+              calls.push({ method: "update", args });
+              return { ok: true };
+            }),
+          },
+          reactions: { add: vi.fn(async () => ({ ok: true })) },
+        },
+      } as unknown as import("@slack/bolt").App;
+      const responder = new SlackResponder(app);
+
+      // First updateStatus — its postMessage will hang
+      const update1 = responder.updateStatus(
+        "C123",
+        "1234567890.123456",
+        "Working...",
+        "lead",
+      );
+
+      // While the first is in flight, a second updateStatus arrives.
+      // It should coalesce: await the first post, then update the message.
+      const update2 = responder.updateStatus(
+        "C123",
+        "1234567890.123456",
+        "Still working...",
+        "lead",
+      );
+
+      // Resolve the first postMessage — both calls can now proceed
+      resolveFirst!({ ts: "status-ts-concurrent" });
+
+      await Promise.all([update1, update2]);
+
+      // Only ONE postMessage (the first call) — no orphan duplicate
+      const postCalls = calls.filter((c) => c.method === "postMessage");
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0].args.text).toBe("Working...");
+
+      // The second call should have updated the message instead of posting a new one
+      const updateCalls = calls.filter((c) => c.method === "update");
+      expect(updateCalls).toHaveLength(1);
+      expect(updateCalls[0].args.text).toBe("Still working...");
+      expect(updateCalls[0].args.ts).toBe("status-ts-concurrent");
+    });
+
+    it("coalesced update skips gracefully when deleteStatus claimed the pending post", async () => {
+      let resolveFirst: (value: unknown) => void;
+      const firstPostPromise = new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+
+      const calls: Array<{ method: string; args: Record<string, unknown> }> =
+        [];
+      const app = {
+        client: {
+          chat: {
+            postMessage: vi.fn(async (args: Record<string, unknown>) => {
+              calls.push({ method: "postMessage", args });
+              await firstPostPromise;
+              return { ts: "status-ts-coalesce-del" };
+            }),
+            delete: vi.fn(async (args: Record<string, unknown>) => {
+              calls.push({ method: "delete", args });
+              return { ok: true };
+            }),
+            update: vi.fn(async (args: Record<string, unknown>) => {
+              calls.push({ method: "update", args });
+              return { ok: true };
+            }),
+          },
+          reactions: { add: vi.fn(async () => ({ ok: true })) },
+        },
+      } as unknown as import("@slack/bolt").App;
+      const responder = new SlackResponder(app);
+
+      // Start first updateStatus (postMessage hangs)
+      const update1 = responder.updateStatus(
+        "C123",
+        "1234567890.123456",
+        "Working...",
+        "lead",
+      );
+
+      // Second updateStatus should coalesce (await pending)
+      const update2 = responder.updateStatus(
+        "C123",
+        "1234567890.123456",
+        "Still working...",
+        "lead",
+      );
+
+      // deleteStatus claims the pending post while it's still in flight
+      const deletePromise = responder.deleteStatus(
+        "C123",
+        "1234567890.123456",
+        "lead",
+      );
+
+      // Now resolve the postMessage
+      resolveFirst!({ ts: "status-ts-coalesce-del" });
+
+      await Promise.all([update1, update2, deletePromise]);
+
+      // First call: posted then superseded (deleteStatus claimed it)
+      // Second call: coalesced, found no entry (deleted), skips
+      // No update calls should have been made
+      const updateCalls = calls.filter((c) => c.method === "update");
+      expect(updateCalls).toHaveLength(0);
+
+      // The inflight delete should have removed the posted message
+      const deleteCalls = calls.filter((c) => c.method === "delete");
+      expect(deleteCalls).toHaveLength(1);
+      expect(deleteCalls[0].args.ts).toBe("status-ts-coalesce-del");
+    });
+  });
+
   describe("debounce", () => {
     it("skips rapid status updates within 1 second", async () => {
       const { app, calls } = mockApp({
