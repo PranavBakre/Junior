@@ -6,6 +6,7 @@ import {
   buildOpenCodeConfigContent,
   type OpenCodeMcpConfig,
   type OpenCodePermissionConfig,
+  type OpenCodeSubagentConfig,
 } from "./config.ts";
 import {
   createOpenCodeEventMapper,
@@ -13,6 +14,7 @@ import {
   type OpenCodeEvent,
 } from "./parser.ts";
 import { buildOpenCodeAgentPrompt, OPENCODE_PROVIDER_AGENT } from "./prompt.ts";
+import { loadOpenCodeSupportSubagents } from "./support-agents.ts";
 
 export interface OpenCodeEnvContext {
   session: ThreadSession;
@@ -36,6 +38,7 @@ export interface OpenCodeSpawnerConfig {
   defaultModel?: string | null;
   permission?: OpenCodePermissionConfig;
   mcp?: OpenCodeMcpConfig | null;
+  subagents?: OpenCodeSubagentConfig[];
   env?: OpenCodeEnvExtension;
 }
 
@@ -67,7 +70,15 @@ export function spawnOpenCode(
     description: config.description,
     model,
     permission: config.permission,
-    mcp: runtime.needsProjectMcp ? config.mcp : null,
+    // OpenCode receives MCP via generated config, not Claude's project
+    // .mcp.json. Keep the utility cwd carve-out (calendar/cloud utilities rely
+    // on their own integrations), but all normal Junior/lead/worker runs need
+    // Slack MCP even when cwd is Junior's project root so intake can call
+    // register_worktree before any worktree exists.
+    mcp: session.cwd ? null : config.mcp,
+    subagents: session.cwd
+      ? []
+      : (config.subagents ?? loadOpenCodeSupportSubagents()),
   });
   const env = extendOpenCodeEnv(
     {

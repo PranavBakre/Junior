@@ -11,7 +11,7 @@
 #
 #   OPENCODE_MCP_ENABLED=true|false              default: true
 #   OPENCODE_SLACK_MCP_ENABLED=true|false         default: true
-#   OPENCODE_PLAYWRIGHT_MCP_ENABLED=true|false    default: false
+#   OPENCODE_PLAYWRIGHT_MCP_ENABLED=true|false    default: true
 #
 # Boolean parsing matches src/config.ts: 1/true/yes/on and 0/false/no/off
 # (case-insensitive). Invalid values produce an error, matching the runtime.
@@ -49,7 +49,7 @@ parse_bool() {
 # --- Env defaults (mirror src/config.ts) ---
 MCP_ENABLED=$(parse_bool "OPENCODE_MCP_ENABLED" "${OPENCODE_MCP_ENABLED:-}" true)
 SLACK_MCP=$(parse_bool "OPENCODE_SLACK_MCP_ENABLED" "${OPENCODE_SLACK_MCP_ENABLED:-}" true)
-PLAYWRIGHT_MCP=$(parse_bool "OPENCODE_PLAYWRIGHT_MCP_ENABLED" "${OPENCODE_PLAYWRIGHT_MCP_ENABLED:-}" false)
+PLAYWRIGHT_MCP=$(parse_bool "OPENCODE_PLAYWRIGHT_MCP_ENABLED" "${OPENCODE_PLAYWRIGHT_MCP_ENABLED:-}" true)
 
 # --- Build config ---
 CONFIG='{}'
