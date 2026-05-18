@@ -33,6 +33,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     tmuxSessionName: null,
     topLevelTmuxAgent: null,
     dormant: false,
+    needsThreadCatchup: false,
     dormantAnnounced: false,
     humanParticipants: [],
     ...overrides,

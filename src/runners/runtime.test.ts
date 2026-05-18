@@ -24,6 +24,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     verbosity: "normal",
     muted: false,
     dormant: false,
+    needsThreadCatchup: false,
     dormantAnnounced: false,
     humanParticipants: [],
     model: null,
