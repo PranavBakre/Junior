@@ -58,6 +58,51 @@ describe("OpenCode config generation", () => {
     ]);
   });
 
+  it("includes generated subagent prompts", () => {
+    const config = buildOpenCodeConfig({
+      agentName: "build",
+      agentPrompt: "Prompt",
+      permission: "allow",
+      subagents: [
+        {
+          name: "nr-research",
+          description: "New Relic research",
+          prompt: "Research prompt",
+        },
+      ],
+    });
+
+    expect(config.agent["nr-research"]).toEqual({
+      description: "New Relic research",
+      mode: "subagent",
+      permission: { "*": "allow" },
+      prompt: "Research prompt",
+    });
+  });
+
+  it("rejects subagents that collide with the primary agent", () => {
+    expect(() =>
+      buildOpenCodeConfig({
+        agentName: "build",
+        agentPrompt: "Prompt",
+        subagents: [{ name: "build", prompt: "Other prompt" }],
+      }),
+    ).toThrow('OpenCode subagent "build" conflicts with primary agent');
+  });
+
+  it("rejects duplicate subagent names", () => {
+    expect(() =>
+      buildOpenCodeConfig({
+        agentName: "build",
+        agentPrompt: "Prompt",
+        subagents: [
+          { name: "nr-research", prompt: "One" },
+          { name: "nr-research", prompt: "Two" },
+        ],
+      }),
+    ).toThrow('Duplicate OpenCode subagent "nr-research"');
+  });
+
   it("serializes OPENCODE_CONFIG_CONTENT JSON", () => {
     const content = buildOpenCodeConfigContent({
       agentName: "build",

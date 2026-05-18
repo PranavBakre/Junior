@@ -138,7 +138,7 @@ export function loadConfig(): Config {
       slackMcpEnabled: parseBooleanEnv("OPENCODE_SLACK_MCP_ENABLED", true),
       playwrightMcpEnabled: parseBooleanEnv(
         "OPENCODE_PLAYWRIGHT_MCP_ENABLED",
-        false,
+        true,
       ),
     },
     repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({

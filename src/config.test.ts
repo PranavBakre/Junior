@@ -63,7 +63,7 @@ describe("loadConfig runner providers", () => {
       permission: "allow",
       mcpEnabled: true,
       slackMcpEnabled: true,
-      playwrightMcpEnabled: false,
+      playwrightMcpEnabled: true,
     });
   });
 
@@ -74,7 +74,7 @@ describe("loadConfig runner providers", () => {
     process.env.JUNIOR_OPENCODE_PERMISSION = "ask";
     process.env.OPENCODE_MCP_ENABLED = "false";
     process.env.OPENCODE_SLACK_MCP_ENABLED = "0";
-    process.env.OPENCODE_PLAYWRIGHT_MCP_ENABLED = "true";
+    process.env.OPENCODE_PLAYWRIGHT_MCP_ENABLED = "false";
 
     const config = loadConfig();
 
@@ -85,7 +85,7 @@ describe("loadConfig runner providers", () => {
       permission: "ask",
       mcpEnabled: false,
       slackMcpEnabled: false,
-      playwrightMcpEnabled: true,
+      playwrightMcpEnabled: false,
     });
   });
 
