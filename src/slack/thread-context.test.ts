@@ -129,4 +129,51 @@ describe("buildPromptPreamble", () => {
 
     expect(observedLimit).toBe(12);
   });
+
+  it("includes previous thread messages but filters !aside messages", async () => {
+    const app = {
+      client: {
+        users: {
+          info: async ({ user }: { user: string }) => ({
+            user: { profile: { display_name: user } },
+          }),
+        },
+        conversations: {
+          replies: async () => ({
+            messages: [
+              { ts: "1", user: "U1", text: "root message" },
+              { ts: "2", user: "U2", text: "dormant detail to keep" },
+              { ts: "3", user: "U3", text: "!aside private aside" },
+              { ts: "4", user: "U4", text: "!aside. punctuated private aside" },
+              { ts: "5", user: "U5", text: "current message" },
+            ],
+          }),
+        },
+      },
+    } as unknown as App;
+
+    const preamble = await buildPromptPreamble(
+      app,
+      "C1",
+      "1",
+      "5",
+      "UBOT",
+      null,
+      undefined,
+      undefined,
+      {
+        identity: false,
+        slack: false,
+        workspace: false,
+        threadHistory: true,
+        threadHistoryLimit: 100,
+        agentState: false,
+      },
+    );
+
+    expect(preamble).toContain("root message");
+    expect(preamble).toContain("dormant detail to keep");
+    expect(preamble).not.toContain("private aside");
+    expect(preamble).not.toContain("User(U5 <@U5>): current message");
+  });
 });

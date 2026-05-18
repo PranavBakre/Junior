@@ -123,6 +123,7 @@ describe("createSession", () => {
       "leadSessionId",
       "model",
       "muted",
+      "needsThreadCatchup",
       "pendingMessages",
       "pid",
       "provider",
@@ -142,6 +143,11 @@ describe("createSession", () => {
   it("has dormant set to false by default", () => {
     const session = createSession("t1", "C01");
     expect(session.dormant).toBe(false);
+  });
+
+  it("has needsThreadCatchup set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.needsThreadCatchup).toBe(false);
   });
 
   it("has dormantAnnounced set to false by default", () => {

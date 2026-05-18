@@ -51,6 +51,13 @@ describe("parseCommand", () => {
     });
   });
 
+  it("parses punctuated !aside as aside", () => {
+    expect(parseCommand("!aside. I need to fix both")).toEqual({
+      command: "aside",
+      text: "I need to fix both",
+    });
+  });
+
   describe("recognizes all known commands", () => {
     const knownCommands = [
       "build",

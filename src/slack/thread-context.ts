@@ -2,6 +2,7 @@ import type { App } from "@slack/bolt";
 import type { RepoConfig } from "../config.ts";
 import { loadPersona } from "../persona.ts";
 import { NO_SLACK_MESSAGE } from "./formatting.ts";
+import { isAsideText } from "./commands.ts";
 import type { AgentContextProfile } from "../agents/loader.ts";
 import { DEFAULT_CONTEXT_PROFILE } from "../agents/loader.ts";
 
@@ -262,6 +263,7 @@ async function fetchThreadHistory(
     // TODO: pre-collect unique user IDs and batch-resolve to avoid Slack rate limits on large threads
     const messages: ThreadMessage[] = await Promise.all(result.messages
       .filter((m) => m.ts !== latestTs)
+      .filter((m) => !isAsideText(m.text ?? ""))
       .map(async (m) => {
         // Extract file names from message attachments
         const files = (m as Record<string, unknown>).files;

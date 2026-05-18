@@ -8,6 +8,7 @@ import type {
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { Config } from "../config.ts";
 import { createSession } from "./types.ts";
+import type { App } from "@slack/bolt";
 
 // --- Mock setup ---
 
@@ -1093,8 +1094,67 @@ describe("SessionManager", () => {
       expect(reactions).toEqual(["ear"]);
       const after = (await store.get("thread-1"))!;
       expect(after.dormant).toBe(false);
+      expect(after.needsThreadCatchup).toBe(true);
       // sticky flag stays — re-trigger is suppressed for life of thread
       expect(after.dormantAnnounced).toBe(true);
+    });
+
+    it("after !listen, next resumed turn sees previous messages except !aside", async () => {
+      manager.slackApp = {
+        client: {
+          users: {
+            info: async ({ user }: { user: string }) => ({
+              user: { profile: { display_name: user } },
+            }),
+          },
+          conversations: {
+            info: async () => ({ channel: { name: "test" } }),
+            replies: async () => ({
+              messages: [
+                { ts: "1", user: "U-A", text: "root" },
+                { ts: "2", user: "U-B", text: "details while dormant" },
+                { ts: "3", user: "U-A", text: "!aside private fix note" },
+                { ts: "4", user: "U-A", text: "!listen" },
+                { ts: "5", user: "U-A", text: "please continue" },
+              ],
+            }),
+          },
+        },
+      } as unknown as App;
+
+      const seeded = createSession(
+        "thread-1",
+        "C123",
+        testConfig.session.defaultVerbosity,
+        testConfig.runner.provider,
+        testConfig.claude.defaultDriver,
+      );
+      seeded.sessionId = "existing-session";
+      seeded.leadSessionId = "existing-session";
+      seeded.humanParticipants = ["U-A", "U-B"];
+      seeded.dormant = true;
+      seeded.dormantAnnounced = true;
+      await store.set("thread-1", seeded);
+
+      await manager.gateAttention(
+        makeEvent({ command: "listen", text: "", user: "U-A", ts: "4" }),
+      );
+
+      currentHandle = createMockHandle();
+      mockSpawnFn = mock(() => currentHandle);
+      await manager.handleMessage(
+        makeEvent({ user: "U-A", text: "please continue", ts: "5" }),
+      );
+      for (let i = 0; i < 10 && mockSpawnFn.mock.calls.length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      const prompt = mockSpawnFn.mock.calls[0][1] as string;
+      expect(prompt).toContain("details while dormant");
+      expect(prompt).toContain("!listen");
+      expect(prompt).not.toContain("private fix note");
+      expect(prompt).toContain("please continue");
+      expect((await store.get("thread-1"))!.needsThreadCatchup).toBe(false);
     });
 
     it("@mention wakes dormant and falls through to routing", async () => {

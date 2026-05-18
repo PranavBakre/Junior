@@ -37,6 +37,10 @@ export interface ParsedCommand {
   text: string;
 }
 
+export function isAsideText(text: string): boolean {
+  return /^!aside(?:$|\s|[.,:;!?-])/i.test(text.trim());
+}
+
 export function parseCommand(text: string): ParsedCommand {
   if (!text.startsWith("!")) {
     return { command: null, text };
@@ -48,6 +52,12 @@ export function parseCommand(text: string): ParsedCommand {
   const remaining = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
 
   if (!KNOWN_COMMANDS.has(commandWord)) {
+    if (isAsideText(text)) {
+      return {
+        command: "aside",
+        text: text.replace(/^!aside(?:[.,:;!?-])?\s*/i, "").trim(),
+      };
+    }
     return { command: null, text };
   }
 
