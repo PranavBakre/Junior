@@ -344,12 +344,14 @@ Mitigations in code today:
   `agent.build.permission` explicitly when Junior has a value. Agent permission
   is object-shaped because OpenCode does not accept the string shorthand at that
   layer. Missing keys are the merge surface.
-- The generated config mirrors Junior's stateless support prompts
-  (`nr-research`, `sentry-fetch`, `vercel-status`) into OpenCode `mode:
-  "subagent"` entries so Task fan-out works even when the child cwd is a target
-  repo or Junior's root. Persistent workers (`reproducer`, `thinker`, `review`)
-  are intentionally not exposed as OpenCode Task subagents; they must remain
-  Slack-dispatched persistent sessions with their own audit trail.
+- The generated config exposes Junior's standalone stateless support prompts
+  (`nr-research`, `sentry-fetch`, `vercel-status`) as OpenCode `mode:
+  "subagent"` entries so Task fan-out works when the child cwd is a target repo
+  or Junior's root. These subagents use a constrained permission surface:
+  read/search tools and MCP tools only. Utility `session.cwd` runs do not receive
+  these support subagents. Persistent workers (`reproducer`, `thinker`,
+  `review`) are intentionally not exposed as OpenCode Task subagents; they must
+  remain Slack-dispatched persistent sessions with their own audit trail.
 
 If full isolation is required for a deployment (production, shared service
 accounts), run Junior with `HOME` / `XDG_CONFIG_HOME` pointed at an empty

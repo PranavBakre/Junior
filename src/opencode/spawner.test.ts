@@ -126,6 +126,9 @@ describe("spawnOpenCode", () => {
 
     const parsed = JSON.parse(configContent!);
     expect(parsed.mcp).toBeUndefined();
+    expect(parsed.agent["nr-research"]).toBeUndefined();
+    expect(parsed.agent["sentry-fetch"]).toBeUndefined();
+    expect(parsed.agent["vercel-status"]).toBeUndefined();
   });
 
   it("exposes stateless support agents to OpenCode Task", async () => {
@@ -148,6 +151,16 @@ describe("spawnOpenCode", () => {
 
     const parsed = JSON.parse(configContent!);
     expect(parsed.agent["nr-research"].mode).toBe("subagent");
+    expect(parsed.agent["nr-research"].permission).toEqual({
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      edit: "deny",
+      write: "deny",
+      bash: "deny",
+      task: "deny",
+      "mcp__*": "allow",
+    });
     expect(parsed.agent["sentry-fetch"].mode).toBe("subagent");
     expect(parsed.agent["vercel-status"].mode).toBe("subagent");
     expect(parsed.agent.reproducer).toBeUndefined();
