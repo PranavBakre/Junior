@@ -323,9 +323,13 @@ OpenCode setup:
   `mcp` entirely (utility runs with no worktree), those globals become the
   *only* MCPs the child sees.
 - Junior includes the local Slack MCP by default for OpenCode worktree-backed
-  runs, but Playwright MCP is opt-in via
-  `OPENCODE_PLAYWRIGHT_MCP_ENABLED=true` because `npx @playwright/mcp` is cold
-  per runner spawn.
+  runs and for normal Junior-root lead/default runs. The only carve-out is an
+  explicit `session.cwd` utility run, where Junior intentionally omits its local
+  MCP wiring so utility commands can rely on their own cloud integrations. This
+  matters for bug intake: lead must call `register_worktree` before any target
+  worktree exists. Playwright MCP is enabled by default for OpenCode parity with
+  Claude's project `.mcp.json`; set `OPENCODE_PLAYWRIGHT_MCP_ENABLED=false` if a
+  deployment needs to avoid `npx @playwright/mcp` cold-start cost.
 - Global `agent.<other>` definitions coexist with Junior's `agent.build`,
   expanding the agent set available inside the spawn.
 - A shell-set `OPENCODE_CONFIG=/path/to/file` is inherited via the child's
@@ -340,6 +344,12 @@ Mitigations in code today:
   `agent.build.permission` explicitly when Junior has a value. Agent permission
   is object-shaped because OpenCode does not accept the string shorthand at that
   layer. Missing keys are the merge surface.
+- The generated config mirrors Junior's stateless support prompts
+  (`nr-research`, `sentry-fetch`, `vercel-status`) into OpenCode `mode:
+  "subagent"` entries so Task fan-out works even when the child cwd is a target
+  repo or Junior's root. Persistent workers (`reproducer`, `thinker`, `review`)
+  are intentionally not exposed as OpenCode Task subagents; they must remain
+  Slack-dispatched persistent sessions with their own audit trail.
 
 If full isolation is required for a deployment (production, shared service
 accounts), run Junior with `HOME` / `XDG_CONFIG_HOME` pointed at an empty

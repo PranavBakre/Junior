@@ -69,6 +69,10 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
 - `.claude/settings.json` grants `mcp__slack-bot__*` permissions
 - Port configurable via `MCP_PORT` env var (default 3456)
 - `--mcp-config` flag injected by `spawner.ts` when cwd differs from project root (worktree scenarios)
+- OpenCode receives the same `slack-bot` MCP through generated
+  `OPENCODE_CONFIG_CONTENT` for all normal runs, including initial lead intake
+  from Junior's project root. Explicit `session.cwd` utility runs still skip
+  Junior's local MCP wiring.
 
 ## What it replaced
 
