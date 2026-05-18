@@ -76,7 +76,9 @@ export function spawnOpenCode(
     // Slack MCP even when cwd is Junior's project root so intake can call
     // register_worktree before any worktree exists.
     mcp: session.cwd ? null : config.mcp,
-    subagents: config.subagents ?? loadOpenCodeSupportSubagents(),
+    subagents: session.cwd
+      ? []
+      : (config.subagents ?? loadOpenCodeSupportSubagents()),
   });
   const env = extendOpenCodeEnv(
     {
