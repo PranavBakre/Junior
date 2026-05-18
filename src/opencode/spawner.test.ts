@@ -29,7 +29,7 @@ describe("spawnOpenCode", () => {
     expect(configContent).toBeDefined();
     const parsed = JSON.parse(configContent!);
 
-    expect(Object.keys(parsed.agent)).toEqual(["build"]);
+    expect(parsed.agent.build).toBeDefined();
     const prompt = parsed.agent.build.prompt as string;
     expect(prompt).toContain("Slack-controlled coding agent");
     expect(prompt).toContain("<junior-core>");
@@ -63,5 +63,106 @@ describe("spawnOpenCode", () => {
     const parsed = JSON.parse(configContent!);
     const prompt = parsed.agent.build.prompt as string;
     expect(prompt).toContain("<junior-active-agent>build</junior-active-agent>");
+  });
+
+  it("includes Slack MCP for non-utility root runs", async () => {
+    const session = createSession("thread-1", "C01");
+    session.provider = "opencode";
+
+    let configContent: string | undefined;
+    const handle = spawnOpenCode(
+      session,
+      "intake bug",
+      {
+        command: "/usr/bin/true",
+        mcp: {
+          "slack-bot": {
+            type: "remote",
+            url: "http://localhost:3456/mcp",
+            enabled: true,
+          },
+        },
+        env: (_env) => {
+          configContent = _env.OPENCODE_CONFIG_CONTENT;
+        },
+      },
+    );
+
+    await handle.result;
+
+    const parsed = JSON.parse(configContent!);
+    expect(parsed.mcp["slack-bot"]).toEqual({
+      type: "remote",
+      url: "http://localhost:3456/mcp",
+      enabled: true,
+    });
+  });
+
+  it("keeps the MCP carve-out for utility cwd overrides", async () => {
+    const session = createSession("thread-1", "C01");
+    session.provider = "opencode";
+    session.cwd = "/tmp/junior-utility";
+
+    let configContent: string | undefined;
+    const handle = spawnOpenCode(
+      session,
+      "update calendar",
+      {
+        command: "/usr/bin/true",
+        mcp: {
+          "slack-bot": {
+            type: "remote",
+            url: "http://localhost:3456/mcp",
+            enabled: true,
+          },
+        },
+        env: (_env) => {
+          configContent = _env.OPENCODE_CONFIG_CONTENT;
+        },
+      },
+    );
+
+    await handle.result;
+
+    const parsed = JSON.parse(configContent!);
+    expect(parsed.mcp).toBeUndefined();
+    expect(parsed.agent["nr-research"]).toBeUndefined();
+    expect(parsed.agent["sentry-fetch"]).toBeUndefined();
+    expect(parsed.agent["vercel-status"]).toBeUndefined();
+  });
+
+  it("exposes stateless support agents to OpenCode Task", async () => {
+    const session = createSession("thread-1", "C01");
+    session.provider = "opencode";
+
+    let configContent: string | undefined;
+    const handle = spawnOpenCode(
+      session,
+      "run observability",
+      {
+        command: "/usr/bin/true",
+        env: (_env) => {
+          configContent = _env.OPENCODE_CONFIG_CONTENT;
+        },
+      },
+    );
+
+    await handle.result;
+
+    const parsed = JSON.parse(configContent!);
+    expect(parsed.agent["nr-research"].mode).toBe("subagent");
+    expect(parsed.agent["nr-research"].permission).toEqual({
+      read: "allow",
+      glob: "allow",
+      grep: "allow",
+      edit: "deny",
+      write: "deny",
+      bash: "deny",
+      task: "deny",
+      "mcp__*": "allow",
+    });
+    expect(parsed.agent["sentry-fetch"].mode).toBe("subagent");
+    expect(parsed.agent["vercel-status"].mode).toBe("subagent");
+    expect(parsed.agent.reproducer).toBeUndefined();
   });
 });

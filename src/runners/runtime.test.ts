@@ -93,4 +93,39 @@ describe("runner runtime", () => {
     expect(env.JUNIOR_SLACK_USERNAME).toBe("Junior");
     expect(env.JUNIOR_SLACK_ICON_EMOJI).toBeUndefined();
   });
+
+  it("clears inherited Junior Slack identity env when not explicitly set", () => {
+    const previousUsername = process.env.JUNIOR_SLACK_USERNAME;
+    const previousIcon = process.env.JUNIOR_SLACK_ICON_EMOJI;
+    process.env.JUNIOR_SLACK_USERNAME = "Stale Agent";
+    process.env.JUNIOR_SLACK_ICON_EMOJI = ":face_with_cowboy_hat:";
+
+    try {
+      const defaultEnv = buildRunnerEnv(
+        makeSession({ activeAgentName: "default" }),
+        "xoxb-test",
+        { username: "Junior" },
+      );
+      expect(defaultEnv.JUNIOR_SLACK_USERNAME).toBe("Junior");
+      expect(defaultEnv.JUNIOR_SLACK_ICON_EMOJI).toBeUndefined();
+
+      const noIdentityEnv = buildRunnerEnv(
+        makeSession({ activeAgentName: "lead" }),
+        "xoxb-test",
+      );
+      expect(noIdentityEnv.JUNIOR_SLACK_USERNAME).toBeUndefined();
+      expect(noIdentityEnv.JUNIOR_SLACK_ICON_EMOJI).toBeUndefined();
+    } finally {
+      if (previousUsername === undefined) {
+        delete process.env.JUNIOR_SLACK_USERNAME;
+      } else {
+        process.env.JUNIOR_SLACK_USERNAME = previousUsername;
+      }
+      if (previousIcon === undefined) {
+        delete process.env.JUNIOR_SLACK_ICON_EMOJI;
+      } else {
+        process.env.JUNIOR_SLACK_ICON_EMOJI = previousIcon;
+      }
+    }
+  });
 });
