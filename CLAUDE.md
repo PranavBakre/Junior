@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-junior is a Slack bot that acts as the control plane for Claude Code sessions. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents) — same role (Junior the orchestrator), rebuilt on Claude Code as a subprocess instead of OpenClaw.
+junior is a Slack bot that acts as the control plane for coding agent sessions. While it follows Claude Code conventions for manual use, it uses **OpenCode** as the default runner for automated Slack turns. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents).
 
-The server owns the lifecycle. When a Slack message arrives in a thread, the bot either spawns a new Claude Code CLI process or routes the message to an existing session. Each thread gets its own isolated session and optional target-repo worktree; runner processes use Junior's project MCP config for worktree-backed target-repo runs.
+The server owns the lifecycle. When a Slack message arrives in a thread, the bot spawns a short-lived runner subprocess (OpenCode or Claude Code). Each thread gets its own isolated session and optional target-repo worktree; runner processes use Junior's project MCP config for worktree-backed target-repo runs.
 
-**Stack:** Node.js / Bun, TypeScript, Slack Event API, Claude Code CLI (Max subscription auth)
+**Stack:** Node.js / Bun, TypeScript, Slack Event API, OpenCode (default) / Claude Code CLI.
 
-**Key architectural choice:** CLI subprocess (`claude -p`), not SDK. The CLI authenticates via Max subscription — no API keys, no usage-based billing. Each Slack message spawns a short-lived process; `--resume` picks up conversation context from the last completed turn.
+**Key architectural choice:** CLI subprocess, not SDK. Each Slack message spawns a short-lived process; `--resume` (or `--session`) picks up conversation context from the last completed turn.
 
 ## Where to Look
 
@@ -53,19 +53,29 @@ Slack Bot Server (Node.js / Bun)
     +-- On message:
     |     1. Look up thread_id
     |     2. If busy -> buffer message (react with eyes)
-    |     3. If idle -> spawn claude -p with --resume, --worktree, --output-format stream-json
+    |     3. If idle -> spawn runner with --resume, --worktree, --output-format stream-json
     |     4. On exit -> post response to Slack, drain buffer
     |
-    +-- Claude Code CLI Process (short-lived, one per message turn)
-          claude -p "<prompt>" --resume <session_id> --worktree "slack-<threadId>"
-            --output-format stream-json --mcp-config .mcp.json --max-turns 25
+    +-- Runner CLI Process (short-lived, one per message turn)
+          <runner-cli> run "<prompt>" --session <id> --dir "slack-<threadId>"
+            --format json --mcp-config .opencode.json
 ```
+
+## Prerequisites
+
+Ensure the following are installed and authenticated on your host:
+- **OpenCode** (Default runner)
+- **Claude Code CLI** (Alternate runner)
+- **Vercel CLI** (Required for `vercel-status` agent)
+- **New Relic CLI** (Required for `nr-research` agent)
+- **Sentry CLI** (Required for `sentry-fetch` agent)
+- **tmux** (Required for experimental interactive mode)
 
 ## Critical Rules
 
-1. **CLI subprocess, not SDK.** Spawn `claude -p` as a child process. Authenticate via Max subscription. Never use `@anthropic-ai/claude-code` as a library — that requires API keys.
-2. **One process per message turn.** Each Slack message spawns a short-lived `claude -p` process. The process exits after responding. No long-lived processes between messages.
-3. **`--resume` for continuity.** Use `--resume <sessionId>` to pick up conversation context. Session IDs are extracted from the first `stream-json` event on stdout.
+1. **CLI subprocess, not SDK.** Spawn `opencode` or `claude -p` as a child process. Never use `@anthropic-ai/claude-code` as a library — that requires API keys.
+2. **One process per message turn.** Each Slack message spawns a short-lived runner process. The process exits after responding. No long-lived processes between messages (except in experimental TMUX mode).
+3. **Native resume for continuity.** Use `--session` (OpenCode) or `--resume` (Claude) to pick up conversation context. Session IDs are extracted from the first stream event on stdout.
 4. **Buffer, don't interrupt.** If Claude is mid-execution and new messages arrive, buffer them. Never kill a running process — it risks corrupted session state. Drain the buffer as a combined prompt after the current turn exits.
 5. **Worktrees for target repos only.** Junior's workspace is shared across all threads (learnings accumulate). Worktrees are created in TARGET repos (example-backend, example-frontend) when threads need code isolation. Threads that only read or discuss don't need worktrees.
 6. **Stream events for status.** Parse `--output-format stream-json` events (tool_use, text, result) and post incremental Slack updates. The final `result` event is the response to post.

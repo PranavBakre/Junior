@@ -7,10 +7,8 @@ provider boundary: Junior owns Slack/session/worktree behavior, and provider
 adapters own each CLI's flags, native event stream, prompt mechanics, MCP config,
 and resume semantics.
 
-## Recommendation
-
-Build the provider abstraction first, then add OpenCode as the first non-Claude
-provider.
+## Status
+The provider abstraction and OpenCode/Claude adapters are fully implemented and in production as of 2026-05-18. OpenCode is the default provider.
 
 OpenCode is currently a better replacement candidate than Codex for Junior's
 specific needs because it has:
