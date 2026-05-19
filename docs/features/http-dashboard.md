@@ -23,9 +23,11 @@ src/http/
 
 Bun-native: no router framework, no auth, no CORS. Static `public/index.html` is served at `/` from the same origin as the API, so cross-origin access has no reason to exist.
 
+Junior is intentionally insecure as a networked product. The dashboard assumes a trusted local operator and host-level access control; exposing it beyond loopback requires adding authentication, authorization, and a real security review.
+
 ## Security posture
 
-- **Loopback-only.** Binds `127.0.0.1` — never reachable off-host without an explicit SSH tunnel. This is the entire threat model; there is no auth layer behind it.
+- **Loopback-only.** Binds `127.0.0.1` — never reachable off-host without an explicit SSH tunnel. This is the entire threat model; there is intentionally no auth layer behind it.
 - **Same-origin.** Dashboard HTML is served by the same Bun process. No CORS headers — adding `Access-Control-Allow-Origin: *` would only let arbitrary websites the operator visits read this server's data.
 - **Path-traversal rejection at the input layer.** `/api/logs?date=` accepts only `YYYY-MM-DD` (strict regex); `/api/memory/<path>` rejects `..` and absolute paths and verifies the resolved path stays inside `docs/`. Reject early, don't sanitize after concatenation.
 - **Projection on `/api/sessions`.** Filesystem paths (`worktreePath`, `cwd`), PIDs (`pid`), prompt-engineering details (`systemPrompt`), and `slackIdentity` are stripped before serialization. `pendingMessages` is reduced to a length count — message bodies never leave the box.

@@ -8,6 +8,17 @@ Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](ht
 
 For deep architecture and the canonical "critical rules" list, see [CLAUDE.md](./CLAUDE.md). This README is the on-ramp.
 
+## Prerequisites
+
+Junior orchestrates external coding agents and observability tools. Ensure the following are installed and authenticated on your host:
+
+- **[OpenCode](https://opencode.ai)** (default runner provider)
+- **[Claude Code CLI](https://anthropic.com)** (Claude provider and tmux driver)
+- **[Vercel CLI](https://vercel.com/docs/cli)** (required by `vercel-status`)
+- **[New Relic CLI](https://github.com/newrelic/newrelic-cli)** (required by `nr-research`)
+- **[Sentry CLI](https://docs.sentry.io/product/cli/)** (required by `sentry-fetch`)
+- **tmux 3.4+** (required only for `DEFAULT_CLAUDE_DRIVER=tmux`)
+
 ---
 
 ## What it does
@@ -34,7 +45,7 @@ Each agent stores its own row in the `agent_sessions` SQLite table so threading 
 
 ### Slack MCP server
 
-While Claude is running, it can post to and read from Slack autonomously through an in-process HTTP MCP server ([`src/mcp/slack-server.ts`](src/mcp/slack-server.ts)). Tools exposed:
+While a runner is active, it can post to and read from Slack autonomously through an in-process HTTP MCP server ([`src/mcp/slack-server.ts`](src/mcp/slack-server.ts)). Tools exposed:
 
 - `slack_send_message`, `slack_read_channel`, `slack_read_thread`
 - `slack_search`, `slack_search_users`
@@ -77,7 +88,7 @@ HTTP_DASHBOARD_PORT=8787 bun run dev
 # open http://127.0.0.1:8787
 ```
 
-Binds `127.0.0.1` only — there is no auth. Do not put it behind a reverse proxy without adding one.
+Binds `127.0.0.1` only. Junior is intentionally insecure as a networked product: there is no dashboard auth, and it assumes a trusted local operator. Do not put it behind a reverse proxy without adding auth and a real security review.
 
 | Path | Description |
 | --- | --- |
@@ -177,7 +188,17 @@ Slash-style commands are parsed in [`src/slack/commands.ts`](src/slack/commands.
 !devserver <branch> [repo] -- acquire dev-server slot
 !devserver status          -- queue depth
 !devserver kill <repo>     -- drop slot
+
+!driver <headless|tmux>    -- switch driver (tmux is EXPERIMENTAL)
 ```
+
+### Experimental: TMUX Mode
+
+Junior supports an experimental "Interactive Driver" that runs Claude Code inside a persistent `tmux` session. The implementation is present behind a flag and still needs production soak before becoming the default.
+
+To try it:
+- Set `DEFAULT_CLAUDE_DRIVER=tmux` in your `.env`.
+- Ensure `tmux` version ≥ 3.4 is installed.
 
 ---
 
@@ -225,7 +246,9 @@ src/
   config.ts             env loading, RepoConfig
   slack/                Bolt app, event handlers, formatting, home tab
   session/              ThreadSession, SessionManager, SQLite + memory stores
-  claude/               spawner, args, stream-json parser
+  runners/              provider selection, shared runtime contract
+  opencode/             OpenCode args, config, parser, spawner
+  claude/               Claude headless spawner, tmux driver, parsers
   worktree/             per-(repo, thread) worktree manager
   agents/               agent loader (.md frontmatter)
   support/              AgentDispatcher, persistent-agent identities
@@ -243,9 +266,11 @@ For per-feature deep dives, see the [`docs/`](docs/) tree — `docs/architecture
 ## Running tests + typecheck
 
 ```sh
+bun run dev         # start bot server with hot reload
 bun run typecheck   # tsc --noEmit
 bun test            # bun:test
-bun run cleanup     # remove stale worktrees + sessions
+bun run build       # build for production
+bun run cleanup     # delete stale idle/draining session rows
 ```
 
 ---
