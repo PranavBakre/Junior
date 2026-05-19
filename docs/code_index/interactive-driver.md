@@ -1,14 +1,20 @@
 # Code Index: Interactive Driver (EXPERIMENTAL)
 
 > [!WARNING]
-> This module is **EXPERIMENTAL** and not yet fully developed or tested.
+> This module is experimental and opt-in. The implementation exists behind `DEFAULT_CLAUDE_DRIVER=tmux`, but the default remains headless while it soaks.
 
-This module provides the "Interactive" execution path, driving Claude Code inside a persistent `tmux` session to utilize the Max subscription instead of API credits.
+This module provides the interactive Claude execution path, driving Claude Code inside a persistent `tmux` session instead of spawning `claude -p` for every turn.
 
-## Key Files
+## Code Index
 
-- [runtime.ts](file:///Users/psbakre/Projects/junior/src/runners/runtime.ts): Orchestrates the choice between headless and interactive drivers.
-- [src/claude/tmux-driver.ts](file:///Users/psbakre/Projects/junior/src/claude/tmux-driver.ts) (Internal): Implementation of the tmux driver.
+| Symbol | File | Purpose |
+|---|---|---|
+| `createDriver(mode, config)` | `src/claude/factory.ts` | Selects `HeadlessDriver` or `TmuxDriver`. |
+| `HeadlessDriver` | `src/claude/headless-driver.ts` | Wraps the existing `claude -p` spawner path. |
+| `TmuxDriver` | `src/claude/tmux-driver.ts` | Starts/reuses tmux sessions, pastes prompts, tails transcripts, and supports interrupts. |
+| `adaptTranscriptLine(...)` | `src/claude/transcript-adapter.ts` | Converts Claude transcript JSONL lines into stream events. |
+| `reconcileTmuxSessions(...)` | `src/lifecycle/tmux-reconcile.ts` | Reattaches or downgrades tmux sessions on bot boot. |
+| `evictIdleTmuxSessions(...)` | `src/lifecycle/tmux-evict.ts` | Kills idle tmux sessions while preserving resume IDs. |
 
 ## Mechanism
 

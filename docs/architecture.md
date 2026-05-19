@@ -1,6 +1,6 @@
 # Architecture
 
-System architecture for junior — the Slack bot that orchestrates Claude Code sessions.
+System architecture for junior — the Slack bot that orchestrates coding-agent sessions.
 
 ## Tech Stack
 
@@ -9,9 +9,9 @@ System architecture for junior — the Slack bot that orchestrates Claude Code s
 | Runtime | Bun | Built-in TS, .env, faster child_process spawning. Fallback to Node+tsx if Bun has issues. |
 | Slack SDK | @slack/bolt (Socket Mode) | Official SDK. Socket Mode = no public URL needed, works from a laptop. |
 | Language | TypeScript (strict, ESM) | Type safety across the session state machine and stream parser. |
-| Persistence (MVP) | In-memory Map | Good enough for single-process bot. |
-| Persistence (prod) | Redis | Survives restarts. TTL-based session cleanup. Provider/factory pattern. |
-| CLI | Claude Code (`claude -p`) | Max subscription auth. Short-lived processes. Stream-json output. |
+| Persistence | SQLite (`bun:sqlite`) | Survives restarts without an external service; memory store remains available for tests/dev. |
+| Runner providers | OpenCode by default, Claude as fallback | Provider adapters normalize CLI args, events, resume semantics, cwd, env, and MCP wiring. |
+| Driver modes | Headless by default, Claude tmux opt-in | Headless uses one subprocess per turn; tmux keeps an interactive Claude session alive behind a flag. |
 
 ## System Diagram
 
@@ -40,17 +40,17 @@ Slack (Socket Mode)
        │               │               │
        ▼               ▼               ▼
 ┌────────────┐  ┌────────────┐  ┌────────────┐
-│   Agent    │  │  Worktree  │  │   Claude   │
-│   Router   │  │  Manager   │  │  Spawner   │
+│   Agent    │  │  Worktree  │  │  Runner    │
+│   Router   │  │  Manager   │  │ Providers   │
 │            │  │            │  │            │
 │ Load .md   │  │ git work-  │  │ spawn      │
-│ from target│  │ tree in    │  │ claude -p  │
-│ repo's     │  │ TARGET     │  │ parse      │
-│ .claude/   │  │ repos      │  │ stream-json│
+│ from target│  │ tree in    │  │ opencode /│
+│ repo's     │  │ TARGET     │  │ claude     │
+│ .claude/   │  │ repos      │  │ parse JSON │
 │ agents/    │  │ (not here) │  │            │
 └─────┬──────┘  └─────┬──────┘  └──────┬─────┘
       │               │                │
-      │   systemPrompt│   cwd          │  stdout events
+      │   systemPrompt│   cwd          │  runner events
       └───────────────┴────────────────┘
                       │
                       ▼
@@ -75,7 +75,7 @@ Target repos (example-backend, example-frontend) are the **data plane** — isol
 This means:
 - Learnings accumulate across all threads (shared control plane)
 - Two threads editing example-backend don't collide (isolated data plane)
-- `--resume` provides per-thread conversation continuity without filesystem isolation
+- Provider-native resume IDs provide per-thread conversation continuity without filesystem isolation
 - Target repos' own `.claude/agents/` definitions are used in-place — not duplicated here
 
 ### 2. Session manager as the central hub
@@ -85,43 +85,44 @@ Every feature touches `ThreadSession`. It's the shared entity, like `jobs` in in
 | Field | Set by | Read by |
 |---|---|---|
 | `status` | Session Manager | All (guards behavior) |
-| `sessionId` | Claude Spawner (from stream-json init event) | Claude Spawner (for --resume) |
-| `worktreePath` | Worktree Manager | Claude Spawner (for cwd) |
+| `sessionId` | Runner provider (from provider event stream) | Runner provider (for native resume) |
+| `worktreePath` | Worktree Manager | Runner provider (for cwd) |
 | `agentType` | Thread Commands / Agent Router | Agent Router (to load definition) |
-| `systemPrompt` | Agent Router | Claude Spawner (for --append-system-prompt) |
+| `systemPrompt` | Agent Router | Runner provider (Claude append-system-prompt or generated OpenCode config) |
 | `pendingMessages` | Session Manager (buffer) | Session Manager (drain) |
 | `verbosity` | Thread Commands | Stream-to-Slack |
 | `targetRepo` | Thread Commands | Worktree Manager, Agent Router |
 
 **Implication:** `ThreadSession` is the integration contract. Changes to its shape affect every module. Keep it stable early.
 
-### 3. Spawner is a dumb executor
+### 3. Runner providers are dumb executors
 
-The spawner accepts pre-composed inputs (system prompt string, cwd path, tool config) and returns structured output (session ID, response text, events). It doesn't know about agents, worktrees, or Slack. This separation means:
+The runner boundary accepts pre-composed inputs (system prompt string, cwd path, tool config) and returns structured output (session ID, response text, normalized events). It doesn't know about Slack routing policy. This separation means:
 
-- Agent router composes the prompt → spawner passes it through
-- Worktree manager resolves the path → spawner uses it as cwd
-- Stream-to-slack subscribes to events → spawner emits them
+- Agent router composes the prompt → provider adapter passes it through
+- Worktree manager resolves the path → shared runtime uses it as cwd
+- Stream-to-slack subscribes to normalized events → provider adapter emits them
 
-Testing the spawner doesn't require Slack, git, or agent definitions.
+Testing provider adapters doesn't require Slack, git, or agent definitions.
 
 ### 4. `cwd` as the configuration mechanism
 
-Instead of passing the target repo's conventions, agent definitions, and CLAUDE.md via flags, set `cwd` to the target repo (or its worktree). Claude Code automatically reads:
+Instead of passing the target repo's conventions and agent definitions via bespoke Slack state, set `cwd` to the target repo (or its worktree). Provider adapters then use that cwd consistently. Claude Code automatically reads:
 - The target repo's `CLAUDE.md`
 - The target repo's `.claude/agents/` definitions
 - The target repo's `.claude/settings.json`
 
-The bot only needs to add:
+The bot also adds provider-specific wiring:
 - `--append-system-prompt` (for the selected agent definition, if overriding)
-- `--mcp-config` (for per-thread tool scoping)
-- `--resume` (for conversation continuity)
+- `--mcp-config` for Claude worktree-backed local tools
+- generated `OPENCODE_CONFIG_CONTENT` for OpenCode prompt, permissions, support subagents, and MCP config
+- native resume flags (`--resume` for Claude, `--session` for OpenCode)
 
-This is inversion of control — the target repo configures Claude, not the bot.
+This is inversion of control — the target repo configures the runner context, not the bot hardcoding every repo convention.
 
-### 5. Stream-json as the system boundary
+### 5. Provider event streams as the system boundary
 
-Everything inside the Claude Code process is opaque. The bot can't inspect Claude's internal state, tool calls in progress, or partial file edits. The only interface is the stream-json stdout:
+Everything inside the runner process is opaque. The bot can't inspect the model's internal state, tool calls in progress, or partial file edits. The interface is provider-native events normalized into `RunnerEvent`. Claude headless emits stream-json:
 
 ```jsonl
 {"type":"system","subtype":"init","session_id":"abc-123"}
@@ -130,7 +131,9 @@ Everything inside the Claude Code process is opaque. The bot can't inspect Claud
 {"type":"result","subtype":"success","text":"Here's what I found:..."}
 ```
 
-**Implication:** The stream parser is the most critical piece to get right. If it drops an event or misparses a line, the bot loses track of what Claude did. Test it thoroughly with real stream-json output samples.
+OpenCode emits JSONL from `opencode run --format json`, and Claude tmux mode tails transcript JSONL. Each adapter maps those shapes into `init`, `message`, `tool`, and `done`.
+
+**Implication:** Provider parsers are critical. If an adapter drops an event or misparses a line, the bot loses track of what the runner did. Test adapters with captured provider output.
 
 ### 6. Provider/factory pattern at every system boundary
 
@@ -138,9 +141,9 @@ Four boundaries need swappable implementations:
 
 | Boundary | Interface | Implementations |
 |---|---|---|
-| Session persistence | `SessionStore` | `InMemorySessionStore`, `RedisSessionStore` |
+| Session persistence | `SessionStore` | `InMemorySessionStore`, `SqliteSessionStore` |
 | Slack posting | `SlackClient` | Real Bolt client, mock for tests |
-| Claude spawning | `ClaudeSpawner` | Real child_process, mock for tests |
+| Runner spawning | `spawnRunner` / driver interfaces | OpenCode adapter, Claude headless adapter, Claude tmux driver |
 | Worktree operations | `WorktreeManager` | Real git commands, mock for tests |
 
 Factory selects the implementation at startup based on config. Consumer code only sees the interface.
@@ -160,19 +163,17 @@ This is simple enough for a pure `validateTransition()` function — no XState n
 
 ### 8. Event-driven internal flow (EventEmitter, not queue)
 
-The spawner emits events as it parses stream-json. Stream-to-Slack subscribes to these events. This is in-process pub/sub — an EventEmitter, not RabbitMQ.
+The runner handle emits normalized events as it parses provider output. Stream-to-Slack subscribes to these events. This is in-process pub/sub, not RabbitMQ.
 
 ```typescript
-// spawner emits
-spawner.on("tool_use", (event) => { ... });
-spawner.on("result", (event) => { ... });
+// runner emits
+handle.onEvent((event) => { ... });
 
 // stream-to-slack subscribes
-spawner.on("tool_use", (event) => updateSlackStatus(event));
-spawner.on("result", (event) => postFinalResponse(event));
+handle.onEvent((event) => updateSlackStatus(event));
 ```
 
-No external message queue needed. If the bot scales to multiple processes, consider Redis pub/sub — but that's post-MVP.
+No external message queue needed. If the bot scales to multiple processes, add a real pub/sub boundary then.
 
 ## Data Flow
 
@@ -184,26 +185,26 @@ Slack message ("!build fix auth")
   → Session Manager: no existing session → create with agentType="build"
   → Worktree Manager: create worktree in example-backend
   → Agent Router: load example-backend/.claude/agents/build.md → compose systemPrompt
-  → Claude Spawner: spawn claude -p "fix auth" --resume --append-system-prompt "..." 
+  → Runner Provider: spawn opencode/claude with the composed prompt and native resume flags
       cwd=example-backend.junior-worktrees/slack-<threadId>
-  → Stream Parser: parse stdout events
+  → Provider Parser: parse stdout/transcript events
       → init event: extract sessionId, store in session
-      → tool_use events: emit to Stream-to-Slack → edit status message
-      → result event: emit to Stream-to-Slack → post final response
+      → tool events: emit to Stream-to-Slack → edit status message
+      → done/final response: emit to Stream-to-Slack → post final response
   → Session Manager: set status=idle, check pendingMessages
   → Done
 ```
 
-### Happy path: message while Claude is busy
+### Happy path: message while a runner is busy
 
 ```
 Slack message ("also fix the tests")
   → Event Handler: extract threadId
   → Session Manager: session exists, status=busy → buffer message, react with 👀
-  → [Claude finishes previous turn]
+  → [Runner finishes previous turn]
   → Session Manager: status → draining, combine buffered messages
       "[alice]: also fix the tests"
-  → Claude Spawner: spawn claude -p "<combined>" --resume <sessionId>
+  → Runner Provider: spawn next turn with native resume id
   → [same flow as above]
 ```
 
@@ -224,14 +225,17 @@ slack/app ──── slack/events ──── slack/commands       │
           │          │    │    │          │           │
           └──────────┤    │    ├──────────┘           │
                      │    │    │                       │
-                 claude/spawner ◄──────────────────────┘
+                 runners/index ◄──────────────────────┘
                      │    │
-              claude/parser
+          ┌──────────┘    └──────────┐
+     opencode/*                  claude/*
+          │                           │
+          └────────── runner events ──┘
                      │
               stream-to-slack
 ```
 
-**Direction of dependencies:** config is depended on by all. Slack modules produce events. Session manager is the hub. Spawner, router, and worktree manager are peers that the session manager coordinates. Stream-to-slack subscribes to spawner events.
+**Direction of dependencies:** config is depended on by all. Slack modules produce events. Session manager is the hub. Runner providers, router, and worktree manager are peers that the session manager coordinates. Stream-to-slack subscribes to runner events.
 
 **No circular dependencies.** If module A depends on B, B must not depend on A. The session manager coordinates the other modules but doesn't import from stream-to-slack — it emits events that stream-to-slack subscribes to.
 
@@ -239,7 +243,7 @@ slack/app ──── slack/events ──── slack/commands       │
 
 ### Error handling
 
-Errors at system boundaries (Slack API, Claude CLI, git commands) are caught and converted to user-facing Slack messages. Internal errors (state machine violations, parse failures) are logged but don't crash the bot.
+Errors at system boundaries (Slack API, runner CLI, git commands) are caught and converted to user-facing Slack messages. Internal errors (state machine violations, parse failures) are logged but don't crash the bot.
 
 ### Logging
 
@@ -249,14 +253,14 @@ Console.log for MVP. Structured logging (pino) for production. Every log line in
 
 | Layer | Test approach |
 |---|---|
-| Stream parser | Unit tests with captured stream-json samples |
+| Provider parsers | Unit tests with captured Claude/OpenCode/tmux transcript samples |
 | Session state machine | Unit tests — pure function, no I/O |
 | Agent loader | Unit tests — read real .md files from fixtures |
-| Spawner | Integration tests — mock child_process or use real Claude with simple prompts |
+| Runner adapters | Integration tests — mock child_process or use real CLI smoke tests |
 | Slack handler | Integration tests — mock Bolt client |
 | End-to-end | Manual — send Slack messages, verify responses |
 
-Mock at the four system boundaries (Slack, Claude, git, Redis). Everything internal is tested with real code.
+Mock at the four system boundaries (Slack, runner CLI, git, persistence). Everything internal is tested with real code.
 
 ## Patterns from Reference Projects
 

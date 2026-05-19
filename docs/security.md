@@ -1,12 +1,14 @@
 # Security Posture
 
-Junior is designed as a developer tool running on a local workstation or a trusted private server.
+Junior is intentionally insecure as a networked product. It is a trusted-operator developer tool meant to run on a local workstation or a private server controlled by the operator, with access limited by host/network boundaries rather than by application-layer auth.
+
+Do not expose Junior, its dashboard, or its MCP server to untrusted networks without adding authentication, authorization, request-origin checks, and a real deployment security review.
 
 ## 1. Loopback-only Dashboard
 The [HTTP Dashboard](./features/http-dashboard.md) binds only to `127.0.0.1` by default.
 - **No Remote Access**: It is not reachable from the internet without an explicit SSH tunnel.
-- **No Auth**: Because it is loopback-only, it does not include an authentication layer.
-- **CSRF Protection**: The API is restricted to the same origin; external sites cannot trigger Junior actions via the dashboard.
+- **No Auth by Design**: Because Junior assumes a trusted local operator, the dashboard does not include an authentication layer.
+- **No CORS Opt-in**: The dashboard does not emit CORS headers, so arbitrary websites cannot read API responses from a browser. The current dashboard is read-only; it does not validate `Origin` or `Sec-Fetch-Site` as a CSRF defense.
 
 ## 2. Worktree Isolation
 Target repositories are never edited in their original paths.
@@ -15,7 +17,7 @@ Target repositories are never edited in their original paths.
 
 ## 3. Provider-level Permissions
 Junior uses the native permission models of its runners:
-- **OpenCode**: Junior generates a restricted `opencode.json` config per spawn, explicitly allowing or denying tools (e.g., `bash` is often restricted for support agents).
+- **OpenCode**: Junior generates config per spawn through `OPENCODE_CONFIG_CONTENT`, including permissions, MCP entries, and constrained support subagents.
 - **Claude Code**: Uses `--permission-mode bypassPermissions` for trusted developer use, or can be configured for restricted modes.
 
 ## 4. MCP Server Security
