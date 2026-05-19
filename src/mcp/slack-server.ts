@@ -13,12 +13,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { WebClient } from "@slack/web-api";
 import { z } from "zod";
-import { readFile } from "fs/promises";
+import { readdir, readFile } from "fs/promises";
+import { loadAgentDefinition } from "../agents/loader.ts";
 import { log } from "../logger.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
+import {
+  AGENT_IDENTITIES,
+  dispatchableAgentsFor,
+  loadOverlayIdentities,
+} from "../support/agents.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
+const FALLBACK_AGENTS_DIR = ".claude/agents";
+const ORG_AGENTS_DIR = "agents-org";
 
 let slack: WebClient;
 let sessionStore: SessionStore | undefined;
@@ -308,6 +316,142 @@ function registerTools(server: McpServer) {
       };
     },
   );
+
+  server.registerTool(
+    "agent_search",
+    {
+      description:
+        "Search Junior agent definitions and show whether each agent is currently registered for !<agent> dispatch.",
+      inputSchema: {
+        query: z.string().optional().describe("Case-insensitive text to match against agent name, filename, or description"),
+        include_public: z.boolean().optional().describe("Include public .claude/agents definitions (default true)"),
+        include_private: z.boolean().optional().describe("Include private agents-org definitions (default true)"),
+        limit: z.number().optional().describe("Maximum results to return (default 25, max 100)"),
+      },
+    },
+    async ({ query, include_public, include_private, limit }) => {
+      const agents = await searchAgentDefinitions({
+        query,
+        includePublic: include_public ?? true,
+        includePrivate: include_private ?? true,
+        limit: Math.min(limit ?? 25, 100),
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ agents }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "reload_agent_registry",
+    {
+      description:
+        "Reload private overlay agent identities from agents-org so newly added !<agent> workers become dispatchable without restarting Junior.",
+      inputSchema: {},
+    },
+    async () => {
+      await loadOverlayIdentities(ORG_AGENTS_DIR);
+      const dispatchable = dispatchableAgentsFor("default").sort();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                ok: true,
+                privateDir: ORG_AGENTS_DIR,
+                registeredAgents: Object.keys(AGENT_IDENTITIES).sort(),
+                defaultDispatchAllow: dispatchable,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+}
+
+interface SearchAgentDefinitionsOptions {
+  query?: string;
+  includePublic: boolean;
+  includePrivate: boolean;
+  limit: number;
+}
+
+interface AgentSearchResult {
+  name: string;
+  path: string;
+  origin: "private" | "public";
+  description: string | null;
+  registeredForDispatch: boolean;
+  slackIdentity: { username: string; iconEmoji?: string } | null;
+}
+
+export async function searchAgentDefinitions(
+  options: SearchAgentDefinitionsOptions,
+): Promise<AgentSearchResult[]> {
+  const dirs: Array<{ path: string; origin: "private" | "public" }> = [];
+  if (options.includePrivate) dirs.push({ path: ORG_AGENTS_DIR, origin: "private" });
+  if (options.includePublic) dirs.push({ path: FALLBACK_AGENTS_DIR, origin: "public" });
+
+  const query = options.query?.trim().toLowerCase();
+  const results: AgentSearchResult[] = [];
+  const seen = new Set<string>();
+
+  for (const dir of dirs) {
+    const files = await markdownFiles(dir.path);
+    for (const file of files) {
+      const path = `${dir.path}/${file}`;
+      const definition = await loadAgentDefinition(path);
+      const name = definition?.name ?? file.replace(/\.md$/, "");
+      const description = definition?.description ?? null;
+      const haystack = `${name} ${file} ${description ?? ""}`.toLowerCase();
+      if (query && !haystack.includes(query)) continue;
+
+      const key = `${dir.origin}:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const identity = AGENT_IDENTITIES[name];
+      results.push({
+        name,
+        path,
+        origin: dir.origin,
+        description,
+        registeredForDispatch: Boolean(identity),
+        slackIdentity: identity
+          ? {
+              username: identity.username,
+              ...(identity.iconEmoji ? { iconEmoji: identity.iconEmoji } : {}),
+            }
+          : null,
+      });
+
+      if (results.length >= options.limit) return results;
+    }
+  }
+
+  return results;
+}
+
+async function markdownFiles(dirPath: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 /**

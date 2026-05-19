@@ -50,6 +50,8 @@ Junior main process
 | `slack_search_users` | `users.list` | Find users by name, email, or title |
 | `slack_upload_file` | `files.getUploadURLExternal` | Upload files to channels/threads |
 | `register_worktree` | (internal) | Create a per-thread worktree in a routed repo and persist its path on the session |
+| `agent_search` | (internal) | Search public/private agent definitions and show dispatch registration state |
+| `reload_agent_registry` | (internal) | Reload private overlay agent identities so newly added workers become dispatchable |
 
 Slack tools require explicit `channel_id` and `thread_ts` parameters. The spawned Claude already knows its thread coordinates from the prompt preamble built by `buildPromptPreamble()`.
 
@@ -78,6 +80,23 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   OpenCode session is `feature-metrics`, using Mixpanel's official hosted MCP
   through `npx -y mcp-remote https://mcp.mixpanel.com/mcp`. Disable with
   `OPENCODE_MIXPANEL_MCP_ENABLED=false`.
+- MongoDB MCP uses `MDB_MCP_CONNECTION_STRING` from the process environment.
+  `.env.example` includes a placeholder; real values belong only in local
+  `.env` or secret managers. OpenCode injects MongoDB only for the
+  `db-executioner` worker and runs `mongodb-mcp-server@latest --readOnly`.
+  Disable with `OPENCODE_MONGODB_MCP_ENABLED=false`.
+
+### Agent registry tools
+
+`agent_search` reads `.claude/agents/*.md` and `agents-org/*.md`, then reports
+which definitions currently have a registered Slack identity and are therefore
+dispatchable via `!<agent>`.
+
+`reload_agent_registry` reruns the private overlay identity loader for
+`agents-org`. This fixes the common case where a new private agent file was
+pulled onto disk but the running process has not registered its `username` /
+`iconEmoji` yet. Agent prompts themselves are read from disk on each resolve;
+the registry reload is for persistent-agent identity/dispatch metadata.
 
 ## What it replaced
 
