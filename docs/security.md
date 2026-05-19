@@ -21,7 +21,7 @@ Junior uses the native permission models of its runners:
 - **Claude Code**: Uses `--permission-mode bypassPermissions` for trusted developer use, or can be configured for restricted modes.
 
 ## 4. MCP Server Security
-The in-process Slack MCP server only exposes tools to the locally spawned runner processes. It requires a shared `MCP_PORT` that is not exposed externally.
+The in-process Slack MCP server is intended for locally spawned runner processes and requires a shared `MCP_PORT`. It does not currently bind explicitly to loopback, so treat it as local-network exposed unless the host firewall or deployment environment restricts the port.
 
 ## 5. Environment Variables
 Sensitive tokens (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`) should be stored in a `.env` file that is never committed (included in `.gitignore`).
