@@ -35,7 +35,7 @@ describe("buildOpenCodeArgs", () => {
     expect(args.at(-1)).toBe("continue");
   });
 
-  it("adds model and file attachments before the prompt", () => {
+  it("adds model before prompt and file attachments after prompt", () => {
     expect(
       buildOpenCodeArgs({
         cwd: "/repo/worktree",
@@ -54,11 +54,23 @@ describe("buildOpenCodeArgs", () => {
       "reviewer",
       "--model",
       "openai/gpt-5.1",
+      "inspect files",
       "--file",
       "/tmp/a.png",
       "--file",
       "/tmp/b.txt",
-      "inspect files",
     ]);
+  });
+
+  it("keeps prompt before files so OpenCode does not parse prompt as a file", () => {
+    const prompt = "<identity>\nsecret prompt context\n</identity>";
+    const args = buildOpenCodeArgs({
+      cwd: "/repo/worktree",
+      agentName: "junior",
+      files: ["/tmp/image.png"],
+      prompt,
+    });
+
+    expect(args.indexOf(prompt)).toBeLessThan(args.indexOf("--file"));
   });
 });
