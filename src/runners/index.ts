@@ -43,7 +43,7 @@ export function spawnRunner(
       {
         defaultModel: config.opencode.model,
         permission: config.opencode.permission,
-        mcp: buildOpenCodeMcpConfig(config),
+        mcp: buildOpenCodeMcpConfig(config, session),
       },
       targetRepoCwd,
       botToken,
@@ -68,7 +68,10 @@ export function spawnRunner(
   );
 }
 
-function buildOpenCodeMcpConfig(config: Config): OpenCodeMcpConfig | null {
+export function buildOpenCodeMcpConfig(
+  config: Config,
+  session: ThreadSession,
+): OpenCodeMcpConfig | null {
   if (!config.opencode.mcpEnabled) return null;
 
   const mcp: OpenCodeMcpConfig = {};
@@ -86,6 +89,20 @@ function buildOpenCodeMcpConfig(config: Config): OpenCodeMcpConfig | null {
       enabled: true,
     };
   }
+  if (config.opencode.mixpanelMcpEnabled && isFeatureMetricsSession(session)) {
+    mcp.mixpanel = {
+      type: "local",
+      command: ["npx", "-y", "mcp-remote", "https://mcp.mixpanel.com/mcp"],
+      enabled: true,
+    };
+  }
 
   return Object.keys(mcp).length > 0 ? mcp : null;
+}
+
+function isFeatureMetricsSession(session: ThreadSession): boolean {
+  return (
+    session.agentType === "feature-metrics" ||
+    session.activeAgentName === "feature-metrics"
+  );
 }

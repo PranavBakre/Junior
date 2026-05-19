@@ -73,6 +73,11 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   `OPENCODE_CONFIG_CONTENT` for all normal runs, including initial lead intake
   from Junior's project root. Explicit `session.cwd` utility runs still skip
   Junior's local MCP wiring.
+- The Mixpanel MCP is intentionally **not** in `.mcp.json` and is not part of
+  default Junior's OpenCode config. It is injected only when the active
+  OpenCode session is `feature-metrics`, using Mixpanel's official hosted MCP
+  through `npx -y mcp-remote https://mcp.mixpanel.com/mcp`. Disable with
+  `OPENCODE_MIXPANEL_MCP_ENABLED=false`.
 
 ## What it replaced
 
