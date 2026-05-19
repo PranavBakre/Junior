@@ -58,6 +58,24 @@ describe("parseCommand", () => {
     });
   });
 
+  it("parses uppercase !aside as aside", () => {
+    expect(parseCommand("!ASIDE this is a side note")).toEqual({
+      command: "aside",
+      text: "this is a side note",
+    });
+  });
+
+  it("does not parse longer !aside-like words as aside", () => {
+    expect(parseCommand("!asider thing")).toEqual({
+      command: null,
+      text: "!asider thing",
+    });
+    expect(parseCommand("!asides thing")).toEqual({
+      command: null,
+      text: "!asides thing",
+    });
+  });
+
   describe("recognizes all known commands", () => {
     const knownCommands = [
       "build",

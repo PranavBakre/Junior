@@ -39,7 +39,6 @@ import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
-import { isAsideText } from "../slack/commands.ts";
 
 export class SessionManager {
   private store: SessionStore;
@@ -122,7 +121,7 @@ export class SessionManager {
     // alternative (skip tracking) creates a corner where U-B posts only
     // asides, then a real non-mention message, and the gate fails to fire
     // because U-B was never registered as present.
-    if (event.command === "aside" || isAsideText(event.text)) {
+    if (event.command === "aside") {
       const isHuman = !event.isSelfBot && !event.botId;
       if (isHuman && event.user) {
         const session = await this.store.get(event.threadId);
