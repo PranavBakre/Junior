@@ -21,7 +21,7 @@ and MCP wiring.
 | Symbol | File | Purpose |
 |---|---|---|
 | `spawnOpenCode(...)` | `spawner.ts` | Runs `opencode run --format json`, generates `OPENCODE_CONFIG_CONTENT`, parses events. |
-| `buildOpenCodeArgs(...)` | `args.ts` | Builds fresh/resume CLI args using `--session`, `--dir`, `--agent build`, and attachments. |
+| `buildOpenCodeArgs(...)` | `args.ts` | Builds fresh/resume CLI args using `--session`, `--dir`, `--agent build`, and attachments; keeps the prompt before `--file` flags so OpenCode does not parse prompt text as file paths. |
 | `buildOpenCodeConfig(...)` | `config.ts` | Generates model, permissions, primary `agent.build`, MCP entries, and subagent entries. |
 | `loadOpenCodeSupportSubagents()` | `support-agents.ts` | Exposes standalone stateless support prompts as generated OpenCode subagents. |
 | `buildOpenCodeAgentPrompt(...)` | `prompt.ts` | Wraps Junior core + active-agent prompt in the OpenCode provider baseline. |
