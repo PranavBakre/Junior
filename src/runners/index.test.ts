@@ -34,6 +34,37 @@ describe("buildOpenCodeMcpConfig", () => {
 
     expect(mcp?.mixpanel).toBeUndefined();
   });
+
+  it("only includes MongoDB MCP for the db-executioner agent", () => {
+    const mainSession = createSession("thread-1", "C01");
+    const dbExecutionerSession = createSession("thread-1", "C01");
+    dbExecutionerSession.agentType = "db-executioner";
+
+    const mainMcp = buildOpenCodeMcpConfig(testConfig(), mainSession);
+    const dbExecutionerMcp = buildOpenCodeMcpConfig(
+      testConfig(),
+      dbExecutionerSession,
+    );
+
+    expect(mainMcp?.mongodb).toBeUndefined();
+    expect(dbExecutionerMcp?.mongodb).toEqual({
+      type: "local",
+      command: ["npx", "-y", "mongodb-mcp-server@latest", "--readOnly"],
+      enabled: true,
+    });
+  });
+
+  it("respects the MongoDB MCP feature flag", () => {
+    const session = createSession("thread-1", "C01");
+    session.agentType = "db-executioner";
+
+    const mcp = buildOpenCodeMcpConfig(
+      testConfig({ mongodbMcpEnabled: false }),
+      session,
+    );
+
+    expect(mcp?.mongodb).toBeUndefined();
+  });
 });
 
 function testConfig(
@@ -63,6 +94,7 @@ function testConfig(
       slackMcpEnabled: true,
       playwrightMcpEnabled: true,
       mixpanelMcpEnabled: true,
+      mongodbMcpEnabled: true,
       ...opencodeOverrides,
     },
     repos: [],

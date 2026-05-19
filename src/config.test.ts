@@ -17,6 +17,7 @@ const ENV_KEYS = [
   "OPENCODE_SLACK_MCP_ENABLED",
   "OPENCODE_PLAYWRIGHT_MCP_ENABLED",
   "OPENCODE_MIXPANEL_MCP_ENABLED",
+  "OPENCODE_MONGODB_MCP_ENABLED",
   "REPOS",
   "SESSION_STALE_TIMEOUT_MS",
   "SESSION_CLEANUP_INTERVAL_MS",
@@ -66,6 +67,7 @@ describe("loadConfig runner providers", () => {
       slackMcpEnabled: true,
       playwrightMcpEnabled: true,
       mixpanelMcpEnabled: true,
+      mongodbMcpEnabled: true,
     });
   });
 
@@ -78,6 +80,7 @@ describe("loadConfig runner providers", () => {
     process.env.OPENCODE_SLACK_MCP_ENABLED = "0";
     process.env.OPENCODE_PLAYWRIGHT_MCP_ENABLED = "false";
     process.env.OPENCODE_MIXPANEL_MCP_ENABLED = "0";
+    process.env.OPENCODE_MONGODB_MCP_ENABLED = "false";
 
     const config = loadConfig();
 
@@ -90,6 +93,7 @@ describe("loadConfig runner providers", () => {
       slackMcpEnabled: false,
       playwrightMcpEnabled: false,
       mixpanelMcpEnabled: false,
+      mongodbMcpEnabled: false,
     });
   });
 
