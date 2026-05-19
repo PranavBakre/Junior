@@ -1,7 +1,12 @@
 import { loadConfig } from "./config.ts";
 import { createSlackApp } from "./slack/app.ts";
 import { registerEventHandlers } from "./slack/events.ts";
-import { formatRunnerToolStatuses, extractRunnerMessageText, prepareSlackResponse } from "./slack/formatting.ts";
+import {
+  extractRunnerMessageText,
+  formatRunnerToolStatuses,
+  prepareSlackResponse,
+  sanitizeErrorForSlack,
+} from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { createSessionStore } from "./session/store/factory.ts";
@@ -129,11 +134,12 @@ sessionManager.onReaction = (event, emoji) => {
 sessionManager.onError = (session, error) => {
   const agentName = session.activeAgentName ?? "lead";
   log.error("error", `thread=${session.threadId} agent=${agentName} ${error ?? "Unknown error"}`);
+  const safeError = sanitizeErrorForSlack(error);
   responder.deleteStatus(session.channel, session.threadId, agentName);
   responder.postResponse(
     session.channel,
     session.threadId,
-    `Error: ${error ?? "Unknown error"}`,
+    `Error: ${safeError}`,
     session.slackIdentity,
   );
 };
