@@ -136,6 +136,7 @@ const testConfig: Config = {
     slackMcpEnabled: true,
     playwrightMcpEnabled: true,
     mixpanelMcpEnabled: true,
+    mongodbMcpEnabled: true,
   },
   repos: [
     { name: "junior", path: "/tmp/junior", defaultBase: "main" },

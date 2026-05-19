@@ -76,6 +76,7 @@ export interface Config {
     slackMcpEnabled: boolean;
     playwrightMcpEnabled: boolean;
     mixpanelMcpEnabled: boolean;
+    mongodbMcpEnabled: boolean;
   };
   repos: RepoConfig[];
   session: {
@@ -145,6 +146,7 @@ export function loadConfig(): Config {
         "OPENCODE_MIXPANEL_MCP_ENABLED",
         true,
       ),
+      mongodbMcpEnabled: parseBooleanEnv("OPENCODE_MONGODB_MCP_ENABLED", true),
     },
     repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({
       ...r,

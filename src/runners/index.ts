@@ -96,6 +96,13 @@ export function buildOpenCodeMcpConfig(
       enabled: true,
     };
   }
+  if (config.opencode.mongodbMcpEnabled && isDbExecutionerSession(session)) {
+    mcp.mongodb = {
+      type: "local",
+      command: ["npx", "-y", "mongodb-mcp-server@latest", "--readOnly"],
+      enabled: true,
+    };
+  }
 
   return Object.keys(mcp).length > 0 ? mcp : null;
 }
@@ -104,5 +111,12 @@ function isFeatureMetricsSession(session: ThreadSession): boolean {
   return (
     session.agentType === "feature-metrics" ||
     session.activeAgentName === "feature-metrics"
+  );
+}
+
+function isDbExecutionerSession(session: ThreadSession): boolean {
+  return (
+    session.agentType === "db-executioner" ||
+    session.activeAgentName === "db-executioner"
   );
 }
