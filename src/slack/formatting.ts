@@ -56,7 +56,7 @@ export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
 
 const MAX_SLACK_ERROR_LENGTH = 500;
 const PROMPT_LEAK_MARKERS = [
-  /<\/?(?:identity|slack-context|thread-context|system|developer|user|assistant)\b/i,
+  /<\/?[a-z][a-z0-9-]*(?:\s[^>]*)?>/i,
   /#\s*(?:IDENTITY|SOUL)\.md\b/i,
   /Do NOT use Slack search/i,
   /CRITICAL\s+[—-]\s+no double-posting/i,

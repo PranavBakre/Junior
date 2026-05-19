@@ -254,6 +254,15 @@ describe("sanitizeErrorForSlack", () => {
     );
   });
 
+  it("withholds short errors that include any prompt wrapper tag", () => {
+    expect(sanitizeErrorForSlack("bad input: <workspace>repo paths</workspace>")).toBe(
+      "runner failed. Raw error withheld because it contained injected prompt/context; check server logs.",
+    );
+    expect(sanitizeErrorForSlack("bad input: <junior-core>rules</junior-core>")).toBe(
+      "runner failed. Raw error withheld because it contained injected prompt/context; check server logs.",
+    );
+  });
+
   it("withholds very long errors instead of posting raw stderr", () => {
     expect(sanitizeErrorForSlack("x".repeat(501))).toBe(
       "runner failed. Raw error was too long to post safely; check server logs.",
