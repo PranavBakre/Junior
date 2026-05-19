@@ -130,6 +130,7 @@ Separate the public Junior repo from org-specific specifics, and let lightweight
 - `composeSystemPrompt`: org overlay's `common/*.md` is appended **additively** after the public/target common — so org-wide invariants (credential paths, merge protocol, infra URLs) reach every agent regardless of which repo's common loaded first.
 - `composeSystemPrompt` also now returns the common preamble alone when no agent definition resolves — covers the default `@junior` path so it picks up the same invariants.
 - Per-agent **context profile** via frontmatter dot-notation flags: `context.identity`, `context.slack`, `context.workspace`, `context.threadHistory`, `context.agentState`. Each gates the corresponding block in `buildPromptPreamble`. Defaults are all-true; missing/invalid flags preserve the heavy preamble (safe-but-heavy).
+- OpenCode MCP config is generated per spawn. The private `feature-metrics` worker gets the Mixpanel MCP server only for its own runs; default Junior and other agents do not receive it.
 - `lead`/`default` agentName branches in `buildRunSession` set `agentType` so they participate in the new compose path (previously short-circuited).
 
 **Test:** Six-scenario load-path matrix (default-no-target, default-target-with-no-common, default-target-with-common, lead variants, worker-with-target) confirms overlay common reaches every agent; public common reaches all agents except those whose target repo has its own common; agent body resolves correctly per the search-chain order.

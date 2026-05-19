@@ -75,6 +75,7 @@ export interface Config {
     mcpEnabled: boolean;
     slackMcpEnabled: boolean;
     playwrightMcpEnabled: boolean;
+    mixpanelMcpEnabled: boolean;
   };
   repos: RepoConfig[];
   session: {
@@ -138,6 +139,10 @@ export function loadConfig(): Config {
       slackMcpEnabled: parseBooleanEnv("OPENCODE_SLACK_MCP_ENABLED", true),
       playwrightMcpEnabled: parseBooleanEnv(
         "OPENCODE_PLAYWRIGHT_MCP_ENABLED",
+        true,
+      ),
+      mixpanelMcpEnabled: parseBooleanEnv(
+        "OPENCODE_MIXPANEL_MCP_ENABLED",
         true,
       ),
     },
