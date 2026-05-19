@@ -90,6 +90,13 @@ export interface ThreadSession {
    */
   dormant: boolean;
   /**
+   * Set when a dormant thread is woken by `!listen` or an @mention. The next
+   * runner turn injects recent Slack thread history even when resuming an
+   * existing model session, so the agent sees messages that arrived while it
+   * was intentionally staying out. Cleared after that catch-up prompt is built.
+   */
+  needsThreadCatchup: boolean;
+  /**
    * Sticky: set once when the attention gate fires its one-shot announcement
    * for this thread, and never reset. Suppresses re-trigger thrashing after
    * the human takes manual action (`!listen` / @mention). If they want to
@@ -168,6 +175,7 @@ export function createSession(
     verbosity: defaultVerbosity,
     muted: false,
     dormant: false,
+    needsThreadCatchup: false,
     dormantAnnounced: false,
     humanParticipants: [],
     model: null,

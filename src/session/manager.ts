@@ -144,6 +144,7 @@ export class SessionManager {
     if (event.command === "listen") {
       if (session && session.dormant) {
         session.dormant = false;
+        session.needsThreadCatchup = true;
         await this.store.set(event.threadId, session);
       }
       this.onReaction?.(event, "ear");
@@ -154,6 +155,7 @@ export class SessionManager {
     // processed normally.
     if (event.mentionsJunior && session?.dormant) {
       session.dormant = false;
+      session.needsThreadCatchup = true;
       await this.store.set(event.threadId, session);
     }
 
@@ -889,8 +891,21 @@ export class SessionManager {
       // the workspace context at all.
       if (this.slackApp && latestTs) {
         const isFirstTurn = !runSession.sessionId;
+        const needsThreadCatchup = !!session.needsThreadCatchup;
         const readablePrompt = await resolveSlackMentions(this.slackApp, prompt);
-        if (isFirstTurn) {
+        if (isFirstTurn || needsThreadCatchup) {
+          const preambleProfile: AgentContextProfile = needsThreadCatchup
+            ? {
+                ...contextProfile,
+                identity: false,
+                slack: true,
+                threadHistory: true,
+                threadHistoryLimit: Math.max(
+                  contextProfile.threadHistoryLimit,
+                  1000,
+                ),
+              }
+            : contextProfile;
           const preamble = await buildPromptPreamble(
             this.slackApp,
             session.channel,
@@ -900,9 +915,13 @@ export class SessionManager {
             workspace,
             worktreePaths,
             this.config.repos,
-            contextProfile,
+            preambleProfile,
           );
           prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
+          if (needsThreadCatchup) {
+            session.needsThreadCatchup = false;
+            await this.store.set(session.threadId, session);
+          }
         } else if (contextProfile.workspace) {
           const workspaceBlock = buildWorkspaceBlock(
             workspace,
@@ -1219,6 +1238,7 @@ export class SessionManager {
     session.agentSessions ??= {};
     session.provider ??= "claude";
     session.humanParticipants ??= [];
+    session.needsThreadCatchup ??= false;
 
     // Track human participants for the attention gate. Bots — Junior, its
     // agents, and foreign bots — are excluded by design (see gateAttention).
