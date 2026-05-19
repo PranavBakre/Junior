@@ -135,6 +135,7 @@ const testConfig: Config = {
     mcpEnabled: true,
     slackMcpEnabled: true,
     playwrightMcpEnabled: true,
+    mixpanelMcpEnabled: true,
   },
   repos: [
     { name: "junior", path: "/tmp/junior", defaultBase: "main" },
