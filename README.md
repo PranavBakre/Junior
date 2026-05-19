@@ -8,6 +8,17 @@ Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](ht
 
 For deep architecture and the canonical "critical rules" list, see [CLAUDE.md](./CLAUDE.md). This README is the on-ramp.
 
+## Prerequisites
+
+Junior orchestrates external coding agents and observability tools. Ensure the following are installed and authenticated on your host:
+
+- **[OpenCode](https://opencode.ai)** (Default runner)
+- **[Claude Code CLI](https://anthropic.com)** (Alternate runner)
+- **[Vercel CLI](https://vercel.com/docs/cli)** (Required for `vercel-status` agent)
+- **[New Relic CLI](https://github.com/newrelic/newrelic-cli)** (Required for `nr-research` agent)
+- **[Sentry CLI](https://docs.sentry.io/product/cli/)** (Required for `sentry-fetch` agent)
+- **tmux** (Required for experimental interactive mode)
+
 ---
 
 ## What it does
@@ -177,7 +188,17 @@ Slash-style commands are parsed in [`src/slack/commands.ts`](src/slack/commands.
 !devserver <branch> [repo] -- acquire dev-server slot
 !devserver status          -- queue depth
 !devserver kill <repo>     -- drop slot
+
+!driver <headless|tmux>    -- switch driver (tmux is EXPERIMENTAL)
 ```
+
+### Experimental: TMUX Mode
+
+Junior supports an experimental "Interactive Driver" that runs Claude Code inside a persistent `tmux` session. This allows using your Claude Max subscription instead of API credits, but it is **not yet fully developed or tested**.
+
+To try it:
+- Set `DEFAULT_CLAUDE_DRIVER=tmux` in your `.env`.
+- Ensure `tmux` version ≥ 3.4 is installed.
 
 ---
 
@@ -243,8 +264,10 @@ For per-feature deep dives, see the [`docs/`](docs/) tree — `docs/architecture
 ## Running tests + typecheck
 
 ```sh
+bun run dev         # start bot server with hot reload
 bun run typecheck   # tsc --noEmit
 bun test            # bun:test
+bun run build       # build for production
 bun run cleanup     # remove stale worktrees + sessions
 ```
 

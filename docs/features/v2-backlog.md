@@ -2,22 +2,9 @@
 
 Features explicitly deferred from MVP. To be scoped when MVP is running.
 
-## Admin Dashboard
+## Admin Dashboard (DONE)
 
-**Problem:** No visibility into what's happening across threads. How many sessions are active? Which threads are stuck? What agent types are being used? Which repos? Without a dashboard, debugging requires reading server logs.
-
-**Scope (to be refined):**
-- Live session graph: threads as nodes, edges showing dependencies (drain chains, worktree sharing)
-- Per-session detail: agent type, status (idle/busy/draining), last activity, pending message count, worktree path, session ID
-- Activity timeline: message received → Claude spawned → events streamed → response posted, with timestamps
-- Error log: failed spawns, timeouts, orphaned sessions — filterable
-- Who's using what: Slack user → threads → agent types → repos
-- Metrics: response latency p50/p99, timeout rate, buffer frequency, agent type distribution
-
-**Open questions:**
-- Web UI or Slack-native (home tab)? Web gives more flexibility. Slack home tab is zero-deploy.
-- Real-time or polling? EventSource/WebSocket from the bot server, or periodic API calls?
-- Auth? If web UI, who can see the dashboard? Pranav only, or whole team?
+**Status:** Completed as the [HTTP Dashboard](./http-dashboard.md). Surfaces live sessions, dev-server queue, logs, and docs.
 
 ## Batch User Resolution in Thread Context
 
