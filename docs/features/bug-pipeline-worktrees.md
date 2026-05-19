@@ -220,7 +220,7 @@ Extend `lifecycle/cleanup.ts`:
 - Replacing `repo-routing.yaml` with anything else.
 - Changing how `thinker` opens PRs.
 - Multi-repo dev-server orchestration beyond the FE+BE pair.
-- Auto-cleanup of the per-thread worktrees on bug-thread completion (already covered by the existing worktree cleanup feature).
+- Auto-cleanup of the per-thread worktrees on bug-thread completion. Today `cleanupStaleSessions` deletes stale session rows only; worktree deletion must be a separate dirty-checked operation.
 
 ## Build order
 

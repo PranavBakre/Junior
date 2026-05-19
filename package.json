@@ -6,7 +6,9 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "cleanup": "bun run src/lifecycle/cleanup.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

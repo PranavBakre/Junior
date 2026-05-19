@@ -1,6 +1,6 @@
 # Code Index: HTTP Dashboard
 
-Localhost-only HTTP server for operator inspection (sessions, dev-servers, logs, docs). Off by default; enabled via `HTTP_DASHBOARD_PORT`. Binds 127.0.0.1, no auth.
+Localhost-only HTTP server for operator inspection (sessions, dev-servers, logs, docs). Off by default; enabled via `HTTP_DASHBOARD_PORT`. Binds 127.0.0.1 and intentionally has no auth; do not expose it beyond a trusted local operator environment.
 
 ## Code Index
 

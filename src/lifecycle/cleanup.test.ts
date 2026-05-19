@@ -1,6 +1,10 @@
 import { describe, it, expect } from "bun:test";
-import { cleanupStaleSessions } from "./cleanup.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { cleanupStaleSessions, runCleanupFromEnv } from "./cleanup.ts";
 import { InMemorySessionStore } from "../session/store/memory.ts";
+import { SqliteSessionStore } from "../session/store/sqlite.ts";
 import { createSession } from "../session/types.ts";
 
 describe("cleanupStaleSessions", () => {
@@ -97,5 +101,40 @@ describe("cleanupStaleSessions", () => {
     const cleaned = await cleanupStaleSessions(store, 50_000);
     expect(cleaned).toEqual([]);
     expect(await store.get("thread-1")).toBeDefined();
+  });
+
+  it("CLI entrypoint cleans persisted sqlite sessions", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-cleanup-test-"));
+    const dbPath = join(dir, "sessions.db");
+    const store = new SqliteSessionStore(dbPath);
+
+    try {
+      const staleIdle = createSession("stale-idle", "channel-1");
+      staleIdle.lastActivity = Date.now() - 100_000;
+      staleIdle.status = "idle";
+      await store.set("stale-idle", staleIdle);
+      store.close();
+
+      const logs: unknown[] = [];
+      const cleaned = await runCleanupFromEnv(
+        {
+          SESSION_STORE: "sqlite",
+          SESSION_DB_PATH: dbPath,
+          SESSION_STALE_TIMEOUT_MS: "50000",
+        },
+        { log: (message?: unknown) => logs.push(message) },
+      );
+
+      const verificationStore = new SqliteSessionStore(dbPath);
+      try {
+        expect(cleaned).toEqual(["stale-idle"]);
+        expect(await verificationStore.get("stale-idle")).toBeUndefined();
+        expect(logs).toContain("Removed 1 stale session(s).");
+      } finally {
+        verificationStore.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
