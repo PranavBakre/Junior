@@ -8,7 +8,8 @@ adapters own each CLI's flags, native event stream, prompt mechanics, MCP config
 and resume semantics.
 
 ## Status
-The provider abstraction and OpenCode/Claude adapters are fully implemented and in production as of 2026-05-18. OpenCode is the default provider.
+
+The provider abstraction and OpenCode/Claude adapters are implemented. OpenCode is the default provider (`RUNNER_PROVIDER=opencode`); Claude remains the fallback provider.
 
 OpenCode is currently a better replacement candidate than Codex for Junior's
 specific needs because it has:
@@ -120,7 +121,7 @@ that project MCP wiring for explicit `session.cwd` utility runs.
 
 ## Current Claude Mapping
 
-Claude remains the default adapter during the migration.
+Claude remains an implemented fallback adapter.
 
 | Junior need | Claude today |
 |---|---|
