@@ -54,6 +54,46 @@ export function extractRunnerMessageText(event: RunnerEvent): string | null {
 
 export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
 
+const MAX_SLACK_ERROR_LENGTH = 500;
+const PROMPT_LEAK_MARKERS = [
+  /<\/?(?:identity|slack-context|thread-context|system|developer|user|assistant)\b/i,
+  /#\s*(?:IDENTITY|SOUL)\.md\b/i,
+  /Do NOT use Slack search/i,
+  /CRITICAL\s+[—-]\s+no double-posting/i,
+  /Your Slack user ID is\b/i,
+  /File not found:\s*</i,
+];
+
+/**
+ * Convert a runner/tool error into a Slack-safe message.
+ *
+ * Raw provider stderr can include the full prompt when a tool wrapper echoes a
+ * bad argument (e.g. `File not found: <identity>...`). Keep the full error in
+ * server logs, but never mirror prompt/context blocks back into Slack.
+ */
+export function sanitizeErrorForSlack(error: string | null | undefined): string {
+  const cleaned = stripAnsi(error ?? "").trim();
+  if (!cleaned) return "runner failed. Check server logs for details.";
+
+  if (containsPromptLeak(cleaned)) {
+    return "runner failed. Raw error withheld because it contained injected prompt/context; check server logs.";
+  }
+
+  if (cleaned.length > MAX_SLACK_ERROR_LENGTH) {
+    return "runner failed. Raw error was too long to post safely; check server logs.";
+  }
+
+  return cleaned;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function containsPromptLeak(text: string): boolean {
+  return PROMPT_LEAK_MARKERS.some((marker) => marker.test(text));
+}
+
 /**
  * Decide whether to post `text` to Slack and what to post.
  * Returns null to suppress entirely; otherwise the cleaned text to post.

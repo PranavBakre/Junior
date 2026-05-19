@@ -23,6 +23,7 @@ Formats normalized runner stream events as Slack status messages, posts final re
 | `extractAssistantText(event)` | Concatenates all `text` content blocks from an assistant event |
 | `prepareSlackResponse(text)` | Sentinel handler: returns null for empty/`NO_SLACK_MESSAGE`/trailing-only-sentinel; strips trailing sentinel from real content |
 | `isDuplicateSlackToolResponse(text, events)` | Detects exact final-response duplicates of text already sent through `slack_send_message`/`mcp__...__slack_send_message` in the same turn so Junior suppresses the second post |
+| `sanitizeErrorForSlack(error)` | Converts runner/tool errors into Slack-safe text: strips ANSI, suppresses prompt/context leak markers, and withholds very long raw stderr |
 | `splitResponse(text, maxLength = 4000)` | Chunks long responses; prefers paragraph (`\n\n`) → line → code-block boundaries; avoids splitting inside fenced code blocks |
 | `NO_SLACK_MESSAGE` | Sentinel constant — agents return this to skip Slack post |
 
@@ -80,6 +81,10 @@ If an agent calls `slack_send_message` and then returns the same text as its fin
 ### Response splitting
 
 `splitResponse` (default 4000 chars) tries paragraph → line → code-fence boundaries. Inside a code block (odd ``` count in slice), it searches for the closing fence and splits after it (within 1.5x maxLength). Falls back to hard split.
+
+### Error response sanitization
+
+`index.ts` logs the raw runner error server-side, then posts only `sanitizeErrorForSlack(error)` to Slack. This prevents provider/tool wrappers from echoing injected prompt/context blocks back into a thread when a bad tool argument appears in stderr (for example `File not found: <identity>...`).
 
 ### Stream parser shape validation
 

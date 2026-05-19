@@ -4,6 +4,7 @@ import {
   formatRunnerToolStatuses,
   formatToolStatuses,
   isDuplicateSlackToolResponse,
+  sanitizeErrorForSlack,
   splitResponse,
 } from "./formatting.ts";
 import type { StreamEventAssistant } from "../claude/types.ts";
@@ -231,6 +232,38 @@ describe("isDuplicateSlackToolResponse", () => {
     ];
 
     expect(isDuplicateSlackToolResponse("additional context", events)).toBe(false);
+  });
+});
+
+describe("sanitizeErrorForSlack", () => {
+  it("keeps short normal errors", () => {
+    expect(sanitizeErrorForSlack("Claude crashed")).toBe("Claude crashed");
+  });
+
+  it("strips ANSI sequences from safe errors", () => {
+    expect(sanitizeErrorForSlack("\u001b[91m\u001b[1mError:\u001b[0m nope")).toBe(
+      "Error: nope",
+    );
+  });
+
+  it("withholds tool errors that include injected prompt/context", () => {
+    const leaked = `\u001b[91mError:\u001b[0m File not found: <identity>\n# SOUL.md — Junior\nYour Slack user ID is U0ABKQ4V065`;
+
+    expect(sanitizeErrorForSlack(leaked)).toBe(
+      "runner failed. Raw error withheld because it contained injected prompt/context; check server logs.",
+    );
+  });
+
+  it("withholds very long errors instead of posting raw stderr", () => {
+    expect(sanitizeErrorForSlack("x".repeat(501))).toBe(
+      "runner failed. Raw error was too long to post safely; check server logs.",
+    );
+  });
+
+  it("uses a generic message for blank errors", () => {
+    expect(sanitizeErrorForSlack("  ")).toBe(
+      "runner failed. Check server logs for details.",
+    );
   });
 });
 
