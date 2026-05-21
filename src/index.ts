@@ -1,5 +1,7 @@
 import { loadConfig } from "./config.ts";
+import { resolve } from "node:path";
 import { createSlackApp } from "./slack/app.ts";
+import { KNOWN_COMMANDS } from "./slack/commands.ts";
 import { registerEventHandlers } from "./slack/events.ts";
 import {
   extractRunnerMessageText,
@@ -25,6 +27,15 @@ import { DevServerManager } from "./lifecycle/dev-server.ts";
 import { DevServerQueue } from "./lifecycle/dev-server-queue.ts";
 import { startMcpServer } from "./mcp/slack-server.ts";
 import { log } from "./logger.ts";
+import { WorkflowController } from "./workflows/controller.ts";
+import { WorkflowExecutor } from "./workflows/executor.ts";
+import { WorkflowRegistry } from "./workflows/registry.ts";
+import { WorkflowScheduler } from "./workflows/scheduler.ts";
+import {
+  InMemoryWorkflowStore,
+  SqliteWorkflowStore,
+  type WorkflowStore,
+} from "./workflows/store.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -59,6 +70,30 @@ const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
   sessionStore: store,
   slackClient: app.client,
   repos: config.repos,
+});
+const workflowRegistry = new WorkflowRegistry({
+  repos: config.repos,
+  builtInCommands: KNOWN_COMMANDS,
+});
+const workflowStore: WorkflowStore = config.session.store === "memory"
+  ? new InMemoryWorkflowStore()
+  : new SqliteWorkflowStore(resolve(config.session.sqlitePath));
+const workflowExecutor = new WorkflowExecutor({
+  config,
+  store: workflowStore,
+  slackClient: app.client,
+});
+const workflowScheduler = new WorkflowScheduler({
+  registry: workflowRegistry,
+  store: workflowStore,
+  executor: workflowExecutor,
+});
+const workflowController = new WorkflowController({
+  registry: workflowRegistry,
+  store: workflowStore,
+  scheduler: workflowScheduler,
+  slackClient: app.client,
+  isAdmin: (userId) => sessionManager.isAdmin(userId),
 });
 
 sessionManager.onResponse = (session, response) => {
@@ -146,7 +181,11 @@ sessionManager.onError = (session, error) => {
 
 registerHomeTab(app, store, config.session.homeWindowMs);
 
-setupGracefulShutdown(sessionManager, store, devServerManager);
+setupGracefulShutdown(sessionManager, store, devServerManager, () => {
+  workflowScheduler.stop();
+  workflowRegistry.stopWatching();
+  workflowStore.close?.();
+});
 
 // Periodic health checks
 setInterval(() => {
@@ -214,6 +253,16 @@ setInterval(() => {
     log.error("reconcile", `tmux reconcile threw: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  try {
+    await workflowRegistry.startWatching();
+    await workflowScheduler.reconcile();
+  } catch (err) {
+    log.error(
+      "workflow",
+      `workflow bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   await app.start();
 
   // Resolve bot identity before registering event handlers
@@ -238,6 +287,7 @@ setInterval(() => {
     // before any routing happens. Returns true when the message is consumed
     // here (do not dispatch).
     if (await sessionManager.gateAttention(event)) return;
+    if (await workflowController.handleMessage(event)) return;
     // Universal dispatch: AgentDispatcher decides whether to dispatch a persistent
     // agent (any channel) or fall through to the single-session manager.
     supportRouter.handleMessage(event);

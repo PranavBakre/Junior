@@ -14,7 +14,9 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@playwright/mcp": "^0.0.70",
     "@slack/bolt": "^4.3.0",
-    "proper-lockfile": "^4.1.2"
+    "cron-parser": "^5.5.0",
+    "proper-lockfile": "^4.1.2",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

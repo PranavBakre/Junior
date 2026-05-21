@@ -4,7 +4,7 @@
 // AgentDispatcher with the prefix intact. `review` was historically here for
 // the standalone code-review workflow but is now a persistent agent; removed
 // to keep one syntax → one semantic.
-const KNOWN_COMMANDS = new Set([
+export const KNOWN_COMMANDS = new Set([
   "build",
   "frontend",
   "architect",
@@ -19,6 +19,8 @@ const KNOWN_COMMANDS = new Set([
   "verbose",
   "normal",
   "help",
+  "workflow",
+  "workflows",
   "adhoc",
   "bugs",
   "mute",
