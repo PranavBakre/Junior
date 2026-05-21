@@ -65,8 +65,6 @@ runner:
   provider: default
   agentName: lead
   timeoutMs: 300000
-fallback:
-  mode: deterministic-summary
 concurrency: skip
 ---
 
@@ -84,9 +82,9 @@ Fields:
 | `ownerSlackUserIds` | yes | Slack users allowed to run/start/stop this workflow. May be empty for admin-only workflows. Admins are always allowed. |
 | `triggers` | yes | At least one schedule, command, or Slack event trigger. |
 | `outputs` | yes | At least one output. Docs output must stay under `data/workflow-runs/<workflow>`. |
-| `permissions` | yes | Capability declaration used by workflow validation and built-in adapters. `repos` may be omitted to use all configured repos, or listed to narrow access. |
-| `runner` | no | Optional agent compression/summarization step. Runner summaries execute from `/tmp/junior-utility`; workflow definitions are still trusted config, not a sandbox boundary. |
-| `fallback` | required with runner | `deterministic-summary` keeps the workflow useful if agent summarization fails. |
+| `permissions` | yes | Capability declaration used by workflow validation and runtime prompts. `repos` may be omitted to use all configured repos, or listed to narrow access. |
+| `runner` | no | Optional agent execution step. Runner workflows execute from `/tmp/junior-utility`; workflow definitions are trusted config, not a sandbox boundary. |
+| `fallback` | no | Reserved for future fallback modes. |
 | `concurrency` | no | `skip` by default. `parallel` is allowed for workflows that can overlap safely. |
 
 Trigger schema:
@@ -125,7 +123,7 @@ Permission tools:
 - `docs.write` — write run artifacts under `data/workflow-runs/`
 - `slack.post` — post Slack summaries
 
-`permissions.tools` is not a general runner sandbox. It is enforced for built-in workflow adapters and output validation. Workflow definition files are trusted operational config; private overlays should be reviewed like code.
+`permissions.tools` is not a general runner sandbox. It is validated and injected into the runner prompt as the declared capability contract. Workflow definition files are trusted operational config; private overlays should be reviewed like code.
 
 Repository scope:
 
@@ -197,19 +195,14 @@ Start/stop commands do not reload files. They only mutate runtime state:
 - `!workflow stop <name>` writes `stopped` and cancels scheduled timers.
 - `!workflow start <name>` writes `active` and reschedules, but only if the file is enabled.
 
-## Worklog V1
+## Worklog Workflow
 
-The built-in direct adapter for `name: worklog`:
-
-1. Reads configured repos allowed by `permissions.repos`.
-2. Collects commits from the last 24 hours using local Git author config.
-3. Collects PRs with `gh pr list --author <current-gh-user>`.
-4. Builds a deterministic grouped summary.
-5. Optionally asks the configured runner agent to compress the raw activity.
-6. Writes the markdown artifact under `data/workflow-runs/worklog/`.
-7. Posts Slack output if configured.
-
-If the runner fails, the deterministic summary is still written and posted.
+`workflows/worklog.workflow.md` is an agent-run workflow. The scheduler triggers
+the markdown definition, the executor spawns the configured runner from
+`/tmp/junior-utility`, and the runner uses the supplied repo paths plus the
+workflow prompt to collect Git/GitHub activity and return a Slack-ready summary.
+Junior then writes that final response under `data/workflow-runs/worklog/` and
+posts it to configured Slack outputs.
 
 ## Dependencies
 

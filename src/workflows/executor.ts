@@ -17,11 +17,8 @@ import {
   WORKFLOW_ARTIFACT_ROOT,
 } from "./types.ts";
 import type { WorkflowStore } from "./store.ts";
-import {
-  collectWorklogActivity,
-  formatWorklogSlackSummary,
-  renderWorklogArtifact,
-} from "./worklog.ts";
+
+export const WORKFLOW_UTILITY_CWD = "/tmp/junior-utility";
 
 export interface WorkflowExecutorOptions {
   config: Config;
@@ -79,25 +76,25 @@ export class WorkflowExecutor {
     await this.store.createRun(run);
 
     let summary = "";
-    let body = "";
     try {
-      const direct = await this.runDirectStep(request.definition);
-      body = direct.artifactBody;
-      summary = direct.summary;
-
       if (request.definition.runner) {
-        const runnerSummary = await this.summarizeWithRunner(
+        summary = await this.runWithRunner(
           request.definition,
-          direct.runnerInput,
+          buildRunnerPrompt({
+            definition: request.definition,
+            run,
+            repos: this.reposFor(request.definition),
+          }),
         );
-        if (runnerSummary) summary = runnerSummary;
+      } else {
+        summary = request.definition.prompt.trim() ||
+          `Workflow ${request.definition.name} ran.`;
       }
 
-      body = renderArtifact({
+      const body = renderArtifact({
         definition: request.definition,
         run,
         summary,
-        body,
       });
       await writeArtifact(artifactPath, body);
       const slackMeta = await this.emitOutputs(request.definition, summary);
@@ -116,7 +113,6 @@ export class WorkflowExecutor {
         definition: request.definition,
         run,
         summary: summary || "_Workflow failed before summary generation._",
-        body: body || "",
       });
       await writeArtifact(artifactPath, failureBody).catch(() => undefined);
       await this.store.updateRun(run);
@@ -125,38 +121,12 @@ export class WorkflowExecutor {
     }
   }
 
-  private async runDirectStep(definition: WorkflowDefinition): Promise<{
-    summary: string;
-    artifactBody: string;
-    runnerInput: string;
-  }> {
-    if (definition.name === "worklog") {
-      const repos = this.reposFor(definition);
-      const until = this.now();
-      const since = new Date(until.getTime() - 24 * 60 * 60 * 1000);
-      const activity = await collectWorklogActivity({ repos, since, until });
-      const summary = formatWorklogSlackSummary(activity);
-      return {
-        summary,
-        artifactBody: renderWorklogArtifact(activity, summary),
-        runnerInput: JSON.stringify(activity, null, 2),
-      };
-    }
-
-    const summary = definition.prompt.trim() || `Workflow ${definition.name} ran.`;
-    return {
-      summary,
-      artifactBody: "No direct workflow adapter is configured for this workflow.",
-      runnerInput: summary,
-    };
-  }
-
-  private async summarizeWithRunner(
+  private async runWithRunner(
     definition: WorkflowDefinition,
-    input: string,
-  ): Promise<string | null> {
+    prompt: string,
+  ): Promise<string> {
     const runner = definition.runner;
-    if (!runner) return null;
+    if (!runner) throw new Error(`Workflow ${definition.name} has no runner`);
     const provider: ImplementedRunnerProvider =
       runner.provider === "default" ? this.config.runner.provider : runner.provider;
     const session = createSession(
@@ -166,24 +136,21 @@ export class WorkflowExecutor {
       provider,
       this.config.claude.defaultDriver,
     );
-    session.cwd = "/tmp/junior-utility";
+    session.cwd = WORKFLOW_UTILITY_CWD;
     session.agentType = runner.agentName;
     session.activeAgentName = runner.agentName;
     session.model = runner.model ?? null;
     session.systemPrompt = [
-      "You are compressing a Junior workflow run into a concise operational summary.",
-      "Use Slack mrkdwn only. Do not invent facts.",
-      definition.prompt,
+      "You are executing a Junior workflow from a markdown workflow definition.",
+      "Use the provided workflow instructions and runtime context as the source of truth.",
+      "Use only capabilities declared in the workflow permissions.",
+      "Return the final workflow result as Slack mrkdwn.",
+      "Junior will write your final response to configured docs outputs and post it to configured Slack outputs.",
     ].join("\n\n");
 
     const handle = this.spawn(
       session,
-      [
-        "Summarize this workflow input.",
-        "Keep it grouped and compact.",
-        "",
-        input,
-      ].join("\n"),
+      prompt,
       this.config,
     );
     const bounded = withTimeout(
@@ -193,11 +160,14 @@ export class WorkflowExecutor {
     );
     const result = await bounded.result;
     if (result.exitCode !== 0 || result.error) {
-      log.warn("workflow", `runner summary failed workflow=${definition.name}: ${result.error ?? result.exitCode}`);
-      return null;
+      log.warn("workflow", `runner failed workflow=${definition.name}: ${result.error ?? result.exitCode}`);
+      throw new Error(
+        `Workflow runner failed: ${result.error ?? `exit ${result.exitCode}`}`,
+      );
     }
     const response = result.response.trim();
-    return response || null;
+    if (!response) throw new Error("Workflow runner returned an empty response");
+    return response;
   }
 
   private async emitOutputs(
@@ -286,7 +256,6 @@ function renderArtifact(options: {
   definition: WorkflowDefinition;
   run: WorkflowRun;
   summary: string;
-  body: string;
 }): string {
   return [
     `# Workflow Run: ${options.definition.name}`,
@@ -303,9 +272,45 @@ function renderArtifact(options: {
     "",
     options.summary,
     "",
-    options.body,
-    "",
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
+}
+
+function buildRunnerPrompt(options: {
+  definition: WorkflowDefinition;
+  run: WorkflowRun;
+  repos: RepoConfig[];
+}): string {
+  return [
+    `Run workflow: ${options.definition.name}`,
+    "",
+    "Workflow prompt:",
+    options.definition.prompt.trim() || "(empty)",
+    "",
+    "Runtime context:",
+    JSON.stringify({
+      run: {
+        id: options.run.id,
+        reason: options.run.reason,
+        artifactPath: options.run.artifactPath,
+      },
+      workflow: {
+        name: options.definition.name,
+        description: options.definition.description ?? null,
+        permissions: options.definition.permissions,
+        outputs: options.definition.outputs,
+      },
+      repos: options.repos.map((repo) => ({
+        name: repo.name,
+        path: repo.path,
+        defaultBase: repo.defaultBase,
+      })),
+    }, null, 2),
+    "",
+    "Final response requirements:",
+    "- Produce the final Slack-ready workflow result.",
+    "- Include collection or execution errors only when they affect trust in the result.",
+    "- Do not say you cannot access repos without first using the provided absolute repo paths.",
+  ].join("\n");
 }
