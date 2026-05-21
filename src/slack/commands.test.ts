@@ -91,6 +91,8 @@ describe("parseCommand", () => {
       "verbose",
       "normal",
       "help",
+      "workflow",
+      "workflows",
       "adhoc",
       "bugs",
       "mute",

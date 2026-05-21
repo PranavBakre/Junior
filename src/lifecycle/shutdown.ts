@@ -6,6 +6,7 @@ export function setupGracefulShutdown(
   manager: SessionManager,
   store: SessionStore,
   devServerManager?: DevServerManager,
+  extraShutdown?: () => void | Promise<void>,
 ): void {
   const shutdown = async () => {
     console.log("Shutting down...");
@@ -28,6 +29,11 @@ export function setupGracefulShutdown(
       // Kill all managed dev servers in parallel with session teardown.
       if (devServerManager) {
         kills.push(devServerManager.killAll());
+      }
+      if (extraShutdown) {
+        kills.push((async () => {
+          await extraShutdown();
+        })());
       }
 
       await Promise.all(kills);
