@@ -153,6 +153,18 @@ const testConfig: Config = {
   channelDefaults: {},
   adminSlackUserId: null,
   http: { enabled: false, port: 0 },
+  worklog: {
+    enabled: false,
+    channel: null,
+    threadTs: null,
+    dailyAt: "18:00",
+    lookbackHours: 24,
+    docsDir: "docs/worklog",
+    gitAuthor: null,
+    githubUser: null,
+    useAgent: true,
+    runOnStartup: false,
+  },
 };
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {

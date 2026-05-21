@@ -47,6 +47,22 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 - Does `!mute` (no arg) become an alias for `!mute all`, or a usage error like `!reset`? Leaning toward usage error to stay consistent with `!reset`.
 - Should muting an agent kill an in-flight process for that agent, or only suppress *future* turns? Today muting mid-turn discards the buffer (`manager.ts:651`) but lets the running process complete — that behavior probably ports over.
 
+## Hot-reloaded agent definitions
+
+**Problem:** `agents-org` and public agent definitions are loaded at boot. Adding or editing an agent identity, prompt, or dispatch permission requires a bot restart even though agents are operational configuration, not compiled code.
+
+**Scope (to be refined):**
+- Add an `AgentDefinitionRegistry` with the same shape as the dynamic workflow registry: file watch/poll, validation, version hash, and last-known-good behavior.
+- Reload affects future dispatches only. Existing resumed sessions keep the prompt/identity hash they started with until reset or a new session is created.
+- Identity changes require care: Slack self-bot routing depends on username/icon mapping. Keep old identity aliases alive for in-flight messages until no active sessions use them.
+- Dispatch permissions are security-sensitive. Invalid allow-list changes fail closed and keep the previous valid definition.
+- Add admin controls: `!agents`, `!agent show <name>`, `!agent start <name>`, `!agent stop <name>`, `!agent reload <name>` as a diagnostic escape hatch.
+
+**Open questions:**
+- Should public agents and `agents-org` overlays share one registry with precedence, or two registries composed at lookup time?
+- Should changing an agent prompt optionally reset active sessions, or only affect new sessions?
+- Where should active/inactive agent state live: SQLite runtime state, frontmatter `enabled`, or both?
+
 ## Thread-owner-based command access
 
 **Status:** Two-tier admin (env + SQLite `admins` table) shipped — see [thread-commands.md](thread-commands.md#admin-only-commands). Thread-owner branch is still open.

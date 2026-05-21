@@ -26,6 +26,8 @@ import { WorktreeManager } from "./worktree/manager.ts";
 import { DevServerManager } from "./lifecycle/dev-server.ts";
 import { DevServerQueue } from "./lifecycle/dev-server-queue.ts";
 import { startMcpServer } from "./mcp/slack-server.ts";
+import { startDailyCron } from "./cron/scheduler.ts";
+import { runWorklogJob } from "./worklog/job.ts";
 import { log } from "./logger.ts";
 import { WorkflowController } from "./workflows/controller.ts";
 import { WorkflowExecutor } from "./workflows/executor.ts";
@@ -292,6 +294,17 @@ setInterval(() => {
     // agent (any channel) or fall through to the single-session manager.
     supportRouter.handleMessage(event);
   }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
+
+  if (config.worklog.enabled) {
+    startDailyCron({
+      name: "worklog",
+      dailyAt: config.worklog.dailyAt,
+      runOnStartup: config.worklog.runOnStartup,
+      run: async () => {
+        await runWorklogJob({ config, app });
+      },
+    });
+  }
 
   if (config.http.enabled) {
     // Bun.serve throws synchronously on port conflict (EADDRINUSE) and a few

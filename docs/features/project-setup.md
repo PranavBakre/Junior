@@ -33,7 +33,16 @@ The bot needs environment configuration (Slack tokens, repo paths, timeouts) and
 9. `app.start()`, resolve bot identity via `auth.test`, register event handlers (every message goes through `supportRouter.handleMessage`).
 10. If `config.http.enabled`, dynamic-import `./http/server.ts` and start the localhost dashboard. Failure is non-fatal — logged so the bot keeps running.
 
-## Private Org Overlay
+## Git Submodule Layout
+
+Submodule paths and remotes are defined only in `.gitmodules`. README and feature docs should not list private repository names, remotes, or org-specific content. They should document only the runtime contract Junior expects from mounted submodules.
+
+Junior currently expects two optional submodule-backed content roots:
+
+| Root | Contract |
+| --- | --- |
+| `identity/` | Persona material. Each persona lives under its own directory and may expose `IDENTITY.md` and `SOUL.md`. Junior treats these as private prompt/context source files; their content is documented inside the submodule, not here. |
+| `agents-org/` | Private/org overlay. May provide agent definitions, shared prompt fragments, and workflow definitions using the same external schema as the public roots. Org-specific details stay inside the submodule. |
 
 The private agent overlay is mounted at `agents-org/`, not under `.claude/`, because it is Junior-owned runtime data rather than a Claude Code native agent directory. Fresh clones initialize it with:
 

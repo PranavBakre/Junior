@@ -28,6 +28,16 @@ const ENV_KEYS = [
   "CHANNEL_DEFAULTS",
   "ADMIN_SLACK_USER_ID",
   "HTTP_DASHBOARD_PORT",
+  "WORKLOG_CRON_ENABLED",
+  "WORKLOG_SLACK_CHANNEL",
+  "WORKLOG_SLACK_THREAD_TS",
+  "WORKLOG_DAILY_AT",
+  "WORKLOG_LOOKBACK_HOURS",
+  "WORKLOG_DOCS_DIR",
+  "WORKLOG_GIT_AUTHOR",
+  "WORKLOG_GITHUB_USER",
+  "WORKLOG_USE_AGENT",
+  "WORKLOG_RUN_ON_STARTUP",
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -111,5 +121,60 @@ describe("loadConfig runner providers", () => {
     expect(() => loadConfig()).toThrow(
       "RUNNER_PROVIDER=codex is a planned provider but is not yet implemented. Use opencode or claude.",
     );
+  });
+});
+
+describe("loadConfig worklog cron", () => {
+  it("defaults the worklog cron off", () => {
+    const config = loadConfig();
+
+    expect(config.worklog).toEqual({
+      enabled: false,
+      channel: null,
+      threadTs: null,
+      dailyAt: "18:00",
+      lookbackHours: 24,
+      docsDir: "docs/worklog",
+      gitAuthor: null,
+      githubUser: null,
+      useAgent: true,
+      runOnStartup: false,
+    });
+  });
+
+  it("requires a Slack channel when enabled", () => {
+    process.env.WORKLOG_CRON_ENABLED = "true";
+
+    expect(() => loadConfig()).toThrow(
+      "WORKLOG_SLACK_CHANNEL is required when WORKLOG_CRON_ENABLED=true",
+    );
+  });
+
+  it("parses worklog cron settings", () => {
+    process.env.WORKLOG_CRON_ENABLED = "true";
+    process.env.WORKLOG_SLACK_CHANNEL = "C123";
+    process.env.WORKLOG_SLACK_THREAD_TS = "123.456";
+    process.env.WORKLOG_DAILY_AT = "09:30";
+    process.env.WORKLOG_LOOKBACK_HOURS = "12";
+    process.env.WORKLOG_DOCS_DIR = "docs/status";
+    process.env.WORKLOG_GIT_AUTHOR = "me@example.com";
+    process.env.WORKLOG_GITHUB_USER = "octocat";
+    process.env.WORKLOG_USE_AGENT = "false";
+    process.env.WORKLOG_RUN_ON_STARTUP = "1";
+
+    const config = loadConfig();
+
+    expect(config.worklog).toEqual({
+      enabled: true,
+      channel: "C123",
+      threadTs: "123.456",
+      dailyAt: "09:30",
+      lookbackHours: 12,
+      docsDir: "docs/status",
+      gitAuthor: "me@example.com",
+      githubUser: "octocat",
+      useAgent: false,
+      runOnStartup: true,
+    });
   });
 });

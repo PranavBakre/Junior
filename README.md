@@ -134,6 +134,16 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SESSION_STORE` | `sqlite` | `sqlite` or `memory` |
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
+| `WORKLOG_CRON_ENABLED` | `false` | Enables the daily PR/commit worklog cron |
+| `WORKLOG_SLACK_CHANNEL` | *(unset)* | Slack channel ID for the worklog post; required when enabled |
+| `WORKLOG_SLACK_THREAD_TS` | *(unset)* | Optional thread timestamp to post the worklog into |
+| `WORKLOG_DAILY_AT` | `18:00` | Local server time for the daily worklog run (`HH:mm`) |
+| `WORKLOG_LOOKBACK_HOURS` | `24` | Commit/PR lookback window |
+| `WORKLOG_DOCS_DIR` | `docs/worklog` | Directory for generated markdown snapshots |
+| `WORKLOG_GIT_AUTHOR` | repo git config | Optional git author filter for commits |
+| `WORKLOG_GITHUB_USER` | gh `@me` | Optional GitHub username for PR filtering |
+| `WORKLOG_USE_AGENT` | `true` | Let the configured runner compress/group the raw activity before posting |
+| `WORKLOG_RUN_ON_STARTUP` | `false` | Run once immediately after boot for verification |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
 | `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode` or `claude` (codex is planned but not yet implemented) |
 | `CLAUDE_MAX_TURNS` | `25` | Max turns per `claude -p` invocation |

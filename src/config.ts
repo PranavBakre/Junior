@@ -99,6 +99,28 @@ export interface Config {
     enabled: boolean;
     port: number;
   };
+  worklog: {
+    /** Daily PR/commit digest. Off unless WORKLOG_CRON_ENABLED=true. */
+    enabled: boolean;
+    /** Slack channel to post the digest into. Required when enabled. */
+    channel: string | null;
+    /** Optional thread timestamp; when unset the digest is posted as a channel message. */
+    threadTs: string | null;
+    /** Local server time in HH:mm, e.g. 18:30. */
+    dailyAt: string;
+    /** Activity lookback window for commits and PR updates. */
+    lookbackHours: number;
+    /** Where markdown snapshots are written. */
+    docsDir: string;
+    /** Optional git log author filter. Defaults to each repo's git user when unset. */
+    gitAuthor: string | null;
+    /** Optional GitHub username for PR filtering. Defaults to gh's authenticated user when unset. */
+    githubUser: string | null;
+    /** Let the configured runner compress/group the collected activity before Slack posting. */
+    useAgent: boolean;
+    /** Run once immediately after boot, useful for local verification. */
+    runOnStartup: boolean;
+  };
 }
 
 function required(name: string): string {
@@ -176,6 +198,7 @@ export function loadConfig(): Config {
     ),
     adminSlackUserId: process.env.ADMIN_SLACK_USER_ID?.trim() || null,
     http: parseHttpDashboard(process.env.HTTP_DASHBOARD_PORT),
+    worklog: parseWorklogConfig(),
   };
 }
 
@@ -235,6 +258,41 @@ function parseBooleanEnv(name: string, fallback: boolean): boolean {
 function parseDriverMode(value: string): DriverMode {
   if (value === "headless" || value === "tmux") return value;
   throw new Error(`Invalid DEFAULT_CLAUDE_DRIVER: ${value} (expected headless|tmux)`);
+}
+
+function parseWorklogConfig(): Config["worklog"] {
+  const enabled = parseBooleanEnv("WORKLOG_CRON_ENABLED", false);
+  const channel = process.env.WORKLOG_SLACK_CHANNEL?.trim() || null;
+  if (enabled && !channel) {
+    throw new Error("WORKLOG_SLACK_CHANNEL is required when WORKLOG_CRON_ENABLED=true");
+  }
+
+  const dailyAt = optional("WORKLOG_DAILY_AT", "18:00");
+  if (!/^\d{2}:\d{2}$/.test(dailyAt)) {
+    throw new Error("Invalid WORKLOG_DAILY_AT: expected HH:mm");
+  }
+  const [hour, minute] = dailyAt.split(":").map(Number);
+  if (hour > 23 || minute > 59) {
+    throw new Error("Invalid WORKLOG_DAILY_AT: expected HH:mm in 24-hour time");
+  }
+
+  const lookbackHours = Number(optional("WORKLOG_LOOKBACK_HOURS", "24"));
+  if (!Number.isFinite(lookbackHours) || lookbackHours <= 0) {
+    throw new Error("Invalid WORKLOG_LOOKBACK_HOURS: expected positive number");
+  }
+
+  return {
+    enabled,
+    channel,
+    threadTs: process.env.WORKLOG_SLACK_THREAD_TS?.trim() || null,
+    dailyAt,
+    lookbackHours,
+    docsDir: optional("WORKLOG_DOCS_DIR", "docs/worklog"),
+    gitAuthor: process.env.WORKLOG_GIT_AUTHOR?.trim() || null,
+    githubUser: process.env.WORKLOG_GITHUB_USER?.trim() || null,
+    useAgent: parseBooleanEnv("WORKLOG_USE_AGENT", true),
+    runOnStartup: parseBooleanEnv("WORKLOG_RUN_ON_STARTUP", false),
+  };
 }
 
 function parseChannelDefaults(
