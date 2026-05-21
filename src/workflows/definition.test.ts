@@ -33,13 +33,14 @@ describe("validateWorkflowDefinition", () => {
           agentName: "lead",
           timeoutMs: 1000,
         },
-        fallback: { mode: "deterministic-summary" },
       },
     });
 
     expect(definition.name).toBe("worklog");
     expect(definition.enabled).toBe(true);
     expect(definition.concurrency).toBe("skip");
+    expect(definition.runner?.agentName).toBe("lead");
+    expect(definition.fallback).toBeUndefined();
     expect(definition.versionHash).toHaveLength(16);
   });
 

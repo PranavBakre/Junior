@@ -97,9 +97,6 @@ export function validateWorkflowDefinition(options: {
   const fallback = fm.fallback == null
     ? undefined
     : parseFallback(objectRecord(fm.fallback, "fallback"));
-  if (runner && !fallback) {
-    throw new Error("fallback is required when runner is configured");
-  }
 
   const concurrency = parseConcurrency(fm.concurrency);
   const description =
