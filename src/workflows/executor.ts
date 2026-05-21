@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import type { WebClient } from "@slack/web-api";
 import type { Config, RepoConfig } from "../config.ts";
 import { spawnRunner } from "../runners/index.ts";
-import type { SpawnRunnerFn } from "../runners/types.ts";
+import type { RunnerEvent, SpawnRunnerFn } from "../runners/types.ts";
 import { createSession, type ImplementedRunnerProvider } from "../session/types.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import { log } from "../logger.ts";
@@ -69,6 +69,7 @@ export class WorkflowExecutor {
       startedAt: started.getTime(),
       finishedAt: null,
       artifactPath,
+      providerSessionId: null,
       slackChannel: null,
       slackThreadTs: null,
       error: null,
@@ -80,6 +81,7 @@ export class WorkflowExecutor {
       if (request.definition.runner) {
         summary = await this.runWithRunner(
           request.definition,
+          run,
           buildRunnerPrompt({
             definition: request.definition,
             run,
@@ -91,6 +93,8 @@ export class WorkflowExecutor {
           `Workflow ${request.definition.name} ran.`;
       }
 
+      run.status = "success";
+      run.finishedAt = this.now().getTime();
       const body = renderArtifact({
         definition: request.definition,
         run,
@@ -100,8 +104,6 @@ export class WorkflowExecutor {
       const slackMeta = await this.emitOutputs(request.definition, summary);
       run.slackChannel = slackMeta.channel;
       run.slackThreadTs = slackMeta.threadTs;
-      run.status = "success";
-      run.finishedAt = this.now().getTime();
       await this.store.updateRun(run);
       await this.updateStateAfterRun(request.definition, run);
       return { run, summary };
@@ -123,6 +125,7 @@ export class WorkflowExecutor {
 
   private async runWithRunner(
     definition: WorkflowDefinition,
+    run: WorkflowRun,
     prompt: string,
   ): Promise<string> {
     const runner = definition.runner;
@@ -153,6 +156,18 @@ export class WorkflowExecutor {
       prompt,
       this.config,
     );
+    handle.onEvent((event) => {
+      if (event.type === "init") {
+        run.providerSessionId = event.sessionId;
+        void this.store.updateRun(run).catch((err) => {
+          log.warn(
+            "workflow",
+            `session id persist failed workflow=${definition.name} run=${run.id}: ${formatError(err)}`,
+          );
+        });
+      }
+      logWorkflowRunnerEvent(definition.name, run.id, event);
+    });
     const bounded = withTimeout(
       handle,
       runner.timeoutMs ?? this.timeoutFor(provider),
@@ -266,6 +281,7 @@ function renderArtifact(options: {
     `Reason: ${options.run.reason}`,
     `Actor: ${options.run.actorSlackUserId ?? "system"}`,
     `Status: ${options.run.status}`,
+    options.run.providerSessionId ? `Provider session: ${options.run.providerSessionId}` : null,
     options.run.error ? `Error: ${options.run.error}` : null,
     "",
     "## Final Summary",
@@ -313,4 +329,37 @@ function buildRunnerPrompt(options: {
     "- Include collection or execution errors only when they affect trust in the result.",
     "- Do not say you cannot access repos without first using the provided absolute repo paths.",
   ].join("\n");
+}
+
+function logWorkflowRunnerEvent(
+  workflowName: string,
+  runId: string,
+  event: RunnerEvent,
+): void {
+  const prefix = `workflow=${workflowName} run=${runId} provider=${event.provider}`;
+  if (event.type === "init") {
+    log.info("workflow-runner", `${prefix} sessionId=${event.sessionId} init`);
+    return;
+  }
+  if (event.type === "tool") {
+    log.info(
+      "workflow-runner",
+      `${prefix} tool=${event.name} status=${event.status ?? "unknown"}`,
+    );
+    return;
+  }
+  if (event.type === "message") {
+    log.info(
+      "workflow-runner",
+      `${prefix} message len=${event.text.length}`,
+    );
+    return;
+  }
+  if (event.type === "done") {
+    log.info("workflow-runner", `${prefix} done`);
+  }
+}
+
+function formatError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }

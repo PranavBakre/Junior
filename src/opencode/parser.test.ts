@@ -73,6 +73,30 @@ describe("createOpenCodeStreamParser", () => {
     });
   });
 
+  it("parses current OpenCode part-stream events", () => {
+    const parser = createOpenCodeStreamParser();
+    const events = parser.feed(
+      '{"type":"step-start"}\n' +
+        '{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"git status"}}}\n' +
+        '{"type":"text","text":"final answer"}\n' +
+        '{"type":"step-finish","tokens":{"input":10,"output":2}}\n',
+    );
+
+    expect(events).toMatchObject([
+      { type: "step-start" },
+      {
+        type: "tool",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: { command: "git status" },
+        },
+      },
+      { type: "text", text: "final answer" },
+      { type: "step-finish", tokens: { input: 10, output: 2 } },
+    ]);
+  });
+
   it("flushes a final valid line without trailing newline", () => {
     const parser = createOpenCodeStreamParser();
 
@@ -185,5 +209,37 @@ describe("createOpenCodeEventMapper", () => {
         status: "completed",
       },
     ]);
+  });
+
+  it("maps current OpenCode part-stream text as the final response", () => {
+    const parser = createOpenCodeStreamParser();
+    const mapper = createOpenCodeEventMapper();
+    const nativeEvents = parser.feed(
+      '{"type":"step-start"}\n' +
+        '{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"gh pr list"}}}\n' +
+        '{"type":"text","text":"*Worklog — last 24h*\\n\\n- shipped payout migration"}\n' +
+        '{"type":"step-finish","tokens":{"input":100,"output":20}}\n',
+    );
+
+    expect(nativeEvents.flatMap((event) => mapper.map(event))).toEqual([
+      {
+        type: "tool",
+        provider: "opencode",
+        name: "Bash",
+        input: { command: "gh pr list" },
+        status: "completed",
+      },
+      {
+        type: "message",
+        provider: "opencode",
+        text: "*Worklog — last 24h*\n\n- shipped payout migration",
+      },
+      {
+        type: "done",
+        provider: "opencode",
+        usage: { input: 100, output: 20 },
+      },
+    ]);
+    expect(mapper.response).toBe("*Worklog — last 24h*\n\n- shipped payout migration");
   });
 });

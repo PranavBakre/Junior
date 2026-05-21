@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import type { App } from "@slack/bolt";
 import { createSession } from "../session/types.ts";
 import type { SessionStore } from "../session/store/interface.ts";
+import type { WorkflowStore } from "../workflows/store.ts";
 import { buildSessionDetailModal, publishHomeTab, registerHomeTab } from "./home.ts";
 
 describe("publishHomeTab", () => {
@@ -99,6 +100,59 @@ describe("publishHomeTab", () => {
     expect(modalText).toContain("*Resume:*\n`opencode --session ses_123`");
     expect(modalText).toContain("Resume: `opencode --session ses_agent`");
     expect(openCalls[0]![0].view.blocks.every((block) => block.text.text.length <= 3_000)).toBe(true);
+  });
+
+  it("shows workflow state and recent artifacts", async () => {
+    const store = {
+      getRecent: mock(async () => new Map()),
+    } as unknown as SessionStore;
+    const workflowStore = {
+      listStates: mock(async () => [{
+        name: "worklog",
+        status: "active",
+        activeVersionHash: "abcdef1234567890",
+        sourcePath: "workflows/worklog.workflow.md",
+        lastLoadedAt: Date.now(),
+        nextRunAt: Date.now() + 60_000,
+        lastRunAt: Date.now() - 60_000,
+        lastRunStatus: "success",
+        lastError: null,
+      }]),
+      listRuns: mock(async () => [{
+        id: "run-1",
+        workflowName: "worklog",
+        workflowVersionHash: "abcdef1234567890",
+        sourcePath: "workflows/worklog.workflow.md",
+        reason: "manual",
+        actorSlackUserId: "U123",
+        status: "success",
+        startedAt: Date.now() - 60_000,
+        finishedAt: Date.now() - 30_000,
+        artifactPath: "data/workflow-runs/worklog/run-1.md",
+        providerSessionId: "ses-workflow",
+        slackChannel: "C123",
+        slackThreadTs: "123.456",
+        error: null,
+      }]),
+    } as unknown as WorkflowStore;
+    const publish = mock(async () => ({ ok: true }));
+    const app = {
+      client: {
+        chat: {
+          getPermalink: mock(async () => ({ permalink: "https://slack.example/thread" })),
+        },
+        views: { publish },
+      },
+    } as unknown as App;
+
+    await publishHomeTab(app, "U123", store, 1_000, workflowStore);
+
+    const publishCalls = (publish as unknown as { mock: { calls: Array<[{ view: { blocks: Array<{ text?: { text?: string } }> } }]> } }).mock.calls;
+    const homeText = publishCalls[0]![0].view.blocks.map((block) => block.text?.text ?? "").join("\n");
+    expect(homeText).toContain("*worklog*");
+    expect(homeText).toContain("Active");
+    expect(homeText).toContain("Last: success");
+    expect(homeText).toContain("data/workflow-runs/worklog/run-1.md");
   });
 
   it("splits oversized modal text into Slack-safe blocks", () => {

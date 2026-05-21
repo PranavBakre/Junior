@@ -114,6 +114,7 @@ export interface WorkflowRun {
   startedAt: number;
   finishedAt: number | null;
   artifactPath: string;
+  providerSessionId: string | null;
   slackChannel: string | null;
   slackThreadTs: string | null;
   error: string | null;
