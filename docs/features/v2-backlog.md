@@ -14,6 +14,24 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 
 **Priority:** Low — current thread sizes are small. Becomes relevant when threads regularly exceed ~20 unique participants.
 
+## Hot Reload for Agent Org Assets
+
+**Status:** Deferred from Dynamic Workflows v1.
+
+**Problem:** Dynamic workflows use file-owned config plus `fs.watch` hot reload, so operators can add or fix workflows without restarting Junior. Agent org assets still depend mostly on boot-time loading.
+
+**Scope (to be refined):**
+- Apply the same watch-and-rescan model to supported agent org assets.
+- Keep roots fixed and explicit; avoid env-driven discovery until the operational model needs it.
+- Preserve last-known-good data when an edited private overlay becomes invalid.
+- Keep manual reload commands as diagnostic repair tools, not the normal deployment path.
+- Define which assets can be reloaded safely in-process and which require draining active sessions first.
+
+**Open questions:**
+- Should active sessions pin the identity/prompt version they started with, or adopt new identity data on the next turn?
+- Should invalid org overlays fail closed for private assets, or fall back to public defaults?
+- Which command surface owns this: a general `!org reload`, per-asset commands, or an admin dashboard action?
+
 ## Per-agent mute
 
 **Problem:** `session.muted` is a single boolean on the parent `ThreadSession`. There is no way to mute *just* the reproducer (e.g. when it's looping noisily) while keeping the lead agent responsive.

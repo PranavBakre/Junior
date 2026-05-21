@@ -1,6 +1,12 @@
 import type { App } from "@slack/bolt";
+import type { KnownBlock, View } from "@slack/types";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { ThreadSession } from "../session/types.ts";
+import { sanitizeErrorForSlack } from "./formatting.ts";
+
+const HOME_TEXT_LIMIT = 2_900;
+const MODAL_TEXT_LIMIT = 2_900;
+const ACTION_SESSION_DETAILS = "home_session_details";
 
 export function registerHomeTab(
   app: App,
@@ -9,6 +15,23 @@ export function registerHomeTab(
 ): void {
   app.event("app_home_opened", async ({ event }) => {
     await publishHomeTab(app, event.user, store, windowMs);
+  });
+
+  app.action(ACTION_SESSION_DETAILS, async ({ ack, body, client }) => {
+    await ack();
+
+    const action = firstAction(body);
+    const threadId = typeof action?.value === "string" ? action.value : null;
+    const triggerId = triggerIdFromBody(body);
+    if (!threadId || !triggerId) return;
+
+    const session = await store.get(threadId);
+    if (!session) return;
+
+    await client.views.open({
+      trigger_id: triggerId,
+      view: buildSessionDetailModal(session),
+    });
   });
 }
 
@@ -146,7 +169,10 @@ function buildHomeBlocks(
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `${title}\n${session.lastError!.type}: ${session.lastError!.message}\n_${ago}_`,
+          text: truncateMrkdwn(
+            `${title}\n${formatLastErrorForSlack(session.lastError!)}\n_${ago}_`,
+            HOME_TEXT_LIMIT,
+          ),
         },
       });
     }
@@ -186,51 +212,121 @@ function sessionBlock(
     ? `<${permalink}|*${session.threadId}*>`
     : `*${session.threadId}*`;
 
-  // Lead/primary session line
   const muteFlag = session.muted ? "  |  :no_bell: *Muted*" : "";
   let text = `${title}\n${status}${muteFlag}  |  Agent: \`${leadAgent}\`  |  Provider: \`${provider}\`  |  Repo: ${repo}\nLast activity: ${ago}`;
 
   if (pending > 0) {
     text += `  |  Pending: ${pending}`;
   }
-  if (session.worktreePath) {
-    text += `\nWorktree: \`${session.worktreePath}\``;
-  }
-  if (session.sessionId) {
-    text += `\nResume: \`${resumeCommand(provider, session.sessionId)}\``;
-  }
-
-  // Persistent agent sub-sessions (multi-agent threads — bug pipeline, etc.)
   const agentEntries = Object.values(session.agentSessions ?? {}).filter(
     (a) => a.sessionId !== null,
   );
   if (agentEntries.length > 0) {
-    const agentLines = agentEntries
-      .sort((a, b) => b.lastActivity - a.lastActivity)
-      .map((a) => {
-        const agentStatus =
-          a.status === "busy"
-            ? ":large_blue_circle:"
-            : a.status === "failed"
-              ? ":x:"
-              : a.status === "done"
-                ? ":white_check_mark:"
-                : ":white_circle:";
-        const agentPending = a.pendingMessages?.length ?? 0;
-        const agentAgo = timeAgo(a.lastActivity);
-        let line = `  ${agentStatus} \`${a.agentName}\` — ${a.status}, last ${agentAgo}`;
-        if (agentPending > 0) line += `, pending ${agentPending}`;
-        if (a.sessionId) line += `\n     Resume: \`${resumeCommand(a.provider ?? provider, a.sessionId)}\``;
-        return line;
-      })
-      .join("\n");
-    text += `\n_Agents in this thread:_\n${agentLines}`;
+    const busyAgents = agentEntries.filter((a) => a.status === "busy").length;
+    text += `  |  Agents: ${agentEntries.length}`;
+    if (busyAgents > 0) text += ` (${busyAgents} busy)`;
   }
 
   return {
     type: "section",
-    text: { type: "mrkdwn", text },
+    text: { type: "mrkdwn", text: truncateMrkdwn(text, HOME_TEXT_LIMIT) },
+    accessory: {
+      type: "button",
+      text: { type: "plain_text", text: "View details", emoji: true },
+      action_id: ACTION_SESSION_DETAILS,
+      value: session.threadId,
+    },
   };
+}
+
+export function buildSessionDetailModal(session: ThreadSession): View {
+  return {
+    type: "modal",
+    title: { type: "plain_text", text: "Session details" },
+    close: { type: "plain_text", text: "Close" },
+    blocks: buildSessionDetailBlocks(session),
+  };
+}
+
+function buildSessionDetailBlocks(session: ThreadSession): KnownBlock[] {
+  const chunks = splitMrkdwn(buildSessionDetailText(session), MODAL_TEXT_LIMIT);
+  return chunks.map((text) => ({
+    type: "section",
+    text: { type: "mrkdwn", text },
+  }));
+}
+
+function buildSessionDetailText(session: ThreadSession): string {
+  const provider = session.provider ?? "claude";
+  const fields = [
+    `*Session*\n\`${session.threadId}\``,
+    `*Status:* ${session.status}`,
+    `*Agent:* \`${session.agentType ?? "default"}\``,
+    `*Provider:* \`${provider}\``,
+    `*Repo:* ${session.targetRepo ?? "none"}`,
+    `*Last activity:* ${timeAgo(session.lastActivity)}`,
+    `*Muted:* ${session.muted ? "yes" : "no"}`,
+    `*Pending messages:* ${session.pendingMessages.length}`,
+  ];
+
+  if (session.worktreePath) fields.push(`*Worktree:*\n\`${session.worktreePath}\``);
+  if (session.sessionId) fields.push(`*Resume:*\n\`${resumeCommand(provider, session.sessionId)}\``);
+
+  const agentEntries = Object.values(session.agentSessions ?? {})
+    .filter((a) => a.sessionId !== null)
+    .sort((a, b) => b.lastActivity - a.lastActivity);
+  if (agentEntries.length > 0) {
+    const agentLines = agentEntries.map((a) => {
+      const agentPending = a.pendingMessages?.length ?? 0;
+      const agentProvider = a.provider ?? provider;
+      let firstLine = `• \`${a.agentName}\` — ${a.status}, last ${timeAgo(a.lastActivity)}`;
+      if (agentPending > 0) firstLine += `, pending ${agentPending}`;
+      const lines = [firstLine];
+      if (a.sessionId) lines.push(`  Resume: \`${resumeCommand(agentProvider, a.sessionId)}\``);
+      return lines.join("\n");
+    });
+    fields.push(`*Agents in this thread:*\n${agentLines.join("\n\n")}`);
+  }
+
+  if (session.lastError) {
+    fields.push(`*Last error:*\n${formatLastErrorForSlack(session.lastError)}\n_${timeAgo(session.lastError.timestamp)}_`);
+  }
+
+  return fields.join("\n\n");
+}
+
+function formatLastErrorForSlack(error: { type: string; message: string }): string {
+  return sanitizeErrorForSlack(`${error.type}: ${error.message}`);
+}
+
+function truncateMrkdwn(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const suffix = "\n… _truncated_";
+  return `${text.slice(0, max - suffix.length)}${suffix}`;
+}
+
+function splitMrkdwn(text: string, max: number): string[] {
+  if (text.length <= max) return [text];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > max) {
+    let splitAt = remaining.lastIndexOf("\n\n", max);
+    if (splitAt < Math.floor(max / 2)) splitAt = max;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks.slice(0, 100);
+}
+
+function firstAction(body: unknown): { value?: unknown } | undefined {
+  const actions = (body as { actions?: Array<{ value?: unknown }> })?.actions;
+  return Array.isArray(actions) ? actions[0] : undefined;
+}
+
+function triggerIdFromBody(body: unknown): string | null {
+  const triggerId = (body as { trigger_id?: unknown })?.trigger_id;
+  return typeof triggerId === "string" ? triggerId : null;
 }
 
 function resumeCommand(provider: string, sessionId: string): string {

@@ -14,6 +14,7 @@ Slack Bolt app setup, event filtering (with self-bot directive escape hatch), ho
 | `extractFiles(event)` (private) | `events.ts` | Pulls `{ url_private_download, name, mimetype }` from `event.files` |
 | `registerHomeTab(app, store, windowMs)` | `home.ts` | `app_home_opened` listener |
 | `publishHomeTab(app, userId, store, windowMs)` | `home.ts` | Builds and publishes the home view |
+| `buildSessionDetailModal(session)` | `home.ts` | Builds the Slack modal for one session's full details |
 
 ### Types
 
@@ -56,7 +57,7 @@ Reads `store.getRecent(windowMs)` then renders:
 - Recent idle sessions (top 10 by lastActivity)
 - Recent errors (top 5)
 
-Each session block shows status, agent, repo, last-activity, pending count, worktree path, resume command, and any `agentSessions[*]` rows with their own sessionId/status/lastActivity/pending.
+Each session block is intentionally compact: status, agent, provider, repo, last-activity, pending count, and agent count. Long details (worktree path, resume command, `agentSessions[*]` resume/status rows, last error) live behind the `home_session_details` button, which opens a Slack modal for a single thread. Home rows and modal sections are capped below Slack's 3000-character section-text limit so `views.publish` / `views.open` do not fail with `invalid_arguments`. Last-error text is sanitized with `sanitizeErrorForSlack` before rendering so stored provider errors cannot leak injected prompt/context through Home or modals.
 
 ## Key Concepts
 
