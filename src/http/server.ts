@@ -12,11 +12,14 @@ import type { Config, RepoConfig } from "../config.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerManager } from "../lifecycle/dev-server.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
+import type { WorkflowRegistry } from "../workflows/registry.ts";
+import type { WorkflowStore } from "../workflows/store.ts";
 import { handleHealth } from "./routes/health.ts";
 import { handleSessions, handleSessionDetail } from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryRead } from "./routes/memory.ts";
 import { handleDevServers } from "./routes/dev-server.ts";
+import { handleWorkflows } from "./routes/workflows.ts";
 import { log } from "../logger.ts";
 
 const PUBLIC_DIR = path.resolve(import.meta.dir, "../../public");
@@ -28,10 +31,20 @@ export interface HttpServerDeps {
   devServerManager: DevServerManager;
   devServerQueue: DevServerQueue;
   repos: RepoConfig[];
+  workflowRegistry: WorkflowRegistry;
+  workflowStore: WorkflowStore;
 }
 
 export function startHttpServer(deps: HttpServerDeps): void {
-  const { store, config, devServerManager, devServerQueue, repos } = deps;
+  const {
+    store,
+    config,
+    devServerManager,
+    devServerQueue,
+    repos,
+    workflowRegistry,
+    workflowStore,
+  } = deps;
 
   const server = Bun.serve({
     port: config.http.port,
@@ -71,6 +84,8 @@ export function startHttpServer(deps: HttpServerDeps): void {
           return await handleSessionDetail(store, threadId);
         } else if (url.pathname === "/api/dev-server") {
           return await handleDevServers(devServerManager, devServerQueue, repos);
+        } else if (url.pathname === "/api/workflows") {
+          return await handleWorkflows(workflowRegistry, workflowStore);
         } else if (url.pathname === "/api/logs") {
           return await handleLogs(url.searchParams);
         } else if (url.pathname === "/api/memory") {

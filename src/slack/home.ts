@@ -2,6 +2,8 @@ import type { App } from "@slack/bolt";
 import type { KnownBlock, View } from "@slack/types";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { ThreadSession } from "../session/types.ts";
+import type { WorkflowRun, WorkflowState } from "../workflows/types.ts";
+import type { WorkflowStore } from "../workflows/store.ts";
 import { sanitizeErrorForSlack } from "./formatting.ts";
 
 const HOME_TEXT_LIMIT = 2_900;
@@ -12,9 +14,10 @@ export function registerHomeTab(
   app: App,
   store: SessionStore,
   windowMs: number,
+  workflowStore?: WorkflowStore,
 ): void {
   app.event("app_home_opened", async ({ event }) => {
-    await publishHomeTab(app, event.user, store, windowMs);
+    await publishHomeTab(app, event.user, store, windowMs, workflowStore);
   });
 
   app.action(ACTION_SESSION_DETAILS, async ({ ack, body, client }) => {
@@ -40,10 +43,14 @@ export async function publishHomeTab(
   userId: string,
   store: SessionStore,
   windowMs: number,
+  workflowStore?: WorkflowStore,
 ): Promise<void> {
   const sessions = await store.getRecent(windowMs);
+  const workflowData = workflowStore
+    ? await loadWorkflowHomeData(workflowStore)
+    : { states: [], runsByWorkflow: new Map<string, WorkflowRun[]>() };
   const permalinks = await resolvePermalinks(app, sessions);
-  const blocks = buildHomeBlocks(sessions, permalinks);
+  const blocks = buildHomeBlocks(sessions, permalinks, workflowData);
 
   try {
     await app.client.views.publish({
@@ -82,6 +89,10 @@ async function resolvePermalinks(
 function buildHomeBlocks(
   sessions: Map<string, ThreadSession>,
   permalinks: Map<string, string>,
+  workflowData: {
+    states: WorkflowState[];
+    runsByWorkflow: Map<string, WorkflowRun[]>;
+  },
 ): Array<Record<string, unknown>> {
   const blocks: Array<Record<string, unknown>> = [];
 
@@ -114,6 +125,17 @@ function buildHomeBlocks(
   });
 
   blocks.push({ type: "divider" });
+
+  if (workflowData.states.length > 0) {
+    blocks.push({
+      type: "header",
+      text: { type: "plain_text", text: "Workflows" },
+    });
+
+    for (const state of workflowData.states) {
+      blocks.push(workflowBlock(state, workflowData.runsByWorkflow.get(state.name) ?? []));
+    }
+  }
 
   // Active sessions
   const busySessions = allSessions.filter((s) => s.status !== "idle");
@@ -178,7 +200,7 @@ function buildHomeBlocks(
     }
   }
 
-  if (allSessions.length === 0) {
+  if (allSessions.length === 0 && workflowData.states.length === 0) {
     blocks.push({
       type: "section",
       text: {
@@ -189,6 +211,59 @@ function buildHomeBlocks(
   }
 
   return blocks;
+}
+
+async function loadWorkflowHomeData(
+  workflowStore: WorkflowStore,
+): Promise<{
+  states: WorkflowState[];
+  runsByWorkflow: Map<string, WorkflowRun[]>;
+}> {
+  const states = await workflowStore.listStates();
+  const runsByWorkflow = new Map<string, WorkflowRun[]>();
+  await Promise.all(
+    states.map(async (state) => {
+      runsByWorkflow.set(state.name, await workflowStore.listRuns(state.name, 3));
+    }),
+  );
+  return { states, runsByWorkflow };
+}
+
+function workflowBlock(
+  state: WorkflowState,
+  runs: WorkflowRun[],
+): Record<string, unknown> {
+  const status = workflowStatusLabel(state.status);
+  const nextRun = state.nextRunAt ? new Date(state.nextRunAt).toISOString() : "none";
+  const lastRun = state.lastRunAt ? `${state.lastRunStatus ?? "unknown"} ${timeAgo(state.lastRunAt)}` : "never";
+  const latest = runs[0];
+  const latestArtifact = latest ? `\nLatest artifact: \`${latest.artifactPath}\`` : "";
+  const latestSession = latest?.providerSessionId
+    ? `\nProvider session: \`${latest.providerSessionId}\``
+    : "";
+  const error = state.lastError ? `\nLast error: ${sanitizeErrorForSlack(state.lastError)}` : "";
+
+  return {
+    type: "section",
+    text: {
+      type: "mrkdwn",
+      text: truncateMrkdwn(
+        `*${state.name}*\n${status}  |  Next: ${nextRun}  |  Last: ${lastRun}${latestArtifact}${latestSession}${error}`,
+        HOME_TEXT_LIMIT,
+      ),
+    },
+  };
+}
+
+function workflowStatusLabel(status: WorkflowState["status"]): string {
+  switch (status) {
+    case "active":
+      return ":large_green_circle: Active";
+    case "stopped":
+      return ":white_circle: Stopped";
+    case "invalid":
+      return ":red_circle: Invalid";
+  }
 }
 
 function sessionBlock(

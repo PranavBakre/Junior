@@ -130,6 +130,10 @@ export class WorkflowRegistry {
     this.definitions = next;
     this.errors = errors;
     const snapshot = this.snapshot();
+    log.info(
+      "workflow",
+      `reload complete definitions=${snapshot.definitions.size} errors=${snapshot.errors.length}`,
+    );
     this.emit({ type: "reloaded", snapshot });
     return snapshot;
   }
@@ -138,8 +142,12 @@ export class WorkflowRegistry {
     await this.reload();
     for (const root of this.roots) {
       try {
-        const watcher = watch(root.path, () => {
-          this.scheduleReload();
+        const watcher = watch(root.path, (eventType, filename) => {
+          log.info(
+            "workflow",
+            `watch event root=${root.path} event=${eventType} file=${filename?.toString() ?? "-"}`,
+          );
+          this.scheduleReload(root.path);
         });
         watcher.on("error", (error) => {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -165,10 +173,15 @@ export class WorkflowRegistry {
     this.reloadTimer = null;
   }
 
-  private scheduleReload(): void {
+  private scheduleReload(rootPath: string): void {
     if (this.reloadTimer) clearTimeout(this.reloadTimer);
+    log.info(
+      "workflow",
+      `reload scheduled root=${rootPath} debounceMs=${this.debounceMs}`,
+    );
     this.reloadTimer = setTimeout(() => {
       this.reloadTimer = null;
+      log.info("workflow", `reload starting root=${rootPath}`);
       this.reload().catch((err) => {
         log.warn(
           "workflow",

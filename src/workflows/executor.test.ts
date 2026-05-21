@@ -28,7 +28,11 @@ describe("WorkflowExecutor", () => {
           exitCode: 0,
           error: null,
         }),
-        onEvent: () => undefined,
+        onEvent: (cb) => cb({
+          type: "init",
+          provider: "opencode",
+          sessionId: "ses-workflow",
+        }),
         kill: () => undefined,
         pid: null,
       };
@@ -74,6 +78,7 @@ describe("WorkflowExecutor", () => {
         "Shipped workflow runner",
       );
       expect((await store.getRun(result.run.id))?.status).toBe("success");
+      expect((await store.getRun(result.run.id))?.providerSessionId).toBe("ses-workflow");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
