@@ -88,11 +88,13 @@ export class SqliteWorkflowStore implements WorkflowStore {
         started_at INTEGER NOT NULL,
         finished_at INTEGER,
         artifact_path TEXT NOT NULL,
+        provider_session_id TEXT,
         slack_channel TEXT,
         slack_thread_ts TEXT,
         error TEXT
       )
     `);
+    ensureColumn(this.db, "workflow_runs", "provider_session_id", "TEXT");
     this.db.run(`
       CREATE INDEX IF NOT EXISTS workflow_runs_workflow_started_idx
       ON workflow_runs (workflow_name, started_at DESC)
@@ -154,11 +156,12 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.db
       .query(
         `INSERT INTO workflow_runs
-         (id, workflow_name, workflow_version_hash, source_path, reason, actor_slack_user_id, status, started_at, finished_at, artifact_path, slack_channel, slack_thread_ts, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, workflow_name, workflow_version_hash, source_path, reason, actor_slack_user_id, status, started_at, finished_at, artifact_path, provider_session_id, slack_channel, slack_thread_ts, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            status = excluded.status,
            finished_at = excluded.finished_at,
+           provider_session_id = excluded.provider_session_id,
            slack_channel = excluded.slack_channel,
            slack_thread_ts = excluded.slack_thread_ts,
            error = excluded.error`,
@@ -174,6 +177,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         run.startedAt,
         run.finishedAt,
         run.artifactPath,
+        run.providerSessionId,
         run.slackChannel,
         run.slackThreadTs,
         run.error,
@@ -220,6 +224,7 @@ interface RunRow {
   started_at: number;
   finished_at: number | null;
   artifact_path: string;
+  provider_session_id: string | null;
   slack_channel: string | null;
   slack_thread_ts: string | null;
   error: string | null;
@@ -251,8 +256,20 @@ function runFromRow(row: RunRow): WorkflowRun {
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     artifactPath: row.artifact_path,
+    providerSessionId: row.provider_session_id,
     slackChannel: row.slack_channel,
     slackThreadTs: row.slack_thread_ts,
     error: row.error,
   };
+}
+
+function ensureColumn(
+  db: Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const rows = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+  if (rows.some((row) => row.name === column)) return;
+  db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

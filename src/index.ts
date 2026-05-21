@@ -179,7 +179,7 @@ sessionManager.onError = (session, error) => {
   );
 };
 
-registerHomeTab(app, store, config.session.homeWindowMs);
+registerHomeTab(app, store, config.session.homeWindowMs, workflowStore);
 
 setupGracefulShutdown(sessionManager, store, devServerManager, () => {
   workflowScheduler.stop();
@@ -306,6 +306,8 @@ setInterval(() => {
         devServerManager,
         devServerQueue,
         repos: config.repos,
+        workflowRegistry,
+        workflowStore,
       });
     } catch (err) {
       log.error(
