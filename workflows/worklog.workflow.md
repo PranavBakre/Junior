@@ -5,7 +5,7 @@ description: Track PRs and commits from the last 24 hours, save a grouped worklo
 ownerSlackUserIds: []
 triggers:
   - type: schedule
-    cron: "55 21 * * 1-5"
+    cron: "00 18 * * 1-5"
     timezone: Asia/Kolkata
   - type: command
     command: worklog
@@ -33,7 +33,7 @@ Use the runtime context supplied by Junior to find the configured repositories a
 For each repo:
 
 1. Only report work that landed on `main`. Ignore feature branches, draft PRs, open PRs, unmerged commits, and local-only commits.
-2. Use merged PRs as the primary source of truth. Query GitHub for PRs authored by `pranav-growthx`, merged into base branch `main`, and merged in the last 48 hours. Use the authenticated `gh` user only for API access, not as the author filter.
+2. Use merged PRs as the primary source of truth. Query GitHub for PRs authored by `pranav-growthx`, merged into base branch `main`, and merged in the last 24 hours. Use the authenticated `gh` user only for API access, not as the author filter.
 3. Use local git commits only as evidence to discover the merged PR that introduced them into `main`. If you find authored commits on `main`, map them back to the merge PR or squash PR and summarize the PR, not the individual commits. Do not include raw commit bullets unless no merged PR can be identified.
 4. For commit fallback, include commits authored by `pranav-growthx`, `Pranav Bakre`, or `pranav@growthx.club`; do not use service-account local git config such as `gxt-admin` as the target author.
 5. Treat collection failures as partial data, not as a reason to invent activity.
