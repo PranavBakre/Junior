@@ -64,6 +64,7 @@ After V1 has real routing outcomes:
 3. Let LLM extraction normalize task shape only when deterministic extraction is insufficient.
 4. Add reason traces to Slack status/debug surfaces so operators can see which memory influenced a route.
 5. Add decay/supersession for stale routing memories, especially repo aliases and user preferences.
+6. Let the memory consolidation engine promote repeated routing outcomes into durable routing memories, but keep those memories as evidence for the router rather than commands.
 
 V2 should improve autonomy, but memory still provides evidence. It should never directly dispatch agents or override explicit user intent.
 
@@ -140,6 +141,9 @@ type RecalledRoutingFact = {
   body: string;
   confidence: number;
   sourceEventId?: string;
+  validAt?: number;
+  invalidAt?: number;
+  supersededBy?: string;
   reason: string;
 };
 
@@ -193,6 +197,7 @@ Examples:
 
 - "Last time this was routed to `build`, user corrected to `frontend`."
 - "Last dashboard styling task needed frontend design rules."
+- "Old repo alias was superseded after the project split; ignore it unless the query is historical."
 
 ### Task Patterns and Lessons
 
@@ -341,6 +346,8 @@ Lesson: For Pranav, "dashboard" usually means gx-admin-client/frontend unless AP
 Source events: route_event_..., correction_event_...
 ```
 
+Repeated routing outcomes should first be stored as source events. The consolidation engine can later promote stable patterns into routing memories such as repo aliases, channel defaults, and user preferences. The hot routing path should not call an LLM for every Slack message just to learn a preference; it should consume already-stored routing memories and persist new outcomes for offline promotion.
+
 ## MVP Build Order
 
 1. Add routing decision types and reason traces.
@@ -357,6 +364,7 @@ Source events: route_event_..., correction_event_...
 - Do not let an LLM generate arbitrary executable routing rules on the hot path.
 - Do not add Prolog/graph/vector infrastructure for MVP.
 - Do not override explicit user commands with learned preferences.
+- Do not run expensive memory extraction in the dispatch hot path.
 
 ## Fit With the Existing System
 

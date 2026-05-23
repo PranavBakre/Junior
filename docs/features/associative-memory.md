@@ -24,6 +24,12 @@ The useful core is:
 
 This keeps memory explainable, rebuildable, cheap to operate, and idiomatic for Junior's JS/TS stack.
 
+The broader research plan still matters, but it should be sequenced:
+
+- V1 proves sourced recall with raw capture, FTS, tags/entities, bounded edge traversal, and explainable scoring.
+- V2 adds the consolidation/"dreaming" engine: classify recent records, promote durable lessons, archive low-value events from the active set, strengthen/prune edges, and handle stale facts.
+- V3 can add richer hybrid retrieval such as local embeddings, Personalized PageRank-style spreading activation, hierarchical summaries, and learned ingestion rules once measured recall gaps justify them.
+
 ## Why Not a Vector DB First
 
 Avoid making embeddings the foundation.
@@ -34,6 +40,8 @@ Avoid making embeddings the foundation.
 - Junior-scale memory likely fits lexical search + structured metadata for a long time.
 
 Embeddings can be added later as an optional acceleration layer if recall misses too much. If added, they should be derived/rebuildable, not authoritative.
+
+This is a rejection of a vector database as the default substrate, not a rejection of local embeddings forever. A future SQLite-backed vector table, such as `sqlite-vec`, can be a rebuildable fuzzy-entry cache beside FTS and symbolic lookup. Raw source records, derived nodes, and provenance remain authoritative.
 
 ## Why Not a Graph DB First
 
@@ -195,6 +203,40 @@ Main Junior session receives only top relevant memories
 
 The classifier can run through a hook, provider event stream, or scheduled job. It should produce raw, provenance-backed records first and derived tags/edges second.
 
+## Memory Classes
+
+The source store should make the memory tiers explicit. These are raw memory classes in the database, not file-format requirements.
+
+### Curated Fact
+
+Manually approved durable knowledge: operator preferences, stable project facts, trusted repo aliases, or safety rules. Curated facts should be rare, high-confidence, and sourced to the correction, approval, or configuration that created them.
+
+### Episodic Event
+
+A timestamped thing that happened: a Slack request, blocker, decision, correction, runner result, route, or notable outcome. Episodic events are the main audit trail for "what happened before?".
+
+### Thread / Session Summary
+
+A compressed record of a whole Slack thread or agent session when individual events are too small to preserve the context. Summaries should link to their source records and derived events.
+
+### Semantic Lesson
+
+Reusable knowledge generalized from one or more events. Lessons answer "what should Junior do differently next time?" and should always keep `lesson_from` provenance.
+
+### Procedural Memory
+
+A repeatable playbook or workflow, such as how to reproduce a bug class or prepare a repo. Procedural memories are future-facing; v1 can store them as facts/lessons, but the schema should not make them impossible later.
+
+### Routing Memory
+
+Repo aliases, user preferences, channel patterns, task patterns, and prior routing corrections. These feed agent selection as evidence, not as direct dispatch commands.
+
+### Correction
+
+An explicit user/operator/agent correction to a fact, route, tag, outcome, edge, or lesson. Corrections are high-value source records because they prevent repeated mistakes and provide labeled examples for future rule learning.
+
+Raw capture can be broad, but active recall should be selective. The hot set should prefer recent, important, unresolved, frequently reused, or manually curated memories. Low-value events should remain searchable for audit but should not eagerly enter the main agent context.
+
 ## Recommended V1
 
 Build the first version as a boring, inspectable memory event log before making recall clever.
@@ -211,7 +253,7 @@ V1 success means Junior can answer "what prior sourced facts might matter here?"
 
 ## Recommended V2
 
-Once V1 has useful records and real misses, add higher-order memory behavior:
+Once V1 has useful records and real misses, add the consolidation/"dreaming" engine and higher-order memory behavior:
 
 1. LLM extraction for events, lessons, tags, entities, and relationships with provenance on every derived field.
 2. Scheduled consolidation that promotes repeated events into lessons and archives low-value source events from the active recall set.
@@ -220,6 +262,17 @@ Once V1 has useful records and real misses, add higher-order memory behavior:
 5. Offline rule-learning experiments after enough accepted/rejected classifications exist.
 
 V2 should optimize quality and operator leverage. It should still keep raw source records authoritative and derived memory rebuildable.
+
+The V2 consolidation engine is the implementation form of "dreaming":
+
+1. replay recent source records and episodic events while Junior is idle or on a schedule;
+2. classify and summarize records that deterministic extraction could not safely handle;
+3. promote repeated or high-importance patterns into semantic lessons and curated/routing facts;
+4. archive low-value events out of the active recall set without deleting the audit source;
+5. strengthen useful edges, prune noisy edges, and create `supersedes` / `contradicts` links for stale facts;
+6. record provenance for every derived field and explanation for every promotion/archive decision.
+
+Do not run this work on every Slack message. The hot path should store raw records cheaply and retrieve only top-k snippets; expensive extraction, reflection, and rule learning belong in scheduled or operator-triggered jobs.
 
 ## Data Sizes
 
@@ -331,7 +384,9 @@ CREATE TABLE memory_source_record (
                      'runner_output',
                      'routing_decision',
                      'routing_correction',
-                     'ingestion_correction'
+                     'ingestion_correction',
+                     'curated_fact',
+                     'manual_correction'
                    )
                  ),
   channel_id     TEXT,
@@ -349,8 +404,22 @@ CREATE TABLE memory_source_record (
 
 CREATE TABLE memory_node (
   id         TEXT PRIMARY KEY,
-  kind       TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'entity', 'tag')),
-  created_at INTEGER NOT NULL
+  kind       TEXT NOT NULL CHECK (
+               kind IN (
+                 'event',
+                 'lesson',
+                 'summary',
+                 'fact',
+                 'procedure',
+                 'routing_memory',
+                 'entity',
+                 'tag'
+               )
+             ),
+  created_at INTEGER NOT NULL,
+  valid_at   INTEGER,
+  invalid_at INTEGER,
+  superseded_by TEXT
 );
 
 CREATE TABLE memory_event (
@@ -364,6 +433,7 @@ CREATE TABLE memory_event (
   created_at    INTEGER NOT NULL,
   last_used_at  INTEGER,
   use_count     INTEGER DEFAULT 0,
+  active        INTEGER DEFAULT 1,
   source_ts     TEXT,
   source_url    TEXT,
   FOREIGN KEY (source_record_id) REFERENCES memory_source_record(id),
@@ -379,6 +449,23 @@ CREATE TABLE lesson (
   created_at    INTEGER NOT NULL,
   last_used_at  INTEGER,
   use_count     INTEGER DEFAULT 0,
+  active        INTEGER DEFAULT 1,
+  FOREIGN KEY (id) REFERENCES memory_node(id)
+);
+
+CREATE TABLE memory_fact (
+  id            TEXT PRIMARY KEY,
+  kind          TEXT NOT NULL CHECK (
+                  kind IN ('curated_fact', 'routing_memory', 'procedure')
+                ),
+  title         TEXT,
+  body          TEXT NOT NULL,
+  confidence    REAL DEFAULT 0.5,
+  importance    REAL DEFAULT 0.5,
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER,
+  use_count     INTEGER DEFAULT 0,
+  active        INTEGER DEFAULT 1,
   FOREIGN KEY (id) REFERENCES memory_node(id)
 );
 
@@ -398,14 +485,14 @@ CREATE TABLE tag (
 CREATE TABLE memory_tag (
   memory_id TEXT NOT NULL,
   tag_id    TEXT NOT NULL,
-  memory_kind TEXT NOT NULL CHECK (memory_kind IN ('event', 'lesson', 'summary', 'fact')),
+  memory_kind TEXT NOT NULL CHECK (memory_kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory')),
   PRIMARY KEY (memory_id, tag_id)
 );
 
 CREATE TABLE mention (
   memory_id TEXT NOT NULL,
   entity_id TEXT NOT NULL,
-  memory_kind TEXT NOT NULL CHECK (memory_kind IN ('event', 'lesson', 'summary', 'fact')),
+  memory_kind TEXT NOT NULL CHECK (memory_kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory')),
   PRIMARY KEY (memory_id, entity_id)
 );
 
@@ -423,7 +510,7 @@ CREATE TABLE edge (
 
 CREATE TABLE memory_search_doc (
   id         TEXT PRIMARY KEY,
-  kind       TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact')),
+  kind       TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory')),
   title      TEXT,
   body       TEXT NOT NULL,
   outcome    TEXT,
@@ -444,7 +531,7 @@ CREATE INDEX edge_dst_idx ON edge(dst_id);
 CREATE INDEX edge_type_src_idx ON edge(type, src_id);
 ```
 
-`memory_source_record` is the raw audit layer: Slack messages, runner outputs, routing decisions, and corrections are stored before extraction. `memory_event` is derived from source records and should always point back to one. `memory_node` keeps ids unambiguous across events, lessons, facts, entities, and tags.
+`memory_source_record` is the raw audit layer: Slack messages, runner outputs, routing decisions, curated facts, and corrections are stored before extraction. `memory_event` is derived from source records and should always point back to one. `memory_node` keeps ids unambiguous across events, lessons, summaries, facts, procedures, routing memories, entities, and tags. `valid_at`, `invalid_at`, and `superseded_by` let recall suppress stale facts by default while preserving historical audit.
 
 `memory_search_doc` is the authoritative search projection. The FTS table is a derived index and should be maintained in one of two explicit ways:
 
@@ -486,6 +573,8 @@ LIMIT 20;
 ```
 
 This is "spreading activation lite": closer nodes score higher, stronger edges score higher, deeper hops decay, and max depth prevents runaway traversal.
+
+If recall quality later depends on many weak paths converging on the same memory, upgrade this traversal to an in-process spreading-activation or Personalized PageRank-style pass over a bounded candidate graph. Keep the recursive CTE path as the simple v1 implementation until measured misses prove it insufficient.
 
 ## Performance Expectations
 
@@ -533,9 +622,32 @@ Start simple and keep each term explainable. The recall output should include wh
 Matched because: exact entity `junior`, tag `memory_architecture`, edge `lesson_from`, high importance, recent discussion.
 ```
 
+## Usage and Cost Model
+
+Memory should reduce main-session context pressure rather than add a model call to every event.
+
+V1 hot path should be cheap:
+
+1. store raw Slack messages, runner outputs, routes, and corrections without an LLM call;
+2. write SQLite rows and derived FTS/search projections;
+3. run FTS/tag/entity lookup and bounded edge traversal;
+4. return only top-k sourced snippets to the main session.
+
+The expensive work belongs off the hot path:
+
+- LLM event extraction;
+- importance scoring when deterministic signals are not enough;
+- thread summarization;
+- lesson/reflection generation;
+- contradiction detection;
+- routing-memory extraction;
+- offline rule-learning and evaluation.
+
+The rule is: **never call an LLM just to decide whether to store raw memory**. Store raw records cheaply, then classify, promote, summarize, and learn from them in scheduled or operator-triggered jobs. This keeps per-message latency and model usage bounded while still letting recall improve over time.
+
 ## MVP Build Order
 
-1. Define `memory_source_record`, `memory_node`, event, lesson, tag/entity, edge, and search-projection schemas.
+1. Define `memory_source_record`, `memory_node`, event, lesson, fact/procedure/routing-memory, tag/entity, edge, and search-projection schemas.
 2. Write append-only source capture for Slack messages, runner outputs, routing decisions, and corrections.
 3. Derive events from source records with deterministic metadata first.
 4. Add SQLite FTS5 search over `memory_search_doc`, with transactional sync or rebuild sync.
@@ -543,7 +655,7 @@ Matched because: exact entity `junior`, tag `memory_architecture`, edge `lesson_
 6. Add recursive CTE edge expansion with depth/fanout caps and tag/entity traversal controls.
 7. Add TypeScript scoring and explanation traces.
 8. Add recall tool interface that returns top-k snippets to Junior.
-9. Add scheduled consolidation later: summarize, promote lessons, prune noisy edges, and archive low-value events.
+9. Add scheduled consolidation later: summarize, promote lessons, prune noisy edges, mark stale facts, and archive low-value events.
 
 ## Future: Ingestion Rule Learning
 

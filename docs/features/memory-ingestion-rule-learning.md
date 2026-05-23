@@ -26,9 +26,9 @@ The runtime path should remain simple:
 ```text
 raw Slack messages
   ↓
-deterministic heuristics + LLM extraction
+cheap deterministic capture and heuristics
   ↓
-store events/tags/edges with provenance
+store raw source records, events, and simple metadata with provenance
   ↓
 log corrections and outcomes
 ```
@@ -36,7 +36,7 @@ log corrections and outcomes
 Then offline:
 
 ```text
-classification history + corrections
+classification history + corrections + consolidation decisions
   ↓
 Popper/Metagol learns candidate symbolic rules
   ↓
@@ -55,6 +55,7 @@ Do not build Popper, Metagol, or any other ILP loop in v1. Build the data needed
 4. Require provenance for every derived tag, entity, edge, lesson, and routing fact.
 5. Add a local evaluation script that replays stored examples against the current ingestion rules and reports precision/recall-style counts.
 6. Store draft learned rules only as text/artifacts, not as executable production behavior.
+7. Do not call an LLM merely to decide whether to store raw memory; raw source capture should be cheap and broad.
 
 V1 success means Junior can answer "why did this memory get this tag/type/edge?" and "what examples would a future learner train on?" It does not need to learn rules yet.
 
@@ -208,7 +209,7 @@ edge(NewFact, OldFact, supersedes) :-
 
 ### Storage and Promotion
 
-Rules can help decide whether something stays hot, archives cold, or becomes a long-term lesson:
+Rules can help the consolidation/"dreaming" engine decide whether something stays hot, archives cold, becomes a long-term lesson, or becomes durable routing/procedural memory:
 
 ```prolog
 promote(Event) :-
@@ -218,6 +219,11 @@ promote(Event) :-
 promote(Event) :-
   event_type(Event, correction),
   repeated_pattern(Event).
+
+archive(Event) :-
+  low_importance(Event),
+  not(unresolved(Event)),
+  not(reused(Event)).
 ```
 
 ### Agent-Selection Memory Extraction
@@ -249,22 +255,43 @@ type IngestionClassification = {
   assignedTags: string[];
   assignedEventTypes: string[];
   createdEdges: Array<{ src: string; dst: string; type: string }>;
-  extractor: "heuristic" | "llm" | "manual" | "learned_rule";
+  extractor: "capture" | "heuristic" | "llm" | "manual" | "learned_rule";
   confidence: number;
   createdAt: number;
 };
 
 type IngestionCorrection = {
   eventId: string;
-  field: "tag" | "event_type" | "edge" | "promotion" | "routing_fact";
+  field:
+    | "tag"
+    | "event_type"
+    | "edge"
+    | "promotion"
+    | "archive"
+    | "routing_fact"
+    | "validity";
   incorrectValue?: string;
   correctValue?: string;
   correctedBy: "user" | "agent" | "reviewer";
   createdAt: number;
 };
+
+type ConsolidationDecision = {
+  eventId: string;
+  action:
+    | "promote_lesson"
+    | "promote_fact"
+    | "promote_routing_memory"
+    | "archive"
+    | "mark_stale";
+  reason: string;
+  sourceIds: string[];
+  extractor: "heuristic" | "llm" | "manual" | "learned_rule";
+  createdAt: number;
+};
 ```
 
-Positive examples come from accepted classifications. Negative examples come from corrected/rejected classifications.
+Positive examples come from accepted classifications and accepted consolidation decisions. Negative examples come from corrected/rejected classifications, rejected promotions, and corrected archive/staleness decisions.
 
 ## Runtime Safety
 
@@ -283,14 +310,15 @@ Do not let an LLM or ILP tool write arbitrary hot-path code or arbitrary Prolog 
 
 ## Recommended Sequence
 
-1. Build deterministic + LLM ingestion first.
+1. Build deterministic capture and simple ingestion first.
 2. Store classifications with provenance.
 3. Store corrections and outcome signals.
-4. Add an offline rule-learning job once there is enough labeled history.
-5. Start with Popper for simple tag/event-type rules.
-6. Review generated rules manually.
-7. Promote accepted rules into the ingestion pipeline.
-8. Measure whether LLM extraction calls decrease and classification consistency improves.
+4. Add scheduled LLM extraction/consolidation for fields deterministic rules cannot safely infer.
+5. Add an offline rule-learning job once there is enough labeled history.
+6. Start with Popper for simple tag/event-type rules.
+7. Review generated rules manually.
+8. Promote accepted rules into the ingestion pipeline.
+9. Measure whether LLM extraction calls decrease and classification consistency improves.
 
 ## Non-Goals
 
@@ -298,9 +326,10 @@ Do not let an LLM or ILP tool write arbitrary hot-path code or arbitrary Prolog 
 - Do not use learned rules as the only classifier.
 - Do not learn from untrusted labels without review.
 - Do not replace recall scoring or SQLite traversal with ILP.
+- Do not put LLM extraction or rule learning in the per-message capture path.
 
 ## Fit With the Memory System
 
-This feature strengthens [Associative Memory MVP](associative-memory.md) by improving the write path. Better tags, event types, and edges make recall better. It also strengthens [Memory-Informed Agent Selection](memory-informed-agent-selection.md) because routing decisions depend on stable routing memories like user preferences, repo aliases, task patterns, and prior corrections.
+This feature strengthens [Associative Memory MVP](associative-memory.md) by improving the write path and the V2 consolidation engine. Better tags, event types, promotion decisions, archive decisions, stale-fact markings, and edges make recall better. It also strengthens [Memory-Informed Agent Selection](memory-informed-agent-selection.md) because routing decisions depend on stable routing memories like user preferences, repo aliases, task patterns, and prior corrections.
 
 The key principle: **learn rules offline, apply accepted rules deterministically online.**
