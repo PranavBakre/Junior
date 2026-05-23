@@ -215,6 +215,8 @@ Routing rules should be ordered so memory informs decisions without overriding e
 
 This distinction matters: explicit intent wins the routing decision, but the session manager still decides whether the chosen target can run immediately or must buffer.
 
+Every branch that returns `dispatch_agent`, including memory-informed correction branches, should pass through the same session gate before execution.
+
 ## Example Rules in TypeScript
 
 Start with pure TypeScript. Do not add Prolog until the rule set becomes painful to maintain.
