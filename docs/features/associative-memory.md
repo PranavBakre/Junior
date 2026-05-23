@@ -203,6 +203,91 @@ Main Junior session receives only top relevant memories
 
 The classifier can run through a hook, provider event stream, or scheduled job. It should produce raw, provenance-backed records first and derived tags/edges second.
 
+## Dictionary and Alias Population
+
+Deterministic recall depends on dictionaries: repo names, aliases, tag synonyms, entity names, and phrase expansions. The dictionary is not magic and should not be treated as an unsourced prompt blob. It is memory too: every non-static entry needs provenance, confidence, validity timestamps, and supersession.
+
+Dictionary entries come from four sources, in order of trust:
+
+### 1. Static config and known system data
+
+Seed the first dictionary from Junior's configured world:
+
+- `REPOS` entries and repo metadata;
+- known agent names and aliases (`build`, `frontend`, `review`, `lead`, `reproducer`, `thinker`);
+- known Slack channels/users where available;
+- command names and directive syntax;
+- file extensions and common stack hints.
+
+Examples:
+
+```text
+gx-backend       -> repo:gql-backend/gx-backend equivalent if configured
+gx-admin-client -> repo:gx-admin-client
+gx-client-next  -> repo:gx-client-next
+PR              -> task_type:review
+.tsx            -> technology:frontend
+```
+
+These entries are deterministic and can be rebuilt from config.
+
+### 2. Curated operator facts
+
+Operators can add high-confidence aliases and preferences when they are known:
+
+```text
+"dashboard"       -> repo:gx-admin-client
+"admin dashboard" -> repo:gx-admin-client
+"web app"         -> repo:gx-client-next
+"API"             -> repo:gx-backend
+```
+
+Curated entries should be rare, sourced to the operator action that created them, and treated as durable until superseded.
+
+### 3. Accepted corrections
+
+Corrections are the best learning signal. If a user says "No, dashboard means admin client," store that as a correction source record. The consolidation engine can later promote it into a dictionary/routing-memory entry:
+
+```text
+alias("dashboard", repo:gx-admin-client)
+confidence: 0.9
+source: correction_event_...
+```
+
+### 4. Dreaming-generated proposals
+
+The consolidation job may propose dictionary entries from repeated usage:
+
+```json
+{
+  "type": "alias_candidate",
+  "phrase": "dashboard",
+  "mapsTo": "gx-admin-client",
+  "targetType": "repo",
+  "confidence": 0.82,
+  "evidence": ["event_1", "event_7", "correction_2"]
+}
+```
+
+These start as drafts. Promote them only after held-out replay, high-confidence gating, or human review. Learned aliases influence recall/routing as evidence, not as direct commands.
+
+### Storage shape
+
+Dictionary entries can be stored as `memory_fact` / `routing_memory` rows plus tags/edges, or as a dedicated projection over those facts. The important fields are:
+
+```text
+phrase
+target_type: repo | tag | entity | task_type | agent | technology
+target_id
+confidence
+source_ids
+valid_at
+invalid_at
+superseded_by
+```
+
+If an alias changes meaning, do not overwrite it. Mark the old entry invalid and create a `supersedes` edge from the new entry to the old one. Current recall filters invalid aliases by default; historical audit can still inspect them.
+
 ## Memory Classes
 
 The source store should make the memory tiers explicit. These are raw memory classes in the database, not file-format requirements.

@@ -191,6 +191,8 @@ Examples:
 - "web app" → `gx-client-next`.
 - "API" / "backend" → `gx-backend`.
 
+Alias source matters. V1 aliases should come from config and curated operator facts. V2 aliases can be promoted from accepted corrections and dreaming-generated proposals. See [Dictionary and Alias Population](associative-memory.md#dictionary-and-alias-population). Learned aliases are routing evidence with confidence and validity, not hard dispatch commands.
+
 ### Prior Routing Corrections
 
 Examples:
