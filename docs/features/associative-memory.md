@@ -274,6 +274,8 @@ The V2 consolidation engine is the implementation form of "dreaming":
 
 Do not run this work on every Slack message. The hot path should store raw records cheaply and retrieve only top-k snippets; expensive extraction, reflection, and rule learning belong in scheduled or operator-triggered jobs.
 
+Junior's dynamic workflow system is the right execution surface for this engine. The memory consolidation job can be a scheduled and on-demand workflow, for example `workflows/memory-consolidation.workflow.md`, with `concurrency: skip`, owner/admin controls, run artifacts under `data/workflow-runs/memory-consolidation`, and optional Slack summaries. The workflow should call memory-specific code/tools rather than embedding all consolidation logic in the markdown prompt. If workflow permissions need to be extended, add narrow capabilities such as `memory.read`, `memory.write`, and `memory.evaluate` instead of granting broad filesystem or database access.
+
 ## Data Sizes
 
 ### Raw Slack Message
@@ -644,6 +646,76 @@ The expensive work belongs off the hot path:
 - offline rule-learning and evaluation.
 
 The rule is: **never call an LLM just to decide whether to store raw memory**. Store raw records cheaply, then classify, promote, summarize, and learn from them in scheduled or operator-triggered jobs. This keeps per-message latency and model usage bounded while still letting recall improve over time.
+
+## Benchmarks and Evaluation
+
+Build a small Junior-specific eval before borrowing academic benchmarks. The first eval set should use real or fixture Slack threads with expected memory ids, expected route/repo when relevant, and known stale memories that must not be returned.
+
+Minimum eval row:
+
+```text
+id
+query_or_message
+expected_memory_ids
+expected_agent
+expected_repo
+must_not_return_memory_ids
+case_type: direct | multi_hop | stale_fact | routing | correction
+```
+
+### Recall Quality
+
+Track:
+
+- `recall@3`, `recall@5`, and `recall@10`: whether the expected memory appears in the top-k results.
+- useful recall rate: of memories surfaced to Junior, how many were used in the answer, route, or operator-facing reason.
+- stale-fact suppression: corrected or superseded facts should not appear for current queries unless the query is explicitly historical.
+- multi-hop recall: queries should surface memories linked through user, repo, task, blocker, or lesson edges, not only direct keyword matches.
+- correction learning: after a correction is stored, a similar replay should route/tag/recall differently.
+
+### Routing Quality
+
+Replay historical routing messages with and without memory evidence:
+
+- selected agent accuracy;
+- selected repo accuracy;
+- clarification rate for intentionally ambiguous messages;
+- explicit-command preservation, where memory must not override the user's command;
+- stale routing preference suppression after a repo alias or user preference is superseded.
+
+### Cost and Performance
+
+Track:
+
+- p50/p95 recall latency before any LLM snippet-selection step;
+- number of source records, nodes, and edges considered;
+- number of snippets injected into the main session;
+- tokens added to the main prompt;
+- model calls per Slack message;
+- model calls per consolidation workflow run;
+- estimated cost per 100 Slack messages;
+- SQLite DB size, FTS rebuild time, and consolidation workflow runtime for the last 24 hours and 7 days.
+
+### Suggested V1 Gates
+
+```text
+recall@5 >= 80% on curated eval
+stale-fact failures = 0 on known corrections
+useful recall rate >= 60%
+p95 recall latency < 300ms before LLM snippet selection
+0 LLM calls required for raw capture
+top-k injected memory <= 8 snippets
+```
+
+### Suggested V2 Gates
+
+```text
+consolidation reduces active recall set size by 30-60%
+recall@5 does not regress after archiving
+lesson promotion precision >= 80% on reviewed samples
+routing accuracy improves over non-memory baseline
+LLM extraction calls per message trend down as accepted rules improve
+```
 
 ## MVP Build Order
 

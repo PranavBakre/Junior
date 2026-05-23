@@ -204,6 +204,12 @@ workflow prompt to collect Git/GitHub activity and return a Slack-ready summary.
 Junior then writes that final response under `data/workflow-runs/worklog/` and
 posts it to configured Slack outputs.
 
+## Memory Consolidation Workflow
+
+The V2 associative-memory consolidation/"dreaming" engine should use this workflow system rather than a bespoke scheduler. A memory workflow can run on a cron schedule and by owner/admin command, skip overlapping runs with `concurrency: skip`, write artifacts under `data/workflow-runs/memory-consolidation`, and optionally post a compact Slack summary.
+
+The workflow definition should orchestrate memory-specific code/tools; it should not place all classification, promotion, archive, and stale-fact logic in prompt prose. If memory consolidation needs new permissions, add narrow workflow tools such as `memory.read`, `memory.write`, and `memory.evaluate`.
+
 ## Dependencies
 
 - Slack Event Handler — must leave unknown `!<command>` text intact.
