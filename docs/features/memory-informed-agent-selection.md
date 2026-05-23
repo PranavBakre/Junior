@@ -314,6 +314,45 @@ If the routing rule set outgrows TypeScript, the migration path is:
 
 For MVP, TypeScript rules are enough and match the codebase.
 
+### The DSL is the contract between extraction and execution — not between model and host
+
+The single most important rule for keeping this safe: **the LLM never authors a query, and never emits DSL/Prolog text. It emits validated structured facts; the host compiles those into DSL terms and runs a fixed, host-authored goal.**
+
+```text
+LLM emits (data, schema-validated tool args):
+  { "mentions": ["css"], "hasPrUrl": true, "channel": "c123" }
+
+host compiles → asserts (DSL terms, internal):
+  mentions(ctx, css).  has_pr_url(ctx).  channel(ctx, c123).
+
+host runs FIXED goal:
+  ?- select_agent(ctx, Agent, Repo, Why).
+
+returns:
+  { agent: "frontend", repo: "gx-admin-client", proof: [...] }
+```
+
+This works because **LLM tool-calling is already structured JSON validated against a tool's input schema** — so the fact-assertion tool's schema *is* your bounded fact vocabulary (enumerated predicates, fixed arities, typed values). Having the model emit Prolog/DSL text would mean stuffing a string blob into a tool argument and throwing away that validation for free.
+
+Two interfaces that must never be collapsed:
+
+1. **Fact-assertion** — where natural language enters. Structured, schema-validated, bounded predicate set. Deterministic extraction for what parses cheaply; a constrained LLM call only for the rest.
+2. **Query** — fixed, host-authored goals exposed as named tools (`select_agent`, etc.). The model picks a tool and supplies typed params; it never composes the query body.
+
+Why JSON-then-compile, not raw DSL from the model:
+
+- **Validation before it becomes code.** Reject `"css; route(ctx, admin)"` at the schema, instead of sanitizing DSL syntax — that parse step is the injection surface you are trying to avoid.
+- **Bounded vocabulary for free.** No schema field for `frobnicate(...)`, so the model cannot invent it.
+- **Swappable executor.** The same validated facts run through a TypeScript evaluator *or* a Prolog engine. Emitting DSL text hard-couples the model to one executor.
+
+**Executor choice — earn the runtime.** Flat classification/routing (`tag(E, frontend) :- mentions(E, css)`, `route(Ctx, review) :- has_pr_url(Ctx)`) runs fine in a small TypeScript evaluator with zero new dependencies. Reach for an in-process Prolog engine such as `tau-prolog` (pure-JS npm package — no second runtime, no Python/SWI install) only when rules genuinely need recursion / backward-chaining or you want real proof trees for multi-hop "why" reasoning over edges. The "second runtime" objection only ever applied to the ILP *learners* (Popper/Metagol), not to an in-process query engine.
+
+Honest caveat: you *can* let the model emit DSL term strings directly **if** you use grammar-constrained decoding to force valid syntax and the allowed predicate set. Absent that hard grammar, free-text DSL from an LLM produces syntax slips and hallucinated predicates — so JSON-schema-then-compile is the safer default.
+
+### Decisions vs recall — two engines, two return types
+
+Routing/classification (this doc) is a **decision**: structured facts in → fixed goal → a verdict + proof trace, consumed by *code*. Episodic recall (see [Associative Memory MVP](associative-memory.md)) is **retrieval**: structured `recall(terms, filters)` in → FTS seeds + bounded traversal + scoring → ranked text snippets + provenance, consumed by the *LLM* to read. The same graph serves both; only the return type differs. Do not push narrative recall through the symbolic query engine — reading the actual text is the entire point of recall.
+
 ## Learning Loop
 
 Routing should write outcomes back into memory.
@@ -362,6 +401,7 @@ Repeated routing outcomes should first be stored as source events. The consolida
 
 - Do not let memory dispatch agents directly.
 - Do not let an LLM generate arbitrary executable routing rules on the hot path.
+- Do not let the LLM author queries or emit DSL/Prolog text. It asserts validated structured facts; the host runs fixed goals. (See [The DSL is the contract between extraction and execution](#the-dsl-is-the-contract-between-extraction-and-execution--not-between-model-and-host).)
 - Do not add Prolog/graph/vector infrastructure for MVP.
 - Do not override explicit user commands with learned preferences.
 - Do not run expensive memory extraction in the dispatch hot path.

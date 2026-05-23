@@ -237,6 +237,19 @@ An explicit user/operator/agent correction to a fact, route, tag, outcome, edge,
 
 Raw capture can be broad, but active recall should be selective. The hot set should prefer recent, important, unresolved, frequently reused, or manually curated memories. Low-value events should remain searchable for audit but should not eagerly enter the main agent context.
 
+## Identity and Deduplication
+
+The schema tracks `use_count`, but the ingestion path must say *how* repeated information collapses — otherwise the same fact arriving five times becomes five nodes, inflating recall noise and fragmenting the signal `use_count` is meant to carry. This is distinct from supersession: **dedup handles the *same* fact seen again; supersession handles a fact that *changed*.**
+
+Rules of thumb:
+
+- **Source records are always append-only.** Every raw Slack message / runner output is its own `memory_source_record`. Never dedup the audit layer — provenance depends on it.
+- **Derived nodes dedup against an identity key.** When extraction produces a derived event/fact/lesson, compute a normalized identity key (e.g. normalized claim text, or `(entity, predicate, normalized_value)` for facts). If a live node already matches the key, do not create a new node — instead bump `use_count`, refresh `last_used_at`, and append the new `source_record_id` to its provenance.
+- **Near-duplicates are a consolidation job, not a hot-path job.** Exact/normalized-key matches can merge cheaply at ingest. Fuzzy "these two say the same thing" merges belong in the offline dreaming pass, which can also strengthen the edge between them rather than collapse them if they are merely related.
+- **A changed value triggers supersession, not dedup.** If the identity key matches on entity but the value differs (phone number changed), mark the old node `invalid_at` and link `supersedes` — keep both for temporal audit.
+
+Without this, `frequency` in the ranking model is measuring "how many duplicate rows we failed to merge," not "how often this actually recurred."
+
 ## Recommended V1
 
 Build the first version as a boring, inspectable memory event log before making recall clever.
@@ -250,6 +263,8 @@ Build the first version as a boring, inspectable memory event log before making 
 7. Feed top-k sourced snippets into Junior only through a tool/provider boundary, not by mutating session prompts globally.
 
 V1 success means Junior can answer "what prior sourced facts might matter here?" with a short, inspectable result. It does not need autonomous learning, embeddings, graph infrastructure, or unsupervised lesson promotion.
+
+> **Expectation to set up front: v1 will not feel "associative" yet.** Until the consolidation/dreaming pass has produced a real edge set, recall is effectively FTS + tag/entity lookup. The spreading-activation behavior — surfacing a memory you didn't search for because it is linked to one you did — only emerges once edges exist. Bet the early experience on *sourced, inspectable* recall, not on associative leaps, and let the graph earn its keep over time.
 
 ## Recommended V2
 

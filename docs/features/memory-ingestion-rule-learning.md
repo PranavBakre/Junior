@@ -11,6 +11,8 @@ Associative memory only works if messy Slack conversations become clean, consist
 
 ## Position
 
+> **Superseded by [Primary Approach: Dreaming Writes the Rules](#primary-approach-dreaming-writes-the-rules) below.** The ILP-as-learner framing in this section is retained as a fallback reference only.
+
 Metagol and Popper should not be part of the live routing or recall path initially. They fit better as **offline rule learners for the memory ingestion layer**.
 
 Use them to suggest rules for:
@@ -45,6 +47,29 @@ human or high-confidence gate reviews
 accepted rules become normal ingestion rules
 ```
 
+## Primary Approach: Dreaming Writes the Rules
+
+**Design-review update: the V2 "dreaming" consolidation engine should author candidate ingestion rules directly. Popper/Metagol are demoted to a research spike, not the planned path.** The ILP sections that follow are retained as the *only-if-needed* fallback.
+
+The realization: the V2 consolidation/"dreaming" pass is *already* an offline LLM run over recent source records and corrections. Rather than exporting labeled examples to a separate ILP learner, let dreaming emit candidate rules into the bounded predicate DSL as one more promotion type, alongside `promote_lesson` / `promote_fact`.
+
+This collapses the old "ILP V3" into V2 and removes its three biggest costs:
+
+- **No labeled-data gate.** The dreaming LLM proposes a rule from observed patterns + corrections already in context. It does not need a curated positive/negative example set accumulated over months before it can produce anything.
+- **No second runtime.** No Popper/Metagol, no Python/SWI toolchain, no compile-from-learned-Prolog step. The rule author lives in the offline job that already runs.
+- **The cost justification flips positive.** You pay one dream-time LLM call to mint a rule that then runs deterministically and replaces N future per-event extraction calls. ILP never had a clean story for that; this does.
+
+**Crucially, the safety pipeline does not change — only the *author* of the candidate rule changes** (the dreaming LLM instead of Popper). Every candidate still: starts as `draft`, carries the examples it covers and the examples it would misfire on, is scored for precision/recall on held-out history, passes human review or a strict auto-threshold, and compiles into the TypeScript rule set or a constrained symbolic evaluator. See [Runtime Safety](#runtime-safety) — it applies unchanged.
+
+Two risks survive and must be guarded:
+
+1. **Confabulation instead of overfitting.** ILP overfits to label noise; an LLM *invents* a plausible-but-wrong rule from a coincidence (e.g. sees "dashboard" + "500" twice and writes `tag(Event, backend) :- mentions(Event, dashboard)` when the real cause was a frontend bug). Same blast radius, different mechanism — and the same `draft → held-out eval → gate` pipeline contains it.
+2. **Model monoculture / grading its own homework.** If the *same* model both extracts events and writes the rules that classify events, its biases self-reinforce and it cannot catch its own systematic errors. ILP's hidden value was being a *different kind* of learner. Mitigation: the held-out evaluation must score against **human-confirmed corrections** as ground truth, never against LLM judgments. Keep one independent signal in the loop.
+
+Constrain the dreaming output to the bounded predicate DSL (`mentions`, `tag`, `event_type`, `edge`, …) — never arbitrary executable TypeScript or free-form Prolog on the hot path.
+
+**Popper/Metagol remain documented below as a fallback only.** Resurrect ILP if, and only if, a measured need for recursive or meta-rule synthesis appears that the dreaming LLM cannot produce reliably — which at Junior's scale is unlikely.
+
 ## Recommended V1
 
 Do not build Popper, Metagol, or any other ILP loop in v1. Build the data needed to make that work later.
@@ -63,8 +88,8 @@ V1 success means Junior can answer "why did this memory get this tag/type/edge?"
 
 After V1 has enough accepted and rejected classifications:
 
-1. Start with Popper for narrow classification rules such as tags, event types, and routing fact extraction.
-2. Treat Metagol as optional research for recursive/meta-rule cases, not the default.
+1. Have the dreaming/consolidation engine emit candidate rules into the bounded predicate DSL as a promotion type (see [Primary Approach](#primary-approach-dreaming-writes-the-rules)). This is the default path.
+2. Treat Popper/Metagol as a fallback research spike, only if recursive/meta-rule synthesis is measurably needed and the dreaming LLM can't produce it reliably.
 3. Generate candidate rules offline with explicit positive examples, negative examples, and held-out metrics.
 4. Review learned rules manually or pass them through a strict promotion gate before they affect live ingestion.
 5. Compile accepted rules into TypeScript or a constrained symbolic evaluator with bounded predicates, not arbitrary hot-path Prolog.
@@ -314,15 +339,16 @@ Do not let an LLM or ILP tool write arbitrary hot-path code or arbitrary Prolog 
 2. Store classifications with provenance.
 3. Store corrections and outcome signals.
 4. Add scheduled LLM extraction/consolidation for fields deterministic rules cannot safely infer.
-5. Add an offline rule-learning job once there is enough labeled history.
-6. Start with Popper for simple tag/event-type rules.
+5. Extend the dreaming/consolidation pass to emit candidate DSL rules as a promotion type (default path).
+6. Only if recursive/meta-rule synthesis proves necessary, add an offline ILP job (Popper) as a fallback.
 7. Review generated rules manually.
 8. Promote accepted rules into the ingestion pipeline.
 9. Measure whether LLM extraction calls decrease and classification consistency improves.
 
 ## Non-Goals
 
-- Do not use Popper/Metagol in the live Slack response path.
+- Do not use Popper/Metagol in the live Slack response path. (They are now a fallback spike, not the default — see [Primary Approach](#primary-approach-dreaming-writes-the-rules).)
+- Do not let the dreaming LLM emit arbitrary code or free-form Prolog; constrain it to the bounded predicate DSL, and gate every candidate rule before it goes live.
 - Do not use learned rules as the only classifier.
 - Do not learn from untrusted labels without review.
 - Do not replace recall scoring or SQLite traversal with ILP.
