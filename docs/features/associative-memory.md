@@ -201,7 +201,7 @@ Build the first version as a boring, inspectable memory event log before making 
 
 1. Add a separate `MemoryStore` backed by the existing SQLite file or a sibling SQLite file.
 2. Capture raw Slack messages, runner outputs, routing decisions, and explicit user corrections as append-only source records.
-3. Extract only low-risk deterministic metadata first: channel, thread, sender kind, command, agent, repo, timestamps, Slack source links, and message text.
+3. Derive `memory_event` rows from those source records; do not treat extracted events as the raw audit source.
 4. Add manual or test-fixture memory facts before live LLM extraction, so recall and routing can be tested against known-good records.
 5. Add FTS search over source-backed event and lesson text with an explicit sync/rebuild path.
 6. Add bounded tag/entity lookup and edge traversal only after the source record and FTS path are easy to inspect.
@@ -323,6 +323,30 @@ Generic tags like `bug`, `frontend`, or `question` should not become high-fanout
 ## SQLite Schema Sketch
 
 ```sql
+CREATE TABLE memory_source_record (
+  id             TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL CHECK (
+                   kind IN (
+                     'slack_message',
+                     'runner_output',
+                     'routing_decision',
+                     'routing_correction',
+                     'ingestion_correction'
+                   )
+                 ),
+  channel_id     TEXT,
+  thread_id      TEXT,
+  slack_ts       TEXT,
+  source_url     TEXT,
+  actor_id       TEXT,
+  actor_kind     TEXT CHECK (actor_kind IN ('human', 'junior', 'agent', 'bot', 'system')),
+  agent_name     TEXT,
+  repo_name      TEXT,
+  body           TEXT NOT NULL,
+  metadata_json  TEXT,
+  created_at     INTEGER NOT NULL
+);
+
 CREATE TABLE memory_node (
   id         TEXT PRIMARY KEY,
   kind       TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'entity', 'tag')),
@@ -331,6 +355,7 @@ CREATE TABLE memory_node (
 
 CREATE TABLE memory_event (
   id            TEXT PRIMARY KEY,
+  source_record_id TEXT NOT NULL,
   thread_id     TEXT NOT NULL,
   summary_id    TEXT,
   body          TEXT NOT NULL,
@@ -341,6 +366,7 @@ CREATE TABLE memory_event (
   use_count     INTEGER DEFAULT 0,
   source_ts     TEXT,
   source_url    TEXT,
+  FOREIGN KEY (source_record_id) REFERENCES memory_source_record(id),
   FOREIGN KEY (id) REFERENCES memory_node(id)
 );
 
@@ -418,7 +444,14 @@ CREATE INDEX edge_dst_idx ON edge(dst_id);
 CREATE INDEX edge_type_src_idx ON edge(type, src_id);
 ```
 
-`memory_node` keeps ids unambiguous across events, lessons, facts, entities, and tags. `memory_search_doc` is the authoritative search projection; ingestion must either update it transactionally with source writes or run an explicit rebuild job. FTS should be treated as a derived index, never as the source of memory truth.
+`memory_source_record` is the raw audit layer: Slack messages, runner outputs, routing decisions, and corrections are stored before extraction. `memory_event` is derived from source records and should always point back to one. `memory_node` keeps ids unambiguous across events, lessons, facts, entities, and tags.
+
+`memory_search_doc` is the authoritative search projection. The FTS table is a derived index and should be maintained in one of two explicit ways:
+
+1. Transactional sync: whenever ingestion writes or updates `memory_search_doc`, the same transaction updates `memory_fts`.
+2. Rebuild sync: a rebuild job deletes and repopulates `memory_fts` from `memory_search_doc`.
+
+Do not let `memory_fts` become the only place searchable memory text exists.
 
 ## Recursive CTE Traversal
 
@@ -476,6 +509,7 @@ Controls:
 4. index `edge.src_id`, `edge.dst_id`, and `(type, src_id)`;
 5. stop expanding low-score paths;
 6. avoid traversing from generic tags.
+7. require allow-listed specific tags/entities, or strict fanout caps, before traversing outward from tag/entity nodes.
 
 Even 100–300ms recall latency is acceptable if it replaces manual context loading and returns only useful snippets.
 
@@ -501,14 +535,15 @@ Matched because: exact entity `junior`, tag `memory_architecture`, edge `lesson_
 
 ## MVP Build Order
 
-1. Define raw event, lesson, tag/entity, and edge schemas.
-2. Write event extraction for Slack thread turns.
-3. Add SQLite FTS5 search over event and lesson text.
-4. Add tag/entity seed lookup.
-5. Add recursive CTE edge expansion with depth/fanout caps.
-6. Add TypeScript scoring and explanation traces.
-7. Add recall tool interface that returns top-k snippets to Junior.
-8. Add scheduled consolidation later: summarize, promote lessons, prune noisy edges, and archive low-value events.
+1. Define `memory_source_record`, `memory_node`, event, lesson, tag/entity, edge, and search-projection schemas.
+2. Write append-only source capture for Slack messages, runner outputs, routing decisions, and corrections.
+3. Derive events from source records with deterministic metadata first.
+4. Add SQLite FTS5 search over `memory_search_doc`, with transactional sync or rebuild sync.
+5. Add tag/entity seed lookup.
+6. Add recursive CTE edge expansion with depth/fanout caps and tag/entity traversal controls.
+7. Add TypeScript scoring and explanation traces.
+8. Add recall tool interface that returns top-k snippets to Junior.
+9. Add scheduled consolidation later: summarize, promote lessons, prune noisy edges, and archive low-value events.
 
 ## Future: Ingestion Rule Learning
 
