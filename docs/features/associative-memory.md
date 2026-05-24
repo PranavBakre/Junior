@@ -829,6 +829,24 @@ LLM extraction calls per message trend down as accepted rules improve
 8. Add recall tool interface that returns top-k snippets to Junior.
 9. Add scheduled consolidation later: summarize, promote lessons, prune noisy edges, mark stale facts, and archive low-value events.
 
+## Runtime Access Surfaces
+
+The memory store is not useful unless runners and workflows can call it without
+editing SQLite rows directly. Expose memory through two narrow surfaces:
+
+1. **CLI for workflow utility runs.** Workflows run from `/tmp/junior-utility`,
+   which intentionally skips Junior's project MCP wiring. They should call:
+   `bun run <runtime context junior.memoryCli> recall --query "..." --json`
+   and `bun run <runtime context junior.memoryCli> consolidate --json`. The CLI
+   uses `MEMORY_DB_PATH` or `data/memory.db`.
+2. **MCP tools for normal Junior runs.** MCP-wired sessions can call
+   `memory_recall` and `memory_consolidate`. These tools return JSON with
+   sourced recall snippets or consolidation decisions.
+
+Do not let consolidation prompts mutate the DB ad hoc. All reads/writes should
+go through `MemoryStore`, the CLI, or the MCP tools so provenance, FTS sync,
+supersession, and active/inactive rules stay consistent.
+
 ## Future: Ingestion Rule Learning
 
 Once the system has enough classified events and corrections, use [Memory Ingestion Rule Learning](memory-ingestion-rule-learning.md) to learn candidate symbolic rules for tag generation, event type classification, edge creation, and promotion decisions. This should run offline: learned rules start as drafts, are reviewed or strictly gated, and only accepted rules enter the online ingestion path.

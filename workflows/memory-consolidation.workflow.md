@@ -12,6 +12,9 @@ outputs:
 permissions:
   tools:
     - docs.write
+    - memory.read
+    - memory.write
+    - memory.evaluate
 runner:
   provider: default
   agentName: default
@@ -22,6 +25,14 @@ concurrency: skip
 Run the associative-memory consolidation workflow for Junior.
 
 Use the memory code path as the source of truth: raw source records remain authoritative, derived memories are rebuildable, and any promotion/archive/rule proposal must preserve provenance.
+
+Access memory through the supported tool surface, not by editing database rows directly:
+
+- CLI: `bun run <runtime context junior.memoryCli> recall --query "..." --json`
+- CLI: `bun run <runtime context junior.memoryCli> consolidate --json`
+- MCP, when available in a normal Junior run: `memory_recall` and `memory_consolidate`
+
+The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Workflow runner cwd is `/tmp/junior-utility`, so use the absolute `junior.memoryCli` path from runtime context rather than a relative `src/memory/cli.ts` path.
 
 Expected work:
 

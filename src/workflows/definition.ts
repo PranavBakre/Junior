@@ -31,6 +31,9 @@ const SUPPORTED_TOOLS = new Set<WorkflowTool>([
   "gh",
   "slack.post",
   "docs.write",
+  "memory.read",
+  "memory.write",
+  "memory.evaluate",
 ]);
 
 export async function loadWorkflowDefinition(
