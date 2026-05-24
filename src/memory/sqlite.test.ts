@@ -302,7 +302,7 @@ describe("SqliteMemoryStore", () => {
     expect(correction?.correct_value).toBe("frontend");
   });
 
-  it("consolidates by archiving cold events, promoting routing memories, and proposing draft rules", async () => {
+  it("consolidates by archiving cold events, promoting routing memories, proposing draft rules, promoting lessons, and pruning edges", async () => {
     const now = Date.now();
     const old = now - 60 * 24 * 60 * 60 * 1000;
     await store.appendSourceRecord({ id: "source-old", kind: "slack_message", body: "ok", createdAt: old });
@@ -314,6 +314,49 @@ describe("SqliteMemoryStore", () => {
       importance: 0.1,
       createdAt: old,
     });
+
+    // Lesson promotion: multiple high-importance events with the same tag
+    const recent = now - 1000;
+    await store.appendSourceRecord({ id: "src-a", kind: "slack_message", body: "auth middleware broken", createdAt: recent });
+    await store.upsertEvent({
+      id: "event-auth-1",
+      sourceRecordId: "src-a",
+      threadId: "T2",
+      body: "auth middleware broken on /api/v2",
+      tags: ["auth", "bug"],
+      importance: 0.8,
+      createdAt: recent,
+    });
+    await store.appendSourceRecord({ id: "src-b", kind: "slack_message", body: "JWT token expired", createdAt: recent });
+    await store.upsertEvent({
+      id: "event-auth-2",
+      sourceRecordId: "src-b",
+      threadId: "T2",
+      body: "JWT token expired after 5 min",
+      tags: ["auth", "error"],
+      importance: 0.9,
+      createdAt: recent,
+    });
+    await store.appendSourceRecord({ id: "src-c", kind: "runner_output", body: "fixed auth middleware", createdAt: recent });
+    await store.upsertEvent({
+      id: "event-auth-3",
+      sourceRecordId: "src-c",
+      threadId: "T2",
+      body: "fixed auth middleware with token refresh",
+      tags: ["auth"],
+      importance: 0.75,
+      createdAt: recent,
+    });
+
+    // Edge pruning: add a weak old edge
+    await store.addEdge({
+      srcId: "event-old",
+      dstId: "event-auth-1",
+      type: "similar",
+      weight: 0.1,
+      createdAt: old,
+    });
+
     await store.logCorrection({
       eventId: "event-a",
       field: "routing_fact",
@@ -345,14 +388,82 @@ describe("SqliteMemoryStore", () => {
 
     const result = await store.consolidate({ now, repeatedCorrectionThreshold: 2 });
 
+    // Archive
     expect(result.archivedEventIds).toContain("event-old");
-    expect(result.promotedMemoryIds).toContain("routing_memory_dashboard_means_gx-admin-client");
-    expect(result.proposedRuleIds).toContain("rule_tag_frontend");
     expect(result.decisions.map((decision) => decision.action)).toContain("archive");
+
+    // Route promotion
+    expect(result.promotedMemoryIds).toContain("routing_memory_dashboard_means_gx-admin-client");
     expect(result.decisions.map((decision) => decision.action)).toContain("promote_routing_memory");
+
+    // Rule proposal
+    expect(result.proposedRuleIds).toContain("rule_tag_frontend");
     expect(result.decisions.map((decision) => decision.action)).toContain("propose_rule");
 
+    // Lesson promotion (3+ high-importance events with same tag)
+    expect(result.decisions.map((decision) => decision.action)).toContain("promote_lesson");
+
+    // Edge pruning (weak old edge removed)
+    expect(result.decisions.map((decision) => decision.action)).toContain("prune_edges");
+
+    // Routing memory recall
     const recalled = await store.recall({ query: "dashboard gx-admin-client", kinds: ["routing_memory"], limit: 5 });
     expect(recalled.map((memory) => memory.id)).toContain("routing_memory_dashboard_means_gx-admin-client");
+  });
+
+  it("accepts and rejects proposed rules, listing accepted rules", async () => {
+    await store.proposeRule({
+      id: "rule_tag_frontend",
+      status: "draft",
+      domain: "tag",
+      ruleText: "tag(Event, frontend) :- mentions_corrected_value(Event, frontend).",
+      positiveExampleIds: ["event-1"],
+      negativeExampleIds: [],
+      createdAt: Date.now(),
+    });
+
+    // Accept
+    const accepted = await store.acceptRule("rule_tag_frontend");
+    expect(accepted).toBe(true);
+
+    const rules = await store.getAcceptedRules();
+    expect(rules.map((rule) => rule.id)).toContain("rule_tag_frontend");
+
+    // Reject
+    const rejected = await store.rejectRule("rule_tag_frontend");
+    expect(rejected).toBe(true);
+
+    const after = await store.getAcceptedRules();
+    expect(after.map((rule) => rule.id)).not.toContain("rule_tag_frontend");
+
+    // Non-existent rule
+    const missing = await store.acceptRule("nonexistent");
+    expect(missing).toBe(false);
+  });
+
+  it("accepted rules survive store close and reopen", async () => {
+    const path = join(tmpDir, "memory.db");
+    await store.proposeRule({
+      id: "rule_tag_persist",
+      status: "draft",
+      domain: "tag",
+      ruleText: "test",
+      positiveExampleIds: [],
+      negativeExampleIds: [],
+      createdAt: Date.now(),
+    });
+    await store.acceptRule("rule_tag_persist");
+    // Close the original store, reopen a fresh instance on the same file.
+    store.close();
+
+    const reopened = new SqliteMemoryStore(path);
+    try {
+      const rules = await reopened.getAcceptedRules();
+      expect(rules.map((rule) => rule.id)).toContain("rule_tag_persist");
+    } finally {
+      reopened.close();
+    }
+    // Reassign so afterEach cleans up the reopened instance.
+    store = reopened;
   });
 });
