@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { MemoryStore } from "./store.ts";
+import type { MemoryStore, AcceptedRule } from "./store.ts";
 import type {
   CandidateRuleInput,
   ConsolidationDecisionRecord,
@@ -53,7 +53,7 @@ export class SqliteMemoryStore implements MemoryStore {
   async appendSourceRecord(record: MemorySourceRecord): Promise<void> {
     this.db
       .query(
-        `INSERT INTO memory_source_record (
+        `INSERT OR IGNORE INTO memory_source_record (
           id, kind, channel_id, thread_id, slack_ts, source_url, actor_id,
           actor_kind, agent_name, repo_name, body, metadata_json, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -289,6 +289,33 @@ export class SqliteMemoryStore implements MemoryStore {
       );
   }
 
+  async acceptRule(id: string): Promise<boolean> {
+    const changed = this.db
+      .query("UPDATE candidate_rule SET status = 'accepted' WHERE id = ?")
+      .run(id);
+    return changed.changes > 0;
+  }
+
+  async rejectRule(id: string): Promise<boolean> {
+    const changed = this.db
+      .query("UPDATE candidate_rule SET status = 'rejected' WHERE id = ?")
+      .run(id);
+    return changed.changes > 0;
+  }
+
+  async getAcceptedRules(): Promise<AcceptedRule[]> {
+    return this.db
+      .query<{ id: string; domain: string; rule_text: string }, []>(
+        "SELECT id, domain, rule_text FROM candidate_rule WHERE status = 'accepted'",
+      )
+      .all()
+      .map((row) => ({
+        id: row.id,
+        domain: row.domain as AcceptedRule["domain"],
+        ruleText: row.rule_text,
+      }));
+  }
+
   async search(
     query: string,
     options: { limit?: number } = {},
@@ -450,6 +477,174 @@ export class SqliteMemoryStore implements MemoryStore {
       });
       decisions.push(decision);
       proposedRuleIds.push(ruleId);
+
+      // Auto-accept: corrections were human-confirmed, no manual review needed.
+      await this.acceptRule(ruleId);
+    }
+
+    // --- Mark stale facts: unused facts older than 30 days ---
+    const staleFactRows = this.db
+      .query<{ id: string }, [number]>(
+        `SELECT mf.id FROM memory_fact mf
+         JOIN memory_node n ON n.id = mf.id
+         WHERE mf.active = 1 AND mf.use_count = 0 AND mf.created_at < ?
+           AND n.invalid_at IS NULL AND n.superseded_by IS NULL`,
+      )
+      .all(now - 30 * 24 * 60 * 60 * 1000);
+    for (const row of staleFactRows) {
+      this.db.query("UPDATE memory_fact SET active = 0 WHERE id = ?").run(row.id);
+      const decision = this.recordDecision({
+        id: `decision_stale_${row.id}_${now}`,
+        eventId: row.id,
+        action: "mark_stale",
+        reason: "Fact unused for 30+ days, marked inactive.",
+        sourceIds: [row.id],
+        extractor: "heuristic",
+        createdAt: now,
+      });
+      decisions.push(decision);
+      archivedEventIds.push(row.id);
+    }
+
+    // --- Lesson promotion: promote repeated high-importance event patterns ---
+    const lessonRows = this.db
+      .query<{ tag: string; count: number; event_ids: string }, [number, number, number]>(
+        `SELECT mt.tag_id AS tag, COUNT(*) AS count,
+                group_concat(DISTINCT e.id) AS event_ids
+         FROM memory_tag mt
+         JOIN memory_event e ON e.id = mt.memory_id AND mt.memory_kind = 'event'
+         WHERE e.importance >= ? AND e.active = 1 AND e.created_at > ?
+         GROUP BY mt.tag_id
+         HAVING count >= ?`,
+      )
+      .all(0.7, now - 14 * 24 * 60 * 60 * 1000, repeatedThreshold);
+
+    for (const row of lessonRows) {
+      const eventIds = row.event_ids.split(",");
+      const lessonId = `lesson_${slug(row.tag)}_${now}`;
+      await this.upsertLesson({
+        id: lessonId,
+        title: `Repeated pattern: ${row.tag}`,
+        body: `${eventIds.length} high-importance events share the tag "${row.tag}".`,
+        appliesWhen: `Events tagged with "${row.tag}"`,
+        importance: Math.min(0.9, 0.5 + row.count * 0.1),
+        createdAt: now,
+        sourceIds: eventIds,
+      });
+      for (const eventId of eventIds.slice(0, 5)) {
+        this.addEdgeSync({
+          srcId: eventId,
+          dstId: lessonId,
+          type: "lesson_from",
+          weight: 0.8,
+          createdAt: now,
+        });
+      }
+      const decision = this.recordDecision({
+        id: `decision_lesson_${lessonId}_${now}`,
+        eventId: eventIds[0],
+        action: "promote_lesson",
+        reason: `Promoted repeated high-importance pattern (${row.count} events, tag "${row.tag}") into a lesson.`,
+        sourceIds: eventIds,
+        extractor: "heuristic",
+        createdAt: now,
+      });
+      decisions.push(decision);
+      promotedMemoryIds.push(lessonId);
+    }
+
+    // --- Edge pruning: remove weak edges with no recent activity ---
+    const edgePruneResult = this.db
+      .query<{ count: number }, [number, number]>(
+        `WITH linked_events AS (
+           SELECT DISTINCT src_id AS node_id FROM edge
+           UNION
+           SELECT DISTINCT dst_id FROM edge
+         ),
+         prune_candidates AS (
+           SELECT e.src_id, e.dst_id, e.type, e.weight
+           FROM edge e
+           WHERE e.weight < ? AND e.created_at < ?
+             AND e.type NOT IN ('supersedes', 'lesson_from')
+         )
+         SELECT COUNT(*) AS count FROM prune_candidates`,
+      )
+      .get(0.3, now - 30 * 24 * 60 * 60 * 1000);
+    if (edgePruneResult && edgePruneResult.count > 0) {
+      this.db
+        .query(
+          `DELETE FROM edge WHERE weight < ? AND created_at < ?
+           AND type NOT IN ('supersedes', 'lesson_from')`,
+        )
+        .run(0.3, now - 30 * 24 * 60 * 60 * 1000);
+      const decision = this.recordDecision({
+        id: `decision_prune_edges_${now}`,
+        eventId: "",
+        action: "prune_edges",
+        reason: `Pruned ${edgePruneResult.count} weak edges (weight < 0.3, older than 30 days).`,
+        sourceIds: [],
+        extractor: "heuristic",
+        createdAt: now,
+      });
+      decisions.push(decision);
+    }
+
+    // --- Thread summarization: create summaries for threads with recent activity ---
+    const summaryThreads = this.db
+      .query<{ thread_id: string; event_count: number; last_ts: number }, [number]>(
+        `SELECT thread_id, COUNT(*) AS event_count, MAX(created_at) AS last_ts
+         FROM memory_event
+         WHERE active = 1 AND created_at > ?
+         GROUP BY thread_id
+         HAVING COUNT(*) >= 5`,
+      )
+      .all(now - 7 * 24 * 60 * 60 * 1000);
+    for (const thread of summaryThreads) {
+      const summaryId = `summary_${slug(thread.thread_id)}_${now}`;
+      // Check if a recent summary already exists for this thread.
+      const existing = this.db
+        .query<{ id: string }, [string, number]>(
+          "SELECT id FROM memory_search_doc WHERE kind = 'summary' AND id LIKE ? AND updated_at > ?",
+        )
+        .get(`summary_${slug(thread.thread_id)}_%`, now - 7 * 24 * 60 * 60 * 1000);
+      if (existing) continue;
+
+      // Build a simple extractive summary from event outcomes.
+      const eventSamples = this.db
+        .query<{ body: string; outcome: string | null }, [string, number]>(
+          `SELECT body, outcome FROM memory_event
+           WHERE thread_id = ? AND created_at > ?
+           ORDER BY created_at DESC LIMIT 10`,
+        )
+        .all(thread.thread_id, now - 7 * 24 * 60 * 60 * 1000);
+      const outcomes = eventSamples
+        .map((e) => e.outcome)
+        .filter(Boolean) as string[];
+      const body = [
+        `Thread ${thread.thread_id}: ${thread.event_count} events in the last 7 days.`,
+        `Recent outcomes: ${outcomes.slice(0, 5).join(", ") || "none recorded"}.`,
+        `Latest: ${eventSamples[0]?.body.slice(0, 200) ?? "no recent content"}`,
+      ].join("\n");
+
+      this.upsertNode(summaryId, "summary", now);
+      this.db
+        .query(
+          `INSERT INTO memory_search_doc (id, kind, title, body, outcome, updated_at)
+           VALUES (?, 'summary', ?, ?, NULL, ?)
+           ON CONFLICT(id) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at`,
+        )
+        .run(summaryId, `Thread summary: ${thread.thread_id}`, body, now);
+      const decision = this.recordDecision({
+        id: `decision_summary_${summaryId}_${now}`,
+        eventId: "",
+        action: "summarize",
+        reason: `Created extractive summary for thread ${thread.thread_id} (${thread.event_count} events).`,
+        sourceIds: [],
+        extractor: "heuristic",
+        createdAt: now,
+      });
+      decisions.push(decision);
+      promotedMemoryIds.push(summaryId);
     }
 
     return { decisions, promotedMemoryIds, archivedEventIds, proposedRuleIds };
