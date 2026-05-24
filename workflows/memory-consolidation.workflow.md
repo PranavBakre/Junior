@@ -4,6 +4,9 @@ enabled: true
 description: Run the offline associative-memory consolidation pass and summarize memory promotions, archives, and draft rules.
 ownerSlackUserIds: []
 triggers:
+  - type: schedule
+    cron: "0 3 * * *"
+    timezone: UTC
   - type: command
     command: memory-consolidation
 outputs:
