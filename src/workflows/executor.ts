@@ -17,6 +17,7 @@ import {
   WORKFLOW_ARTIFACT_ROOT,
 } from "./types.ts";
 import type { WorkflowStore } from "./store.ts";
+import type { MemoryStore } from "../memory/store.ts";
 
 export const WORKFLOW_UTILITY_CWD = "/tmp/junior-utility";
 
@@ -26,6 +27,7 @@ export interface WorkflowExecutorOptions {
   slackClient?: WebClient;
   spawn?: SpawnRunnerFn;
   now?: () => Date;
+  memoryStore?: MemoryStore;
 }
 
 export interface WorkflowRunRequest {
@@ -45,6 +47,7 @@ export class WorkflowExecutor {
   private slackClient?: WebClient;
   private spawn: SpawnRunnerFn;
   private now: () => Date;
+  private memoryStore?: MemoryStore;
 
   constructor(options: WorkflowExecutorOptions) {
     this.config = options.config;
@@ -52,6 +55,7 @@ export class WorkflowExecutor {
     this.slackClient = options.slackClient;
     this.spawn = options.spawn ?? spawnRunner;
     this.now = options.now ?? (() => new Date());
+    this.memoryStore = options.memoryStore;
   }
 
   async run(request: WorkflowRunRequest): Promise<WorkflowRunResult> {
@@ -78,7 +82,27 @@ export class WorkflowExecutor {
 
     let summary = "";
     try {
-      if (request.definition.runner) {
+      if (request.definition.name === "memory-consolidation" && this.memoryStore) {
+        // Run native consolidation first (deterministic, cheap).
+        const nativeSummary = await this.runMemoryConsolidation();
+        // If a runner is configured, spawn it for LLM-powered inspection
+        // and inject the native results so the LLM can build on them.
+        if (request.definition.runner) {
+          const runnerSummary = await this.runWithRunner(
+            request.definition,
+            run,
+            buildRunnerPromptWithNative({
+              definition: request.definition,
+              run,
+              repos: this.reposFor(request.definition),
+              nativeResult: nativeSummary,
+            }),
+          );
+          summary = `${nativeSummary}\n\n---\n## LLM Analysis\n\n${runnerSummary}`;
+        } else {
+          summary = nativeSummary;
+        }
+      } else if (request.definition.runner) {
         summary = await this.runWithRunner(
           request.definition,
           run,
@@ -201,6 +225,18 @@ export class WorkflowExecutor {
     return { channel: slackChannel, threadTs: slackThreadTs };
   }
 
+  private async runMemoryConsolidation(): Promise<string> {
+    if (!this.memoryStore) throw new Error("memory store not configured");
+    const result = await this.memoryStore.consolidate();
+    return [
+      "Memory consolidation complete.",
+      `Promoted memories: ${result.promotedMemoryIds.join(", ") || "none"}`,
+      `Archived events: ${result.archivedEventIds.join(", ") || "none"}`,
+      `Proposed rules: ${result.proposedRuleIds.join(", ") || "none"}`,
+      `Decisions: ${result.decisions.length}`,
+    ].join("\n");
+  }
+
   private async postSlack(
     output: Exclude<WorkflowOutput, { type: "docs" }>,
     text: string,
@@ -298,12 +334,37 @@ function buildRunnerPrompt(options: {
   run: WorkflowRun;
   repos: RepoConfig[];
 }): string {
-  return [
+  return buildRunnerPromptWithNative({ ...options, nativeResult: null });
+}
+
+function buildRunnerPromptWithNative(options: {
+  definition: WorkflowDefinition;
+  run: WorkflowRun;
+  repos: RepoConfig[];
+  nativeResult: string | null;
+}): string {
+  const parts = [
     `Run workflow: ${options.definition.name}`,
     "",
     "Workflow prompt:",
     options.definition.prompt.trim() || "(empty)",
     "",
+  ];
+
+  if (options.nativeResult) {
+    parts.push(
+      "Native consolidation has already run (deterministic pass). Use these results as a starting point:",
+      "",
+      "```json",
+      options.nativeResult,
+      "```",
+      "",
+      "Your job: inspect the current memory state via memory tools, identify patterns the deterministic pass may have missed, validate the promoted memories and proposed rules, and produce a final human-readable summary. Do not re-run consolidation — it's already done. Focus on inspection, validation, and explanation.",
+      "",
+    );
+  }
+
+  parts.push(
     "Runtime context:",
     JSON.stringify({
       run: {
@@ -332,7 +393,9 @@ function buildRunnerPrompt(options: {
     "- Produce the final Slack-ready workflow result.",
     "- Include collection or execution errors only when they affect trust in the result.",
     "- Do not say you cannot access repos without first using the provided absolute repo paths.",
-  ].join("\n");
+  );
+
+  return parts.join("\n");
 }
 
 function logWorkflowRunnerEvent(
