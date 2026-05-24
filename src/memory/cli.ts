@@ -31,22 +31,14 @@ export async function runMemoryCli(argv: string[]): Promise<string> {
       return json ? `${JSON.stringify(result, null, 2)}\n` : formatConsolidation(result);
     }
 
-    if (command === "accept-rule") {
+    if (command === "accept-rule" || command === "reject-rule") {
       const id = stringOption(options, "id");
-      if (!id) throw new Error("--id <rule-id> is required for accept-rule");
-      const ok = await store.acceptRule(id);
+      if (!id) throw new Error("--id <rule-id> is required");
+      const status = command === "accept-rule" ? "accepted" : "rejected";
+      const ok = await store.setRuleStatus(id, status);
       return json
-        ? `${JSON.stringify({ accepted: ok, id }, null, 2)}\n`
-        : (ok ? `Rule accepted: ${id}\n` : `Rule not found: ${id}\n`);
-    }
-
-    if (command === "reject-rule") {
-      const id = stringOption(options, "id");
-      if (!id) throw new Error("--id <rule-id> is required for reject-rule");
-      const ok = await store.rejectRule(id);
-      return json
-        ? `${JSON.stringify({ rejected: ok, id }, null, 2)}\n`
-        : (ok ? `Rule rejected: ${id}\n` : `Rule not found: ${id}\n`);
+        ? `${JSON.stringify({ [status]: ok, id }, null, 2)}\n`
+        : (ok ? `Rule ${status}: ${id}\n` : `Rule not found: ${id}\n`);
     }
 
     if (command === "accepted-rules") {
