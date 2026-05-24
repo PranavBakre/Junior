@@ -167,6 +167,68 @@ describe("SqliteMemoryStore", () => {
     expect(lesson?.reasons).toContain("Related by edge traversal");
   });
 
+  it("records recall usage for returned memories", async () => {
+    const now = Date.now();
+    await store.appendSourceRecord({
+      id: "source-1",
+      kind: "slack_message",
+      body: "Dashboard means admin client.",
+      createdAt: now,
+    });
+    await store.upsertEvent({
+      id: "event-1",
+      sourceRecordId: "source-1",
+      threadId: "T1",
+      body: "User corrected dashboard to mean gx-admin-client.",
+      createdAt: now,
+    });
+
+    await store.recall({ query: "dashboard", limit: 5 });
+
+    const db = (store as unknown as { db: Database }).db;
+    const row = db
+      .query<{ use_count: number; last_used_at: number | null }, [string]>(
+        "SELECT use_count, last_used_at FROM memory_event WHERE id = ?",
+      )
+      .get("event-1");
+    expect(row?.use_count).toBe(1);
+    expect(row?.last_used_at).toBeNumber();
+  });
+
+  it("traverses undirected edges from either side", async () => {
+    const now = Date.now();
+    await store.appendSourceRecord({
+      id: "source-1",
+      kind: "slack_message",
+      body: "Dashboard and admin client are related aliases.",
+      createdAt: now,
+    });
+    await store.upsertEvent({
+      id: "event-dashboard",
+      sourceRecordId: "source-1",
+      threadId: "T1",
+      body: "dashboard alias",
+      createdAt: now,
+    });
+    await store.upsertLesson({
+      id: "lesson-admin",
+      title: "Admin dashboard alias",
+      body: "gx-admin-client is the admin dashboard.",
+      createdAt: now,
+    });
+    await store.addEdge({
+      srcId: "event-dashboard",
+      dstId: "lesson-admin",
+      type: "same_topic",
+      directed: false,
+      createdAt: now,
+    });
+
+    const related = await store.recall({ query: "gx-admin-client", depth: 1, limit: 5 });
+
+    expect(related.map((result) => result.id)).toContain("event-dashboard");
+  });
+
   it("stores facts and suppresses superseded facts from current recall", async () => {
     const now = Date.now();
     await store.upsertFact({
