@@ -39,6 +39,7 @@ import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
+import type { MemoryIngestor } from "../memory/ingestion.ts";
 
 export class SessionManager {
   private store: SessionStore;
@@ -47,6 +48,7 @@ export class SessionManager {
   private seenMessages = new Set<string>();
   private spawnRunner: SpawnRunnerFn;
   private drivers: DriverMap;
+  private memoryIngestor?: MemoryIngestor;
 
   slackApp?: App;
   botUserId?: string;
@@ -64,6 +66,7 @@ export class SessionManager {
     config: Config,
     spawnRunner?: SpawnRunnerFn,
     drivers?: DriverMap,
+    memoryIngestor?: MemoryIngestor,
   ) {
     this.store = store;
     this.config = config;
@@ -79,6 +82,11 @@ export class SessionManager {
           agentIdentity,
         ),
     });
+    this.memoryIngestor = memoryIngestor;
+  }
+
+  setMemoryIngestor(memoryIngestor: MemoryIngestor): void {
+    this.memoryIngestor = memoryIngestor;
   }
 
   /** Public for tests + reconciliation; the manager doesn't expose drivers otherwise. */
@@ -220,6 +228,7 @@ export class SessionManager {
     this.rememberSeenMessage(dedupeKey);
 
     const session = await this.getOrCreateSession(event);
+    await this.captureSlackMemory(event, agentName, "persistent-agent");
 
     if (session.muted) return;
 
@@ -256,6 +265,7 @@ export class SessionManager {
     this.rememberSeenMessage(dedupeKey);
 
     const session = await this.getOrCreateSession(event);
+    await this.captureSlackMemory(event, agentName, "single-session");
 
     if (event.command) {
       const handled = await this.handleCommand(session, event);
@@ -1117,6 +1127,7 @@ export class SessionManager {
     // thread while this one was running. Fall back to the snapshot only if the
     // row was deleted (e.g. !reset during the run).
     const fresh = (await this.store.get(session.threadId)) ?? session;
+    await this.captureRunnerMemory(fresh.threadId, agentName, result);
     const agentSession = isTopLevel
       ? null
       : this.getOrCreateAgentSession(fresh, agentName);
@@ -1210,6 +1221,42 @@ export class SessionManager {
         agentSession.lastActivity = Date.now();
       }
       await this.store.set(fresh.threadId, fresh);
+    }
+  }
+
+  private async captureSlackMemory(
+    event: SlackMessageEvent,
+    agentName: string,
+    route: string,
+  ): Promise<void> {
+    if (!this.memoryIngestor) return;
+    try {
+      await this.memoryIngestor.captureSlackMessage(event, { agentName, route });
+      await this.memoryIngestor.captureRoutingDecision({
+        threadId: event.threadId,
+        channelId: event.channel,
+        slackTs: event.ts,
+        user: event.user,
+        selectedAgent: agentName,
+        reason: `Selected ${agentName} via ${route}${event.command ? ` for command ${event.command}` : ""}.`,
+        text: event.text,
+      });
+    } catch (err) {
+      _log.warn("memory", `capture.slack.fail thread=${event.threadId} err=${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async captureRunnerMemory(
+    threadId: string,
+    agentName: string,
+    result: SpawnResult,
+  ): Promise<void> {
+    if (!this.memoryIngestor) return;
+    try {
+      await this.memoryIngestor.captureRunnerResult(threadId, agentName, result);
+      await this.memoryIngestor.captureRunnerEvents(threadId, agentName, result.events);
+    } catch (err) {
+      _log.warn("memory", `capture.runner.fail thread=${threadId} agent=${agentName} err=${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
