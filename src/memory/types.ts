@@ -139,7 +139,7 @@ export interface IngestionCorrectionInput {
 export interface ConsolidationDecisionRecord {
   id: string;
   eventId: string;
-  action: "promote_lesson" | "promote_fact" | "promote_routing_memory" | "archive" | "mark_stale" | "propose_rule";
+  action: "promote_lesson" | "promote_fact" | "promote_routing_memory" | "archive" | "mark_stale" | "propose_rule" | "prune_edges" | "summarize";
   reason: string;
   sourceIds: string[];
   extractor: "heuristic" | "llm" | "manual" | "learned_rule";
