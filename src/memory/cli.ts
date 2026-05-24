@@ -31,6 +31,31 @@ export async function runMemoryCli(argv: string[]): Promise<string> {
       return json ? `${JSON.stringify(result, null, 2)}\n` : formatConsolidation(result);
     }
 
+    if (command === "accept-rule") {
+      const id = stringOption(options, "id");
+      if (!id) throw new Error("--id <rule-id> is required for accept-rule");
+      const ok = await store.acceptRule(id);
+      return json
+        ? `${JSON.stringify({ accepted: ok, id }, null, 2)}\n`
+        : (ok ? `Rule accepted: ${id}\n` : `Rule not found: ${id}\n`);
+    }
+
+    if (command === "reject-rule") {
+      const id = stringOption(options, "id");
+      if (!id) throw new Error("--id <rule-id> is required for reject-rule");
+      const ok = await store.rejectRule(id);
+      return json
+        ? `${JSON.stringify({ rejected: ok, id }, null, 2)}\n`
+        : (ok ? `Rule rejected: ${id}\n` : `Rule not found: ${id}\n`);
+    }
+
+    if (command === "accepted-rules") {
+      const rules = await store.getAcceptedRules();
+      return json
+        ? `${JSON.stringify({ rules }, null, 2)}\n`
+        : rules.length === 0 ? "No accepted rules.\n" : rules.map((rule) => `${rule.id} | ${rule.domain} | ${rule.ruleText}`).join("\n") + "\n";
+    }
+
     return usage();
   } finally {
     store.close();
@@ -113,5 +138,8 @@ function usage(): string {
     "Usage:",
     "  bun run src/memory/cli.ts recall --query <text> [--tags a,b] [--entities x,y] [--limit n] [--json]",
     "  bun run src/memory/cli.ts consolidate [--json]",
+    "  bun run src/memory/cli.ts accept-rule --id <rule-id> [--json]",
+    "  bun run src/memory/cli.ts reject-rule --id <rule-id> [--json]",
+    "  bun run src/memory/cli.ts accepted-rules [--json]",
   ].join("\n") + "\n";
 }
