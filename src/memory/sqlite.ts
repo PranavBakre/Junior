@@ -341,11 +341,13 @@ export class SqliteMemoryStore implements MemoryStore {
       }
     }
 
-    return [...candidates.values()]
+    const results = [...candidates.values()]
       .filter((row) => this.recallFilter(row, options))
       .map((row) => this.toResult(row))
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
+    this.recordRecallUsage(results.map((result) => result.id));
+    return results;
   }
 
   async consolidate(options: ConsolidationOptions = {}): Promise<ConsolidationResult> {
@@ -635,14 +637,18 @@ export class SqliteMemoryStore implements MemoryStore {
     return this.db
       .query<CandidateRow, [string, number, number]>(
         `WITH RECURSIVE seed(id) AS (
-           SELECT value FROM json_each(?1)
-         ), related(id, depth, score, path) AS (
-           SELECT e.dst_id, 1, e.weight, e.src_id || '>' || e.dst_id
-           FROM edge e JOIN seed s ON s.id = e.src_id
-           UNION ALL
-           SELECT e.dst_id, r.depth + 1, r.score * e.weight * 0.7, r.path || '>' || e.dst_id
-           FROM edge e JOIN related r ON e.src_id = r.id
-           WHERE r.depth < ?2 AND instr(r.path, e.dst_id) = 0
+            SELECT value FROM json_each(?1)
+          ), edge_links(src_id, dst_id, weight) AS (
+            SELECT src_id, dst_id, weight FROM edge
+            UNION ALL
+            SELECT dst_id, src_id, weight FROM edge WHERE directed = 0
+          ), related(id, depth, score, path) AS (
+            SELECT e.dst_id, 1, e.weight, e.src_id || '>' || e.dst_id
+            FROM edge_links e JOIN seed s ON s.id = e.src_id
+            UNION ALL
+            SELECT e.dst_id, r.depth + 1, r.score * e.weight * 0.7, r.path || '>' || e.dst_id
+            FROM edge_links e JOIN related r ON e.src_id = r.id
+            WHERE r.depth < ?2 AND instr(r.path, e.dst_id) = 0
          ), ranked AS (
            SELECT id, MAX(score) AS edge_score FROM related GROUP BY id ORDER BY edge_score DESC LIMIT ?3
          )
@@ -680,6 +686,29 @@ export class SqliteMemoryStore implements MemoryStore {
       reasons: unique(row.reasons),
       sourceIds: row.source_ids ? row.source_ids.split(",").filter(Boolean) : [],
     };
+  }
+
+  private recordRecallUsage(ids: string[]): void {
+    const uniqueIds = unique(ids);
+    if (uniqueIds.length === 0) return;
+    const now = Date.now();
+    const txn = this.db.transaction(() => {
+      const bumpEvent = this.db.query(
+        "UPDATE memory_event SET use_count = use_count + 1, last_used_at = ? WHERE id = ?",
+      );
+      const bumpLesson = this.db.query(
+        "UPDATE lesson SET use_count = use_count + 1, last_used_at = ? WHERE id = ?",
+      );
+      const bumpFact = this.db.query(
+        "UPDATE memory_fact SET use_count = use_count + 1, last_used_at = ? WHERE id = ?",
+      );
+      for (const id of uniqueIds) {
+        bumpEvent.run(now, id);
+        bumpLesson.run(now, id);
+        bumpFact.run(now, id);
+      }
+    });
+    txn();
   }
 
   private recordDecision(decision: ConsolidationDecisionRecord): ConsolidationDecisionRecord {
