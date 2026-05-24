@@ -339,8 +339,8 @@ Without this, `frequency` in the ranking model is measuring "how many duplicate 
 
 Build the first version as a boring, inspectable memory event log before making recall clever.
 
-1. Add a separate `MemoryStore` backed by the existing SQLite file or a sibling SQLite file.
-2. Capture raw Slack messages, runner outputs, routing decisions, and explicit user corrections as append-only source records.
+1. Add a separate `MemoryStore` backed by the existing SQLite file or a sibling SQLite file (`MEMORY_DB_PATH`, default `data/memory.db`).
+2. Capture raw Slack messages, runner outputs, routing decisions, and explicit user corrections as append-only source records. Live Slack/session capture should go through a small ingestion service, not direct DB writes.
 3. Derive `memory_event` rows from those source records; do not treat extracted events as the raw audit source.
 4. Add manual or test-fixture memory facts before live LLM extraction, so recall and routing can be tested against known-good records.
 5. Add FTS search over source-backed event and lesson text with an explicit sync/rebuild path.
@@ -846,6 +846,17 @@ editing SQLite rows directly. Expose memory through two narrow surfaces:
 Do not let consolidation prompts mutate the DB ad hoc. All reads/writes should
 go through `MemoryStore`, the CLI, or the MCP tools so provenance, FTS sync,
 supersession, and active/inactive rules stay consistent.
+
+## Live Ingestion Wiring
+
+Live ingestion uses `MemoryIngestor` in the session manager:
+
+- incoming Slack messages are stored as `memory_source_record` rows and derived `memory_event` rows;
+- selected agent/routing decisions are stored as routing source records plus routing-memory facts;
+- runner outputs are stored as source records and derived events on completion;
+- notable runner tool errors are captured as high-importance events.
+
+This is intentionally cheap and deterministic. It does not call an LLM in the Slack hot path. LLM extraction and lesson promotion remain scheduled/offline consolidation work.
 
 ## Future: Ingestion Rule Learning
 
