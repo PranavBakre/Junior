@@ -289,17 +289,10 @@ export class SqliteMemoryStore implements MemoryStore {
       );
   }
 
-  async acceptRule(id: string): Promise<boolean> {
+  async setRuleStatus(id: string, status: "accepted" | "rejected"): Promise<boolean> {
     const changed = this.db
-      .query("UPDATE candidate_rule SET status = 'accepted' WHERE id = ?")
-      .run(id);
-    return changed.changes > 0;
-  }
-
-  async rejectRule(id: string): Promise<boolean> {
-    const changed = this.db
-      .query("UPDATE candidate_rule SET status = 'rejected' WHERE id = ?")
-      .run(id);
+      .query("UPDATE candidate_rule SET status = ? WHERE id = ?")
+      .run(status, id);
     return changed.changes > 0;
   }
 
@@ -314,13 +307,6 @@ export class SqliteMemoryStore implements MemoryStore {
         domain: row.domain as AcceptedRule["domain"],
         ruleText: row.rule_text,
       }));
-  }
-
-  async search(
-    query: string,
-    options: { limit?: number } = {},
-  ): Promise<MemorySearchResult[]> {
-    return this.recall({ query, limit: options.limit });
   }
 
   async recall(options: MemoryRecallOptions): Promise<MemorySearchResult[]> {
@@ -396,13 +382,11 @@ export class SqliteMemoryStore implements MemoryStore {
     for (const row of archiveRows) {
       this.db.query("UPDATE memory_event SET active = 0 WHERE id = ?").run(row.id);
       const decision = this.recordDecision({
-        id: `decision_archive_${row.id}_${now}`,
-        eventId: row.id,
         action: "archive",
+        eventId: row.id,
         reason: "Archived old, low-importance, unused event from active recall set.",
         sourceIds: [row.source_record_id],
-        extractor: "heuristic",
-        createdAt: now,
+        now,
       });
       decisions.push(decision);
       archivedEventIds.push(row.id);
@@ -432,13 +416,11 @@ export class SqliteMemoryStore implements MemoryStore {
         tags: ["routing_memory", "learned_correction"],
       });
       const decision = this.recordDecision({
-        id: `decision_promote_${factId}_${now}`,
-        eventId: eventIds[0],
         action: "promote_routing_memory",
+        eventId: eventIds[0],
         reason: `Promoted repeated correction (${group.count} examples) into routing memory.`,
         sourceIds: eventIds,
-        extractor: "heuristic",
-        createdAt: now,
+        now,
       });
       decisions.push(decision);
       promotedMemoryIds.push(factId);
@@ -467,19 +449,17 @@ export class SqliteMemoryStore implements MemoryStore {
         createdAt: now,
       });
       const decision = this.recordDecision({
-        id: `decision_rule_${ruleId}_${now}`,
-        eventId: row.event_ids.split(",")[0],
         action: "propose_rule",
+        eventId: row.event_ids.split(",")[0],
         reason: "Proposed draft bounded-DSL rule from repeated tag corrections.",
         sourceIds: row.event_ids.split(","),
-        extractor: "heuristic",
-        createdAt: now,
+        now,
       });
       decisions.push(decision);
       proposedRuleIds.push(ruleId);
 
       // Auto-accept: corrections were human-confirmed, no manual review needed.
-      await this.acceptRule(ruleId);
+      await this.setRuleStatus(ruleId, "accepted");
     }
 
     // --- Mark stale facts: unused facts older than 30 days ---
@@ -494,13 +474,11 @@ export class SqliteMemoryStore implements MemoryStore {
     for (const row of staleFactRows) {
       this.db.query("UPDATE memory_fact SET active = 0 WHERE id = ?").run(row.id);
       const decision = this.recordDecision({
-        id: `decision_stale_${row.id}_${now}`,
-        eventId: row.id,
         action: "mark_stale",
+        eventId: row.id,
         reason: "Fact unused for 30+ days, marked inactive.",
         sourceIds: [row.id],
-        extractor: "heuristic",
-        createdAt: now,
+        now,
       });
       decisions.push(decision);
       archivedEventIds.push(row.id);
@@ -541,13 +519,11 @@ export class SqliteMemoryStore implements MemoryStore {
         });
       }
       const decision = this.recordDecision({
-        id: `decision_lesson_${lessonId}_${now}`,
-        eventId: eventIds[0],
         action: "promote_lesson",
+        eventId: eventIds[0],
         reason: `Promoted repeated high-importance pattern (${row.count} events, tag "${row.tag}") into a lesson.`,
         sourceIds: eventIds,
-        extractor: "heuristic",
-        createdAt: now,
+        now,
       });
       decisions.push(decision);
       promotedMemoryIds.push(lessonId);
@@ -578,13 +554,11 @@ export class SqliteMemoryStore implements MemoryStore {
         )
         .run(0.3, now - 30 * 24 * 60 * 60 * 1000);
       const decision = this.recordDecision({
-        id: `decision_prune_edges_${now}`,
-        eventId: "",
         action: "prune_edges",
+        eventId: "",
         reason: `Pruned ${edgePruneResult.count} weak edges (weight < 0.3, older than 30 days).`,
         sourceIds: [],
-        extractor: "heuristic",
-        createdAt: now,
+        now,
       });
       decisions.push(decision);
     }
@@ -635,13 +609,11 @@ export class SqliteMemoryStore implements MemoryStore {
         )
         .run(summaryId, `Thread summary: ${thread.thread_id}`, body, now);
       const decision = this.recordDecision({
-        id: `decision_summary_${summaryId}_${now}`,
-        eventId: "",
         action: "summarize",
+        eventId: "",
         reason: `Created extractive summary for thread ${thread.thread_id} (${thread.event_count} events).`,
         sourceIds: [],
-        extractor: "heuristic",
-        createdAt: now,
+        now,
       });
       decisions.push(decision);
       promotedMemoryIds.push(summaryId);
@@ -906,7 +878,23 @@ export class SqliteMemoryStore implements MemoryStore {
     txn();
   }
 
-  private recordDecision(decision: ConsolidationDecisionRecord): ConsolidationDecisionRecord {
+  private recordDecision(params: {
+    action: ConsolidationDecisionRecord["action"];
+    eventId: string;
+    reason: string;
+    sourceIds: string[];
+    now: number;
+  }): ConsolidationDecisionRecord {
+    const id = `decision_${params.action}_${params.eventId}_${params.now}`;
+    const decision: ConsolidationDecisionRecord = {
+      id,
+      eventId: params.eventId,
+      action: params.action,
+      reason: params.reason,
+      sourceIds: params.sourceIds,
+      extractor: "heuristic",
+      createdAt: params.now,
+    };
     this.db
       .query(
         `INSERT INTO consolidation_decision (id, event_id, action, reason, source_ids_json, extractor, created_at)
@@ -914,13 +902,8 @@ export class SqliteMemoryStore implements MemoryStore {
          ON CONFLICT(id) DO NOTHING`,
       )
       .run(
-        decision.id,
-        decision.eventId,
-        decision.action,
-        decision.reason,
-        JSON.stringify(decision.sourceIds),
-        decision.extractor,
-        decision.createdAt,
+        decision.id, decision.eventId, decision.action, decision.reason,
+        JSON.stringify(decision.sourceIds), decision.extractor, decision.createdAt,
       );
     return decision;
   }

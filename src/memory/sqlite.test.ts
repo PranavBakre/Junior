@@ -95,7 +95,7 @@ describe("SqliteMemoryStore", () => {
       createdAt: now,
     });
 
-    const results = await store.search("dashboard gx-admin-client");
+    const results = await store.recall({ query: "dashboard gx-admin-client" });
 
     expect(results).toHaveLength(1);
     expect(results[0].id).toBe("event-1");
@@ -120,11 +120,11 @@ describe("SqliteMemoryStore", () => {
 
     const db = (store as unknown as { db: Database }).db;
     db.run("DELETE FROM memory_fts");
-    expect(await store.search("PR review")).toEqual([]);
+    expect((await store.recall({ query: "PR review" }))).toEqual([]);
 
     await store.rebuildSearchIndex();
 
-    const results = await store.search("PR review");
+    const results = await store.recall({ query: "PR review" });
     expect(results.map((result) => result.id)).toEqual(["event-1"]);
   });
 
@@ -423,21 +423,21 @@ describe("SqliteMemoryStore", () => {
     });
 
     // Accept
-    const accepted = await store.acceptRule("rule_tag_frontend");
+    const accepted = await store.setRuleStatus("rule_tag_frontend", "accepted");
     expect(accepted).toBe(true);
 
     const rules = await store.getAcceptedRules();
     expect(rules.map((rule) => rule.id)).toContain("rule_tag_frontend");
 
     // Reject
-    const rejected = await store.rejectRule("rule_tag_frontend");
+    const rejected = await store.setRuleStatus("rule_tag_frontend", "rejected");
     expect(rejected).toBe(true);
 
     const after = await store.getAcceptedRules();
     expect(after.map((rule) => rule.id)).not.toContain("rule_tag_frontend");
 
     // Non-existent rule
-    const missing = await store.acceptRule("nonexistent");
+    const missing = await store.setRuleStatus("nonexistent", "accepted");
     expect(missing).toBe(false);
   });
 
@@ -452,7 +452,7 @@ describe("SqliteMemoryStore", () => {
       negativeExampleIds: [],
       createdAt: Date.now(),
     });
-    await store.acceptRule("rule_tag_persist");
+    await store.setRuleStatus("rule_tag_persist", "accepted");
     // Close the original store, reopen a fresh instance on the same file.
     store.close();
 

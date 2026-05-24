@@ -29,11 +29,10 @@ export interface MemoryStore {
   logClassification(classification: IngestionClassificationInput): Promise<void>;
   logCorrection(correction: IngestionCorrectionInput): Promise<void>;
   proposeRule(rule: CandidateRuleInput): Promise<void>;
-  acceptRule(id: string): Promise<boolean>;
-  rejectRule(id: string): Promise<boolean>;
+  setRuleStatus(id: string, status: "accepted" | "rejected"): Promise<boolean>;
   getAcceptedRules(): Promise<AcceptedRule[]>;
-  search(query: string, options?: { limit?: number }): Promise<MemorySearchResult[]>;
   recall(options: MemoryRecallOptions): Promise<MemorySearchResult[]>;
+  consolidate(options?: ConsolidationOptions): Promise<ConsolidationResult>;
   consolidate(options?: ConsolidationOptions): Promise<ConsolidationResult>;
   rebuildSearchIndex(): Promise<void>;
 }

@@ -492,25 +492,30 @@ export class AgentDispatcher {
     }
   }
 
-  private async memorySuggestedAgent(event: SlackMessageEvent): Promise<string | null> {
-    if (!this.memoryStore || event.command || event.isSelfBot) return null;
-    try {
-      const memories = await this.memoryStore.recall({
-        query: event.text,
-        kinds: ["routing_memory"],
-        tags: ["routing_memory", "routing_decision", "learned_correction"],
-        limit: 5,
-        depth: 1,
-      });
-      const haystack = memories.map((memory) => `${memory.title ?? ""} ${memory.body}`).join("\n").toLowerCase();
-      for (const agent of ["frontend", "review", "build", "architect", "pm", "reproducer", "thinker"] as const) {
-        if (haystack.includes(agent) && isPersistentAgent(agent)) return agent;
+  private memorySuggestedAgent = (() => {
+    const AGENTS = ["frontend", "review", "build", "architect", "pm", "reproducer", "thinker"] as const;
+    return async function (this: AgentDispatcher, event: SlackMessageEvent): Promise<string | null> {
+      if (!this.memoryStore || event.command || event.isSelfBot) return null;
+      try {
+        const memories = await this.memoryStore.recall({
+          query: event.text,
+          kinds: ["routing_memory"],
+          tags: ["routing_memory", "routing_decision", "learned_correction"],
+          limit: 5,
+          depth: 1,
+        });
+        for (const memory of memories) {
+          const h = (memory.title ?? "" + " " + memory.body).toLowerCase();
+          for (const agent of AGENTS) {
+            if (h.includes(agent) && isPersistentAgent(agent)) return agent;
+          }
+        }
+      } catch (err) {
+        log.warn("memory", `routing recall failed thread=${event.threadId}: ${err instanceof Error ? err.message : String(err)}`);
       }
-    } catch (err) {
-      log.warn("memory", `routing recall failed thread=${event.threadId}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    return null;
-  }
+      return null;
+    };
+  })();
 }
 
 // ---------------------------------------------------------------------------

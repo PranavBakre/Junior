@@ -106,10 +106,11 @@ export class WorkflowExecutor {
         summary = await this.runWithRunner(
           request.definition,
           run,
-          buildRunnerPrompt({
+          buildRunnerPromptWithNative({
             definition: request.definition,
             run,
             repos: this.reposFor(request.definition),
+            nativeResult: null,
           }),
         );
       } else {
@@ -327,14 +328,6 @@ function renderArtifact(options: {
   ]
     .filter((line): line is string => line !== null)
     .join("\n");
-}
-
-function buildRunnerPrompt(options: {
-  definition: WorkflowDefinition;
-  run: WorkflowRun;
-  repos: RepoConfig[];
-}): string {
-  return buildRunnerPromptWithNative({ ...options, nativeResult: null });
 }
 
 function buildRunnerPromptWithNative(options: {
