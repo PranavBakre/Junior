@@ -435,6 +435,55 @@ function registerTools(server: McpServer) {
       });
     },
   );
+
+  server.registerTool(
+    "memory_accept_rule",
+    {
+      description:
+        "Accept a proposed draft ingestion rule so it becomes active in the live capture path. Returns whether the rule was found and accepted.",
+      inputSchema: {
+        id: z.string().describe("Rule ID from a consolidation proposal (e.g., rule_tag_foo)"),
+      },
+    },
+    async ({ id }) => {
+      return withMemoryStore(async (memory) => {
+        const accepted = await memory.acceptRule(id);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ accepted, id }, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_reject_rule",
+    {
+      description:
+        "Reject a proposed draft ingestion rule. Returns whether the rule was found and rejected.",
+      inputSchema: {
+        id: z.string().describe("Rule ID from a consolidation proposal"),
+      },
+    },
+    async ({ id }) => {
+      return withMemoryStore(async (memory) => {
+        const rejected = await memory.rejectRule(id);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ rejected, id }, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_accepted_rules",
+    {
+      description:
+        "List all accepted ingestion rules currently active in the live capture path.",
+      inputSchema: {},
+    },
+    async () => {
+      return withMemoryStore(async (memory) => {
+        const rules = await memory.getAcceptedRules();
+        return { content: [{ type: "text" as const, text: JSON.stringify({ rules }, null, 2) }] };
+      });
+    },
+  );
 }
 
 async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemoryStore>) => Promise<T>): Promise<T> {
