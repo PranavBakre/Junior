@@ -87,6 +87,9 @@ export interface Config {
     homeWindowMs: number;
     defaultVerbosity: SessionVerbosity;
   };
+  memory: {
+    sqlitePath: string;
+  };
   channelDefaults: Record<string, { agentType: string }>;
   /**
    * Single Slack user ID allowed to run elevated commands (`!mute`, `!unmute`,
@@ -167,6 +170,9 @@ export function loadConfig(): Config {
       defaultVerbosity: parseVerbosity(
         optional("SESSION_DEFAULT_VERBOSITY", "normal"),
       ),
+    },
+    memory: {
+      sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
     },
     channelDefaults: parseChannelDefaults(
       optional(
