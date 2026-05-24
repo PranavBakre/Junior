@@ -13,7 +13,10 @@ export type WorkflowTool =
   | "git"
   | "gh"
   | "slack.post"
-  | "docs.write";
+  | "docs.write"
+  | "memory.read"
+  | "memory.write"
+  | "memory.evaluate";
 
 export interface WorkflowScheduleTrigger {
   type: "schedule";

@@ -122,6 +122,9 @@ Permission tools:
 - `gh` — read GitHub PR metadata with the GitHub CLI
 - `docs.write` — write run artifacts under `data/workflow-runs/`
 - `slack.post` — post Slack summaries
+- `memory.read` — read associative memory through the memory CLI/tool surface
+- `memory.write` — run approved memory writes/consolidation through memory code
+- `memory.evaluate` — inspect consolidation results and rule proposals
 
 `permissions.tools` is not a general runner sandbox. It is validated and injected into the runner prompt as the declared capability contract. Workflow definition files are trusted operational config; private overlays should be reviewed like code.
 
@@ -208,7 +211,14 @@ posts it to configured Slack outputs.
 
 The V2 associative-memory consolidation/"dreaming" engine should use this workflow system rather than a bespoke scheduler. A memory workflow can run on a cron schedule and by owner/admin command, skip overlapping runs with `concurrency: skip`, write artifacts under `data/workflow-runs/memory-consolidation`, and optionally post a compact Slack summary.
 
-The workflow definition should orchestrate memory-specific code/tools; it should not place all classification, promotion, archive, and stale-fact logic in prompt prose. If memory consolidation needs new permissions, add narrow workflow tools such as `memory.read`, `memory.write`, and `memory.evaluate`.
+The workflow definition orchestrates memory-specific code/tools; it does not place all classification, promotion, archive, and stale-fact logic in prompt prose. Workflow utility runs skip Junior's project MCP wiring because they run from `/tmp/junior-utility`, so memory workflows access the store through the CLI surface:
+
+```bash
+bun run <runtime context junior.memoryCli> recall --query "dashboard routing" --json
+bun run <runtime context junior.memoryCli> consolidate --json
+```
+
+The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Because workflow runners execute from `/tmp/junior-utility`, the runtime context includes `junior.projectRoot` and `junior.memoryCli` absolute paths. Normal Junior runner sessions with MCP wiring can use `memory_recall` and `memory_consolidate` instead.
 
 ## Dependencies
 

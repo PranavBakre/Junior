@@ -317,6 +317,10 @@ function buildRunnerPrompt(options: {
         permissions: options.definition.permissions,
         outputs: options.definition.outputs,
       },
+      junior: {
+        projectRoot: process.cwd(),
+        memoryCli: join(process.cwd(), "src/memory/cli.ts"),
+      },
       repos: options.repos.map((repo) => ({
         name: repo.name,
         path: repo.path,
