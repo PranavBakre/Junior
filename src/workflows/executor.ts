@@ -349,7 +349,8 @@ export class WorkflowExecutor {
   }
 
   private timeoutFor(provider: ImplementedRunnerProvider): number {
-    return provider === "opencode"
+    if (provider === "codex-app-server") return this.config.codex.timeoutMs;
+    return provider === "opencode" || provider === "opencode-sdk"
       ? this.config.opencode.timeoutMs
       : this.config.claude.timeoutMs;
   }

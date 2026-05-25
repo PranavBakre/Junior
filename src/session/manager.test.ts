@@ -139,6 +139,22 @@ const testConfig: Config = {
     mixpanelMcpEnabled: true,
     mongodbMcpEnabled: true,
   },
+  codex: {
+    mode: "app-server",
+    model: null,
+    timeoutMs: 300000,
+    sandbox: "workspace-write",
+    askForApproval: "never",
+    searchEnabled: false,
+    appServerContinuityEnabled: false,
+    mcpEnabled: true,
+    slackMcpEnabled: true,
+    playwrightMcpEnabled: true,
+    mixpanelMcpEnabled: true,
+    mongodbMcpEnabled: true,
+    memoryMcpEnabled: true,
+    isolatedHomePath: "data/codex-home",
+  },
   repos: [
     { name: "junior", path: "/tmp/junior", defaultBase: "main" },
     { name: "frontend", path: "/tmp/frontend", defaultBase: "main" },
@@ -745,6 +761,21 @@ describe("SessionManager", () => {
       // session.provider stays unchanged (undefined or claude)
       expect(session?.provider ?? "claude").toBe("claude");
       expect(onCmd.mock.calls.at(-1)?.[1]).toContain("not yet implemented");
+    });
+
+    it("accepts codex-app-server as an implemented provider", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "codex-app-server",
+        ts: "ts-provider-codex-app-server",
+      }));
+
+      const session = await store.get("thread-1");
+      expect(session?.provider).toBe("codex-app-server");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("codex-app-server");
     });
   });
 
