@@ -12,6 +12,7 @@ const ENV_KEYS = [
   "RUNNER_PROVIDER",
   "OPENCODE_MODEL",
   "OPENCODE_TIMEOUT_MS",
+  "OPENCODE_CONTINUITY_ENABLED",
   "JUNIOR_OPENCODE_PERMISSION",
   "OPENCODE_MCP_ENABLED",
   "OPENCODE_SLACK_MCP_ENABLED",
@@ -65,6 +66,7 @@ describe("loadConfig runner providers", () => {
     expect(config.opencode).toEqual({
       model: null,
       timeoutMs: 300000,
+      continuityEnabled: false,
       permission: "allow",
       mcpEnabled: true,
       slackMcpEnabled: true,
@@ -89,6 +91,7 @@ describe("loadConfig runner providers", () => {
     process.env.RUNNER_PROVIDER = "opencode";
     process.env.OPENCODE_MODEL = "openai/gpt-5.1";
     process.env.OPENCODE_TIMEOUT_MS = "1234";
+    process.env.OPENCODE_CONTINUITY_ENABLED = "true";
     process.env.JUNIOR_OPENCODE_PERMISSION = "ask";
     process.env.OPENCODE_MCP_ENABLED = "false";
     process.env.OPENCODE_SLACK_MCP_ENABLED = "0";
@@ -102,6 +105,7 @@ describe("loadConfig runner providers", () => {
     expect(config.opencode).toEqual({
       model: "openai/gpt-5.1",
       timeoutMs: 1234,
+      continuityEnabled: true,
       permission: "ask",
       mcpEnabled: false,
       slackMcpEnabled: false,

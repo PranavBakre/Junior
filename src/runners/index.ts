@@ -44,6 +44,7 @@ export function spawnRunner(
       prompt,
       {
         defaultModel: config.opencode.model,
+        continuityEnabled: config.opencode.continuityEnabled,
         permission: config.opencode.permission,
         mcp: buildOpenCodeMcpConfig(config, session),
       },

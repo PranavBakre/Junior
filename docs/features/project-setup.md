@@ -70,6 +70,7 @@ interface Config {
   opencode: {
     model: string | null;
     timeoutMs: number;
+    continuityEnabled: boolean;
     permission: string;
     mcpEnabled: boolean;
     slackMcpEnabled: boolean;
@@ -104,6 +105,7 @@ interface Config {
 | `CLAUDE_PERMISSION_MODE` | no | `bypassPermissions` | |
 | `OPENCODE_MODEL` | no | unset | passed through to `opencode run --model` |
 | `OPENCODE_TIMEOUT_MS` | no | `300000` | |
+| `OPENCODE_CONTINUITY_ENABLED` | no | `false` | enables OpenCode session reuse across completed turns: CLI `--session` and SDK reattach; SDK provider kill still uses native abort, but CLI interrupt-and-resume is not verified |
 | `JUNIOR_OPENCODE_PERMISSION` | no | `allow` | OpenCode permission mode in generated agent config |
 | `OPENCODE_MCP_ENABLED` | no | `true` | enables generated OpenCode MCP config for normal non-utility runs |
 | `OPENCODE_SLACK_MCP_ENABLED` | no | `true` | includes the local Slack MCP entry when MCP is enabled |

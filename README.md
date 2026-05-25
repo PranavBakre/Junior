@@ -141,6 +141,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |
 | `OPENCODE_MODEL` | *(unset)* | Override default OpenCode model |
 | `OPENCODE_TIMEOUT_MS` | `300000` | Per-turn OpenCode timeout before SIGINT |
+| `OPENCODE_CONTINUITY_ENABLED` | `false` | Enables OpenCode session reuse across completed turns: CLI `--session` / SDK reattach. SDK provider kill still uses OpenCode native abort; CLI interrupt-and-resume is not verified. |
 | `JUNIOR_OPENCODE_PERMISSION` | `allow` | OpenCode permission mode for generated agent config |
 | `OPENCODE_MCP_ENABLED` | `true` | Enables generated OpenCode MCP config for normal non-utility runs |
 | `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | `true` | Include Playwright MCP in generated OpenCode config; set `false` to disable |
