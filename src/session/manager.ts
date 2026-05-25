@@ -494,7 +494,7 @@ export class SessionManager {
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
           "`!agent <junior|lead>` — Set thread default agent",
-          "`!provider <claude|opencode>` — Set runner provider for this thread",
+          "`!provider <claude|opencode|opencode-sdk>` — Set runner provider for this thread",
           "`!cancel` — Kill running process, keep session",
           "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
           "`!status` — Show session status",
@@ -590,14 +590,14 @@ export class SessionManager {
         if (isRunnerProvider(provider) && !isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\` or \`!provider opencode\`.`,
+            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\`, \`!provider opencode\`, or \`!provider opencode-sdk\`.`,
           );
           return true;
         }
         if (!isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Unknown provider "${provider}". Use \`!provider claude\` or \`!provider opencode\`.`,
+            `Unknown provider "${provider}". Use \`!provider claude\`, \`!provider opencode\`, or \`!provider opencode-sdk\`.`,
           );
           return true;
         }

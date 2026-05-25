@@ -228,11 +228,11 @@ function parseRunnerProvider(value: string): ImplementedRunnerProvider {
     // Known provider, not yet implemented. Fail at config load with the real
     // cause rather than throwing on the first message turn.
     throw new Error(
-      `RUNNER_PROVIDER=${value} is a planned provider but is not yet implemented. Use opencode or claude.`,
+      `RUNNER_PROVIDER=${value} is a planned provider but is not yet implemented. Use opencode|opencode-sdk|claude.`,
     );
   }
   throw new Error(
-    `Invalid RUNNER_PROVIDER: ${value} (expected opencode|claude)`,
+    `Invalid RUNNER_PROVIDER: ${value} (expected opencode|opencode-sdk|claude)`,
   );
 }
 

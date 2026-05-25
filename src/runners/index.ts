@@ -2,6 +2,7 @@ import type { Config } from "../config.ts";
 import type { AgentIdentity, RunnerProvider, ThreadSession } from "../session/types.ts";
 import { spawnClaude } from "../claude/spawner.ts";
 import { spawnOpenCode } from "../opencode/spawner.ts";
+import { spawnOpenCodeSdk } from "../opencode/sdk-provider.ts";
 import type { OpenCodeMcpConfig } from "../opencode/config.ts";
 import type { SpawnHandle } from "./types.ts";
 
@@ -18,6 +19,7 @@ export function runnerTimeoutMs(
 ): number {
   switch (provider) {
     case "opencode":
+    case "opencode-sdk":
       return config.opencode.timeoutMs;
     case "codex":
     case "claude":
@@ -45,6 +47,18 @@ export function spawnRunner(
         permission: config.opencode.permission,
         mcp: buildOpenCodeMcpConfig(config, session),
       },
+      targetRepoCwd,
+      botToken,
+      agentIdentity,
+      imagePaths,
+    );
+  }
+
+  if (provider === "opencode-sdk") {
+    return spawnOpenCodeSdk(
+      session,
+      prompt,
+      config,
       targetRepoCwd,
       botToken,
       agentIdentity,
