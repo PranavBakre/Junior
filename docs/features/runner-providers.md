@@ -26,6 +26,11 @@ specific needs because it has:
 - `opencode serve` + `opencode run --attach` as a future optimization for MCP
   cold-start cost
 
+OpenCode's server/SDK surface exposes a session abort API, and the OpenCode TUI
+uses that API for interrupt. Current logs prove normal `--session` reuse across
+completed turns, not CLI SIGINT-plus-resume recovery. Treat continuity as
+session reuse unless an abort-recovery fixture proves more.
+
 Codex remains viable, but OpenCode gives a cleaner story for dynamic Junior
 agent prompts.
 
@@ -55,8 +60,14 @@ Configuration ergonomics also favor OpenCode:
   work or a generated Codex home.
 - OpenCode permissions are config-level and per-agent; Codex splits sandbox mode
   from approval policy and is sensitive to flag position.
-- OpenCode headless resume is `opencode run --session <id>`, which fits
-  Junior's existing "one process per Slack turn" shape directly.
+- OpenCode native continuity is available but controlled by
+  `OPENCODE_CONTINUITY_ENABLED`. When enabled, the CLI provider resumes with
+  `opencode run --session <id>` and the SDK/server provider re-attaches to the
+  existing session across completed turns. This is not a CLI
+  interrupt-and-resume guarantee: current evidence proves normal session reuse,
+  not SIGINT recovery. The SDK provider still uses OpenCode's native
+  `session.abort()` API for interrupt/kill when that provider is active. When
+  disabled, each run starts fresh.
 
 Risk profile matters. The Codex CLI surface has moved quickly, and the
 Codex-specific doc already caught flag drift. The first non-Claude adapter should
@@ -180,6 +191,43 @@ been captured for the observed OpenCode `tool_use` shape and now emit
 at INFO (`opencode-parser`) so operators can capture additional fixtures.
 
 Do not guess the tool event schema from docs.
+
+## OpenCode SDK/Server Provider
+
+OpenCode's TUI interrupt path does not send Escape bytes to a headless process.
+It calls the server/SDK `session.abort` API. Junior should use that API for the
+SDK provider's native interrupt path, while still requiring a real fixture
+before claiming prompt-after-abort continuation is a supported recovery flow.
+
+Junior models the SDK/server integration as a separate provider/driver, not as
+hidden behavior in the current `opencode` CLI adapter:
+
+- `opencode` — current one-process-per-turn CLI adapter using
+  `opencode run --format json`, optional `--session`, generated
+  `OPENCODE_CONFIG_CONTENT`, and stdout JSON parsing.
+- `opencode-sdk` — control-plane adapter that starts or attaches to an OpenCode
+  server, subscribes to events, sends prompts, and interrupts through the
+  SDK/HTTP API.
+
+The SDK/server provider should preserve Junior's provider contract: normalized
+`RunnerEvent`s, the same cwd/env/MCP policy, provider-native resume semantics,
+and no business logic in route/session orchestration. It can improve status
+inspection, server reuse, and mid-run abort, but timeout recovery should not be
+described as resumable unless a future fixture proves prompt-after-abort
+continuation.
+
+Implementation outline:
+
+1. Keep a dedicated `RunnerProvider` value for the SDK/server mode.
+2. Keep provider code responsible for OpenCode server startup/attachment and SDK
+   client lifecycle.
+3. Map OpenCode server events to Junior's normalized `RunnerEvent` shape with
+   fixtures captured from the server event stream.
+4. Use `session.abort({ sessionID })` for SDK kill/interrupt.
+5. Gate session reattach behind `OPENCODE_CONTINUITY_ENABLED`.
+6. Add an abort-recovery fixture before treating abort plus a later prompt as
+   verified timeout recovery.
+7. Keep the current CLI provider available for simple isolated turns.
 
 ## OpenCode Prompt Strategy
 

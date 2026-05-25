@@ -16,6 +16,7 @@ import { z } from "zod";
 import { readdir, readFile } from "fs/promises";
 import { loadAgentDefinition } from "../agents/loader.ts";
 import { log } from "../logger.ts";
+import { createMemoryStore } from "../memory/factory.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import {
@@ -27,6 +28,7 @@ import {
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
 const ORG_AGENTS_DIR = "agents-org";
+const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH ?? "data/memory.db";
 
 let slack: WebClient;
 let sessionStore: SessionStore | undefined;
@@ -377,6 +379,104 @@ function registerTools(server: McpServer) {
       };
     },
   );
+
+  server.registerTool(
+    "memory_recall",
+    {
+      description:
+        "Recall sourced associative-memory snippets from Junior's memory database using FTS, tags/entities, and bounded edge traversal.",
+      inputSchema: {
+        query: z.string().optional().describe("Optional full-text query"),
+        tags: z.array(z.string()).optional().describe("Optional normalized or natural tag names"),
+        entities: z.array(z.string()).optional().describe("Optional entity names"),
+        kinds: z.array(z.enum(["event", "lesson", "summary", "fact", "procedure", "routing_memory"])).optional().describe("Optional memory kinds to include"),
+        limit: z.number().optional().describe("Maximum results (default 5)"),
+        depth: z.number().optional().describe("Edge traversal depth 0-3 (default 2)"),
+        include_inactive: z.boolean().optional().describe("Include archived/inactive memories"),
+        include_invalid: z.boolean().optional().describe("Include superseded/stale memories"),
+      },
+    },
+    async ({ query, tags, entities, kinds, limit, depth, include_inactive, include_invalid }) => {
+      return withMemoryStore(async (memory) => {
+        const results = await memory.recall({
+          query,
+          tags,
+          entities,
+          kinds,
+          limit,
+          depth,
+          includeInactive: include_inactive,
+          includeInvalid: include_invalid,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify({ results }, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_consolidate",
+    {
+      description:
+        "Run Junior's deterministic associative-memory consolidation pass: archive cold events, promote repeated routing corrections, and propose draft rules.",
+      inputSchema: {
+        archive_before_ms: z.number().optional().describe("Archive active low-value events older than this age in ms"),
+        low_importance_threshold: z.number().optional().describe("Archive events at or below this importance (default 0.2)"),
+        repeated_correction_threshold: z.number().optional().describe("Corrections required for promotion/rule proposal (default 2)"),
+      },
+    },
+    async ({ archive_before_ms, low_importance_threshold, repeated_correction_threshold }) => {
+      return withMemoryStore(async (memory) => {
+        const result = await memory.consolidate({
+          archiveBeforeMs: archive_before_ms,
+          lowImportanceThreshold: low_importance_threshold,
+          repeatedCorrectionThreshold: repeated_correction_threshold,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_set_rule_status",
+    {
+      description:
+        "Accept or reject a proposed draft ingestion rule. Accepted rules become active in the live capture path.",
+      inputSchema: {
+        id: z.string().describe("Rule ID from a consolidation proposal (e.g., rule_tag_foo)"),
+        status: z.enum(["accepted", "rejected"]).describe("New status for the rule"),
+      },
+    },
+    async ({ id, status }) => {
+      return withMemoryStore(async (memory) => {
+        const ok = await memory.setRuleStatus(id, status);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ [status]: ok, id }, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_accepted_rules",
+    {
+      description:
+        "List all accepted ingestion rules currently active in the live capture path.",
+      inputSchema: {},
+    },
+    async () => {
+      return withMemoryStore(async (memory) => {
+        const rules = await memory.getAcceptedRules();
+        return { content: [{ type: "text" as const, text: JSON.stringify({ rules }, null, 2) }] };
+      });
+    },
+  );
+}
+
+async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemoryStore>) => Promise<T>): Promise<T> {
+  const memory = createMemoryStore(MEMORY_DB_PATH);
+  try {
+    return await fn(memory);
+  } finally {
+    memory.close();
+  }
 }
 
 interface SearchAgentDefinitionsOptions {

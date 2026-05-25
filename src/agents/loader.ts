@@ -24,6 +24,19 @@ export interface AgentContextProfile {
   agentState: boolean;
 }
 
+export type AgentPermissionIntent =
+  | "read-only"
+  | "normal"
+  | "human-gated"
+  | "utility"
+  | "no-tools";
+
+export interface AgentPermissions {
+  intent: AgentPermissionIntent | null;
+  mcp: string[];
+  tools: string[];
+}
+
 export const DEFAULT_CONTEXT_PROFILE: AgentContextProfile = {
   identity: true,
   slack: true,
@@ -43,6 +56,7 @@ export interface AgentDefinition {
   common: string[];
   prompt: string;
   context: AgentContextProfile;
+  permissions: AgentPermissions;
   /**
    * Optional slack identity declared in frontmatter. Lets private/overlay
    * agents register their visual identity (username + emoji) without
@@ -71,6 +85,7 @@ export async function loadAgentDefinition(
     common: readCommonProfile(frontmatter),
     prompt: body.trim(),
     context: readContextProfile(frontmatter),
+    permissions: readAgentPermissions(frontmatter),
     username: frontmatter["username"] ?? null,
     iconEmoji: frontmatter["iconEmoji"] ?? null,
   };
@@ -103,6 +118,39 @@ function readContextProfile(
       DEFAULT_CONTEXT_PROFILE.threadHistoryLimit,
     agentState: parseBool(fm["context.agentState"]) ?? DEFAULT_CONTEXT_PROFILE.agentState,
   };
+}
+
+function readAgentPermissions(fm: Record<string, string>): AgentPermissions {
+  return {
+    intent: parsePermissionIntent(
+      fm["permissions.intent"] ?? fm["permission.intent"] ?? fm.permission,
+    ),
+    mcp: parseCsv(fm["permissions.mcp"] ?? fm["permission.mcp"]),
+    tools: parseCsv(fm.tools),
+  };
+}
+
+function parsePermissionIntent(value: string | undefined): AgentPermissionIntent | null {
+  if (value === undefined || value.trim() === "") return null;
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "read-only" ||
+    normalized === "normal" ||
+    normalized === "human-gated" ||
+    normalized === "utility" ||
+    normalized === "no-tools"
+  ) {
+    return normalized;
+  }
+  return "no-tools";
+}
+
+function parseCsv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
 }
 
 function parseBool(value: string | undefined): boolean | undefined {
