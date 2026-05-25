@@ -116,6 +116,7 @@ interface Config {
 | `SESSION_CLEANUP_INTERVAL_MS` | no | `900000` | 15m |
 | `HOME_WINDOW_MS` | no | `172800000` | App Home visibility window (2 days) |
 | `SESSION_DEFAULT_VERBOSITY` | no | `normal` | `quiet` \| `normal` \| `verbose` |
+| `MEMORY_DB_PATH` | no | `data/memory.db` | associative memory DB used by live capture, CLI, and MCP memory tools |
 | `ADMIN_SLACK_USER_ID` | no | unset | bootstrap admin; further admins live in the `admins` SQLite table |
 | `HTTP_DASHBOARD_PORT` | no | unset | localhost dashboard; must be a positive integer 1–65535 or unset |
 | `MCP_PORT` | no | `3456` | internal Slack-bot MCP server |

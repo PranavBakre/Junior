@@ -26,6 +26,11 @@ specific needs because it has:
 - `opencode serve` + `opencode run --attach` as a future optimization for MCP
   cold-start cost
 
+OpenCode's server/SDK surface also exposes a real session abort API. The current
+CLI provider does not use it; workflow idle recovery is implemented as a
+best-effort SIGINT + `--session` resume fallback until a separate SDK/server
+provider exists.
+
 Codex remains viable, but OpenCode gives a cleaner story for dynamic Junior
 agent prompts.
 
@@ -180,6 +185,42 @@ been captured for the observed OpenCode `tool_use` shape and now emit
 at INFO (`opencode-parser`) so operators can capture additional fixtures.
 
 Do not guess the tool event schema from docs.
+
+## Future OpenCode SDK/Server Provider
+
+OpenCode's TUI interrupt path does not send Escape bytes to a headless process.
+In upstream OpenCode, the prompt component's `session.interrupt` command calls
+`sdk.client.session.abort({ sessionID })` after repeated interrupts; the server
+handler maps that to `promptSvc.cancel(sessionID)`. That is the correct native
+control-plane operation for cancelling an in-flight tool/model step.
+
+Junior should model this as a separate provider/driver, not as hidden behavior in
+the current `opencode` CLI adapter:
+
+- `opencode` — current one-process-per-turn CLI adapter using
+  `opencode run --format json`, `--session`, generated `OPENCODE_CONFIG_CONTENT`,
+  and stdout JSON parsing.
+- `opencode-sdk` or `opencode-server` — future control-plane adapter that starts
+  or attaches to an OpenCode server, subscribes to events, sends prompts through
+  the SDK/HTTP API, and interrupts with `session.abort`.
+
+The SDK/server provider should preserve Junior's provider contract: normalized
+`RunnerEvent`s, the same cwd/env/MCP policy, provider-native resume semantics,
+and no business logic in route/session orchestration. It should add only the
+capabilities the CLI adapter cannot support cleanly: mid-run abort, prompt-after-
+abort continuation, and richer status inspection.
+
+Implementation outline:
+
+1. Add a new `RunnerProvider` value for the SDK/server mode.
+2. Build a provider file that owns OpenCode server startup/attachment and SDK
+   client lifecycle.
+3. Map OpenCode server events to Junior's normalized `RunnerEvent` shape using
+   fixtures captured from the server event stream.
+4. Implement idle recovery by calling `session.abort({ sessionID })`, waiting for
+   the session to become idle, then `session.prompt(...)` with the continuation
+   prompt.
+5. Keep the current CLI provider unchanged for simple isolated turns.
 
 ## OpenCode Prompt Strategy
 

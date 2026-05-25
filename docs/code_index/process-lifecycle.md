@@ -9,6 +9,7 @@ Timeout guards, graceful shutdown, stale session cleanup, orphan detection, and 
 | Symbol | File | Purpose |
 |---|---|---|
 | `withTimeout(handle, timeoutMs, onTimeout?)` | `timeout.ts` | Wraps `SpawnHandle`; kills + resolves with `error: "Process timed out..."` after timeout |
+| workflow runner idle recovery | `src/workflows/executor.ts` | For workflow runner configs with `idleTimeoutMs`, sends SIGINT after a silent period, SIGKILL after 10s grace if needed, then respawns with provider-native resume and a continuation prompt up to `maxIdleInterrupts`. |
 | `setupGracefulShutdown(manager, store, devServerManager?)` | `shutdown.ts` | SIGINT/SIGTERM handler — `resetSession` busy threads, `killAll` dev servers, hard exit after 30s |
 | `cleanupStaleSessions(store, staleTimeoutMs)` | `cleanup.ts` | Deletes idle/draining sessions older than threshold (skips `busy`) |
 | `checkOrphanedSessions(store)` | `health.ts` | Marks `busy` sessions/agents idle when their pid is dead. Scans top-level pid + every `agentSessions[*].pid`. |
