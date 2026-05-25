@@ -65,6 +65,8 @@ runner:
   provider: default
   agentName: lead
   timeoutMs: 300000
+  idleTimeoutMs: 300000
+  maxIdleInterrupts: 3
 concurrency: skip
 ---
 
@@ -83,7 +85,7 @@ Fields:
 | `triggers` | yes | At least one schedule, command, or Slack event trigger. |
 | `outputs` | yes | At least one output. Docs output must stay under `data/workflow-runs/<workflow>`. |
 | `permissions` | yes | Capability declaration used by workflow validation and runtime prompts. `repos` may be omitted to use all configured repos, or listed to narrow access. |
-| `runner` | no | Optional agent execution step. Runner workflows execute from `/tmp/junior-utility`; workflow definitions are trusted config, not a sandbox boundary. |
+| `runner` | no | Optional agent execution step. Runner workflows execute from `/tmp/junior-utility`; workflow definitions are trusted config, not a sandbox boundary. `idleTimeoutMs` and `maxIdleInterrupts` opt into the CLI SIGINT/resume fallback for silent runner processes. |
 | `fallback` | no | Reserved for future fallback modes. |
 | `concurrency` | no | `skip` by default. `parallel` is allowed for workflows that can overlap safely. |
 
@@ -219,6 +221,12 @@ bun run <runtime context junior.memoryCli> consolidate --json
 ```
 
 The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Because workflow runners execute from `/tmp/junior-utility`, the runtime context includes `junior.projectRoot` and `junior.memoryCli` absolute paths. Normal Junior runner sessions with MCP wiring can use `memory_recall` and `memory_consolidate` instead.
+
+### Runner idle interrupt fallback
+
+Workflow runner configs can set `idleTimeoutMs` to recover from a silent CLI run before the hard `timeoutMs` expires. The executor starts an idle timer for each CLI attempt and resets it on every normalized runner event. When the timer fires, Junior sends `SIGINT` to the provider process, waits up to 10 seconds for it to exit, then sends `SIGKILL` as a cleanup fallback. If the run has already emitted a provider session id, Junior immediately spawns a new `opencode run --session <id>` / `claude --resume <id>` attempt with a compact "continue from the last completed step" prompt. `maxIdleInterrupts` bounds the number of resume attempts; after that, the run fails normally.
+
+This is a CLI fallback, not OpenCode's native TUI interrupt. OpenCode's TUI uses the server `session.abort` API after repeated Escape presses; a future SDK/server provider should use that API directly instead of process signals.
 
 ## Dependencies
 

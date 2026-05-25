@@ -182,6 +182,90 @@ describe("WorkflowExecutor", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("interrupts and resumes an idle workflow runner with the provider session id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-idle-test-"));
+    const definition = workflowDefinition(dir);
+    definition.runner = {
+      provider: "default",
+      agentName: "default",
+      timeoutMs: 1000,
+      idleTimeoutMs: 10,
+      maxIdleInterrupts: 1,
+    };
+    const store = new InMemoryWorkflowStore();
+    const killSignals: Array<string | undefined> = [];
+    const seenSessionIds: Array<string | null | undefined> = [];
+    let callCount = 0;
+    const spawn: SpawnRunnerFn = (session, _prompt): SpawnHandle => {
+      callCount += 1;
+      seenSessionIds.push(session.sessionId);
+      if (callCount === 1) {
+        let resolve!: (result: Awaited<SpawnHandle["result"]>) => void;
+        const result = new Promise<Awaited<SpawnHandle["result"]>>((next) => {
+          resolve = next;
+        });
+        return {
+          provider: "opencode",
+          result,
+          onEvent: (cb) => setTimeout(() => cb({
+            type: "init",
+            provider: "opencode",
+            sessionId: "ses-idle",
+          }), 0),
+          kill: (signal) => {
+            killSignals.push(signal);
+            resolve({
+              provider: "opencode",
+              sessionId: "ses-idle",
+              response: "",
+              events: [],
+              exitCode: 130,
+              error: "interrupted",
+            });
+          },
+          pid: null,
+        };
+      }
+
+      return {
+        provider: "opencode",
+        result: Promise.resolve({
+          provider: "opencode",
+          sessionId: "ses-idle",
+          response: "Resumed and completed.",
+          events: [],
+          exitCode: 0,
+          error: null,
+        }),
+        onEvent: (cb) => cb({
+          type: "init",
+          provider: "opencode",
+          sessionId: "ses-idle",
+        }),
+        kill: () => undefined,
+        pid: null,
+      };
+    };
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store,
+      spawn,
+      now: () => new Date("2026-05-24T11:00:00.000Z"),
+    });
+
+    try {
+      const result = await executor.run({ definition, reason: "manual" });
+
+      expect(result.summary).toBe("Resumed and completed.");
+      expect(callCount).toBe(2);
+      expect(killSignals).toContain("SIGINT");
+      expect(seenSessionIds).toEqual([null, "ses-idle"]);
+      expect((await store.getRun(result.run.id))?.providerSessionId).toBe("ses-idle");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 function workflowDefinition(root: string): WorkflowDefinition {
