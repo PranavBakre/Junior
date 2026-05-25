@@ -8,7 +8,11 @@ export type WorkflowRunReason = "schedule" | "command" | "event" | "manual";
 export type WorkflowRunStatus = "running" | "success" | "failed" | "skipped";
 export type WorkflowLastRunStatus = Exclude<WorkflowRunStatus, "running">;
 export type WorkflowConcurrency = "skip" | "parallel";
-export type WorkflowRunnerProvider = "default" | "opencode" | "claude";
+export type WorkflowRunnerProvider =
+  | "default"
+  | "opencode"
+  | "codex-app-server"
+  | "claude";
 export type WorkflowTool =
   | "git"
   | "gh"

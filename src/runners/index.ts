@@ -3,6 +3,7 @@ import type { AgentIdentity, RunnerProvider, ThreadSession } from "../session/ty
 import { spawnClaude } from "../claude/spawner.ts";
 import { spawnOpenCode } from "../opencode/spawner.ts";
 import { spawnOpenCodeSdk } from "../opencode/sdk-provider.ts";
+import { spawnCodexAppServer } from "../codex-app-server/spawner.ts";
 import type { OpenCodeMcpConfig } from "../opencode/config.ts";
 import type { SpawnHandle } from "./types.ts";
 
@@ -21,8 +22,10 @@ export function runnerTimeoutMs(
     case "opencode":
     case "opencode-sdk":
       return config.opencode.timeoutMs;
-    case "codex":
+    case "codex-app-server":
+      return config.codex.timeoutMs;
     case "claude":
+    case "codex":
       return config.claude.timeoutMs;
   }
 }
@@ -71,6 +74,18 @@ export function spawnRunner(
     // Defense-in-depth: config parsing and !provider reject codex until its
     // adapter lands, but stale persisted state should still fail loudly.
     throw new Error("Codex runner provider is not implemented yet");
+  }
+
+  if (provider === "codex-app-server") {
+    return spawnCodexAppServer(
+      session,
+      prompt,
+      config,
+      targetRepoCwd,
+      botToken,
+      agentIdentity,
+      imagePaths,
+    );
   }
 
   return spawnClaude(

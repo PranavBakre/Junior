@@ -217,7 +217,74 @@ describe("spawnOpenCode", () => {
     expect(parsed.agent["vercel-status"].mode).toBe("subagent");
     expect(parsed.agent.reproducer).toBeUndefined();
   });
+
+  it("captures sessionId from init event before SIGINT — simulates idle-interrupt recovery", async () => {
+    // This test verifies the idle-interrupt recovery path:
+    // 1. OpenCode spawns, emits step_start with sessionID, then hangs
+    // 2. Junior sends SIGINT (simulating idle timeout)
+    // 3. The result.sessionId is captured from the init event — available for retry
+    //    with --session to resume conversation context
+    const session = createSession("thread-int", "C01");
+    session.provider = "opencode";
+
+    const { command, cleanup } = createHungOpenCodeScript("ses_hung_123");
+
+    try {
+      const handle = spawnOpenCode(session, "long running task", {
+        command,
+        continuityEnabled: true,
+      });
+
+      // Wait for the init event, then send SIGINT to simulate idle interrupt
+      const initPromise = new Promise<{ sessionId: string }>((resolve) => {
+        handle.onEvent((event) => {
+          if (event.type === "init") {
+            resolve({ sessionId: event.sessionId });
+          }
+        });
+      });
+
+      const initEvent = await initPromise;
+      expect(initEvent.sessionId).toBe("ses_hung_123");
+
+      // Simulate idle timeout: send SIGINT
+      handle.kill("SIGINT");
+
+      const result = await handle.result;
+
+      // SessionId must be available so the retry spawn can pass --session
+      expect(result.sessionId).toBe("ses_hung_123");
+      // Non-zero exit expected after SIGINT
+      expect(result.exitCode).not.toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
 });
+
+function createHungOpenCodeScript(sessionId: string): {
+  command: string;
+  cleanup: () => void;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "junior-opencode-hung-"));
+  const command = join(dir, "hung-opencode.sh");
+  writeFileSync(
+    command,
+    `#!/bin/sh
+# Emit a step_start with sessionID, then hang until killed
+echo '{"type":"step_start","sessionID":"${sessionId}"}'
+# Wait indefinitely — stdout is buffered, so flush
+trap 'exit 130' INT TERM
+while true; do sleep 1; done
+`,
+  );
+  chmodSync(command, 0o755);
+  return {
+    command,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
 
 function createArgCaptureCommand(): {
   command: string;
