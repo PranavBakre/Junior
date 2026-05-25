@@ -141,6 +141,8 @@ export interface ThreadSession {
    * without guessing. Null until the first tmux turn.
    */
   topLevelTmuxAgent: string | null;
+  /** Number of times this session's current turn has been idle-interrupted and resumed. */
+  idleInterruptCount: number;
 }
 
 export function createSession(
@@ -187,6 +189,7 @@ export function createSession(
     driverMode: resolvedDriverMode,
     tmuxSessionName: null,
     topLevelTmuxAgent: null,
+    idleInterruptCount: 0,
   };
 }
 

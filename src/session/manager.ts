@@ -1066,7 +1066,34 @@ export class SessionManager {
         agentSession.pid = handle.pid;
       }
 
+      // Idle timer: if no runner event arrives for idleTimeoutMs, SIGINT then
+      // resume with --session/--resume. Reset on every event. Escalate to
+      // SIGKILL after 10s if the process doesn't exit cleanly.
+      let idleInterrupted = false;
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleKillTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearIdleTimers = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (idleKillTimer) clearTimeout(idleKillTimer);
+        idleTimer = null;
+        idleKillTimer = null;
+      };
+      const armIdleTimer = () => {
+        clearIdleTimers();
+        idleTimer = setTimeout(() => {
+          idleInterrupted = true;
+          _log.warn("session", `idle-interrupt thread=${session.threadId} agent=${agentName}`);
+          handle.kill("SIGINT");
+          idleKillTimer = setTimeout(() => {
+            _log.warn("session", `idle-escalate thread=${session.threadId} agent=${agentName}`);
+            handle.kill("SIGKILL");
+          }, 10_000);
+        }, this.config.session.idleTimeoutMs);
+      };
+      armIdleTimer();
+
       handle.onEvent((event: RunnerEvent) => {
+        armIdleTimer();
         if (event.type === "init") {
           if (isTopLevel) {
             session.sessionId = event.sessionId;
@@ -1080,18 +1107,115 @@ export class SessionManager {
         this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
       });
 
-      handle.result.then(
-        (result: SpawnResult) => this.onRunComplete(session, result, agentName, handle),
-        (err: unknown) =>
-          this.onRunComplete(session, {
+      const maxIdleInterrupts = this.config.session.maxIdleInterrupts;
+      let attemptHandle = handle;
+
+      for (;;) {
+        let result: SpawnResult;
+        try {
+          result = await attemptHandle.result;
+        } catch (err: unknown) {
+          result = {
             provider,
             sessionId: null,
             response: "",
             events: [],
             exitCode: null,
             error: err instanceof Error ? err.message : String(err),
-          }, agentName, handle),
-      );
+          };
+        } finally {
+          clearIdleTimers();
+        }
+
+        if (
+          idleInterrupted &&
+          session.sessionId &&
+          session.idleInterruptCount < maxIdleInterrupts
+        ) {
+          session.idleInterruptCount++;
+          _log.warn(
+            "session",
+            `idle-resume thread=${session.threadId} agent=${agentName} attempt=${session.idleInterruptCount}/${maxIdleInterrupts}`,
+          );
+          const continuePrompt = [
+            `The previous turn was interrupted after ${this.config.session.idleTimeoutMs / 1000}s with no runner events.`,
+            `Idle interrupt ${session.idleInterruptCount} of ${maxIdleInterrupts}.`,
+            "Continue from the last completed step.",
+          ].join("\n");
+
+          // Re-spawn with the continue prompt. Reuse the same rawHandle
+          // creation path (driver.send for tmux, spawnRunner otherwise).
+          let retryRawHandle: SpawnHandle;
+          if (provider === "claude") {
+            const driver = this.driverFor(session.driverMode);
+            retryRawHandle = driver.send({
+              session: runSession,
+              prompt: continuePrompt,
+              config: this.config.claude,
+              targetRepoCwd,
+              botToken: this.config.slack.botToken,
+              agentIdentity,
+              threadId: session.threadId,
+              agentName,
+            });
+          } else {
+            retryRawHandle = this.spawnRunner(
+              runSession,
+              continuePrompt,
+              this.config,
+              targetRepoCwd,
+              this.config.slack.botToken,
+              agentIdentity,
+              [],
+            );
+          }
+          const retryHandle = withTimeout(
+            retryRawHandle,
+            runnerTimeoutMs(this.config, provider),
+            () => {
+              console.warn(
+                `[manager] ${provider} timed out (retry) for thread ${session.threadId}`,
+              );
+            },
+          );
+          this.handles.set(handleKey, retryHandle);
+          if (isTopLevel) {
+            session.pid = retryHandle.pid;
+          } else if (agentSession) {
+            agentSession.pid = retryHandle.pid;
+          }
+
+          // Re-arm idle timer for the retry handle
+          idleInterrupted = false;
+          armIdleTimer();
+          retryHandle.onEvent((event: RunnerEvent) => {
+            armIdleTimer();
+            if (event.type === "init") {
+              if (isTopLevel) {
+                session.sessionId = event.sessionId;
+                session.leadSessionId = event.sessionId;
+                session.provider = event.provider;
+              } else if (agentSession) {
+                agentSession.sessionId = event.sessionId;
+                agentSession.provider = event.provider;
+              }
+            }
+            this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
+          });
+
+          attemptHandle = retryHandle;
+          continue;
+        }
+
+        // Normal completion (or idle-interrupted but out of retries).
+        const exhaustedRetries = idleInterrupted && session.idleInterruptCount >= maxIdleInterrupts;
+        // Reset idle interrupt count so the next turn starts fresh.
+        session.idleInterruptCount = 0;
+        if (result.error && exhaustedRetries) {
+          result.error = `Idle interrupts exhausted after ${maxIdleInterrupts} attempts. ${result.error}`;
+        }
+        return this.onRunComplete(session, result, agentName, attemptHandle);
+      }
     } catch (err) {
       // Agent prompt composition or worktree creation failed fatally
       if (isTopLevel) {

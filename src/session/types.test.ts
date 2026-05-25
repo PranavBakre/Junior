@@ -118,6 +118,7 @@ describe("createSession", () => {
       "dormantAnnounced",
       "driverMode",
       "humanParticipants",
+      "idleInterruptCount",
       "lastActivity",
       "lastError",
       "leadSessionId",
