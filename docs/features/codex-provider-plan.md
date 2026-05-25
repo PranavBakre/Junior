@@ -122,8 +122,9 @@ the primary Codex provider target. The required isolation strategy is now
 concrete: spawn app-server with `JUNIOR_SPAWNED=1`, a Junior-owned `CODEX_HOME`,
 minimal generated config, and auth linked or copied from the real Codex home.
 The remaining work is implementation, fixture coverage, and soak. Native
-app-server resume and native app-server interrupt should be feature-flagged so
-operators can run Codex conservatively until those paths are needed.
+idle-timeout interrupt/resume recovery should be feature-flagged so operators
+can run Codex conservatively until that path is needed. Normal `thread/resume`
+for completed turns remains part of the app-server provider contract.
 
 ## Current Junior Features Codex Must Preserve
 
@@ -680,9 +681,9 @@ Responsibilities:
 - Start or attach to app-server over stdio or `unix://`.
 - Send `initialize`.
 - Use `thread/start` for fresh sessions.
-- Use `thread/resume` for existing sessions only when
-  `CODEX_APP_SERVER_CONTINUITY_ENABLED=true`; otherwise fail clearly on a Codex
-  session that requires native resume.
+- Use `thread/resume` for existing non-ephemeral sessions, including after a
+  Junior/app-server restart. `CODEX_APP_SERVER_CONTINUITY_ENABLED` does not gate
+  normal completed-turn resume.
 - Use `baseInstructions` / `developerInstructions` for Junior's provider
   baseline, core prompt, and active agent prompt.
 - Apply the active agent's mapped frontmatter permissions to app-server thread
@@ -707,8 +708,8 @@ Exit criteria:
 - Local app-server smoke test returns a thread id/session id and response.
 - Interrupt smoke test yields turn status `interrupted` when the continuity flag
   is enabled, and hard-stop behavior is covered when the flag is disabled.
-- Resume smoke test continues the same app-server thread when the continuity flag is
-  enabled, and disabled-resume behavior fails with a clear error.
+- Resume smoke test continues the same app-server thread regardless of the
+  continuity flag. The flag only gates idle-timeout interrupt/resume recovery.
 
 ### Phase 4: Provider Wiring
 

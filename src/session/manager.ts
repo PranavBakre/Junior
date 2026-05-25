@@ -11,6 +11,7 @@ import type {
   AgentSession,
   DriverMode,
   PendingMessage,
+  RunnerProvider,
   ThreadSession,
 } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
@@ -1130,9 +1131,11 @@ export class SessionManager {
 
         if (
           idleInterrupted &&
-          session.sessionId &&
+          this.idleResumeEnabled(provider) &&
+          (isTopLevel ? session.sessionId : agentSession?.sessionId) &&
           session.idleInterruptCount < maxIdleInterrupts
         ) {
+          const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
           session.idleInterruptCount++;
           _log.warn(
             "session",
@@ -1150,7 +1153,7 @@ export class SessionManager {
           if (provider === "claude") {
             const driver = this.driverFor(session.driverMode);
             retryRawHandle = driver.send({
-              session: runSession,
+              session: retryRunSession,
               prompt: continuePrompt,
               config: this.config.claude,
               targetRepoCwd,
@@ -1161,7 +1164,7 @@ export class SessionManager {
             });
           } else {
             retryRawHandle = this.spawnRunner(
-              runSession,
+              retryRunSession,
               continuePrompt,
               this.config,
               targetRepoCwd,
@@ -1451,6 +1454,10 @@ export class SessionManager {
       pid: null,
     };
     return session.agentSessions[agentName];
+  }
+
+  private idleResumeEnabled(provider: RunnerProvider): boolean {
+    return provider !== "codex-app-server" || this.config.codex.appServerContinuityEnabled;
   }
 
   private buildRunSession(
