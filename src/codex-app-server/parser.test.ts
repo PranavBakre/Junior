@@ -59,6 +59,31 @@ describe("createCodexAppServerEventMapper", () => {
     expect(mapper.response).toBe("Hello world");
   });
 
+  it("maps completed agentMessage items as responses", () => {
+    const mapper = createCodexAppServerEventMapper();
+    const events = [
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "agentMessage", text: "here." },
+        },
+      },
+      {
+        method: "turn/completed",
+        params: { threadId: "thr_1" },
+      },
+    ].flatMap((event) => mapper.map(event));
+
+    expect(events).toEqual([
+      { type: "init", provider: "codex-app-server", sessionId: "thr_1" },
+      { type: "message", provider: "codex-app-server", text: "here." },
+      { type: "done", provider: "codex-app-server" },
+    ]);
+    expect(mapper.response).toBe("here.");
+  });
+
   it("maps known tool-like item types", () => {
     const mapper = createCodexAppServerEventMapper();
     const runnerEvents = [

@@ -31,7 +31,6 @@ const TOOL_ITEM_TYPES = new Set([
 ]);
 
 const IGNORED_ITEM_TYPES = new Set([
-  "agentMessage",
   "compacted",
   "contextCompaction",
   "plan",
@@ -175,6 +174,19 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
       }
 
       if (notification.method === "item/started" || notification.method === "item/completed") {
+        if (notification.method === "item/completed") {
+          const text = completedItemAgentMessageText(params);
+          if (text) {
+            response = text;
+            pendingText = "";
+            events.push({
+              type: "message",
+              provider: "codex-app-server",
+              text,
+            });
+            return events;
+          }
+        }
         const tool = mapToolItem(params, notification.method === "item/completed" ? "completed" : "started");
         if (tool) events.push(tool);
         return events;
@@ -277,9 +289,27 @@ function completedAgentMessageText(params: Record<string, unknown> | undefined):
   const texts = items
     .map(asRecord)
     .filter((item): item is Record<string, unknown> => item?.type === "agentMessage")
-    .map((item) => stringValue(item.text) ?? "")
+    .map(agentMessageText)
     .filter(Boolean);
   return texts.join("\n\n");
+}
+
+function completedItemAgentMessageText(params: Record<string, unknown> | undefined): string {
+  const item = asRecord(params?.item);
+  if (item?.type !== "agentMessage") return "";
+  return agentMessageText(item);
+}
+
+function agentMessageText(item: Record<string, unknown>): string {
+  const direct = stringValue(item.text) ?? stringValue(item.message);
+  if (direct) return direct;
+
+  const content = Array.isArray(item.content) ? item.content : [];
+  return content
+    .map(asRecord)
+    .map((part) => stringValue(part?.text) ?? "")
+    .filter(Boolean)
+    .join("");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
