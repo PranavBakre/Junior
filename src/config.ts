@@ -79,6 +79,22 @@ export interface Config {
     mixpanelMcpEnabled: boolean;
     mongodbMcpEnabled: boolean;
   };
+  codex: {
+    mode: "app-server" | "cli";
+    model: string | null;
+    timeoutMs: number;
+    sandbox: "read-only" | "workspace-write" | "danger-full-access";
+    askForApproval: "untrusted" | "on-request" | "never";
+    searchEnabled: boolean;
+    appServerContinuityEnabled: boolean;
+    mcpEnabled: boolean;
+    slackMcpEnabled: boolean;
+    playwrightMcpEnabled: boolean;
+    mixpanelMcpEnabled: boolean;
+    mongodbMcpEnabled: boolean;
+    memoryMcpEnabled: boolean;
+    isolatedHomePath: string | null;
+  };
   repos: RepoConfig[];
   session: {
     staleTimeoutMs: number;
@@ -90,6 +106,8 @@ export interface Config {
     /**
      * If the runner produces no events for this long (ms), send SIGINT then
      * re-spawn with --session/--resume. Default 300000 (5 min).
+     * Only applies to headless CLI providers (claude, opencode) — server-attached
+     * providers (opencode-sdk, codex-app-server) manage their own timeouts.
      */
     idleTimeoutMs: number;
     /** Maximum SIGINT + resume attempts before letting the hard timeout kill the turn. */
@@ -159,6 +177,26 @@ export function loadConfig(): Config {
         true,
       ),
       mongodbMcpEnabled: parseBooleanEnv("OPENCODE_MONGODB_MCP_ENABLED", true),
+    },
+    codex: {
+      mode: parseCodexMode(optional("CODEX_MODE", "app-server")),
+      model: process.env.CODEX_MODEL ?? null,
+      timeoutMs: Number(optional("CODEX_TIMEOUT_MS", "300000")),
+      sandbox: parseCodexSandbox(optional("CODEX_SANDBOX", "workspace-write")),
+      askForApproval: parseCodexApproval(optional("CODEX_ASK_FOR_APPROVAL", "never")),
+      searchEnabled: parseBooleanEnv("CODEX_SEARCH_ENABLED", false),
+      appServerContinuityEnabled: parseBooleanEnv(
+        "CODEX_APP_SERVER_CONTINUITY_ENABLED",
+        false,
+      ),
+      mcpEnabled: parseBooleanEnv("CODEX_MCP_ENABLED", true),
+      slackMcpEnabled: parseBooleanEnv("CODEX_SLACK_MCP_ENABLED", true),
+      playwrightMcpEnabled: parseBooleanEnv("CODEX_PLAYWRIGHT_MCP_ENABLED", true),
+      mixpanelMcpEnabled: parseBooleanEnv("CODEX_MIXPANEL_MCP_ENABLED", true),
+      mongodbMcpEnabled: parseBooleanEnv("CODEX_MONGODB_MCP_ENABLED", true),
+      memoryMcpEnabled: parseBooleanEnv("CODEX_MEMORY_MCP_ENABLED", true),
+      isolatedHomePath:
+        process.env.CODEX_ISOLATED_HOME_PATH?.trim() || "data/codex-home",
     },
     repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({
       ...r,
@@ -230,11 +268,11 @@ function parseRunnerProvider(value: string): ImplementedRunnerProvider {
     // Known provider, not yet implemented. Fail at config load with the real
     // cause rather than throwing on the first message turn.
     throw new Error(
-      `RUNNER_PROVIDER=${value} is a planned provider but is not yet implemented. Use opencode|opencode-sdk|claude.`,
+      `RUNNER_PROVIDER=${value} is a planned provider but is not yet implemented. Use opencode|opencode-sdk|codex-app-server|claude.`,
     );
   }
   throw new Error(
-    `Invalid RUNNER_PROVIDER: ${value} (expected opencode|opencode-sdk|claude)`,
+    `Invalid RUNNER_PROVIDER: ${value} (expected opencode|opencode-sdk|codex-app-server|claude)`,
   );
 }
 
@@ -252,6 +290,33 @@ function parseBooleanEnv(name: string, fallback: boolean): boolean {
 function parseDriverMode(value: string): DriverMode {
   if (value === "headless" || value === "tmux") return value;
   throw new Error(`Invalid DEFAULT_CLAUDE_DRIVER: ${value} (expected headless|tmux)`);
+}
+
+function parseCodexMode(value: string): Config["codex"]["mode"] {
+  if (value === "app-server" || value === "cli") return value;
+  throw new Error(`Invalid CODEX_MODE: ${value} (expected app-server|cli)`);
+}
+
+function parseCodexSandbox(value: string): Config["codex"]["sandbox"] {
+  if (
+    value === "read-only" ||
+    value === "workspace-write" ||
+    value === "danger-full-access"
+  ) {
+    return value;
+  }
+  throw new Error(
+    `Invalid CODEX_SANDBOX: ${value} (expected read-only|workspace-write|danger-full-access)`,
+  );
+}
+
+function parseCodexApproval(value: string): Config["codex"]["askForApproval"] {
+  if (value === "untrusted" || value === "on-request" || value === "never") {
+    return value;
+  }
+  throw new Error(
+    `Invalid CODEX_ASK_FOR_APPROVAL: ${value} (expected untrusted|on-request|never)`,
+  );
 }
 
 function parseChannelDefaults(

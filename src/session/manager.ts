@@ -1,6 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
-import type { RunnerEvent, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
+import type { RunnerEvent, RunnerProvider, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
 import type {
   SlackMessageEvent,
   SlackFileAttachment,
@@ -494,7 +494,7 @@ export class SessionManager {
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
           "`!agent <junior|lead>` — Set thread default agent",
-          "`!provider <claude|opencode|opencode-sdk>` — Set runner provider for this thread",
+          "`!provider <claude|opencode|opencode-sdk|codex-app-server>` — Set runner provider for this thread",
           "`!cancel` — Kill running process, keep session",
           "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
           "`!status` — Show session status",
@@ -590,14 +590,14 @@ export class SessionManager {
         if (isRunnerProvider(provider) && !isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\`, \`!provider opencode\`, or \`!provider opencode-sdk\`.`,
+            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\`, \`!provider opencode\`, \`!provider opencode-sdk\`, or \`!provider codex-app-server\`.`,
           );
           return true;
         }
         if (!isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Unknown provider "${provider}". Use \`!provider claude\`, \`!provider opencode\`, or \`!provider opencode-sdk\`.`,
+            `Unknown provider "${provider}". Use \`!provider claude\`, \`!provider opencode\`, \`!provider opencode-sdk\`, or \`!provider codex-app-server\`.`,
           );
           return true;
         }
@@ -906,6 +906,7 @@ export class SessionManager {
           await this.store.set(session.threadId, session);
         }
       }
+      runSession.agentPermissions = agentDefinition?.permissions;
 
       // Build the prompt. On the first turn (no sessionId yet), inject the
       // preamble blocks the agent asked for. On resumed turns, --resume already
@@ -1069,7 +1070,15 @@ export class SessionManager {
       // Idle timer: if no runner event arrives for idleTimeoutMs, SIGINT then
       // resume with --session/--resume. Reset on every event. Escalate to
       // SIGKILL after 10s if the process doesn't exit cleanly.
+      //
+      // Only enabled for headless CLI providers (claude, opencode) where
+      // Junior owns the process lifecycle. Server-attached providers
+      // (opencode-sdk, codex-app-server) manage their own timeouts — a
+      // sleeping server-attached session between turns should NOT be
+      // SIGINT'd by Junior.
+      const idleEnabled = this.idleResumeEnabled(provider);
       let idleInterrupted = false;
+      let activeHandle = handle;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let idleKillTimer: ReturnType<typeof setTimeout> | null = null;
       const clearIdleTimers = () => {
@@ -1079,14 +1088,15 @@ export class SessionManager {
         idleKillTimer = null;
       };
       const armIdleTimer = () => {
+        if (!idleEnabled) return;
         clearIdleTimers();
         idleTimer = setTimeout(() => {
           idleInterrupted = true;
-          _log.warn("session", `idle-interrupt thread=${session.threadId} agent=${agentName}`);
-          handle.kill("SIGINT");
+          _log.warn("session", `idle-interrupt thread=${session.threadId} agent=${agentName} provider=${provider}`);
+          activeHandle.kill("SIGINT");
           idleKillTimer = setTimeout(() => {
-            _log.warn("session", `idle-escalate thread=${session.threadId} agent=${agentName}`);
-            handle.kill("SIGKILL");
+            _log.warn("session", `idle-escalate thread=${session.threadId} agent=${agentName} provider=${provider}`);
+            activeHandle.kill("SIGKILL");
           }, 10_000);
         }, this.config.session.idleTimeoutMs);
       };
@@ -1106,6 +1116,7 @@ export class SessionManager {
         }
         this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
       });
+      await this.persistRunProcessDetails(session.threadId, agentName, handle.pid);
 
       const maxIdleInterrupts = this.config.session.maxIdleInterrupts;
       let attemptHandle = handle;
@@ -1129,19 +1140,23 @@ export class SessionManager {
 
         if (
           idleInterrupted &&
-          session.sessionId &&
+          this.idleResumeEnabled(provider) &&
+          (isTopLevel ? session.sessionId : agentSession?.sessionId) &&
           session.idleInterruptCount < maxIdleInterrupts
         ) {
           session.idleInterruptCount++;
           _log.warn(
             "session",
-            `idle-resume thread=${session.threadId} agent=${agentName} attempt=${session.idleInterruptCount}/${maxIdleInterrupts}`,
+            `idle-resume attempt=${session.idleInterruptCount}/${maxIdleInterrupts} thread=${session.threadId} agent=${agentName} provider=${provider}`,
           );
+          await this.store.set(session.threadId, session);
+
           const continuePrompt = [
             `The previous turn was interrupted after ${this.config.session.idleTimeoutMs / 1000}s with no runner events.`,
             `Idle interrupt ${session.idleInterruptCount} of ${maxIdleInterrupts}.`,
             "Continue from the last completed step.",
           ].join("\n");
+          const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
 
           // Re-spawn with the continue prompt. Reuse the same rawHandle
           // creation path (driver.send for tmux, spawnRunner otherwise).
@@ -1149,7 +1164,7 @@ export class SessionManager {
           if (provider === "claude") {
             const driver = this.driverFor(session.driverMode);
             retryRawHandle = driver.send({
-              session: runSession,
+              session: retryRunSession,
               prompt: continuePrompt,
               config: this.config.claude,
               targetRepoCwd,
@@ -1160,7 +1175,7 @@ export class SessionManager {
             });
           } else {
             retryRawHandle = this.spawnRunner(
-              runSession,
+              retryRunSession,
               continuePrompt,
               this.config,
               targetRepoCwd,
@@ -1185,9 +1200,8 @@ export class SessionManager {
             agentSession.pid = retryHandle.pid;
           }
 
-          // Re-arm idle timer for the retry handle
+          activeHandle = retryHandle;
           idleInterrupted = false;
-          armIdleTimer();
           retryHandle.onEvent((event: RunnerEvent) => {
             armIdleTimer();
             if (event.type === "init") {
@@ -1202,6 +1216,10 @@ export class SessionManager {
             }
             this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
           });
+          await this.persistRunProcessDetails(session.threadId, agentName, retryHandle.pid);
+
+          // Re-arm idle timer for the retry handle
+          armIdleTimer();
 
           attemptHandle = retryHandle;
           continue;
@@ -1236,6 +1254,28 @@ export class SessionManager {
         session.lastError.message,
       );
     }
+  }
+
+  private async persistRunProcessDetails(
+    threadId: string,
+    agentName: string,
+    pid: number | null,
+  ): Promise<void> {
+    const fresh = await this.store.get(threadId);
+    if (!fresh) return;
+
+    if (agentName === "lead" || agentName === "default") {
+      if (fresh.status === "busy") {
+        fresh.pid = pid;
+      }
+    } else {
+      const agentSession = fresh.agentSessions?.[agentName];
+      if (agentSession?.status === "busy") {
+        agentSession.pid = pid;
+      }
+    }
+
+    await this.store.set(threadId, fresh);
   }
 
   private async onRunComplete(
@@ -1450,6 +1490,18 @@ export class SessionManager {
       pid: null,
     };
     return session.agentSessions[agentName];
+  }
+
+  /**
+   * Idle interrupt (SIGINT + resume) should only fire for headless CLI
+   * providers where Junior owns the process lifecycle. Server-attached
+   * providers (opencode-sdk, codex-app-server) manage their own timeouts
+   * and have sessions that are naturally "sleeping" between turns — Junior
+   * should not interrupt them.
+   */
+  private idleResumeEnabled(provider: RunnerProvider): boolean {
+    if (provider === "opencode") return this.config.opencode.continuityEnabled;
+    return provider !== "opencode-sdk" && provider !== "codex-app-server";
   }
 
   private buildRunSession(
