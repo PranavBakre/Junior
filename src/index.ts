@@ -31,6 +31,8 @@ import { WorkflowController } from "./workflows/controller.ts";
 import { WorkflowExecutor } from "./workflows/executor.ts";
 import { WorkflowRegistry } from "./workflows/registry.ts";
 import { WorkflowScheduler } from "./workflows/scheduler.ts";
+import { createMemoryStore } from "./memory/factory.ts";
+import { MemoryIngestor } from "./memory/ingestion.ts";
 import {
   InMemoryWorkflowStore,
   SqliteWorkflowStore,
@@ -42,7 +44,10 @@ const app = createSlackApp(config);
 
 const store = createSessionStore(config);
 log.info("boot", `Session store: ${config.session.store}`);
+const memoryStore = createMemoryStore(config.memory.sqlitePath);
+const memoryIngestor = new MemoryIngestor(memoryStore);
 const sessionManager = new SessionManager(store, config);
+sessionManager.setMemoryIngestor(memoryIngestor);
 const agentRouter = new AgentRouter(
   config.repos,
   ".claude/agents",
@@ -70,6 +75,7 @@ const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
   sessionStore: store,
   slackClient: app.client,
   repos: config.repos,
+  memoryStore,
 });
 const workflowRegistry = new WorkflowRegistry({
   repos: config.repos,
@@ -185,6 +191,7 @@ setupGracefulShutdown(sessionManager, store, devServerManager, () => {
   workflowScheduler.stop();
   workflowRegistry.stopWatching();
   workflowStore.close?.();
+  memoryStore.close();
 });
 
 // Periodic health checks
@@ -308,6 +315,7 @@ setInterval(() => {
         repos: config.repos,
         workflowRegistry,
         workflowStore,
+        memoryStore,
       });
     } catch (err) {
       log.error(
