@@ -143,11 +143,6 @@ export function spawnCodexAppServer(
       });
 
       if (session.sessionId) {
-        if (!config.codex.appServerContinuityEnabled) {
-          throw new Error(
-            "Codex app-server resume requested but CODEX_APP_SERVER_CONTINUITY_ENABLED is false",
-          );
-        }
         const resumed = record(await send("thread/resume", {
           threadId: session.sessionId,
           cwd: runtime.cwd,

@@ -189,6 +189,144 @@ function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEven
   };
 }
 
+function cloneConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    ...structuredClone(testConfig),
+    ...overrides,
+  };
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs: number = 100,
+): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
+function createIdleInterruptedHandle(): MockHandle {
+  const listeners: Array<(event: RunnerEvent) => void> = [];
+  let resolveResult!: (result: SpawnResult) => void;
+  let initQueued = false;
+  const result = new Promise<SpawnResult>((res) => {
+    resolveResult = res;
+  });
+  const handle: MockHandle = {
+    provider: "codex-app-server",
+    result,
+    onEvent: (cb) => {
+      listeners.push(cb);
+      if (!initQueued) {
+        initQueued = true;
+        queueMicrotask(() => {
+          for (const listener of listeners) {
+            listener({
+              type: "init",
+              provider: "codex-app-server",
+              sessionId: "codex-thread-1",
+            });
+          }
+        });
+      }
+    },
+    kill: mock(() => {
+      resolveResult({
+        provider: "codex-app-server",
+        sessionId: "codex-thread-1",
+        response: "",
+        events: [],
+        exitCode: null,
+        error: "interrupted",
+      });
+    }),
+    pid: 12345,
+    _complete: (resp = "ok", sid = "codex-thread-1", resultEvents?: RunnerEvent[]) => {
+      for (const l of listeners)
+        l({
+          type: "init",
+          provider: "codex-app-server",
+          sessionId: sid,
+        });
+      for (const l of listeners)
+        l({ type: "done", provider: "codex-app-server" });
+      resolveResult({
+        provider: "codex-app-server",
+        sessionId: sid,
+        response: resp,
+        events: resultEvents ?? [],
+        exitCode: 0,
+        error: null,
+      });
+    },
+    _error: (errorMsg: string) => {
+      resolveResult({
+        provider: "codex-app-server",
+        sessionId: null,
+        response: "",
+        events: [],
+        exitCode: 1,
+        error: errorMsg,
+      });
+    },
+  };
+
+  return handle;
+}
+
+function createCompletingCodexHandle(
+  response: string = "ok",
+  sessionId: string = "codex-thread-1",
+): MockHandle {
+  const listeners: Array<(event: RunnerEvent) => void> = [];
+  let resolveResult!: (result: SpawnResult) => void;
+  const result = new Promise<SpawnResult>((res) => {
+    resolveResult = res;
+  });
+
+  return {
+    provider: "codex-app-server",
+    result,
+    onEvent: (cb) => listeners.push(cb),
+    kill: mock(() => {}),
+    pid: 12345,
+    _complete: (resp?: string, sid?: string, resultEvents?: RunnerEvent[]) => {
+      const finalResponse = resp ?? response;
+      const finalSessionId = sid ?? sessionId;
+      for (const l of listeners)
+        l({
+          type: "init",
+          provider: "codex-app-server",
+          sessionId: finalSessionId,
+        });
+      for (const l of listeners)
+        l({ type: "done", provider: "codex-app-server" });
+      resolveResult({
+        provider: "codex-app-server",
+        sessionId: finalSessionId,
+        response: finalResponse,
+        events: resultEvents ?? [],
+        exitCode: 0,
+        error: null,
+      });
+    },
+    _error: (errorMsg: string) => {
+      resolveResult({
+        provider: "codex-app-server",
+        sessionId: null,
+        response: "",
+        events: [],
+        exitCode: 1,
+        error: errorMsg,
+      });
+    },
+  };
+}
+
 describe("SessionManager", () => {
   let store: InMemorySessionStore;
   let manager: InstanceType<typeof SessionManager>;
@@ -365,6 +503,74 @@ describe("SessionManager", () => {
 
     const session = await store.get("thread-1");
     expect(session!.sessionId).toBe("claude-session-42");
+  });
+
+  it("does not idle-resume codex app-server when continuity is disabled", async () => {
+    const config = cloneConfig({
+      runner: { provider: "codex-app-server" },
+      session: {
+        ...testConfig.session,
+        idleTimeoutMs: 5,
+        maxIdleInterrupts: 1,
+      },
+      codex: {
+        ...testConfig.codex,
+        appServerContinuityEnabled: false,
+      },
+    });
+    const idleHandle = createIdleInterruptedHandle();
+    mockSpawnFn = mock(() => idleHandle);
+    manager = new SessionManager(
+      store,
+      config,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
+
+    await manager.handleMessage(makeEvent());
+    await waitFor(() => (
+      mockSpawnFn.mock.calls.length === 1 &&
+      (idleHandle.kill as ReturnType<typeof mock>).mock.calls.length > 0
+    ));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("idle-resumes codex app-server when continuity is enabled", async () => {
+    const config = cloneConfig({
+      runner: { provider: "codex-app-server" },
+      session: {
+        ...testConfig.session,
+        idleTimeoutMs: 5,
+        maxIdleInterrupts: 1,
+      },
+      codex: {
+        ...testConfig.codex,
+        appServerContinuityEnabled: true,
+      },
+    });
+    const firstHandle = createIdleInterruptedHandle();
+    const retryHandle = createCompletingCodexHandle("continued", "codex-thread-1");
+    let spawnCount = 0;
+    mockSpawnFn = mock(() => {
+      spawnCount++;
+      return spawnCount === 1 ? firstHandle : retryHandle;
+    });
+    manager = new SessionManager(
+      store,
+      config,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
+
+    await manager.handleMessage(makeEvent());
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+    const retryPrompt = mockSpawnFn.mock.calls[1][1] as string;
+    const retrySession = mockSpawnFn.mock.calls[1][0];
+    retryHandle._complete("continued", "codex-thread-1");
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(retryPrompt).toContain("The previous turn was interrupted");
+    expect(retrySession.sessionId).toBe("codex-thread-1");
   });
 
   // --- Buffer drain ---
