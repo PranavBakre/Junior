@@ -15,6 +15,8 @@ export interface CodexAppServerStreamParser {
 export interface CodexAppServerEventMapper {
   readonly sessionId: string | null;
   readonly response: string;
+  readonly error: string | null;
+  readonly warning: string | null;
   map(notification: CodexJsonRpcNotification): RunnerEvent[];
 }
 
@@ -143,6 +145,8 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
   let sessionId: string | null = null;
   let response = "";
   let pendingText = "";
+  let error: string | null = null;
+  let warning: string | null = null;
 
   function maybeInitFromParams(params: Record<string, unknown> | undefined): RunnerEvent[] {
     if (sessionId || !params) return [];
@@ -160,12 +164,28 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
     get response(): string {
       return response;
     },
+    get error(): string | null {
+      return error;
+    },
+    get warning(): string | null {
+      return warning;
+    },
     map(notification: CodexJsonRpcNotification): RunnerEvent[] {
       const params = notification.params;
       const events = maybeInitFromParams(params);
 
       if (!KNOWN_METHODS.has(notification.method)) {
         log.info("codex-app-server", `Unmapped notification method "${notification.method}"`);
+      }
+
+      if (notification.method === "error") {
+        error = diagnosticMessage("error", params);
+        return events;
+      }
+
+      if (notification.method === "warning") {
+        warning = diagnosticMessage("warning", params);
+        return events;
       }
 
       if (notification.method === "item/agentMessage/delta") {
@@ -310,6 +330,29 @@ function agentMessageText(item: Record<string, unknown>): string {
     .map((part) => stringValue(part?.text) ?? "")
     .filter(Boolean)
     .join("");
+}
+
+function diagnosticMessage(
+  method: "error" | "warning",
+  params: Record<string, unknown> | undefined,
+): string {
+  const label = method === "error" ? "error" : "warning";
+  const prefix = `Codex app-server ${label}`;
+  if (!params || Object.keys(params).length === 0) return prefix;
+
+  const nested = asRecord(params.error) ?? asRecord(params.warning);
+  const message =
+    stringValue(params.message) ??
+    stringValue(params.error) ??
+    stringValue(params.warning) ??
+    stringValue(params.description) ??
+    stringValue(nested?.message) ??
+    stringValue(nested?.error);
+  const code = stringValue(params.code) ?? stringValue(nested?.code);
+  if (message && code) return `${prefix}: ${message} (${code})`;
+  if (message) return `${prefix}: ${message}`;
+
+  return `${prefix}: ${JSON.stringify(params)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
