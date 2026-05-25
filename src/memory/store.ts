@@ -7,7 +7,10 @@ import type {
   MemoryEdgeInput,
   MemoryEventInput,
   MemoryFactInput,
+  MemoryFactUpdate,
   MemoryLessonInput,
+  MemoryLessonUpdate,
+  MemoryMergeResult,
   MemoryRecallOptions,
   MemorySearchResult,
   MemorySourceRecord,
@@ -24,7 +27,11 @@ export interface MemoryStore {
   appendSourceRecord(record: MemorySourceRecord): Promise<void>;
   upsertEvent(event: MemoryEventInput): Promise<void>;
   upsertLesson(lesson: MemoryLessonInput): Promise<void>;
+  updateLesson(id: string, update: MemoryLessonUpdate): Promise<void>;
+  mergeLessons(ids: string[], title: string): Promise<MemoryMergeResult>;
   upsertFact(fact: MemoryFactInput): Promise<void>;
+  updateFact(id: string, update: MemoryFactUpdate): Promise<void>;
+  mergeFacts(ids: string[], title: string): Promise<MemoryMergeResult>;
   addEdge(edge: MemoryEdgeInput): Promise<void>;
   logClassification(classification: IngestionClassificationInput): Promise<void>;
   logCorrection(correction: IngestionCorrectionInput): Promise<void>;
@@ -32,7 +39,6 @@ export interface MemoryStore {
   setRuleStatus(id: string, status: "accepted" | "rejected"): Promise<boolean>;
   getAcceptedRules(): Promise<AcceptedRule[]>;
   recall(options: MemoryRecallOptions): Promise<MemorySearchResult[]>;
-  consolidate(options?: ConsolidationOptions): Promise<ConsolidationResult>;
   consolidate(options?: ConsolidationOptions): Promise<ConsolidationResult>;
   rebuildSearchIndex(): Promise<void>;
 }
