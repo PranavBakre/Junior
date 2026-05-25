@@ -8,7 +8,7 @@ Core orchestrator: routes Slack messages to Claude, manages the buffer/drain sta
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `SessionManager(store, config, spawnClaude?)` | `manager.ts` | Constructor — `spawnClaude` injectable for tests |
+| `SessionManager(store, config, spawnRunner?)` | `manager.ts` | Constructor — runner spawn injectable for tests |
 | `handleMessage(event)` | `manager.ts` | Default single-session entry — any-channel @mentions |
 | `handleLeadMessage(event)` | `manager.ts` | Single-session entry for the support `lead` agent (shares top-level session slot) |
 | `handleAgentMessage(event, agentName)` | `manager.ts` | Persistent-agent entry — per-agent buffer/drain via `session.agentSessions[name]` |
@@ -94,7 +94,7 @@ idle ──[msg]──► busy ──[exit, no pending]──► done|failed
 
 Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, continue), `repo`, `branch`, `agent`, `cancel`, `reset` (admin), `status`, `help`, `quiet`/`normal`/`verbose`, `adhoc`/`bugs` (calendar tasks via haiku + cwd override), `mute`/`unmute` (admin). See `thread-commands.md`.
 
-## Prompt Composition (in `runClaudeWithAgent`)
+## Prompt Composition (in `runRunnerWithAgent`)
 
 1. Resolve target repo + (always) create worktree if `targetRepo` set
 2. Resolve agent definition + context profile (defaults to all-true)
@@ -104,12 +104,13 @@ Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, c
 6. Download image files → append paths
 7. `composeSystemPrompt` (common + agent body) + identity block + dispatch-allow block → `session.systemPrompt`
 8. Optional `<persistent-agent-state>` block when `context.agentState` is on
-9. `spawnClaude(runSession, prompt, ..., agentIdentity)` wrapped in `withTimeout`
+9. `spawnRunner(runSession, prompt, ..., agentIdentity)` wrapped in `withTimeout`
 
 ## Concurrency Guards
 
 - **Refetch-then-mutate in `onRunComplete`**: long-running agents may be minutes stale; refetch the row to avoid clobbering writes from other agents on the same thread.
 - **Handle ownership check**: if `this.handles.get(handleKey) !== ownHandle`, the run was replaced by `!reset` or a newer spawn — bail without writing or posting.
+- **Idle interrupt/resume**: for headless CLI providers Junior owns, silent runs are SIGINT'd after `session.idleTimeoutMs`; if a native session id was captured, the retry uses `buildRunSession(...)` so provider-native continuity receives the latest `sessionId`. OpenCode idle recovery is gated by `OPENCODE_CONTINUITY_ENABLED`.
 - **Slack tool duplicate suppression**: if a runner used `slack_send_message` and its final response is the exact same text, skip `onResponse` to avoid double-posting the same Slack reply.
 - **`seenMessages` dedupe**: bounded set (cap 1000, drops oldest 500) keyed on `dedupeKey ?? ts`. Slack fires both `message` and `app_mention` for @mentions.
 

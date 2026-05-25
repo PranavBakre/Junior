@@ -36,6 +36,7 @@ export interface OpenCodeSpawnerConfig {
   agentPrompt?: string;
   description?: string;
   defaultModel?: string | null;
+  continuityEnabled?: boolean;
   permission?: OpenCodePermissionConfig;
   mcp?: OpenCodeMcpConfig | null;
   subagents?: OpenCodeSubagentConfig[];
@@ -97,7 +98,7 @@ export function spawnOpenCode(
     cwd: runtime.cwd,
     agentName,
     prompt,
-    sessionId: session.sessionId,
+    sessionId: config.continuityEnabled ? session.sessionId : null,
     model,
     files: imagePaths,
   });
@@ -157,8 +158,8 @@ export function spawnOpenCode(
     onEvent: (cb) => {
       listeners.push(cb);
     },
-    kill: () => {
-      proc.kill();
+    kill: (signal) => {
+      signal ? proc.kill(signal) : proc.kill();
     },
     pid: proc.pid,
   };
