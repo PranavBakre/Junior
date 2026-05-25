@@ -1078,6 +1078,7 @@ export class SessionManager {
       // SIGINT'd by Junior.
       const idleEnabled = this.idleResumeEnabled(provider);
       let idleInterrupted = false;
+      let activeHandle = handle;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let idleKillTimer: ReturnType<typeof setTimeout> | null = null;
       const clearIdleTimers = () => {
@@ -1092,10 +1093,10 @@ export class SessionManager {
         idleTimer = setTimeout(() => {
           idleInterrupted = true;
           _log.warn("session", `idle-interrupt thread=${session.threadId} agent=${agentName} provider=${provider}`);
-          handle.kill("SIGINT");
+          activeHandle.kill("SIGINT");
           idleKillTimer = setTimeout(() => {
             _log.warn("session", `idle-escalate thread=${session.threadId} agent=${agentName} provider=${provider}`);
-            handle.kill("SIGKILL");
+            activeHandle.kill("SIGKILL");
           }, 10_000);
         }, this.config.session.idleTimeoutMs);
       };
@@ -1115,6 +1116,7 @@ export class SessionManager {
         }
         this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
       });
+      await this.persistRunProcessDetails(session.threadId, agentName, handle.pid);
 
       const maxIdleInterrupts = this.config.session.maxIdleInterrupts;
       let attemptHandle = handle;
@@ -1198,9 +1200,8 @@ export class SessionManager {
             agentSession.pid = retryHandle.pid;
           }
 
-          // Re-arm idle timer for the retry handle
+          activeHandle = retryHandle;
           idleInterrupted = false;
-          armIdleTimer();
           retryHandle.onEvent((event: RunnerEvent) => {
             armIdleTimer();
             if (event.type === "init") {
@@ -1215,6 +1216,10 @@ export class SessionManager {
             }
             this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
           });
+          await this.persistRunProcessDetails(session.threadId, agentName, retryHandle.pid);
+
+          // Re-arm idle timer for the retry handle
+          armIdleTimer();
 
           attemptHandle = retryHandle;
           continue;
@@ -1249,6 +1254,28 @@ export class SessionManager {
         session.lastError.message,
       );
     }
+  }
+
+  private async persistRunProcessDetails(
+    threadId: string,
+    agentName: string,
+    pid: number | null,
+  ): Promise<void> {
+    const fresh = await this.store.get(threadId);
+    if (!fresh) return;
+
+    if (agentName === "lead" || agentName === "default") {
+      if (fresh.status === "busy") {
+        fresh.pid = pid;
+      }
+    } else {
+      const agentSession = fresh.agentSessions?.[agentName];
+      if (agentSession?.status === "busy") {
+        agentSession.pid = pid;
+      }
+    }
+
+    await this.store.set(threadId, fresh);
   }
 
   private async onRunComplete(
