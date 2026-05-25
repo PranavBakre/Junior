@@ -3,12 +3,13 @@
  *
  * Unlike the CLI adapter (`spawnOpenCode` which runs `opencode run` per turn),
  * this provider starts (or attaches to) an `opencode serve` process and uses
- * the @opencode-ai/sdk client to send prompts, subscribe to events, and abort
- * sessions cleanly via `session.abort`.
+ * the @opencode-ai/sdk client to send prompts, subscribe to events, and
+ * interrupt sessions with the same session abort API used by the OpenCode TUI.
  *
- * The server stays alive between turns (like the tmux driver) and sessions
- * carry conversation context, so `--resume` is replaced by re-attaching to the
- * same session ID.
+ * When OPENCODE_CONTINUITY_ENABLED=true, sessions carry conversation context
+ * across completed turns, so the SDK provider re-attaches to the same session
+ * ID. Prompt-after-abort continuation still needs a fixture before Junior can
+ * treat timeout recovery as verified continuity.
  */
 
 import { dirname, resolve } from "node:path";
@@ -151,6 +152,7 @@ export function spawnOpenCodeSdk(
 
   let sdkSessionId: string | null = null;
   let aborted = false;
+  let finishTurn: (() => void) | null = null;
   const eventListeners: Array<(event: RunnerEvent) => void> = [];
 
   const spawnResult = new Promise<SpawnResult>(async (resolve, reject) => {
@@ -167,8 +169,14 @@ export function spawnOpenCodeSdk(
         // ok
       }
 
-      // Create session (or re-attach to existing)
-      let currentSessionId = session.sessionId ?? undefined;
+      // Create session, or re-attach to existing only when continuity is
+      // explicitly enabled. OpenCode continuity means reusing session context
+      // across completed turns. SDK abort is the native interrupt path, but
+      // prompt-after-abort continuation still needs a fixture before treating it
+      // as timeout recovery.
+      let currentSessionId = config.opencode.continuityEnabled
+        ? (session.sessionId ?? undefined)
+        : undefined;
       if (!currentSessionId) {
         const created = await server.client.session.create({ directory: cwd, agent: agentName }) as { id: string };
         currentSessionId = created.id;
@@ -188,16 +196,21 @@ export function spawnOpenCodeSdk(
       };
 
       const eventStream = server.client.event.subscribe({ directory: cwd });
+      const turnDone = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
       const eventConsumer = (async () => {
         try {
           for await (const raw of eventStream) {
             if (aborted) break;
             try {
               const part = (typeof raw.data === "string" ? JSON.parse(raw.data) : raw.data) as SdkEventPart;
+              const partSessionId = "sessionID" in part ? (part as { sessionID?: string }).sessionID : undefined;
+              if (partSessionId && partSessionId !== currentSessionId) continue;
 
               // Capture session ID from first part carrying one
               if (!sessionIdCaptured) {
-                const sid = "sessionID" in part ? (part as { sessionID?: string }).sessionID : undefined;
+                const sid = partSessionId;
                 if (sid) {
                   sessionIdCaptured = true;
                   emit({ type: "init", provider, sessionId: sid });
@@ -231,6 +244,8 @@ export function spawnOpenCodeSdk(
                   ? { input: stepPart.tokens.input ?? 0, output: stepPart.tokens.output ?? 0 }
                   : undefined;
                 emit({ type: "done", provider, usage });
+                finishTurn?.();
+                break;
               }
             } catch {
               // Skip unparseable events
@@ -259,7 +274,9 @@ export function spawnOpenCodeSdk(
         return;
       }
 
-      // Wait for event stream to finish
+      // The SDK subscription is server-lived; a Junior turn is complete when
+      // the active SDK session emits step-finish, not when the stream closes.
+      await turnDone;
       await eventConsumer;
 
       const responseText = events
@@ -289,9 +306,10 @@ export function spawnOpenCodeSdk(
         try {
           await _server.client.session.abort({ sessionID: sdkSessionId });
         } catch {
-          // Best-effort abort
+          // ok
         }
       }
+      finishTurn?.();
       if (signal === "SIGKILL" && _server) {
         try { _server.close(); } catch { /* ok */ }
         _server = null;

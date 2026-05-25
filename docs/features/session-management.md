@@ -68,7 +68,9 @@ For every run the manager:
 2. Resolves the agent definition to pick a context profile (see [agent-routing.md](agent-routing.md)).
 3. Builds the prompt: full preamble (workspace, thread context, persistent-agent state, image paths) on the first turn; on resumed turns only the workspace block, gated by the agent's context profile. `--resume` carries identity/history.
 4. Composes the system prompt: agent definition + per-agent Slack identity (`username`, `icon_emoji`, attribution suffix) + dispatch allow-list (which `!<agent>` directives this agent may emit).
-5. Spawns via `claude/spawner.ts`, stores the handle under `threadId:agentName`, wires `onEvent` → status pills / streaming, `result.then` → `onRunComplete`.
+5. Spawns through the selected runner provider, stores the handle under `threadId:agentName`, wires `onEvent` → status pills / streaming, `result.then` → `onRunComplete`.
+
+For headless CLI providers that Junior owns, silent runs are interrupted after `SESSION_IDLE_TIMEOUT_MS` and retried with provider-native continuity when a session id has already been captured. OpenCode uses this path only when `OPENCODE_CONTINUITY_ENABLED=true`; otherwise Junior must not SIGINT/retry because the retry would start a fresh OpenCode session.
 
 ## Persistence
 
@@ -89,4 +91,4 @@ Admins: bootstrap one in `ADMIN_SLACK_USER_ID`; the rest live in the `admins` SQ
 
 ## Cleanup
 
-Stale threads / worktrees are reaped by the lifecycle module — see [process-lifecycle.md](process-lifecycle.md). The home tab windows on `HOME_WINDOW_MS` (2 days default) via `getRecent`.
+Stale threads / worktrees are reaped by the lifecycle module — see [process-lifecycle.md](process-lifecycle.md). Cleanup skips rows with any busy persistent agent so an idle top-level thread is not deleted while a worker is still running. The home tab windows on `HOME_WINDOW_MS` (2 days default) via `getRecent`.
