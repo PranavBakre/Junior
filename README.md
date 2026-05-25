@@ -135,7 +135,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
-| `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode` or `claude` (codex is planned but not yet implemented) |
+| `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode`, `opencode-sdk`, `codex-app-server`, or `claude` (`codex` is reserved for a future CLI fallback) |
 | `CLAUDE_MAX_TURNS` | `25` | Max turns per `claude -p` invocation |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Per-turn timeout before SIGINT |
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |
@@ -145,6 +145,10 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `JUNIOR_OPENCODE_PERMISSION` | `allow` | OpenCode permission mode for generated agent config |
 | `OPENCODE_MCP_ENABLED` | `true` | Enables generated OpenCode MCP config for normal non-utility runs |
 | `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | `true` | Include Playwright MCP in generated OpenCode config; set `false` to disable |
+| `CODEX_MODEL` | *(unset)* | Override default Codex app-server model |
+| `CODEX_TIMEOUT_MS` | `300000` | Per-turn Codex timeout before SIGINT |
+| `CODEX_APP_SERVER_CONTINUITY_ENABLED` | `false` | Enables app-server `thread/resume` and `turn/interrupt`; off until soak proves continuity |
+| `CODEX_ISOLATED_HOME_PATH` | `data/codex-home` | Junior-owned Codex home with generated config and symlinked auth |
 
 `REPOS` example:
 
