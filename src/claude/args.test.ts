@@ -33,6 +33,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     driverMode: "headless",
     tmuxSessionName: null,
     topLevelTmuxAgent: null,
+    idleInterruptCount: 0,
     ...overrides,
   };
 }
