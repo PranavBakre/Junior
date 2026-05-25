@@ -408,6 +408,10 @@ function resumeCommand(provider: string, sessionId: string): string {
   switch (provider) {
     case "opencode":
       return `opencode --session ${sessionId}`;
+    case "opencode-sdk":
+      return `opencode --session ${sessionId}`;
+    case "codex-app-server":
+      return `bin/codex-app-server-with-junior-home.sh # thread ${sessionId}`;
     case "codex":
       return `codex exec resume ${sessionId}`;
     case "claude":
