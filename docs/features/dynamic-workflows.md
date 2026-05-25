@@ -65,6 +65,8 @@ runner:
   provider: default
   agentName: lead
   timeoutMs: 300000
+  idleTimeoutMs: 300000
+  maxIdleInterrupts: 3
 concurrency: skip
 ---
 
@@ -83,7 +85,7 @@ Fields:
 | `triggers` | yes | At least one schedule, command, or Slack event trigger. |
 | `outputs` | yes | At least one output. Docs output must stay under `data/workflow-runs/<workflow>`. |
 | `permissions` | yes | Capability declaration used by workflow validation and runtime prompts. `repos` may be omitted to use all configured repos, or listed to narrow access. |
-| `runner` | no | Optional agent execution step. Runner workflows execute from `/tmp/junior-utility`; workflow definitions are trusted config, not a sandbox boundary. |
+| `runner` | no | Optional agent execution step. Runner workflows execute from `/tmp/junior-utility`; workflow definitions are trusted config, not a sandbox boundary. `idleTimeoutMs` and `maxIdleInterrupts` opt into the CLI SIGINT/resume fallback for silent runner processes. |
 | `fallback` | no | Reserved for future fallback modes. |
 | `concurrency` | no | `skip` by default. `parallel` is allowed for workflows that can overlap safely. |
 
@@ -122,6 +124,9 @@ Permission tools:
 - `gh` — read GitHub PR metadata with the GitHub CLI
 - `docs.write` — write run artifacts under `data/workflow-runs/`
 - `slack.post` — post Slack summaries
+- `memory.read` — read associative memory through the memory CLI/tool surface
+- `memory.write` — run approved memory writes/consolidation through memory code
+- `memory.evaluate` — inspect consolidation results and rule proposals
 
 `permissions.tools` is not a general runner sandbox. It is validated and injected into the runner prompt as the declared capability contract. Workflow definition files are trusted operational config; private overlays should be reviewed like code.
 
@@ -203,6 +208,25 @@ the markdown definition, the executor spawns the configured runner from
 workflow prompt to collect Git/GitHub activity and return a Slack-ready summary.
 Junior then writes that final response under `data/workflow-runs/worklog/` and
 posts it to configured Slack outputs.
+
+## Memory Consolidation Workflow
+
+The V2 associative-memory consolidation/"dreaming" engine should use this workflow system rather than a bespoke scheduler. A memory workflow can run on a cron schedule and by owner/admin command, skip overlapping runs with `concurrency: skip`, write artifacts under `data/workflow-runs/memory-consolidation`, and optionally post a compact Slack summary.
+
+The workflow definition orchestrates memory-specific code/tools; it does not place all classification, promotion, archive, and stale-fact logic in prompt prose. Workflow utility runs skip Junior's project MCP wiring because they run from `/tmp/junior-utility`, so memory workflows access the store through the CLI surface:
+
+```bash
+bun run <runtime context junior.memoryCli> recall --query "dashboard routing" --json
+bun run <runtime context junior.memoryCli> consolidate --json
+```
+
+The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Because workflow runners execute from `/tmp/junior-utility`, the runtime context includes `junior.projectRoot` and `junior.memoryCli` absolute paths. Normal Junior runner sessions with MCP wiring can use `memory_recall` and `memory_consolidate` instead.
+
+### Runner idle interrupt fallback
+
+Workflow runner configs can set `idleTimeoutMs` to recover from a silent CLI run before the hard `timeoutMs` expires. The executor starts an idle timer for each CLI attempt and resets it on every normalized runner event. When the timer fires, Junior sends `SIGINT` to the provider process, waits up to 10 seconds for it to exit, then sends `SIGKILL` as a cleanup fallback. If the run has already emitted a provider session id, Junior immediately spawns a new `opencode run --session <id>` / `claude --resume <id>` attempt with a compact "continue from the last completed step" prompt. `maxIdleInterrupts` bounds the number of resume attempts; after that, the run fails normally.
+
+This is a CLI fallback, not OpenCode's native TUI interrupt. OpenCode's TUI uses the server `session.abort` API after repeated Escape presses; a future SDK/server provider should use that API directly instead of process signals.
 
 ## Dependencies
 

@@ -131,12 +131,29 @@ const testConfig: Config = {
   opencode: {
     model: null,
     timeoutMs: 300000,
+    continuityEnabled: false,
     permission: "allow",
     mcpEnabled: true,
     slackMcpEnabled: true,
     playwrightMcpEnabled: true,
     mixpanelMcpEnabled: true,
     mongodbMcpEnabled: true,
+  },
+  codex: {
+    mode: "app-server",
+    model: null,
+    timeoutMs: 300000,
+    sandbox: "workspace-write",
+    askForApproval: "never",
+    searchEnabled: false,
+    appServerContinuityEnabled: false,
+    mcpEnabled: true,
+    slackMcpEnabled: true,
+    playwrightMcpEnabled: true,
+    mixpanelMcpEnabled: true,
+    mongodbMcpEnabled: true,
+    memoryMcpEnabled: true,
+    isolatedHomePath: "data/codex-home",
   },
   repos: [
     { name: "junior", path: "/tmp/junior", defaultBase: "main" },
@@ -149,6 +166,8 @@ const testConfig: Config = {
     sqlitePath: "data/sessions.db",
     homeWindowMs: 172800000,
     defaultVerbosity: "quiet",
+    idleTimeoutMs: 300000,
+    maxIdleInterrupts: 3,
   },
   memory: {
     sqlitePath: "data/memory.db",
@@ -167,6 +186,99 @@ function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEven
     ts: "1234567890.123456",
     command: null,
     ...overrides,
+  };
+}
+
+function cloneConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    ...structuredClone(testConfig),
+    ...overrides,
+  };
+}
+
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number = 100,
+): Promise<void> {
+  const started = Date.now();
+  while (!(await predicate())) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("Timed out waiting for condition");
+    }
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
+function createIdleOpencodeHandle(
+  sessionId = "ses_idle_1",
+  pid = 12345,
+): SpawnHandle {
+  let resolveResult!: (result: SpawnResult) => void;
+  const result = new Promise<SpawnResult>((res) => {
+    resolveResult = res;
+  });
+
+  return {
+    provider: "opencode",
+    result,
+    onEvent: (cb) => {
+      setTimeout(() => cb({ type: "init", provider: "opencode", sessionId }), 0);
+    },
+    kill: mock((_signal?: "SIGINT" | "SIGTERM" | "SIGKILL") => {
+      resolveResult({
+        provider: "opencode",
+        sessionId,
+        response: "",
+        events: [],
+        exitCode: 130,
+        error: "interrupted",
+      });
+    }),
+    pid,
+  };
+}
+
+function createCompletingOpencodeHandle(
+  sessionId = "ses_idle_1",
+  pid = 12345,
+): MockHandle {
+  const listeners: Array<(event: RunnerEvent) => void> = [];
+  let resolveResult!: (result: SpawnResult) => void;
+  const result = new Promise<SpawnResult>((res) => {
+    resolveResult = res;
+  });
+
+  return {
+    provider: "opencode",
+    result,
+    onEvent: (cb) => listeners.push(cb),
+    kill: mock(() => {}),
+    pid,
+    _complete: (resp?: string, sid?: string, resultEvents?: RunnerEvent[]) => {
+      const finalSessionId = sid ?? sessionId;
+      for (const l of listeners) {
+        l({ type: "init", provider: "opencode", sessionId: finalSessionId });
+        l({ type: "done", provider: "opencode" });
+      }
+      resolveResult({
+        provider: "opencode",
+        sessionId: finalSessionId,
+        response: resp ?? "done",
+        events: resultEvents ?? [],
+        exitCode: 0,
+        error: null,
+      });
+    },
+    _error: (errorMsg: string) => {
+      resolveResult({
+        provider: "opencode",
+        sessionId: null,
+        response: "",
+        events: [],
+        exitCode: 1,
+        error: errorMsg,
+      });
+    },
   };
 }
 
@@ -347,6 +459,78 @@ describe("SessionManager", () => {
     const session = await store.get("thread-1");
     expect(session!.sessionId).toBe("claude-session-42");
   });
+
+  it("does not idle-interrupt opencode when continuity is disabled", async () => {
+    const config = cloneConfig({
+      runner: { provider: "opencode" },
+      opencode: {
+        ...testConfig.opencode,
+        continuityEnabled: false,
+      },
+      session: {
+        ...testConfig.session,
+        idleTimeoutMs: 5,
+        maxIdleInterrupts: 1,
+      },
+    });
+    const idleHandle = createIdleOpencodeHandle();
+    mockSpawnFn = mock(() => idleHandle);
+    manager = new SessionManager(
+      store,
+      config,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
+
+    await manager.handleMessage(makeEvent());
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(idleHandle.kill).not.toHaveBeenCalled();
+    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("idle-interrupts and resumes opencode only when continuity is enabled", async () => {
+    const config = cloneConfig({
+      runner: { provider: "opencode" },
+      opencode: {
+        ...testConfig.opencode,
+        continuityEnabled: true,
+      },
+      session: {
+        ...testConfig.session,
+        idleTimeoutMs: 5,
+        maxIdleInterrupts: 1,
+      },
+    });
+    const idleHandle = createIdleOpencodeHandle("ses_resume_1", 12345);
+    const retryHandle = createCompletingOpencodeHandle("ses_resume_1", 67890);
+    let spawnCount = 0;
+    mockSpawnFn = mock(() => (spawnCount++ === 0 ? idleHandle : retryHandle));
+    manager = new SessionManager(
+      store,
+      config,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
+
+    await manager.handleMessage(makeEvent());
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+
+    expect(idleHandle.kill).toHaveBeenCalledWith("SIGINT");
+    const retrySession = mockSpawnFn.mock.calls[1][0];
+    const retryConfig = mockSpawnFn.mock.calls[1][2];
+    expect(retrySession.sessionId).toBe("ses_resume_1");
+    expect(retryConfig.opencode.continuityEnabled).toBe(true);
+    await waitFor(async () => (await store.get("thread-1"))?.pid === 67890);
+
+    retryHandle._complete("resumed", "ses_resume_1");
+    await new Promise((r) => setTimeout(r, 10));
+
+    const session = await store.get("thread-1");
+    expect(session).toBeDefined();
+    expect(session!.sessionId).toBe("ses_resume_1");
+    expect(session!.status).toBe("idle");
+  });
+
+
 
   // --- Buffer drain ---
 
@@ -742,6 +926,21 @@ describe("SessionManager", () => {
       // session.provider stays unchanged (undefined or claude)
       expect(session?.provider ?? "claude").toBe("claude");
       expect(onCmd.mock.calls.at(-1)?.[1]).toContain("not yet implemented");
+    });
+
+    it("accepts codex-app-server as an implemented provider", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      await manager.handleMessage(makeEvent({
+        command: "provider",
+        text: "codex-app-server",
+        ts: "ts-provider-codex-app-server",
+      }));
+
+      const session = await store.get("thread-1");
+      expect(session?.provider).toBe("codex-app-server");
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("codex-app-server");
     });
   });
 
