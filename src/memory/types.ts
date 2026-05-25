@@ -84,6 +84,7 @@ export interface MemoryEdgeInput {
     | "follows_up"
     | "contradicts"
     | "supersedes"
+    | "merged_from"
     | "mentions"
     | "tagged_as"
     | "applies_to"
@@ -91,6 +92,34 @@ export interface MemoryEdgeInput {
   weight?: number;
   directed?: boolean;
   createdAt: number;
+}
+
+export interface MemoryLessonUpdate {
+  title?: string | null;
+  body?: string | null;
+  appliesWhen?: string | null;
+  importance?: number | null;
+  addSourceIds?: string[];
+  addTags?: string[];
+  addEntities?: Array<{ name: string; kind: string }>;
+}
+
+export interface MemoryFactUpdate {
+  kind?: "curated_fact" | "routing_memory" | "procedure" | null;
+  title?: string | null;
+  body?: string | null;
+  confidence?: number | null;
+  importance?: number | null;
+  addSourceIds?: string[];
+  addTags?: string[];
+  addEntities?: Array<{ name: string; kind: string }>;
+}
+
+export interface MemoryMergeResult {
+  mergedId: string;
+  kind: "lesson" | "fact";
+  sourceIds: string[];
+  supersededIds: string[];
 }
 
 export interface MemoryRecallOptions {

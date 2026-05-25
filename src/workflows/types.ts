@@ -8,12 +8,19 @@ export type WorkflowRunReason = "schedule" | "command" | "event" | "manual";
 export type WorkflowRunStatus = "running" | "success" | "failed" | "skipped";
 export type WorkflowLastRunStatus = Exclude<WorkflowRunStatus, "running">;
 export type WorkflowConcurrency = "skip" | "parallel";
-export type WorkflowRunnerProvider = "default" | "opencode" | "claude";
+export type WorkflowRunnerProvider =
+  | "default"
+  | "opencode"
+  | "codex-app-server"
+  | "claude";
 export type WorkflowTool =
   | "git"
   | "gh"
   | "slack.post"
-  | "docs.write";
+  | "docs.write"
+  | "memory.read"
+  | "memory.write"
+  | "memory.evaluate";
 
 export interface WorkflowScheduleTrigger {
   type: "schedule";
@@ -62,6 +69,8 @@ export interface WorkflowRunnerConfig {
   provider: WorkflowRunnerProvider;
   agentName: string;
   timeoutMs?: number;
+  idleTimeoutMs?: number;
+  maxIdleInterrupts?: number;
   model?: string | null;
 }
 
