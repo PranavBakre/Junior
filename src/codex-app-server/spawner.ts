@@ -197,13 +197,14 @@ export function spawnCodexAppServer(
       await stdoutDone;
       const exitCode = await proc.exited;
       const stderr = await stderrText;
+      const mapperError = mapper.error ?? (!mapper.response ? mapper.warning : null);
       return {
         provider,
         sessionId: mapper.sessionId ?? activeThreadId,
         response: mapper.response,
         events,
         exitCode: exitCode === 143 ? 0 : exitCode,
-        error: exitCode === 0 || exitCode === 143 ? null : stderr || `Process exited with code ${exitCode}`,
+        error: mapperError ?? (exitCode === 0 || exitCode === 143 ? null : stderr || `Process exited with code ${exitCode}`),
       };
     } catch (err) {
       if (!processKilled) proc.kill("SIGTERM");

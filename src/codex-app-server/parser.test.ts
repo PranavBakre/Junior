@@ -84,6 +84,26 @@ describe("createCodexAppServerEventMapper", () => {
     expect(mapper.response).toBe("here.");
   });
 
+  it("captures app-server error and warning diagnostics", () => {
+    const mapper = createCodexAppServerEventMapper();
+    const events = [
+      {
+        method: "warning",
+        params: { threadId: "thr_1", message: "approaching limit" },
+      },
+      {
+        method: "error",
+        params: { threadId: "thr_1", error: { message: "tool failed", code: "tool_error" } },
+      },
+    ].flatMap((event) => mapper.map(event));
+
+    expect(events).toEqual([
+      { type: "init", provider: "codex-app-server", sessionId: "thr_1" },
+    ]);
+    expect(mapper.warning).toBe("Codex app-server warning: approaching limit");
+    expect(mapper.error).toBe("Codex app-server error: tool failed (tool_error)");
+  });
+
   it("maps known tool-like item types", () => {
     const mapper = createCodexAppServerEventMapper();
     const runnerEvents = [
