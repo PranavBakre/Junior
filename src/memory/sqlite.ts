@@ -265,13 +265,14 @@ export class SqliteMemoryStore implements MemoryStore {
         .run(update.kind ?? null, update.title ?? null, update.body ?? null, update.confidence ?? null, update.importance ?? null, id);
 
       const current = this.db
-        .query<{ kind: string; title: string | null; body: string }, [string]>(
-          "SELECT kind, title, body FROM memory_fact WHERE id = ?",
+        .query<{ kind: string; title: string | null; body: string; created_at: number }, [string]>(
+          "SELECT kind, title, body, created_at FROM memory_fact WHERE id = ?",
         )
         .get(id);
       if (!current) return;
 
       const nodeKind = current.kind === "curated_fact" ? "fact" : current.kind as SearchableMemoryKind;
+      this.upsertNode(id, nodeKind, current.created_at);
       this.upsertProvenance(id, update.addSourceIds ?? []);
       this.upsertTags(id, nodeKind, update.addTags ?? []);
       this.upsertEntities(id, nodeKind, update.addEntities ?? []);
