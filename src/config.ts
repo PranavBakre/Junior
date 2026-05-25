@@ -86,6 +86,13 @@ export interface Config {
     sqlitePath: string;
     homeWindowMs: number;
     defaultVerbosity: SessionVerbosity;
+    /**
+     * If the runner produces no events for this long (ms), send SIGINT then
+     * re-spawn with --session/--resume. Default 300000 (5 min).
+     */
+    idleTimeoutMs: number;
+    /** Maximum SIGINT + resume attempts before letting the hard timeout kill the turn. */
+    maxIdleInterrupts: number;
   };
   memory: {
     sqlitePath: string;
@@ -170,6 +177,8 @@ export function loadConfig(): Config {
       defaultVerbosity: parseVerbosity(
         optional("SESSION_DEFAULT_VERBOSITY", "normal"),
       ),
+      idleTimeoutMs: Number(optional("SESSION_IDLE_TIMEOUT_MS", "300000")),
+      maxIdleInterrupts: Number(optional("SESSION_MAX_IDLE_INTERRUPTS", "3")),
     },
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),

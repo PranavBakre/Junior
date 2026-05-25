@@ -25,6 +25,8 @@ const ENV_KEYS = [
   "SESSION_DB_PATH",
   "HOME_WINDOW_MS",
   "SESSION_DEFAULT_VERBOSITY",
+  "SESSION_IDLE_TIMEOUT_MS",
+  "SESSION_MAX_IDLE_INTERRUPTS",
   "MEMORY_DB_PATH",
   "CHANNEL_DEFAULTS",
   "ADMIN_SLACK_USER_ID",
@@ -71,6 +73,8 @@ describe("loadConfig runner providers", () => {
       mongodbMcpEnabled: true,
     });
     expect(config.memory.sqlitePath).toBe("data/memory.db");
+    expect(config.session.idleTimeoutMs).toBe(300000);
+    expect(config.session.maxIdleInterrupts).toBe(3);
   });
 
   it("parses memory db path", () => {

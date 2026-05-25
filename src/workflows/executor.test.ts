@@ -330,6 +330,8 @@ function testConfig(): Config {
       sqlitePath: "data/sessions.db",
       homeWindowMs: 172800000,
       defaultVerbosity: "normal",
+      idleTimeoutMs: 300000,
+      maxIdleInterrupts: 3,
     },
     memory: { sqlitePath: "data/memory.db" },
     channelDefaults: {},
