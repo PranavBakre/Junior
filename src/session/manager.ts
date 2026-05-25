@@ -894,6 +894,19 @@ export class SessionManager {
       const contextProfile: AgentContextProfile =
         agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
 
+      // Apply agent-declared model override to the session so the spawner
+      // picks it up (session.model ?? config.defaultModel).
+      // Only top-level agents (lead/default) persist the override to the
+      // stored session; persistent workers carry it on runSession only so
+      // the override is re-evaluated each turn from the agent definition.
+      if (agentDefinition?.model) {
+        runSession.model = agentDefinition.model;
+        if (isTopLevel) {
+          session.model = agentDefinition.model;
+          await this.store.set(session.threadId, session);
+        }
+      }
+
       // Build the prompt. On the first turn (no sessionId yet), inject the
       // preamble blocks the agent asked for. On resumed turns, --resume already
       // carries identity/context/history — keep just the workspace block (cheap
