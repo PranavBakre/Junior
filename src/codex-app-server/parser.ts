@@ -25,17 +25,84 @@ const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",
   "webSearch",
   "fileChange",
+  "imageView",
+  "enteredReviewMode",
+  "exitedReviewMode",
+]);
+
+const IGNORED_ITEM_TYPES = new Set([
+  "agentMessage",
+  "compacted",
+  "contextCompaction",
+  "plan",
+  "reasoning",
+  "userMessage",
 ]);
 
 const KNOWN_METHODS = new Set([
+  "account/login/completed",
+  "account/updated",
+  "account/rateLimits/updated",
+  "app/list/updated",
+  "command/exec/outputDelta",
+  "configWarning",
+  "deprecationNotice",
+  "error",
+  "externalAgentConfig/import/completed",
+  "fs/changed",
+  "guardianWarning",
+  "hook/completed",
+  "hook/started",
   "thread/started",
   "turn/started",
+  "turn/diff/updated",
+  "turn/plan/updated",
+  "model/rerouted",
+  "model/verification",
   "item/started",
   "item/completed",
   "item/agentMessage/delta",
+  "item/autoApprovalReview/started",
+  "item/autoApprovalReview/completed",
+  "item/plan/delta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/summaryPartAdded",
+  "item/reasoning/textDelta",
+  "item/commandExecution/outputDelta",
+  "item/commandExecution/terminalInteraction",
+  "item/fileChange/patchUpdated",
+  "item/fileChange/outputDelta",
+  "item/mcpToolCall/progress",
+  "process/exited",
+  "process/outputDelta",
+  "remoteControl/status/changed",
+  "serverRequest/resolved",
+  "skills/changed",
+  "thread/archived",
+  "thread/closed",
+  "thread/compacted",
+  "thread/goal/cleared",
+  "thread/goal/updated",
+  "thread/name/updated",
+  "thread/realtime/started",
+  "thread/realtime/itemAdded",
+  "thread/realtime/sdp",
+  "thread/realtime/transcript/delta",
+  "thread/realtime/transcript/done",
+  "thread/realtime/outputAudio/delta",
+  "thread/realtime/error",
+  "thread/realtime/closed",
+  "thread/settings/updated",
   "turn/completed",
   "thread/status/changed",
   "thread/tokenUsage/updated",
+  "thread/unarchived",
+  "warning",
+  "fuzzyFileSearch/sessionUpdated",
+  "fuzzyFileSearch/sessionCompleted",
+  "windows/worldWritableWarning",
+  "windowsSandbox/setupCompleted",
+  "mcpServer/oauthLogin/completed",
   "mcpServer/startupStatus/updated",
 ]);
 
@@ -172,7 +239,7 @@ function mapToolItem(
   const type = stringValue(item?.type);
   if (!item || !type) return null;
   if (!TOOL_ITEM_TYPES.has(type)) {
-    if (type !== "agentMessage" && type !== "userMessage") {
+    if (!IGNORED_ITEM_TYPES.has(type)) {
       log.info("codex-app-server", `Unmapped item type "${type}"`);
     }
     return null;
@@ -199,6 +266,8 @@ function codexToolName(type: string, item: Record<string, unknown>): string {
   if (type === "collabToolCall") return "Task";
   if (type === "webSearch") return "WebSearch";
   if (type === "fileChange") return "Edit";
+  if (type === "imageView") return "Read";
+  if (type === "enteredReviewMode" || type === "exitedReviewMode") return "Review";
   return type;
 }
 
