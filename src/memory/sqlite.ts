@@ -12,7 +12,10 @@ import type {
   MemoryEdgeInput,
   MemoryEventInput,
   MemoryFactInput,
+  MemoryFactUpdate,
   MemoryLessonInput,
+  MemoryLessonUpdate,
+  MemoryMergeResult,
   MemoryRecallOptions,
   MemorySearchResult,
   MemorySourceRecord,
@@ -209,6 +212,209 @@ export class SqliteMemoryStore implements MemoryStore {
       });
     });
     txn();
+  }
+
+  async updateLesson(id: string, update: MemoryLessonUpdate): Promise<void> {
+    const txn = this.db.transaction(() => {
+      this.db
+        .query(
+          `UPDATE lesson SET
+             title = COALESCE(?1, title),
+             body = COALESCE(?2, body),
+             applies_when = COALESCE(?3, applies_when),
+             importance = COALESCE(?4, importance)
+           WHERE id = ?5`,
+        )
+        .run(update.title ?? null, update.body ?? null, update.appliesWhen ?? null, update.importance ?? null, id);
+
+      this.upsertProvenance(id, update.addSourceIds ?? []);
+      this.upsertTags(id, "lesson", update.addTags ?? []);
+      this.upsertEntities(id, "lesson", update.addEntities ?? []);
+
+      const current = this.db
+        .query<{ title: string; body: string; applies_when: string | null }, [string]>(
+          "SELECT title, body, applies_when FROM lesson WHERE id = ?",
+        )
+        .get(id);
+      if (current) {
+        this.upsertSearchDoc({
+          id,
+          kind: "lesson",
+          title: current.title,
+          body: current.body,
+          outcome: current.applies_when ?? null,
+          updatedAt: Date.now(),
+        });
+      }
+    });
+    txn();
+  }
+
+  async updateFact(id: string, update: MemoryFactUpdate): Promise<void> {
+    const txn = this.db.transaction(() => {
+      this.db
+        .query(
+          `UPDATE memory_fact SET
+             kind = COALESCE(?1, kind),
+             title = COALESCE(?2, title),
+             body = COALESCE(?3, body),
+             confidence = COALESCE(?4, confidence),
+             importance = COALESCE(?5, importance)
+           WHERE id = ?6`,
+        )
+        .run(update.kind ?? null, update.title ?? null, update.body ?? null, update.confidence ?? null, update.importance ?? null, id);
+
+      const current = this.db
+        .query<{ kind: string; title: string | null; body: string }, [string]>(
+          "SELECT kind, title, body FROM memory_fact WHERE id = ?",
+        )
+        .get(id);
+      if (!current) return;
+
+      const nodeKind = current.kind === "curated_fact" ? "fact" : current.kind as SearchableMemoryKind;
+      this.upsertProvenance(id, update.addSourceIds ?? []);
+      this.upsertTags(id, nodeKind, update.addTags ?? []);
+      this.upsertEntities(id, nodeKind, update.addEntities ?? []);
+
+      this.upsertSearchDoc({
+        id,
+        kind: nodeKind,
+        title: current.title ?? null,
+        body: current.body,
+        outcome: null,
+        updatedAt: Date.now(),
+      });
+    });
+    txn();
+  }
+
+  async mergeLessons(ids: string[], title: string): Promise<MemoryMergeResult> {
+    const now = Date.now();
+    const mergedId = `lesson_merged_${slug(title)}_${now}`;
+    const idsJson = JSON.stringify(ids);
+
+    const sources = this.db
+      .query<
+        { id: string; title: string; body: string; applies_when: string | null; importance: number; created_at: number },
+        [string]
+      >(
+        `SELECT id, title, body, applies_when, importance, created_at
+         FROM lesson WHERE id IN (SELECT value FROM json_each(?)) AND active = 1`,
+      )
+      .all(idsJson);
+
+    if (sources.length === 0) throw new Error("No active lessons found with the given IDs");
+
+    const { sourceIds, allTags, allEntities } = this.collectMetadata(sources.map((s) => s.id));
+
+    const mergedBody = [
+      `Merged from: ${sources.map((s) => s.id).join(", ")}`,
+      ...sources.map((s) => {
+        const appliesLine = s.applies_when ? `\nApplies when: ${s.applies_when}` : "";
+        return `---\n[${s.id}] ${s.title}${appliesLine}\n\n${s.body}`;
+      }),
+    ].join("\n\n");
+
+    const maxImportance = Math.max(...sources.map((s) => s.importance));
+    const minCreatedAt = Math.min(...sources.map((s) => s.created_at));
+    const entities = [...allEntities.entries()].map(([name, kind]) => ({ name, kind }));
+
+    const txn = this.db.transaction(() => {
+      this.upsertNode(mergedId, "lesson", minCreatedAt);
+      this.db
+        .query(
+          `INSERT INTO lesson (id, title, body, applies_when, importance, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(mergedId, title, mergedBody, null, maxImportance, now);
+
+      this.upsertProvenance(mergedId, [...sourceIds]);
+      this.upsertTags(mergedId, "lesson", [...allTags]);
+      this.upsertEntities(mergedId, "lesson", entities);
+
+      for (const source of sources) {
+        this.addEdgeSync({ srcId: mergedId, dstId: source.id, type: "merged_from", weight: 1, directed: true, createdAt: now });
+        this.addEdgeSync({ srcId: mergedId, dstId: source.id, type: "supersedes", weight: 1, directed: true, createdAt: now });
+        this.db.query("UPDATE lesson SET active = 0 WHERE id = ?").run(source.id);
+        this.db
+          .query("UPDATE memory_node SET invalid_at = ?, superseded_by = ? WHERE id = ?")
+          .run(now, mergedId, source.id);
+      }
+
+      this.upsertSearchDoc({
+        id: mergedId, kind: "lesson", title,
+        body: mergedBody, outcome: null, updatedAt: now,
+      });
+    });
+    txn();
+
+    return { mergedId, kind: "lesson", sourceIds: sources.map((s) => s.id), supersededIds: sources.map((s) => s.id) };
+  }
+
+  async mergeFacts(ids: string[], title: string): Promise<MemoryMergeResult> {
+    const now = Date.now();
+    const mergedId = `fact_merged_${slug(title)}_${now}`;
+    const idsJson = JSON.stringify(ids);
+
+    const sources = this.db
+      .query<
+        { id: string; kind: string; title: string | null; body: string; confidence: number; importance: number; created_at: number },
+        [string]
+      >(
+        `SELECT id, kind, title, body, confidence, importance, created_at
+         FROM memory_fact WHERE id IN (SELECT value FROM json_each(?)) AND active = 1`,
+      )
+      .all(idsJson);
+
+    if (sources.length === 0) throw new Error("No active facts found with the given IDs");
+
+    const kindCounts = new Map<string, number>();
+    for (const s of sources) kindCounts.set(s.kind, (kindCounts.get(s.kind) ?? 0) + 1);
+    const dominantKind = [...kindCounts.entries()].sort((a, b) => b[1] - a[1])[0][0] as "curated_fact" | "routing_memory" | "procedure";
+
+    const { sourceIds, allTags, allEntities } = this.collectMetadata(sources.map((s) => s.id));
+
+    const mergedBody = [
+      `Merged from: ${sources.map((s) => s.id).join(", ")}`,
+      ...sources.map((s) => `---\n[${s.id}] ${s.title ?? s.kind}\n\n${s.body}`),
+    ].join("\n\n");
+
+    const maxImportance = Math.max(...sources.map((s) => s.importance));
+    const maxConfidence = Math.max(...sources.map((s) => s.confidence));
+    const minCreatedAt = Math.min(...sources.map((s) => s.created_at));
+    const entities = [...allEntities.entries()].map(([name, kind]) => ({ name, kind }));
+    const nodeKind: SearchableMemoryKind = dominantKind === "curated_fact" ? "fact" : dominantKind;
+
+    const txn = this.db.transaction(() => {
+      this.upsertNode(mergedId, nodeKind, minCreatedAt);
+      this.db
+        .query(
+          `INSERT INTO memory_fact (id, kind, title, body, confidence, importance, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(mergedId, dominantKind, title, mergedBody, maxConfidence, maxImportance, now);
+
+      this.upsertProvenance(mergedId, [...sourceIds]);
+      this.upsertTags(mergedId, nodeKind, [...allTags]);
+      this.upsertEntities(mergedId, nodeKind, entities);
+
+      for (const source of sources) {
+        this.addEdgeSync({ srcId: mergedId, dstId: source.id, type: "merged_from", weight: 1, directed: true, createdAt: now });
+        this.addEdgeSync({ srcId: mergedId, dstId: source.id, type: "supersedes", weight: 1, directed: true, createdAt: now });
+        this.db.query("UPDATE memory_fact SET active = 0 WHERE id = ?").run(source.id);
+        this.db
+          .query("UPDATE memory_node SET invalid_at = ?, superseded_by = ? WHERE id = ?")
+          .run(now, mergedId, source.id);
+      }
+
+      this.upsertSearchDoc({
+        id: mergedId, kind: nodeKind, title,
+        body: mergedBody, outcome: null, updatedAt: now,
+      });
+    });
+    txn();
+
+    return { mergedId, kind: "fact", sourceIds: sources.map((s) => s.id), supersededIds: sources.map((s) => s.id) };
   }
 
   async addEdge(edge: MemoryEdgeInput): Promise<void> {
@@ -709,6 +915,93 @@ export class SqliteMemoryStore implements MemoryStore {
         .run(memoryId, entityId, memoryKind);
       this.addEdgeSync({ srcId: memoryId, dstId: entityId, type: "mentions", createdAt: Date.now() });
     }
+  }
+
+  /** Append-only provenance: adds source_ids without clearing existing. */
+  private upsertProvenance(memoryId: string, sourceIds: string[]): void {
+    if (sourceIds.length === 0) return;
+    const insert = this.db.query(
+      "INSERT OR IGNORE INTO memory_provenance (memory_id, source_id) VALUES (?, ?)",
+    );
+    for (const sourceId of sourceIds) insert.run(memoryId, sourceId);
+  }
+
+  /** Append-only tags: adds tags without clearing existing. */
+  private upsertTags(memoryId: string, memoryKind: string, tags: string[]): void {
+    if (tags.length === 0) return;
+    for (const tagName of unique(tags.map(normalizeName))) {
+      const tagId = `tag:${tagName}`;
+      this.upsertNode(tagId, "tag", Date.now());
+      this.db
+        .query("INSERT OR IGNORE INTO tag (id, name) VALUES (?, ?)")
+        .run(tagId, tagName);
+      this.db
+        .query("INSERT OR IGNORE INTO memory_tag (memory_id, tag_id, memory_kind) VALUES (?, ?, ?)")
+        .run(memoryId, tagId, memoryKind);
+      this.addEdgeSync({ srcId: memoryId, dstId: tagId, type: "tagged_as", createdAt: Date.now() });
+    }
+  }
+
+  /** Append-only entities: adds entities without clearing existing. */
+  private upsertEntities(
+    memoryId: string,
+    memoryKind: string,
+    entities: Array<{ name: string; kind: string }>,
+  ): void {
+    if (entities.length === 0) return;
+    for (const entity of entities) {
+      const name = normalizeName(entity.name);
+      const kind = normalizeName(entity.kind);
+      const entityId = `entity:${kind}:${name}`;
+      this.upsertNode(entityId, "entity", Date.now());
+      this.db
+        .query("INSERT OR IGNORE INTO entity (id, name, kind) VALUES (?, ?, ?)")
+        .run(entityId, name, kind);
+      this.db
+        .query("INSERT OR IGNORE INTO mention (memory_id, entity_id, memory_kind) VALUES (?, ?, ?)")
+        .run(memoryId, entityId, memoryKind);
+      this.addEdgeSync({ srcId: memoryId, dstId: entityId, type: "mentions", createdAt: Date.now() });
+    }
+  }
+
+  /** Collect union of tags, entities, and provenance across a set of memory IDs. */
+  private collectMetadata(ids: string[]): {
+    sourceIds: Set<string>;
+    allTags: Set<string>;
+    allEntities: Map<string, string>;
+  } {
+    const sourceIds = new Set<string>();
+    const allTags = new Set<string>();
+    const allEntities = new Map<string, string>();
+
+    for (const id of ids) {
+      const tagRows = this.db
+        .query<{ tag_id: string }, [string]>(
+          "SELECT tag_id FROM memory_tag WHERE memory_id = ?",
+        )
+        .all(id);
+      for (const t of tagRows) {
+        allTags.add(t.tag_id.replace(/^tag:/, ""));
+      }
+
+      const entityRows = this.db
+        .query<{ entity_id: string }, [string]>(
+          "SELECT entity_id FROM mention WHERE memory_id = ?",
+        )
+        .all(id);
+      for (const e of entityRows) {
+        const match = e.entity_id.match(/^entity:(.+):(.+)$/);
+        if (match) allEntities.set(match[2], match[1]);
+      }
+
+      const provRows = this.db
+        .query<{ source_id: string }, [string]>(
+          "SELECT source_id FROM memory_provenance WHERE memory_id = ?",
+        )
+        .all(id);
+      for (const p of provRows) sourceIds.add(p.source_id);
+    }
+    return { sourceIds, allTags, allEntities };
   }
 
   private upsertSearchDoc(doc: {
