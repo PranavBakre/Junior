@@ -48,11 +48,13 @@ export interface SpawnResult {
   error: string | null;
 }
 
+export type RunnerKillSignal = "SIGINT" | "SIGTERM" | "SIGKILL";
+
 export interface SpawnHandle {
   provider: RunnerProvider;
   result: Promise<SpawnResult>;
   onEvent: (cb: (event: RunnerEvent) => void) => void;
-  kill: () => void;
+  kill: (signal?: RunnerKillSignal) => void;
   pid: number | null;
 }
 
