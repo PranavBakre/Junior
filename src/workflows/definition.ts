@@ -31,6 +31,9 @@ const SUPPORTED_TOOLS = new Set<WorkflowTool>([
   "gh",
   "slack.post",
   "docs.write",
+  "memory.read",
+  "memory.write",
+  "memory.evaluate",
 ]);
 
 export async function loadWorkflowDefinition(
@@ -222,10 +225,18 @@ function parseRunner(raw: Record<string, unknown>): WorkflowRunnerConfig {
     throw new Error(`Invalid runner provider: ${provider}`);
   }
   const timeoutMs = raw.timeoutMs == null ? undefined : positiveNumber(raw.timeoutMs, "timeoutMs");
+  const idleTimeoutMs = raw.idleTimeoutMs == null
+    ? undefined
+    : positiveNumber(raw.idleTimeoutMs, "idleTimeoutMs");
+  const maxIdleInterrupts = raw.maxIdleInterrupts == null
+    ? undefined
+    : positiveInteger(raw.maxIdleInterrupts, "maxIdleInterrupts");
   return {
     provider,
     agentName: stringField(raw, "agentName"),
     timeoutMs,
+    idleTimeoutMs,
+    maxIdleInterrupts,
     model: raw.model == null ? undefined : stringValue(raw.model, "model"),
   };
 }
@@ -333,6 +344,13 @@ function positiveNumber(value: unknown, label: string): number {
     throw new Error(`${label} must be a positive number`);
   }
   return value;
+}
+
+function positiveInteger(value: unknown, label: string): number {
+  if (!Number.isInteger(value) || (value as number) <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return value as number;
 }
 
 function hashContent(content: string): string {

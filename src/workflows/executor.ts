@@ -3,13 +3,14 @@ import { dirname, join } from "node:path";
 import type { WebClient } from "@slack/web-api";
 import type { Config, RepoConfig } from "../config.ts";
 import { spawnRunner } from "../runners/index.ts";
-import type { RunnerEvent, SpawnRunnerFn } from "../runners/types.ts";
+import type { RunnerEvent, SpawnHandle, SpawnRunnerFn } from "../runners/types.ts";
 import { createSession, type ImplementedRunnerProvider } from "../session/types.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import { log } from "../logger.ts";
 import type {
   WorkflowDefinition,
   WorkflowOutput,
+  WorkflowRunnerConfig,
   WorkflowRun,
   WorkflowRunReason,
 } from "./types.ts";
@@ -17,8 +18,10 @@ import {
   WORKFLOW_ARTIFACT_ROOT,
 } from "./types.ts";
 import type { WorkflowStore } from "./store.ts";
+import type { MemoryStore } from "../memory/store.ts";
 
 export const WORKFLOW_UTILITY_CWD = "/tmp/junior-utility";
+const DEFAULT_MAX_IDLE_INTERRUPTS = 3;
 
 export interface WorkflowExecutorOptions {
   config: Config;
@@ -26,6 +29,7 @@ export interface WorkflowExecutorOptions {
   slackClient?: WebClient;
   spawn?: SpawnRunnerFn;
   now?: () => Date;
+  memoryStore?: MemoryStore;
 }
 
 export interface WorkflowRunRequest {
@@ -45,6 +49,7 @@ export class WorkflowExecutor {
   private slackClient?: WebClient;
   private spawn: SpawnRunnerFn;
   private now: () => Date;
+  private memoryStore?: MemoryStore;
 
   constructor(options: WorkflowExecutorOptions) {
     this.config = options.config;
@@ -52,6 +57,7 @@ export class WorkflowExecutor {
     this.slackClient = options.slackClient;
     this.spawn = options.spawn ?? spawnRunner;
     this.now = options.now ?? (() => new Date());
+    this.memoryStore = options.memoryStore;
   }
 
   async run(request: WorkflowRunRequest): Promise<WorkflowRunResult> {
@@ -78,14 +84,35 @@ export class WorkflowExecutor {
 
     let summary = "";
     try {
-      if (request.definition.runner) {
+      if (request.definition.name === "memory-consolidation" && this.memoryStore) {
+        // Run native consolidation first (deterministic, cheap).
+        const nativeSummary = await this.runMemoryConsolidation();
+        // If a runner is configured, spawn it for LLM-powered inspection
+        // and inject the native results so the LLM can build on them.
+        if (request.definition.runner) {
+          const runnerSummary = await this.runWithRunner(
+            request.definition,
+            run,
+            buildRunnerPromptWithNative({
+              definition: request.definition,
+              run,
+              repos: this.reposFor(request.definition),
+              nativeResult: nativeSummary,
+            }),
+          );
+          summary = `${nativeSummary}\n\n---\n## LLM Analysis\n\n${runnerSummary}`;
+        } else {
+          summary = nativeSummary;
+        }
+      } else if (request.definition.runner) {
         summary = await this.runWithRunner(
           request.definition,
           run,
-          buildRunnerPrompt({
+          buildRunnerPromptWithNative({
             definition: request.definition,
             run,
             repos: this.reposFor(request.definition),
+            nativeResult: null,
           }),
         );
       } else {
@@ -151,38 +178,117 @@ export class WorkflowExecutor {
       "Junior will write your final response to configured docs outputs and post it to configured Slack outputs.",
     ].join("\n\n");
 
-    const handle = this.spawn(
+    return await this.runWorkflowRunnerAttempts({
+      definition,
+      run,
+      runner,
+      provider,
       session,
-      prompt,
+      initialPrompt: prompt,
+    });
+  }
+
+  private async runWorkflowRunnerAttempts(options: {
+    definition: WorkflowDefinition;
+    run: WorkflowRun;
+    runner: WorkflowRunnerConfig;
+    provider: ImplementedRunnerProvider;
+    session: ReturnType<typeof createSession>;
+    initialPrompt: string;
+  }): Promise<string> {
+    const maxIdleInterrupts = options.runner.idleTimeoutMs
+      ? (options.runner.maxIdleInterrupts ?? DEFAULT_MAX_IDLE_INTERRUPTS)
+      : 0;
+    let idleInterrupts = 0;
+    let prompt = options.initialPrompt;
+
+    for (;;) {
+      const attempt = await this.runWorkflowRunnerAttempt({ ...options, prompt });
+      if (attempt.result.sessionId) {
+        options.session.sessionId = attempt.result.sessionId;
+      }
+      if (attempt.result.exitCode === 0 && !attempt.result.error) {
+        const response = attempt.result.response.trim();
+        if (!response) throw new Error("Workflow runner returned an empty response");
+        return response;
+      }
+
+      if (attempt.idleInterrupted && options.session.sessionId && idleInterrupts < maxIdleInterrupts) {
+        idleInterrupts += 1;
+        log.warn(
+          "workflow",
+          `runner idle-interrupted workflow=${options.definition.name} run=${options.run.id} count=${idleInterrupts}`,
+        );
+        prompt = buildIdleContinuePrompt(options.runner.idleTimeoutMs!, idleInterrupts, maxIdleInterrupts);
+        continue;
+      }
+
+      log.warn(
+        "workflow",
+        `runner failed workflow=${options.definition.name}: ${attempt.result.error ?? attempt.result.exitCode}`,
+      );
+      throw new Error(
+        `Workflow runner failed: ${attempt.result.error ?? `exit ${attempt.result.exitCode}`}`,
+      );
+    }
+  }
+
+  private async runWorkflowRunnerAttempt(options: {
+    definition: WorkflowDefinition;
+    run: WorkflowRun;
+    runner: WorkflowRunnerConfig;
+    provider: ImplementedRunnerProvider;
+    session: ReturnType<typeof createSession>;
+    prompt: string;
+  }): Promise<{ result: Awaited<SpawnHandle["result"]>; idleInterrupted: boolean }> {
+    const handle = this.spawn(
+      options.session,
+      options.prompt,
       this.config,
     );
+    let idleInterrupted = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleKillTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (idleKillTimer) clearTimeout(idleKillTimer);
+      idleTimer = null;
+      idleKillTimer = null;
+    };
+    const armIdleTimer = () => {
+      clearIdleTimer();
+      if (!options.runner.idleTimeoutMs) return;
+      idleTimer = setTimeout(() => {
+        idleInterrupted = true;
+        handle.kill("SIGINT");
+        idleKillTimer = setTimeout(() => {
+          handle.kill("SIGKILL");
+        }, 10_000);
+      }, options.runner.idleTimeoutMs);
+    };
+
     handle.onEvent((event) => {
+      armIdleTimer();
       if (event.type === "init") {
-        run.providerSessionId = event.sessionId;
-        void this.store.updateRun(run).catch((err) => {
+        options.session.sessionId = event.sessionId;
+        options.run.providerSessionId = event.sessionId;
+        void this.store.updateRun(options.run).catch((err) => {
           log.warn(
             "workflow",
-            `session id persist failed workflow=${definition.name} run=${run.id}: ${formatError(err)}`,
+            `session id persist failed workflow=${options.definition.name} run=${options.run.id}: ${formatError(err)}`,
           );
         });
       }
-      logWorkflowRunnerEvent(definition.name, run.id, event);
+      logWorkflowRunnerEvent(options.definition.name, options.run.id, event);
     });
+    armIdleTimer();
     const bounded = withTimeout(
       handle,
-      runner.timeoutMs ?? this.timeoutFor(provider),
+      options.runner.timeoutMs ?? this.timeoutFor(options.provider),
       () => handle.kill(),
     );
-    const result = await bounded.result;
-    if (result.exitCode !== 0 || result.error) {
-      log.warn("workflow", `runner failed workflow=${definition.name}: ${result.error ?? result.exitCode}`);
-      throw new Error(
-        `Workflow runner failed: ${result.error ?? `exit ${result.exitCode}`}`,
-      );
-    }
-    const response = result.response.trim();
-    if (!response) throw new Error("Workflow runner returned an empty response");
-    return response;
+    const result = await bounded.result.finally(clearIdleTimer);
+    return { result, idleInterrupted };
   }
 
   private async emitOutputs(
@@ -199,6 +305,18 @@ export class WorkflowExecutor {
       slackThreadTs = posted.threadTs;
     }
     return { channel: slackChannel, threadTs: slackThreadTs };
+  }
+
+  private async runMemoryConsolidation(): Promise<string> {
+    if (!this.memoryStore) throw new Error("memory store not configured");
+    const result = await this.memoryStore.consolidate();
+    return [
+      "Memory consolidation complete.",
+      `Promoted memories: ${result.promotedMemoryIds.join(", ") || "none"}`,
+      `Archived events: ${result.archivedEventIds.join(", ") || "none"}`,
+      `Proposed rules: ${result.proposedRuleIds.join(", ") || "none"}`,
+      `Decisions: ${result.decisions.length}`,
+    ].join("\n");
   }
 
   private async postSlack(
@@ -293,17 +411,34 @@ function renderArtifact(options: {
     .join("\n");
 }
 
-function buildRunnerPrompt(options: {
+function buildRunnerPromptWithNative(options: {
   definition: WorkflowDefinition;
   run: WorkflowRun;
   repos: RepoConfig[];
+  nativeResult: string | null;
 }): string {
-  return [
+  const parts = [
     `Run workflow: ${options.definition.name}`,
     "",
     "Workflow prompt:",
     options.definition.prompt.trim() || "(empty)",
     "",
+  ];
+
+  if (options.nativeResult) {
+    parts.push(
+      "Native consolidation has already run (deterministic pass). Use these results as a starting point:",
+      "",
+      "```json",
+      options.nativeResult,
+      "```",
+      "",
+      "Your job: inspect the current memory state via memory tools, identify patterns the deterministic pass may have missed, validate the promoted memories and proposed rules, and produce a final human-readable summary. Do not re-run consolidation — it's already done. Focus on inspection, validation, and explanation.",
+      "",
+    );
+  }
+
+  parts.push(
     "Runtime context:",
     JSON.stringify({
       run: {
@@ -317,6 +452,10 @@ function buildRunnerPrompt(options: {
         permissions: options.definition.permissions,
         outputs: options.definition.outputs,
       },
+      junior: {
+        projectRoot: process.cwd(),
+        memoryCli: join(process.cwd(), "src/memory/cli.ts"),
+      },
       repos: options.repos.map((repo) => ({
         name: repo.name,
         path: repo.path,
@@ -328,6 +467,22 @@ function buildRunnerPrompt(options: {
     "- Produce the final Slack-ready workflow result.",
     "- Include collection or execution errors only when they affect trust in the result.",
     "- Do not say you cannot access repos without first using the provided absolute repo paths.",
+  );
+
+  return parts.join("\n");
+}
+
+function buildIdleContinuePrompt(
+  idleTimeoutMs: number,
+  interruptCount: number,
+  maxInterrupts: number,
+): string {
+  return [
+    `The previous workflow runner process was interrupted after ${idleTimeoutMs}ms with no runner events.`,
+    `Idle interrupt ${interruptCount} of ${maxInterrupts}.`,
+    "Resume the existing workflow session and continue from the last completed step.",
+    "Do not restart deterministic work that has already completed unless required to recover.",
+    "When finished, return the final Slack-ready workflow result.",
   ].join("\n");
 }
 

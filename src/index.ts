@@ -88,6 +88,7 @@ const workflowExecutor = new WorkflowExecutor({
   config,
   store: workflowStore,
   slackClient: app.client,
+  memoryStore,
 });
 const workflowScheduler = new WorkflowScheduler({
   registry: workflowRegistry,
