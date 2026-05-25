@@ -197,11 +197,11 @@ function cloneConfig(overrides: Partial<Config> = {}): Config {
 }
 
 async function waitFor(
-  predicate: () => boolean,
+  predicate: () => boolean | Promise<boolean>,
   timeoutMs: number = 100,
 ): Promise<void> {
   const started = Date.now();
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() - started > timeoutMs) {
       throw new Error("Timed out waiting for condition");
     }
@@ -209,7 +209,10 @@ async function waitFor(
   }
 }
 
-function createIdleOpencodeHandle(sessionId = "ses_idle_1"): SpawnHandle {
+function createIdleOpencodeHandle(
+  sessionId = "ses_idle_1",
+  pid = 12345,
+): SpawnHandle {
   let resolveResult!: (result: SpawnResult) => void;
   const result = new Promise<SpawnResult>((res) => {
     resolveResult = res;
@@ -231,11 +234,14 @@ function createIdleOpencodeHandle(sessionId = "ses_idle_1"): SpawnHandle {
         error: "interrupted",
       });
     }),
-    pid: 12345,
+    pid,
   };
 }
 
-function createCompletingOpencodeHandle(sessionId = "ses_idle_1"): MockHandle {
+function createCompletingOpencodeHandle(
+  sessionId = "ses_idle_1",
+  pid = 12345,
+): MockHandle {
   const listeners: Array<(event: RunnerEvent) => void> = [];
   let resolveResult!: (result: SpawnResult) => void;
   const result = new Promise<SpawnResult>((res) => {
@@ -247,7 +253,7 @@ function createCompletingOpencodeHandle(sessionId = "ses_idle_1"): MockHandle {
     result,
     onEvent: (cb) => listeners.push(cb),
     kill: mock(() => {}),
-    pid: 12345,
+    pid,
     _complete: (resp?: string, sid?: string, resultEvents?: RunnerEvent[]) => {
       const finalSessionId = sid ?? sessionId;
       for (const l of listeners) {
@@ -495,8 +501,8 @@ describe("SessionManager", () => {
         maxIdleInterrupts: 1,
       },
     });
-    const idleHandle = createIdleOpencodeHandle("ses_resume_1");
-    const retryHandle = createCompletingOpencodeHandle("ses_resume_1");
+    const idleHandle = createIdleOpencodeHandle("ses_resume_1", 12345);
+    const retryHandle = createCompletingOpencodeHandle("ses_resume_1", 67890);
     let spawnCount = 0;
     mockSpawnFn = mock(() => (spawnCount++ === 0 ? idleHandle : retryHandle));
     manager = new SessionManager(
@@ -513,6 +519,7 @@ describe("SessionManager", () => {
     const retryConfig = mockSpawnFn.mock.calls[1][2];
     expect(retrySession.sessionId).toBe("ses_resume_1");
     expect(retryConfig.opencode.continuityEnabled).toBe(true);
+    await waitFor(async () => (await store.get("thread-1"))?.pid === 67890);
 
     retryHandle._complete("resumed", "ses_resume_1");
     await new Promise((r) => setTimeout(r, 10));
