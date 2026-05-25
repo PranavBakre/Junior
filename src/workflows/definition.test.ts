@@ -32,6 +32,8 @@ describe("validateWorkflowDefinition", () => {
           provider: "default",
           agentName: "lead",
           timeoutMs: 1000,
+          idleTimeoutMs: 300000,
+          maxIdleInterrupts: 2,
         },
       },
     });
@@ -40,6 +42,8 @@ describe("validateWorkflowDefinition", () => {
     expect(definition.enabled).toBe(true);
     expect(definition.concurrency).toBe("skip");
     expect(definition.runner?.agentName).toBe("lead");
+    expect(definition.runner?.idleTimeoutMs).toBe(300000);
+    expect(definition.runner?.maxIdleInterrupts).toBe(2);
     expect(definition.fallback).toBeUndefined();
     expect(definition.versionHash).toHaveLength(16);
   });
