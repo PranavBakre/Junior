@@ -157,8 +157,8 @@ export function spawnOpenCode(
     onEvent: (cb) => {
       listeners.push(cb);
     },
-    kill: () => {
-      proc.kill();
+    kill: (signal) => {
+      signal ? proc.kill(signal) : proc.kill();
     },
     pid: proc.pid,
   };
