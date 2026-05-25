@@ -20,6 +20,7 @@ Claude Code CLI processes can hang, crash, or produce errors. The bot needs to h
 - Error categorization: timeout, crash, rate limit, auth failure, unknown
 - User-facing error messages in Slack (not raw stderr)
 - Session state recovery: if process dies mid-turn, session stays resumable
+- Stale cleanup must not delete an idle parent thread while any persistent agent session is still busy.
 - Health check: periodic scan for orphaned processes
 - Metrics: track success/failure/timeout rates per agent type
 - Graceful bot shutdown: on SIGINT/SIGTERM, wait for running processes to finish
