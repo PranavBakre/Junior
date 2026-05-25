@@ -14,10 +14,11 @@ import type { DevServerManager } from "../lifecycle/dev-server.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { WorkflowRegistry } from "../workflows/registry.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
+import type { MemoryStore } from "../memory/store.ts";
 import { handleHealth } from "./routes/health.ts";
 import { handleSessions, handleSessionDetail } from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
-import { handleMemoryList, handleMemoryRead } from "./routes/memory.ts";
+import { handleMemoryConsolidate, handleMemoryList, handleMemoryRead, handleMemoryRecall } from "./routes/memory.ts";
 import { handleDevServers } from "./routes/dev-server.ts";
 import { handleWorkflows } from "./routes/workflows.ts";
 import { log } from "../logger.ts";
@@ -33,6 +34,7 @@ export interface HttpServerDeps {
   repos: RepoConfig[];
   workflowRegistry: WorkflowRegistry;
   workflowStore: WorkflowStore;
+  memoryStore?: MemoryStore;
 }
 
 export function startHttpServer(deps: HttpServerDeps): void {
@@ -44,6 +46,7 @@ export function startHttpServer(deps: HttpServerDeps): void {
     repos,
     workflowRegistry,
     workflowStore,
+    memoryStore,
   } = deps;
 
   const server = Bun.serve({
@@ -88,6 +91,12 @@ export function startHttpServer(deps: HttpServerDeps): void {
           return await handleWorkflows(workflowRegistry, workflowStore);
         } else if (url.pathname === "/api/logs") {
           return await handleLogs(url.searchParams);
+        } else if (url.pathname === "/api/memory/recall") {
+          if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
+          return await handleMemoryRecall(memoryStore, url.searchParams);
+        } else if (url.pathname === "/api/memory/consolidate" && req.method === "POST") {
+          if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
+          return await handleMemoryConsolidate(memoryStore);
         } else if (url.pathname === "/api/memory") {
           return await handleMemoryList();
         } else if (url.pathname.startsWith("/api/memory/")) {
