@@ -106,6 +106,8 @@ export interface Config {
     /**
      * If the runner produces no events for this long (ms), send SIGINT then
      * re-spawn with --session/--resume. Default 300000 (5 min).
+     * Only applies to headless CLI providers (claude, opencode) — server-attached
+     * providers (opencode-sdk, codex-app-server) manage their own timeouts.
      */
     idleTimeoutMs: number;
     /** Maximum SIGINT + resume attempts before letting the hard timeout kill the turn. */

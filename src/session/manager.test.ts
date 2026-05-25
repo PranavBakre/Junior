@@ -209,79 +209,33 @@ async function waitFor(
   }
 }
 
-function createIdleInterruptedHandle(): MockHandle {
-  const listeners: Array<(event: RunnerEvent) => void> = [];
+function createIdleOpencodeHandle(sessionId = "ses_idle_1"): SpawnHandle {
   let resolveResult!: (result: SpawnResult) => void;
-  let initQueued = false;
   const result = new Promise<SpawnResult>((res) => {
     resolveResult = res;
   });
-  const handle: MockHandle = {
-    provider: "codex-app-server",
+
+  return {
+    provider: "opencode",
     result,
     onEvent: (cb) => {
-      listeners.push(cb);
-      if (!initQueued) {
-        initQueued = true;
-        queueMicrotask(() => {
-          for (const listener of listeners) {
-            listener({
-              type: "init",
-              provider: "codex-app-server",
-              sessionId: "codex-thread-1",
-            });
-          }
-        });
-      }
+      setTimeout(() => cb({ type: "init", provider: "opencode", sessionId }), 0);
     },
-    kill: mock(() => {
+    kill: mock((_signal?: "SIGINT" | "SIGTERM" | "SIGKILL") => {
       resolveResult({
-        provider: "codex-app-server",
-        sessionId: "codex-thread-1",
+        provider: "opencode",
+        sessionId,
         response: "",
         events: [],
-        exitCode: null,
+        exitCode: 130,
         error: "interrupted",
       });
     }),
     pid: 12345,
-    _complete: (resp = "ok", sid = "codex-thread-1", resultEvents?: RunnerEvent[]) => {
-      for (const l of listeners)
-        l({
-          type: "init",
-          provider: "codex-app-server",
-          sessionId: sid,
-        });
-      for (const l of listeners)
-        l({ type: "done", provider: "codex-app-server" });
-      resolveResult({
-        provider: "codex-app-server",
-        sessionId: sid,
-        response: resp,
-        events: resultEvents ?? [],
-        exitCode: 0,
-        error: null,
-      });
-    },
-    _error: (errorMsg: string) => {
-      resolveResult({
-        provider: "codex-app-server",
-        sessionId: null,
-        response: "",
-        events: [],
-        exitCode: 1,
-        error: errorMsg,
-      });
-    },
   };
-
-  return handle;
 }
 
-function createCompletingCodexHandle(
-  response: string = "ok",
-  sessionId: string = "codex-thread-1",
-): MockHandle {
+function createCompletingOpencodeHandle(sessionId = "ses_idle_1"): MockHandle {
   const listeners: Array<(event: RunnerEvent) => void> = [];
   let resolveResult!: (result: SpawnResult) => void;
   const result = new Promise<SpawnResult>((res) => {
@@ -289,26 +243,21 @@ function createCompletingCodexHandle(
   });
 
   return {
-    provider: "codex-app-server",
+    provider: "opencode",
     result,
     onEvent: (cb) => listeners.push(cb),
     kill: mock(() => {}),
     pid: 12345,
     _complete: (resp?: string, sid?: string, resultEvents?: RunnerEvent[]) => {
-      const finalResponse = resp ?? response;
       const finalSessionId = sid ?? sessionId;
-      for (const l of listeners)
-        l({
-          type: "init",
-          provider: "codex-app-server",
-          sessionId: finalSessionId,
-        });
-      for (const l of listeners)
-        l({ type: "done", provider: "codex-app-server" });
+      for (const l of listeners) {
+        l({ type: "init", provider: "opencode", sessionId: finalSessionId });
+        l({ type: "done", provider: "opencode" });
+      }
       resolveResult({
-        provider: "codex-app-server",
+        provider: "opencode",
         sessionId: finalSessionId,
-        response: finalResponse,
+        response: resp ?? "done",
         events: resultEvents ?? [],
         exitCode: 0,
         error: null,
@@ -316,7 +265,7 @@ function createCompletingCodexHandle(
     },
     _error: (errorMsg: string) => {
       resolveResult({
-        provider: "codex-app-server",
+        provider: "opencode",
         sessionId: null,
         response: "",
         events: [],
@@ -505,20 +454,20 @@ describe("SessionManager", () => {
     expect(session!.sessionId).toBe("claude-session-42");
   });
 
-  it("does not idle-resume codex app-server when continuity is disabled", async () => {
+  it("does not idle-interrupt opencode when continuity is disabled", async () => {
     const config = cloneConfig({
-      runner: { provider: "codex-app-server" },
+      runner: { provider: "opencode" },
+      opencode: {
+        ...testConfig.opencode,
+        continuityEnabled: false,
+      },
       session: {
         ...testConfig.session,
         idleTimeoutMs: 5,
         maxIdleInterrupts: 1,
       },
-      codex: {
-        ...testConfig.codex,
-        appServerContinuityEnabled: false,
-      },
     });
-    const idleHandle = createIdleInterruptedHandle();
+    const idleHandle = createIdleOpencodeHandle();
     mockSpawnFn = mock(() => idleHandle);
     manager = new SessionManager(
       store,
@@ -527,35 +476,29 @@ describe("SessionManager", () => {
     );
 
     await manager.handleMessage(makeEvent());
-    await waitFor(() => (
-      mockSpawnFn.mock.calls.length === 1 &&
-      (idleHandle.kill as ReturnType<typeof mock>).mock.calls.length > 0
-    ));
-    await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 20));
 
+    expect(idleHandle.kill).not.toHaveBeenCalled();
     expect(mockSpawnFn).toHaveBeenCalledTimes(1);
   });
 
-  it("idle-resumes codex app-server when continuity is enabled", async () => {
+  it("idle-interrupts and resumes opencode only when continuity is enabled", async () => {
     const config = cloneConfig({
-      runner: { provider: "codex-app-server" },
+      runner: { provider: "opencode" },
+      opencode: {
+        ...testConfig.opencode,
+        continuityEnabled: true,
+      },
       session: {
         ...testConfig.session,
         idleTimeoutMs: 5,
         maxIdleInterrupts: 1,
       },
-      codex: {
-        ...testConfig.codex,
-        appServerContinuityEnabled: true,
-      },
     });
-    const firstHandle = createIdleInterruptedHandle();
-    const retryHandle = createCompletingCodexHandle("continued", "codex-thread-1");
+    const idleHandle = createIdleOpencodeHandle("ses_resume_1");
+    const retryHandle = createCompletingOpencodeHandle("ses_resume_1");
     let spawnCount = 0;
-    mockSpawnFn = mock(() => {
-      spawnCount++;
-      return spawnCount === 1 ? firstHandle : retryHandle;
-    });
+    mockSpawnFn = mock(() => (spawnCount++ === 0 ? idleHandle : retryHandle));
     manager = new SessionManager(
       store,
       config,
@@ -564,14 +507,23 @@ describe("SessionManager", () => {
 
     await manager.handleMessage(makeEvent());
     await waitFor(() => mockSpawnFn.mock.calls.length === 2);
-    const retryPrompt = mockSpawnFn.mock.calls[1][1] as string;
+
+    expect(idleHandle.kill).toHaveBeenCalledWith("SIGINT");
     const retrySession = mockSpawnFn.mock.calls[1][0];
-    retryHandle._complete("continued", "codex-thread-1");
+    const retryConfig = mockSpawnFn.mock.calls[1][2];
+    expect(retrySession.sessionId).toBe("ses_resume_1");
+    expect(retryConfig.opencode.continuityEnabled).toBe(true);
+
+    retryHandle._complete("resumed", "ses_resume_1");
     await new Promise((r) => setTimeout(r, 10));
 
-    expect(retryPrompt).toContain("The previous turn was interrupted");
-    expect(retrySession.sessionId).toBe("codex-thread-1");
+    const session = await store.get("thread-1");
+    expect(session).toBeDefined();
+    expect(session!.sessionId).toBe("ses_resume_1");
+    expect(session!.status).toBe("idle");
   });
+
+
 
   // --- Buffer drain ---
 

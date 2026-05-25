@@ -103,6 +103,56 @@ describe("cleanupStaleSessions", () => {
     expect(await store.get("thread-1")).toBeDefined();
   });
 
+  it("keeps stale idle sessions when an agent session is busy", async () => {
+    const store = makeStore();
+    const session = createSession("thread-1", "channel-1");
+    session.lastActivity = Date.now() - 100_000;
+    session.status = "idle";
+    session.agentSessions.reproducer = {
+      agentName: "reproducer",
+      sessionId: "rep-sess-1",
+      status: "busy",
+      pendingMessages: [],
+      lastActivity: Date.now() - 1_000,
+      pid: 12345,
+    };
+    await store.set("thread-1", session);
+
+    const cleaned = await cleanupStaleSessions(store, 50_000);
+
+    expect(cleaned).toEqual([]);
+    expect(await store.get("thread-1")).toBeDefined();
+  });
+
+  it("deletes stale idle sessions when all agent sessions are done or failed", async () => {
+    const store = makeStore();
+    const session = createSession("thread-1", "channel-1");
+    session.lastActivity = Date.now() - 100_000;
+    session.status = "idle";
+    session.agentSessions.reproducer = {
+      agentName: "reproducer",
+      sessionId: "rep-sess-1",
+      status: "done",
+      pendingMessages: [],
+      lastActivity: Date.now() - 100_000,
+      pid: null,
+    };
+    session.agentSessions.thinker = {
+      agentName: "thinker",
+      sessionId: "think-sess-1",
+      status: "failed",
+      pendingMessages: [],
+      lastActivity: Date.now() - 100_000,
+      pid: null,
+    };
+    await store.set("thread-1", session);
+
+    const cleaned = await cleanupStaleSessions(store, 50_000);
+
+    expect(cleaned).toEqual(["thread-1"]);
+    expect(await store.get("thread-1")).toBeUndefined();
+  });
+
   it("CLI entrypoint cleans persisted sqlite sessions", async () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-cleanup-test-"));
     const dbPath = join(dir, "sessions.db");

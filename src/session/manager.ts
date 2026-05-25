@@ -1,6 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
-import type { RunnerEvent, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
+import type { RunnerEvent, RunnerProvider, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
 import type {
   SlackMessageEvent,
   SlackFileAttachment,
@@ -11,7 +11,6 @@ import type {
   AgentSession,
   DriverMode,
   PendingMessage,
-  RunnerProvider,
   ThreadSession,
 } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
@@ -1071,6 +1070,13 @@ export class SessionManager {
       // Idle timer: if no runner event arrives for idleTimeoutMs, SIGINT then
       // resume with --session/--resume. Reset on every event. Escalate to
       // SIGKILL after 10s if the process doesn't exit cleanly.
+      //
+      // Only enabled for headless CLI providers (claude, opencode) where
+      // Junior owns the process lifecycle. Server-attached providers
+      // (opencode-sdk, codex-app-server) manage their own timeouts — a
+      // sleeping server-attached session between turns should NOT be
+      // SIGINT'd by Junior.
+      const idleEnabled = this.idleResumeEnabled(provider);
       let idleInterrupted = false;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let idleKillTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1081,13 +1087,14 @@ export class SessionManager {
         idleKillTimer = null;
       };
       const armIdleTimer = () => {
+        if (!idleEnabled) return;
         clearIdleTimers();
         idleTimer = setTimeout(() => {
           idleInterrupted = true;
-          _log.warn("session", `idle-interrupt thread=${session.threadId} agent=${agentName}`);
+          _log.warn("session", `idle-interrupt thread=${session.threadId} agent=${agentName} provider=${provider}`);
           handle.kill("SIGINT");
           idleKillTimer = setTimeout(() => {
-            _log.warn("session", `idle-escalate thread=${session.threadId} agent=${agentName}`);
+            _log.warn("session", `idle-escalate thread=${session.threadId} agent=${agentName} provider=${provider}`);
             handle.kill("SIGKILL");
           }, 10_000);
         }, this.config.session.idleTimeoutMs);
@@ -1135,17 +1142,19 @@ export class SessionManager {
           (isTopLevel ? session.sessionId : agentSession?.sessionId) &&
           session.idleInterruptCount < maxIdleInterrupts
         ) {
-          const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
           session.idleInterruptCount++;
           _log.warn(
             "session",
-            `idle-resume thread=${session.threadId} agent=${agentName} attempt=${session.idleInterruptCount}/${maxIdleInterrupts}`,
+            `idle-resume attempt=${session.idleInterruptCount}/${maxIdleInterrupts} thread=${session.threadId} agent=${agentName} provider=${provider}`,
           );
+          await this.store.set(session.threadId, session);
+
           const continuePrompt = [
             `The previous turn was interrupted after ${this.config.session.idleTimeoutMs / 1000}s with no runner events.`,
             `Idle interrupt ${session.idleInterruptCount} of ${maxIdleInterrupts}.`,
             "Continue from the last completed step.",
           ].join("\n");
+          const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
 
           // Re-spawn with the continue prompt. Reuse the same rawHandle
           // creation path (driver.send for tmux, spawnRunner otherwise).
@@ -1456,8 +1465,16 @@ export class SessionManager {
     return session.agentSessions[agentName];
   }
 
+  /**
+   * Idle interrupt (SIGINT + resume) should only fire for headless CLI
+   * providers where Junior owns the process lifecycle. Server-attached
+   * providers (opencode-sdk, codex-app-server) manage their own timeouts
+   * and have sessions that are naturally "sleeping" between turns — Junior
+   * should not interrupt them.
+   */
   private idleResumeEnabled(provider: RunnerProvider): boolean {
-    return provider !== "codex-app-server" || this.config.codex.appServerContinuityEnabled;
+    if (provider === "opencode") return this.config.opencode.continuityEnabled;
+    return provider !== "opencode-sdk" && provider !== "codex-app-server";
   }
 
   private buildRunSession(
