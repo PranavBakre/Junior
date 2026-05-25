@@ -25,6 +25,7 @@ const ENV_KEYS = [
   "SESSION_DB_PATH",
   "HOME_WINDOW_MS",
   "SESSION_DEFAULT_VERBOSITY",
+  "MEMORY_DB_PATH",
   "CHANNEL_DEFAULTS",
   "ADMIN_SLACK_USER_ID",
   "HTTP_DASHBOARD_PORT",
@@ -69,6 +70,15 @@ describe("loadConfig runner providers", () => {
       mixpanelMcpEnabled: true,
       mongodbMcpEnabled: true,
     });
+    expect(config.memory.sqlitePath).toBe("data/memory.db");
+  });
+
+  it("parses memory db path", () => {
+    process.env.MEMORY_DB_PATH = "data/test-memory.db";
+
+    const config = loadConfig();
+
+    expect(config.memory.sqlitePath).toBe("data/test-memory.db");
   });
 
   it("parses runner provider and OpenCode env vars", () => {
