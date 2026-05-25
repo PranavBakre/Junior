@@ -1,6 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { Config } from "../config.ts";
-import type { RunnerEvent, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
+import type { RunnerEvent, RunnerProvider, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
 import type {
   SlackMessageEvent,
   SlackFileAttachment,
@@ -39,6 +39,7 @@ import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
+import type { MemoryIngestor } from "../memory/ingestion.ts";
 
 export class SessionManager {
   private store: SessionStore;
@@ -47,6 +48,7 @@ export class SessionManager {
   private seenMessages = new Set<string>();
   private spawnRunner: SpawnRunnerFn;
   private drivers: DriverMap;
+  private memoryIngestor?: MemoryIngestor;
 
   slackApp?: App;
   botUserId?: string;
@@ -64,6 +66,7 @@ export class SessionManager {
     config: Config,
     spawnRunner?: SpawnRunnerFn,
     drivers?: DriverMap,
+    memoryIngestor?: MemoryIngestor,
   ) {
     this.store = store;
     this.config = config;
@@ -79,6 +82,11 @@ export class SessionManager {
           agentIdentity,
         ),
     });
+    this.memoryIngestor = memoryIngestor;
+  }
+
+  setMemoryIngestor(memoryIngestor: MemoryIngestor): void {
+    this.memoryIngestor = memoryIngestor;
   }
 
   /** Public for tests + reconciliation; the manager doesn't expose drivers otherwise. */
@@ -220,6 +228,7 @@ export class SessionManager {
     this.rememberSeenMessage(dedupeKey);
 
     const session = await this.getOrCreateSession(event);
+    await this.captureSlackMemory(event, agentName, "persistent-agent");
 
     if (session.muted) return;
 
@@ -256,6 +265,7 @@ export class SessionManager {
     this.rememberSeenMessage(dedupeKey);
 
     const session = await this.getOrCreateSession(event);
+    await this.captureSlackMemory(event, agentName, "single-session");
 
     if (event.command) {
       const handled = await this.handleCommand(session, event);
@@ -484,7 +494,7 @@ export class SessionManager {
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
           "`!agent <junior|lead>` — Set thread default agent",
-          "`!provider <claude|opencode>` — Set runner provider for this thread",
+          "`!provider <claude|opencode|opencode-sdk|codex-app-server>` — Set runner provider for this thread",
           "`!cancel` — Kill running process, keep session",
           "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
           "`!status` — Show session status",
@@ -580,14 +590,14 @@ export class SessionManager {
         if (isRunnerProvider(provider) && !isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\` or \`!provider opencode\`.`,
+            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\`, \`!provider opencode\`, \`!provider opencode-sdk\`, or \`!provider codex-app-server\`.`,
           );
           return true;
         }
         if (!isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Unknown provider "${provider}". Use \`!provider claude\` or \`!provider opencode\`.`,
+            `Unknown provider "${provider}". Use \`!provider claude\`, \`!provider opencode\`, \`!provider opencode-sdk\`, or \`!provider codex-app-server\`.`,
           );
           return true;
         }
@@ -884,6 +894,20 @@ export class SessionManager {
       const contextProfile: AgentContextProfile =
         agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
 
+      // Apply agent-declared model override to the session so the spawner
+      // picks it up (session.model ?? config.defaultModel).
+      // Only top-level agents (lead/default) persist the override to the
+      // stored session; persistent workers carry it on runSession only so
+      // the override is re-evaluated each turn from the agent definition.
+      if (agentDefinition?.model) {
+        runSession.model = agentDefinition.model;
+        if (isTopLevel) {
+          session.model = agentDefinition.model;
+          await this.store.set(session.threadId, session);
+        }
+      }
+      runSession.agentPermissions = agentDefinition?.permissions;
+
       // Build the prompt. On the first turn (no sessionId yet), inject the
       // preamble blocks the agent asked for. On resumed turns, --resume already
       // carries identity/context/history — keep just the workspace block (cheap
@@ -1043,7 +1067,43 @@ export class SessionManager {
         agentSession.pid = handle.pid;
       }
 
+      // Idle timer: if no runner event arrives for idleTimeoutMs, SIGINT then
+      // resume with --session/--resume. Reset on every event. Escalate to
+      // SIGKILL after 10s if the process doesn't exit cleanly.
+      //
+      // Only enabled for headless CLI providers (claude, opencode) where
+      // Junior owns the process lifecycle. Server-attached providers
+      // (opencode-sdk, codex-app-server) manage their own timeouts — a
+      // sleeping server-attached session between turns should NOT be
+      // SIGINT'd by Junior.
+      const idleEnabled = this.idleResumeEnabled(provider);
+      let idleInterrupted = false;
+      let activeHandle = handle;
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleKillTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearIdleTimers = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (idleKillTimer) clearTimeout(idleKillTimer);
+        idleTimer = null;
+        idleKillTimer = null;
+      };
+      const armIdleTimer = () => {
+        if (!idleEnabled) return;
+        clearIdleTimers();
+        idleTimer = setTimeout(() => {
+          idleInterrupted = true;
+          _log.warn("session", `idle-interrupt thread=${session.threadId} agent=${agentName} provider=${provider}`);
+          activeHandle.kill("SIGINT");
+          idleKillTimer = setTimeout(() => {
+            _log.warn("session", `idle-escalate thread=${session.threadId} agent=${agentName} provider=${provider}`);
+            activeHandle.kill("SIGKILL");
+          }, 10_000);
+        }, this.config.session.idleTimeoutMs);
+      };
+      armIdleTimer();
+
       handle.onEvent((event: RunnerEvent) => {
+        armIdleTimer();
         if (event.type === "init") {
           if (isTopLevel) {
             session.sessionId = event.sessionId;
@@ -1056,19 +1116,124 @@ export class SessionManager {
         }
         this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
       });
+      await this.persistRunProcessDetails(session.threadId, agentName, handle.pid);
 
-      handle.result.then(
-        (result: SpawnResult) => this.onRunComplete(session, result, agentName, handle),
-        (err: unknown) =>
-          this.onRunComplete(session, {
+      const maxIdleInterrupts = this.config.session.maxIdleInterrupts;
+      let attemptHandle = handle;
+
+      for (;;) {
+        let result: SpawnResult;
+        try {
+          result = await attemptHandle.result;
+        } catch (err: unknown) {
+          result = {
             provider,
             sessionId: null,
             response: "",
             events: [],
             exitCode: null,
             error: err instanceof Error ? err.message : String(err),
-          }, agentName, handle),
-      );
+          };
+        } finally {
+          clearIdleTimers();
+        }
+
+        if (
+          idleInterrupted &&
+          this.idleResumeEnabled(provider) &&
+          (isTopLevel ? session.sessionId : agentSession?.sessionId) &&
+          session.idleInterruptCount < maxIdleInterrupts
+        ) {
+          session.idleInterruptCount++;
+          _log.warn(
+            "session",
+            `idle-resume attempt=${session.idleInterruptCount}/${maxIdleInterrupts} thread=${session.threadId} agent=${agentName} provider=${provider}`,
+          );
+          await this.store.set(session.threadId, session);
+
+          const continuePrompt = [
+            `The previous turn was interrupted after ${this.config.session.idleTimeoutMs / 1000}s with no runner events.`,
+            `Idle interrupt ${session.idleInterruptCount} of ${maxIdleInterrupts}.`,
+            "Continue from the last completed step.",
+          ].join("\n");
+          const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
+
+          // Re-spawn with the continue prompt. Reuse the same rawHandle
+          // creation path (driver.send for tmux, spawnRunner otherwise).
+          let retryRawHandle: SpawnHandle;
+          if (provider === "claude") {
+            const driver = this.driverFor(session.driverMode);
+            retryRawHandle = driver.send({
+              session: retryRunSession,
+              prompt: continuePrompt,
+              config: this.config.claude,
+              targetRepoCwd,
+              botToken: this.config.slack.botToken,
+              agentIdentity,
+              threadId: session.threadId,
+              agentName,
+            });
+          } else {
+            retryRawHandle = this.spawnRunner(
+              retryRunSession,
+              continuePrompt,
+              this.config,
+              targetRepoCwd,
+              this.config.slack.botToken,
+              agentIdentity,
+              [],
+            );
+          }
+          const retryHandle = withTimeout(
+            retryRawHandle,
+            runnerTimeoutMs(this.config, provider),
+            () => {
+              console.warn(
+                `[manager] ${provider} timed out (retry) for thread ${session.threadId}`,
+              );
+            },
+          );
+          this.handles.set(handleKey, retryHandle);
+          if (isTopLevel) {
+            session.pid = retryHandle.pid;
+          } else if (agentSession) {
+            agentSession.pid = retryHandle.pid;
+          }
+
+          activeHandle = retryHandle;
+          idleInterrupted = false;
+          retryHandle.onEvent((event: RunnerEvent) => {
+            armIdleTimer();
+            if (event.type === "init") {
+              if (isTopLevel) {
+                session.sessionId = event.sessionId;
+                session.leadSessionId = event.sessionId;
+                session.provider = event.provider;
+              } else if (agentSession) {
+                agentSession.sessionId = event.sessionId;
+                agentSession.provider = event.provider;
+              }
+            }
+            this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
+          });
+          await this.persistRunProcessDetails(session.threadId, agentName, retryHandle.pid);
+
+          // Re-arm idle timer for the retry handle
+          armIdleTimer();
+
+          attemptHandle = retryHandle;
+          continue;
+        }
+
+        // Normal completion (or idle-interrupted but out of retries).
+        const exhaustedRetries = idleInterrupted && session.idleInterruptCount >= maxIdleInterrupts;
+        // Reset idle interrupt count so the next turn starts fresh.
+        session.idleInterruptCount = 0;
+        if (result.error && exhaustedRetries) {
+          result.error = `Idle interrupts exhausted after ${maxIdleInterrupts} attempts. ${result.error}`;
+        }
+        return this.onRunComplete(session, result, agentName, attemptHandle);
+      }
     } catch (err) {
       // Agent prompt composition or worktree creation failed fatally
       if (isTopLevel) {
@@ -1089,6 +1254,28 @@ export class SessionManager {
         session.lastError.message,
       );
     }
+  }
+
+  private async persistRunProcessDetails(
+    threadId: string,
+    agentName: string,
+    pid: number | null,
+  ): Promise<void> {
+    const fresh = await this.store.get(threadId);
+    if (!fresh) return;
+
+    if (agentName === "lead" || agentName === "default") {
+      if (fresh.status === "busy") {
+        fresh.pid = pid;
+      }
+    } else {
+      const agentSession = fresh.agentSessions?.[agentName];
+      if (agentSession?.status === "busy") {
+        agentSession.pid = pid;
+      }
+    }
+
+    await this.store.set(threadId, fresh);
   }
 
   private async onRunComplete(
@@ -1117,6 +1304,7 @@ export class SessionManager {
     // thread while this one was running. Fall back to the snapshot only if the
     // row was deleted (e.g. !reset during the run).
     const fresh = (await this.store.get(session.threadId)) ?? session;
+    await this.captureRunnerMemory(fresh.threadId, agentName, result);
     const agentSession = isTopLevel
       ? null
       : this.getOrCreateAgentSession(fresh, agentName);
@@ -1213,6 +1401,42 @@ export class SessionManager {
     }
   }
 
+  private async captureSlackMemory(
+    event: SlackMessageEvent,
+    agentName: string,
+    route: string,
+  ): Promise<void> {
+    if (!this.memoryIngestor) return;
+    try {
+      await this.memoryIngestor.captureSlackMessage(event, { agentName, route });
+      await this.memoryIngestor.captureRoutingDecision({
+        threadId: event.threadId,
+        channelId: event.channel,
+        slackTs: event.ts,
+        user: event.user,
+        selectedAgent: agentName,
+        reason: `Selected ${agentName} via ${route}${event.command ? ` for command ${event.command}` : ""}.`,
+        text: event.text,
+      });
+    } catch (err) {
+      _log.warn("memory", `capture.slack.fail thread=${event.threadId} err=${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private async captureRunnerMemory(
+    threadId: string,
+    agentName: string,
+    result: SpawnResult,
+  ): Promise<void> {
+    if (!this.memoryIngestor) return;
+    try {
+      await this.memoryIngestor.captureRunnerResult(threadId, agentName, result);
+      await this.memoryIngestor.captureRunnerEvents(threadId, agentName, result.events);
+    } catch (err) {
+      _log.warn("memory", `capture.runner.fail thread=${threadId} agent=${agentName} err=${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private async getOrCreateSession(
     event: SlackMessageEvent,
   ): Promise<ThreadSession> {
@@ -1266,6 +1490,18 @@ export class SessionManager {
       pid: null,
     };
     return session.agentSessions[agentName];
+  }
+
+  /**
+   * Idle interrupt (SIGINT + resume) should only fire for headless CLI
+   * providers where Junior owns the process lifecycle. Server-attached
+   * providers (opencode-sdk, codex-app-server) manage their own timeouts
+   * and have sessions that are naturally "sleeping" between turns — Junior
+   * should not interrupt them.
+   */
+  private idleResumeEnabled(provider: RunnerProvider): boolean {
+    if (provider === "opencode") return this.config.opencode.continuityEnabled;
+    return provider !== "opencode-sdk" && provider !== "codex-app-server";
   }
 
   private buildRunSession(
