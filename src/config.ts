@@ -71,6 +71,7 @@ export interface Config {
   opencode: {
     model: string | null;
     timeoutMs: number;
+    continuityEnabled: boolean;
     permission: string;
     mcpEnabled: boolean;
     slackMcpEnabled: boolean;
@@ -145,6 +146,7 @@ export function loadConfig(): Config {
     opencode: {
       model: process.env.OPENCODE_MODEL ?? null,
       timeoutMs: Number(optional("OPENCODE_TIMEOUT_MS", "300000")),
+      continuityEnabled: parseBooleanEnv("OPENCODE_CONTINUITY_ENABLED", false),
       permission: optional("JUNIOR_OPENCODE_PERMISSION", "allow"),
       mcpEnabled: parseBooleanEnv("OPENCODE_MCP_ENABLED", true),
       slackMcpEnabled: parseBooleanEnv("OPENCODE_SLACK_MCP_ENABLED", true),

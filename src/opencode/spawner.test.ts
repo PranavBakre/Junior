@@ -1,8 +1,60 @@
 import { describe, expect, it } from "bun:test";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSession } from "../session/types.ts";
 import { spawnOpenCode } from "./spawner.ts";
 
 describe("spawnOpenCode", () => {
+  it("does not resume native sessions unless continuity is enabled", async () => {
+    const session = createSession("thread-1", "C01");
+    session.provider = "opencode";
+    session.sessionId = "ses_existing";
+    const capture = createArgCaptureCommand();
+
+    try {
+      const handle = spawnOpenCode(session, "start fresh", {
+        command: capture.command,
+        env: { JUNIOR_TEST_CAPTURE_ARGS: capture.outputPath },
+      });
+
+      await handle.result;
+
+      expect(capture.readArgs()).not.toContain("--session");
+    } finally {
+      capture.cleanup();
+    }
+  });
+
+  it("passes native session id when continuity is enabled", async () => {
+    const session = createSession("thread-1", "C01");
+    session.provider = "opencode";
+    session.sessionId = "ses_existing";
+    const capture = createArgCaptureCommand();
+
+    try {
+      const handle = spawnOpenCode(session, "continue", {
+        command: capture.command,
+        continuityEnabled: true,
+        env: { JUNIOR_TEST_CAPTURE_ARGS: capture.outputPath },
+      });
+
+      await handle.result;
+
+      const args = capture.readArgs();
+      expect(args).toContain("--session");
+      expect(args[args.indexOf("--session") + 1]).toBe("ses_existing");
+    } finally {
+      capture.cleanup();
+    }
+  });
+
   it("generates runtime config for provider agent build while preserving Junior active agent in the prompt", async () => {
     const session = createSession("thread-1", "C01");
     session.provider = "opencode";
@@ -166,3 +218,26 @@ describe("spawnOpenCode", () => {
     expect(parsed.agent.reproducer).toBeUndefined();
   });
 });
+
+function createArgCaptureCommand(): {
+  command: string;
+  outputPath: string;
+  readArgs: () => string[];
+  cleanup: () => void;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "junior-opencode-args-"));
+  const command = join(dir, "capture-args.sh");
+  const outputPath = join(dir, "args.txt");
+  writeFileSync(
+    command,
+    '#!/bin/sh\nprintf "%s\\n" "$@" > "$JUNIOR_TEST_CAPTURE_ARGS"\n',
+  );
+  chmodSync(command, 0o755);
+
+  return {
+    command,
+    outputPath,
+    readArgs: () => readFileSync(outputPath, "utf8").trim().split("\n"),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}

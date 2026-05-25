@@ -3,12 +3,13 @@
  *
  * Unlike the CLI adapter (`spawnOpenCode` which runs `opencode run` per turn),
  * this provider starts (or attaches to) an `opencode serve` process and uses
- * the @opencode-ai/sdk client to send prompts, subscribe to events, and abort
- * sessions cleanly via `session.abort`.
+ * the @opencode-ai/sdk client to send prompts, subscribe to events, and
+ * interrupt sessions with the same session abort API used by the OpenCode TUI.
  *
- * The server stays alive between turns (like the tmux driver) and sessions
- * carry conversation context, so `--resume` is replaced by re-attaching to the
- * same session ID.
+ * When OPENCODE_CONTINUITY_ENABLED=true, sessions carry conversation context
+ * across completed turns, so the SDK provider re-attaches to the same session
+ * ID. Prompt-after-abort continuation still needs a fixture before Junior can
+ * treat timeout recovery as verified continuity.
  */
 
 import { dirname, resolve } from "node:path";
@@ -167,8 +168,14 @@ export function spawnOpenCodeSdk(
         // ok
       }
 
-      // Create session (or re-attach to existing)
-      let currentSessionId = session.sessionId ?? undefined;
+      // Create session, or re-attach to existing only when continuity is
+      // explicitly enabled. OpenCode continuity means reusing session context
+      // across completed turns. SDK abort is the native interrupt path, but
+      // prompt-after-abort continuation still needs a fixture before treating it
+      // as timeout recovery.
+      let currentSessionId = config.opencode.continuityEnabled
+        ? (session.sessionId ?? undefined)
+        : undefined;
       if (!currentSessionId) {
         const created = await server.client.session.create({ directory: cwd, agent: agentName }) as { id: string };
         currentSessionId = created.id;
@@ -289,7 +296,7 @@ export function spawnOpenCodeSdk(
         try {
           await _server.client.session.abort({ sessionID: sdkSessionId });
         } catch {
-          // Best-effort abort
+          // ok
         }
       }
       if (signal === "SIGKILL" && _server) {

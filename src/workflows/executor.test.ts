@@ -315,6 +315,7 @@ function testConfig(): Config {
     opencode: {
       model: null,
       timeoutMs: 300000,
+      continuityEnabled: false,
       permission: "allow",
       mcpEnabled: true,
       slackMcpEnabled: true,
