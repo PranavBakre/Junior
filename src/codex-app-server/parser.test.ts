@@ -59,6 +59,51 @@ describe("createCodexAppServerEventMapper", () => {
     expect(mapper.response).toBe("Hello world");
   });
 
+  it("maps completed agentMessage items as responses", () => {
+    const mapper = createCodexAppServerEventMapper();
+    const events = [
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "agentMessage", text: "here." },
+        },
+      },
+      {
+        method: "turn/completed",
+        params: { threadId: "thr_1" },
+      },
+    ].flatMap((event) => mapper.map(event));
+
+    expect(events).toEqual([
+      { type: "init", provider: "codex-app-server", sessionId: "thr_1" },
+      { type: "message", provider: "codex-app-server", text: "here." },
+      { type: "done", provider: "codex-app-server" },
+    ]);
+    expect(mapper.response).toBe("here.");
+  });
+
+  it("captures app-server error and warning diagnostics", () => {
+    const mapper = createCodexAppServerEventMapper();
+    const events = [
+      {
+        method: "warning",
+        params: { threadId: "thr_1", message: "approaching limit" },
+      },
+      {
+        method: "error",
+        params: { threadId: "thr_1", error: { message: "tool failed", code: "tool_error" } },
+      },
+    ].flatMap((event) => mapper.map(event));
+
+    expect(events).toEqual([
+      { type: "init", provider: "codex-app-server", sessionId: "thr_1" },
+    ]);
+    expect(mapper.warning).toBe("Codex app-server warning: approaching limit");
+    expect(mapper.error).toBe("Codex app-server error: tool failed (tool_error)");
+  });
+
   it("maps known tool-like item types", () => {
     const mapper = createCodexAppServerEventMapper();
     const runnerEvents = [
@@ -118,6 +163,22 @@ describe("createCodexAppServerEventMapper", () => {
           item: { type: "fileChange", path: "src/file.ts", action: "modify" },
         },
       },
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "imageView", path: "bug.png" },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "enteredReviewMode", reviewType: "auto" },
+        },
+      },
     ].flatMap((event) => mapper.map(event));
 
     expect(runnerEvents).toMatchObject([
@@ -170,6 +231,74 @@ describe("createCodexAppServerEventMapper", () => {
         input: { path: "src/file.ts", action: "modify" },
         status: "completed",
       },
+      {
+        type: "tool",
+        provider: "codex-app-server",
+        name: "Read",
+        input: { path: "bug.png" },
+        status: "completed",
+      },
+      {
+        type: "tool",
+        provider: "codex-app-server",
+        name: "Review",
+        input: { reviewType: "auto" },
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("ignores known telemetry notifications and non-tool item types", () => {
+    const mapper = createCodexAppServerEventMapper();
+    const runnerEvents = [
+      {
+        method: "remoteControl/status/changed",
+        params: { status: "disconnected" },
+      },
+      {
+        method: "account/rateLimits/updated",
+        params: { rateLimits: [] },
+      },
+      {
+        method: "turn/diff/updated",
+        params: { threadId: "thr_1", turnId: "turn_1" },
+      },
+      {
+        method: "item/reasoning/summaryTextDelta",
+        params: { threadId: "thr_1", itemId: "item_1", delta: "summary" },
+      },
+      {
+        method: "item/commandExecution/outputDelta",
+        params: { threadId: "thr_1", itemId: "item_2", delta: "stdout" },
+      },
+      {
+        method: "item/started",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "reasoning", text: "thinking" },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "reasoning", text: "done thinking" },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "plan", text: "inspect then edit" },
+        },
+      },
+    ].flatMap((event) => mapper.map(event));
+
+    expect(runnerEvents).toEqual([
+      { type: "init", provider: "codex-app-server", sessionId: "thr_1" },
     ]);
   });
 });

@@ -219,7 +219,11 @@ export class WorkflowExecutor {
           "workflow",
           `runner idle-interrupted workflow=${options.definition.name} run=${options.run.id} count=${idleInterrupts}`,
         );
-        prompt = buildIdleContinuePrompt(options.runner.idleTimeoutMs!, idleInterrupts, maxIdleInterrupts);
+        prompt = buildIdleContinuePrompt(
+          options.runner.idleTimeoutMs!,
+          idleInterrupts,
+          maxIdleInterrupts,
+        );
         continue;
       }
 
@@ -260,13 +264,22 @@ export class WorkflowExecutor {
       if (!options.runner.idleTimeoutMs) return;
       idleTimer = setTimeout(() => {
         idleInterrupted = true;
+        log.warn(
+          "workflow",
+          `idle-interrupt workflow=${options.definition.name} run=${options.run.id}`,
+        );
         handle.kill("SIGINT");
         idleKillTimer = setTimeout(() => {
+          log.warn(
+            "workflow",
+            `idle-escalate workflow=${options.definition.name} run=${options.run.id}`,
+          );
           handle.kill("SIGKILL");
         }, 10_000);
       }, options.runner.idleTimeoutMs);
     };
 
+    armIdleTimer();
     handle.onEvent((event) => {
       armIdleTimer();
       if (event.type === "init") {
@@ -281,7 +294,7 @@ export class WorkflowExecutor {
       }
       logWorkflowRunnerEvent(options.definition.name, options.run.id, event);
     });
-    armIdleTimer();
+
     const bounded = withTimeout(
       handle,
       options.runner.timeoutMs ?? this.timeoutFor(options.provider),

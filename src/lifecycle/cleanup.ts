@@ -15,6 +15,15 @@ export async function cleanupStaleSessions(
       if (session.status === "busy" || session.status === "draining") {
         continue;
       }
+      // Don't delete the thread if any persistent agent session is still
+      // active — the top-level status may be idle while a worker (reproducer,
+      // thinker, reviewer, etc.) is mid-run.
+      const hasBusyAgent = Object.values(session.agentSessions ?? {}).some(
+        (a) => a.status === "busy",
+      );
+      if (hasBusyAgent) {
+        continue;
+      }
       await store.delete(threadId);
       cleaned.push(threadId);
     }

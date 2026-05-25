@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { SessionManager } from "../session/manager.ts";
 import { parseAgentDirectives, parseDevserverDirective, AgentDispatcher } from "./router.ts";
+import type { MemoryStore } from "../memory/store.ts";
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
   return {
@@ -336,6 +337,41 @@ describe("AgentDispatcher", () => {
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
     const call = managerMock.handleMessage.mock.calls[0][0];
     expect(call.dedupeKey).toBeUndefined();
+  });
+
+  it("uses routing memory body even when the memory has a title", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const memoryStore = {
+      recall: mock(async () => [
+        {
+          id: "routing-1",
+          kind: "routing_memory",
+          title: "Learned routing memory",
+          body: "Send pull request review requests to review.",
+          outcome: null,
+          score: 1,
+          reasons: [],
+          sourceIds: [],
+        },
+      ]),
+    } as unknown as MemoryStore;
+    const router = new AgentDispatcher(
+      managerMock as unknown as SessionManager,
+      new Set(),
+      { memoryStore },
+    );
+
+    await router.handleMessage(makeEvent({ channel: "C_GENERAL", text: "please look at this PR" }));
+
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ dedupeKey: "123.456:review:memory" }),
+      "review",
+    );
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
   });
 
   it("drops self-bot posts with unknown username (no usable identity)", async () => {

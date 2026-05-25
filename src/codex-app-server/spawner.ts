@@ -57,7 +57,7 @@ export function spawnCodexAppServer(
     ...(codexHome ? { CODEX_HOME: codexHome } : {}),
   };
 
-  const proc = Bun.spawn(["codex", "app-server", "--listen", "stdio://"], {
+  const proc = Bun.spawn([process.env.CODEX_BIN ?? "codex", "app-server", "--listen", "stdio://"], {
     cwd: runtime.cwd,
     stdout: "pipe",
     stderr: "pipe",
@@ -73,6 +73,7 @@ export function spawnCodexAppServer(
   let activeThreadId: string | null = session.sessionId;
   let activeTurnId: string | null = null;
   let processKilled = false;
+  let processExitError: Error | null = null;
 
   const emit = (event: RunnerEvent) => {
     events.push(event);
@@ -88,15 +89,33 @@ export function spawnCodexAppServer(
   const send = (method: string, params: Record<string, unknown>): Promise<unknown> => {
     const id = nextId++;
     const message = { jsonrpc: "2.0", id, method, params };
-    proc.stdin.write(`${JSON.stringify(message)}\n`);
     return new Promise((resolve, reject) => {
       pending.set(id, { method, resolve, reject });
+      if (processExitError) {
+        pending.delete(id);
+        reject(processExitError);
+        return;
+      }
+      try {
+        proc.stdin.write(`${JSON.stringify(message)}\n`);
+      } catch (err) {
+        pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   };
 
   const respond = (id: number, result: Record<string, unknown>) => {
     proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
   };
+
+  proc.exited.then((exitCode) => {
+    processExitError = new Error(`Codex app-server exited before replying to pending requests (exit ${exitCode})`);
+    rejectPending(pending, processExitError);
+  }).catch(() => {
+    processExitError = new Error("Codex app-server exited before replying to pending requests");
+    rejectPending(pending, processExitError);
+  });
 
   const stdoutDone = consumeStdout(proc.stdout, (message) => {
     if ("id" in message && typeof message.id === "number" && !("method" in message)) {
@@ -143,11 +162,6 @@ export function spawnCodexAppServer(
       });
 
       if (session.sessionId) {
-        if (!config.codex.appServerContinuityEnabled) {
-          throw new Error(
-            "Codex app-server resume requested but CODEX_APP_SERVER_CONTINUITY_ENABLED is false",
-          );
-        }
         const resumed = record(await send("thread/resume", {
           threadId: session.sessionId,
           cwd: runtime.cwd,
@@ -202,13 +216,14 @@ export function spawnCodexAppServer(
       await stdoutDone;
       const exitCode = await proc.exited;
       const stderr = await stderrText;
+      const mapperError = mapper.error ?? (!mapper.response ? mapper.warning : null);
       return {
         provider,
         sessionId: mapper.sessionId ?? activeThreadId,
         response: mapper.response,
         events,
         exitCode: exitCode === 143 ? 0 : exitCode,
-        error: exitCode === 0 || exitCode === 143 ? null : stderr || `Process exited with code ${exitCode}`,
+        error: mapperError ?? (exitCode === 0 || exitCode === 143 ? null : stderr || `Process exited with code ${exitCode}`),
       };
     } catch (err) {
       if (!processKilled) proc.kill("SIGTERM");
@@ -317,6 +332,13 @@ function settleResponse(response: JsonRpcResponse, pending: Map<number, PendingR
   } else {
     entry.resolve(response.result);
   }
+}
+
+function rejectPending(pending: Map<number, PendingRequest>, err: Error): void {
+  for (const entry of pending.values()) {
+    entry.reject(err);
+  }
+  pending.clear();
 }
 
 async function waitForDone(events: RunnerEvent[], exited: Promise<number>): Promise<void> {

@@ -505,7 +505,7 @@ export class AgentDispatcher {
           depth: 1,
         });
         for (const memory of memories) {
-          const h = (memory.title ?? "" + " " + memory.body).toLowerCase();
+          const h = `${memory.title ?? ""} ${memory.body}`.toLowerCase();
           for (const agent of AGENTS) {
             if (h.includes(agent) && isPersistentAgent(agent)) return agent;
           }

@@ -1,5 +1,5 @@
 import { createMemoryStore } from "./factory.ts";
-import type { MemoryFactInput, MemoryRecallOptions, SearchableMemoryKind } from "./types.ts";
+import type { MemoryFactInput, MemoryMergeResult, MemoryRecallOptions, SearchableMemoryKind } from "./types.ts";
 import {
   entitiesForMessage,
   importanceForText,
@@ -183,6 +183,67 @@ export async function runMemoryCli(argv: string[]): Promise<string> {
       return json
         ? `${JSON.stringify({ edge: { srcId, dstId, type, weight, directed }, ok: true }, null, 2)}\n`
         : `Edge created: ${srcId} --[${type}]--> ${dstId}\n`;
+    }
+
+    if (command === "update-lesson") {
+      const id = stringOption(options, "id");
+      if (!id) throw new Error("--id <lesson-id> is required");
+      await store.updateLesson(id, {
+        title: stringOption(options, "title"),
+        body: stringOption(options, "body"),
+        appliesWhen: stringOption(options, "applies-when"),
+        importance: numberOption(options, "importance"),
+        addSourceIds: listOption(options, "add-source-ids"),
+        addTags: listOption(options, "add-tags"),
+        addEntities: entityListOption(options, "add-entities"),
+      });
+      return json
+        ? `${JSON.stringify({ updated: id, kind: "lesson" }, null, 2)}\n`
+        : `Lesson updated: ${id}\n`;
+    }
+
+    if (command === "update-fact") {
+      const id = stringOption(options, "id");
+      if (!id) throw new Error("--id <fact-id> is required");
+      const kind = stringOption(options, "kind") as MemoryFactInput["kind"] | undefined;
+      if (kind && !["curated_fact", "routing_memory", "procedure"].includes(kind)) {
+        throw new Error(`--kind must be one of: curated_fact, routing_memory, procedure. Got: ${kind}`);
+      }
+      await store.updateFact(id, {
+        kind,
+        title: stringOption(options, "title"),
+        body: stringOption(options, "body"),
+        confidence: numberOption(options, "confidence"),
+        importance: numberOption(options, "importance"),
+        addSourceIds: listOption(options, "add-source-ids"),
+        addTags: listOption(options, "add-tags"),
+        addEntities: entityListOption(options, "add-entities"),
+      });
+      return json
+        ? `${JSON.stringify({ updated: id, kind: "fact" }, null, 2)}\n`
+        : `Fact updated: ${id}\n`;
+    }
+
+    if (command === "merge-lessons") {
+      const ids = listOption(options, "ids");
+      const title = stringOption(options, "title");
+      if (!ids || ids.length < 2) throw new Error("--ids <id1,id2,...> with at least 2 IDs is required");
+      if (!title) throw new Error("--title <title> is required");
+      const result: MemoryMergeResult = await store.mergeLessons(ids, title);
+      return json
+        ? `${JSON.stringify(result, null, 2)}\n`
+        : `Merged ${result.sourceIds.length} lessons into ${result.mergedId} (${result.supersededIds.join(", ")} superseded)\n`;
+    }
+
+    if (command === "merge-facts") {
+      const ids = listOption(options, "ids");
+      const title = stringOption(options, "title");
+      if (!ids || ids.length < 2) throw new Error("--ids <id1,id2,...> with at least 2 IDs is required");
+      if (!title) throw new Error("--title <title> is required");
+      const result: MemoryMergeResult = await store.mergeFacts(ids, title);
+      return json
+        ? `${JSON.stringify(result, null, 2)}\n`
+        : `Merged ${result.sourceIds.length} facts into ${result.mergedId} (${result.supersededIds.join(", ")} superseded)\n`;
     }
 
     if (command === "log-correction") {
@@ -371,6 +432,10 @@ function usage(): string {
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-event --body <text> [--id <id>] [--thread-id <id>] [--agent <name>] [--outcome <text>] [--source-url <url>] [--tags x,y] [--entities name:kind,...] [--importance 0-1] [--json]",
     "  bun run src/memory/cli.ts add-edge --src <id> --dst <id> [--type <type>] [--weight 0-1] [--directed] [--json]",
+    "  bun run src/memory/cli.ts update-lesson --id <id> [--title <text>] [--body <text>] [--applies-when <text>] [--importance 0-1] [--add-source-ids a,b] [--add-tags x,y] [--add-entities name:kind,...] [--json]",
+    "  bun run src/memory/cli.ts update-fact --id <id> [--kind <curated_fact|routing_memory|procedure>] [--title <text>] [--body <text>] [--confidence 0-1] [--importance 0-1] [--add-source-ids a,b] [--add-tags x,y] [--add-entities name:kind,...] [--json]",
+    "  bun run src/memory/cli.ts merge-lessons --ids <id1,id2,...> --title <title> [--json]",
+    "  bun run src/memory/cli.ts merge-facts --ids <id1,id2,...> --title <title> [--json]",
     "  bun run src/memory/cli.ts log-correction --event-id <id> --field <field> --correct <value> [--incorrect <value>] [--by <who>] [--json]",
     "  bun run src/memory/cli.ts propose-rule --id <id> --domain <domain> --rule <text> [--positive-examples a,b] [--negative-examples a,b] [--precision 0-1] [--recall 0-1] [--json]",
     "  bun run src/memory/cli.ts rebuild-fts [--json]",

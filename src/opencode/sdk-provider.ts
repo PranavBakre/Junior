@@ -152,6 +152,7 @@ export function spawnOpenCodeSdk(
 
   let sdkSessionId: string | null = null;
   let aborted = false;
+  let finishTurn: (() => void) | null = null;
   const eventListeners: Array<(event: RunnerEvent) => void> = [];
 
   const spawnResult = new Promise<SpawnResult>(async (resolve, reject) => {
@@ -195,16 +196,21 @@ export function spawnOpenCodeSdk(
       };
 
       const eventStream = server.client.event.subscribe({ directory: cwd });
+      const turnDone = new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      });
       const eventConsumer = (async () => {
         try {
           for await (const raw of eventStream) {
             if (aborted) break;
             try {
               const part = (typeof raw.data === "string" ? JSON.parse(raw.data) : raw.data) as SdkEventPart;
+              const partSessionId = "sessionID" in part ? (part as { sessionID?: string }).sessionID : undefined;
+              if (partSessionId && partSessionId !== currentSessionId) continue;
 
               // Capture session ID from first part carrying one
               if (!sessionIdCaptured) {
-                const sid = "sessionID" in part ? (part as { sessionID?: string }).sessionID : undefined;
+                const sid = partSessionId;
                 if (sid) {
                   sessionIdCaptured = true;
                   emit({ type: "init", provider, sessionId: sid });
@@ -238,6 +244,8 @@ export function spawnOpenCodeSdk(
                   ? { input: stepPart.tokens.input ?? 0, output: stepPart.tokens.output ?? 0 }
                   : undefined;
                 emit({ type: "done", provider, usage });
+                finishTurn?.();
+                break;
               }
             } catch {
               // Skip unparseable events
@@ -266,7 +274,9 @@ export function spawnOpenCodeSdk(
         return;
       }
 
-      // Wait for event stream to finish
+      // The SDK subscription is server-lived; a Junior turn is complete when
+      // the active SDK session emits step-finish, not when the stream closes.
+      await turnDone;
       await eventConsumer;
 
       const responseText = events
@@ -299,6 +309,7 @@ export function spawnOpenCodeSdk(
           // ok
         }
       }
+      finishTurn?.();
       if (signal === "SIGKILL" && _server) {
         try { _server.close(); } catch { /* ok */ }
         _server = null;
