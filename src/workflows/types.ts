@@ -65,6 +65,8 @@ export interface WorkflowRunnerConfig {
   provider: WorkflowRunnerProvider;
   agentName: string;
   timeoutMs?: number;
+  idleTimeoutMs?: number;
+  maxIdleInterrupts?: number;
   model?: string | null;
 }
 

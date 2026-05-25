@@ -5,8 +5,8 @@ description: Run the offline associative-memory consolidation pass and summarize
 ownerSlackUserIds: []
 triggers:
   - type: schedule
-    cron: "0 3 * * *"
-    timezone: UTC
+    cron: "38 6 * * *"
+    timezone: Asia/Kolkata
   - type: command
     command: memory-consolidation
 outputs:
@@ -21,7 +21,9 @@ permissions:
 runner:
   provider: default
   agentName: default
-  timeoutMs: 300000
+  timeoutMs: 30000000
+  idleTimeoutMs: 300000
+  maxIdleInterrupts: 3
 concurrency: skip
 ---
 

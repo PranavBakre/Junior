@@ -3,13 +3,14 @@ import { dirname, join } from "node:path";
 import type { WebClient } from "@slack/web-api";
 import type { Config, RepoConfig } from "../config.ts";
 import { spawnRunner } from "../runners/index.ts";
-import type { RunnerEvent, SpawnRunnerFn } from "../runners/types.ts";
+import type { RunnerEvent, SpawnHandle, SpawnRunnerFn } from "../runners/types.ts";
 import { createSession, type ImplementedRunnerProvider } from "../session/types.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import { log } from "../logger.ts";
 import type {
   WorkflowDefinition,
   WorkflowOutput,
+  WorkflowRunnerConfig,
   WorkflowRun,
   WorkflowRunReason,
 } from "./types.ts";
@@ -20,6 +21,7 @@ import type { WorkflowStore } from "./store.ts";
 import type { MemoryStore } from "../memory/store.ts";
 
 export const WORKFLOW_UTILITY_CWD = "/tmp/junior-utility";
+const DEFAULT_MAX_IDLE_INTERRUPTS = 3;
 
 export interface WorkflowExecutorOptions {
   config: Config;
@@ -176,38 +178,117 @@ export class WorkflowExecutor {
       "Junior will write your final response to configured docs outputs and post it to configured Slack outputs.",
     ].join("\n\n");
 
-    const handle = this.spawn(
+    return await this.runWorkflowRunnerAttempts({
+      definition,
+      run,
+      runner,
+      provider,
       session,
-      prompt,
+      initialPrompt: prompt,
+    });
+  }
+
+  private async runWorkflowRunnerAttempts(options: {
+    definition: WorkflowDefinition;
+    run: WorkflowRun;
+    runner: WorkflowRunnerConfig;
+    provider: ImplementedRunnerProvider;
+    session: ReturnType<typeof createSession>;
+    initialPrompt: string;
+  }): Promise<string> {
+    const maxIdleInterrupts = options.runner.idleTimeoutMs
+      ? (options.runner.maxIdleInterrupts ?? DEFAULT_MAX_IDLE_INTERRUPTS)
+      : 0;
+    let idleInterrupts = 0;
+    let prompt = options.initialPrompt;
+
+    for (;;) {
+      const attempt = await this.runWorkflowRunnerAttempt({ ...options, prompt });
+      if (attempt.result.sessionId) {
+        options.session.sessionId = attempt.result.sessionId;
+      }
+      if (attempt.result.exitCode === 0 && !attempt.result.error) {
+        const response = attempt.result.response.trim();
+        if (!response) throw new Error("Workflow runner returned an empty response");
+        return response;
+      }
+
+      if (attempt.idleInterrupted && options.session.sessionId && idleInterrupts < maxIdleInterrupts) {
+        idleInterrupts += 1;
+        log.warn(
+          "workflow",
+          `runner idle-interrupted workflow=${options.definition.name} run=${options.run.id} count=${idleInterrupts}`,
+        );
+        prompt = buildIdleContinuePrompt(options.runner.idleTimeoutMs!, idleInterrupts, maxIdleInterrupts);
+        continue;
+      }
+
+      log.warn(
+        "workflow",
+        `runner failed workflow=${options.definition.name}: ${attempt.result.error ?? attempt.result.exitCode}`,
+      );
+      throw new Error(
+        `Workflow runner failed: ${attempt.result.error ?? `exit ${attempt.result.exitCode}`}`,
+      );
+    }
+  }
+
+  private async runWorkflowRunnerAttempt(options: {
+    definition: WorkflowDefinition;
+    run: WorkflowRun;
+    runner: WorkflowRunnerConfig;
+    provider: ImplementedRunnerProvider;
+    session: ReturnType<typeof createSession>;
+    prompt: string;
+  }): Promise<{ result: Awaited<SpawnHandle["result"]>; idleInterrupted: boolean }> {
+    const handle = this.spawn(
+      options.session,
+      options.prompt,
       this.config,
     );
+    let idleInterrupted = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleKillTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (idleKillTimer) clearTimeout(idleKillTimer);
+      idleTimer = null;
+      idleKillTimer = null;
+    };
+    const armIdleTimer = () => {
+      clearIdleTimer();
+      if (!options.runner.idleTimeoutMs) return;
+      idleTimer = setTimeout(() => {
+        idleInterrupted = true;
+        handle.kill("SIGINT");
+        idleKillTimer = setTimeout(() => {
+          handle.kill("SIGKILL");
+        }, 10_000);
+      }, options.runner.idleTimeoutMs);
+    };
+
     handle.onEvent((event) => {
+      armIdleTimer();
       if (event.type === "init") {
-        run.providerSessionId = event.sessionId;
-        void this.store.updateRun(run).catch((err) => {
+        options.session.sessionId = event.sessionId;
+        options.run.providerSessionId = event.sessionId;
+        void this.store.updateRun(options.run).catch((err) => {
           log.warn(
             "workflow",
-            `session id persist failed workflow=${definition.name} run=${run.id}: ${formatError(err)}`,
+            `session id persist failed workflow=${options.definition.name} run=${options.run.id}: ${formatError(err)}`,
           );
         });
       }
-      logWorkflowRunnerEvent(definition.name, run.id, event);
+      logWorkflowRunnerEvent(options.definition.name, options.run.id, event);
     });
+    armIdleTimer();
     const bounded = withTimeout(
       handle,
-      runner.timeoutMs ?? this.timeoutFor(provider),
+      options.runner.timeoutMs ?? this.timeoutFor(options.provider),
       () => handle.kill(),
     );
-    const result = await bounded.result;
-    if (result.exitCode !== 0 || result.error) {
-      log.warn("workflow", `runner failed workflow=${definition.name}: ${result.error ?? result.exitCode}`);
-      throw new Error(
-        `Workflow runner failed: ${result.error ?? `exit ${result.exitCode}`}`,
-      );
-    }
-    const response = result.response.trim();
-    if (!response) throw new Error("Workflow runner returned an empty response");
-    return response;
+    const result = await bounded.result.finally(clearIdleTimer);
+    return { result, idleInterrupted };
   }
 
   private async emitOutputs(
@@ -389,6 +470,20 @@ function buildRunnerPromptWithNative(options: {
   );
 
   return parts.join("\n");
+}
+
+function buildIdleContinuePrompt(
+  idleTimeoutMs: number,
+  interruptCount: number,
+  maxInterrupts: number,
+): string {
+  return [
+    `The previous workflow runner process was interrupted after ${idleTimeoutMs}ms with no runner events.`,
+    `Idle interrupt ${interruptCount} of ${maxInterrupts}.`,
+    "Resume the existing workflow session and continue from the last completed step.",
+    "Do not restart deterministic work that has already completed unless required to recover.",
+    "When finished, return the final Slack-ready workflow result.",
+  ].join("\n");
 }
 
 function logWorkflowRunnerEvent(
