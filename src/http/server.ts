@@ -34,7 +34,7 @@ export interface HttpServerDeps {
   repos: RepoConfig[];
   workflowRegistry: WorkflowRegistry;
   workflowStore: WorkflowStore;
-  memoryStore: MemoryStore;
+  memoryStore?: MemoryStore;
 }
 
 export function startHttpServer(deps: HttpServerDeps): void {
@@ -92,8 +92,10 @@ export function startHttpServer(deps: HttpServerDeps): void {
         } else if (url.pathname === "/api/logs") {
           return await handleLogs(url.searchParams);
         } else if (url.pathname === "/api/memory/recall") {
+          if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
           return await handleMemoryRecall(memoryStore, url.searchParams);
         } else if (url.pathname === "/api/memory/consolidate" && req.method === "POST") {
+          if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
           return await handleMemoryConsolidate(memoryStore);
         } else if (url.pathname === "/api/memory") {
           return await handleMemoryList();

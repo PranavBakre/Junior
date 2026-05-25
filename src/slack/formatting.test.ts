@@ -223,6 +223,23 @@ describe("isDuplicateSlackToolResponse", () => {
     expect(isDuplicateSlackToolResponse("!review check PR 123", events)).toBe(true);
   });
 
+  it("detects Codex app-server mcpToolCall events", () => {
+    const events: RunnerEvent[] = [
+      makeToolEvent({
+        provider: "codex-app-server",
+        name: "slack_send_message",
+        input: {
+          codexItemType: "mcpToolCall",
+          server: "slack-bot",
+          tool: "slack_send_message",
+          arguments: { text: "posted from Codex" },
+        },
+      }),
+    ];
+
+    expect(isDuplicateSlackToolResponse("posted from Codex", events)).toBe(true);
+  });
+
   it("does not suppress different follow-up text", () => {
     const events: RunnerEvent[] = [
       makeToolEvent({

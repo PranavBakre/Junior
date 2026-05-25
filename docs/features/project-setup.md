@@ -70,6 +70,7 @@ interface Config {
   opencode: {
     model: string | null;
     timeoutMs: number;
+    continuityEnabled: boolean;
     permission: string;
     mcpEnabled: boolean;
     slackMcpEnabled: boolean;
@@ -97,13 +98,14 @@ interface Config {
 | `SLACK_BOT_TOKEN` | yes | — | |
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode `xapp-...` |
 | `SLACK_SIGNING_SECRET` | no | `""` | only needed if you ever switch to Events API |
-| `RUNNER_PROVIDER` | no | `opencode` | `opencode` \| `claude`; `codex` is planned but rejected until implemented |
+| `RUNNER_PROVIDER` | no | `opencode` | `opencode` \| `opencode-sdk` \| `codex-app-server` \| `claude`; `codex` is reserved for the future CLI fallback |
 | `CLAUDE_MAX_TURNS` | no | `25` | |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | |
 | `CLAUDE_MODEL` | no | unset | passed through to `claude -p --model` |
 | `CLAUDE_PERMISSION_MODE` | no | `bypassPermissions` | |
 | `OPENCODE_MODEL` | no | unset | passed through to `opencode run --model` |
 | `OPENCODE_TIMEOUT_MS` | no | `300000` | |
+| `OPENCODE_CONTINUITY_ENABLED` | no | `false` | enables OpenCode session reuse across completed turns: CLI `--session` and SDK reattach; SDK provider kill still uses native abort, but CLI interrupt-and-resume is not verified |
 | `JUNIOR_OPENCODE_PERMISSION` | no | `allow` | OpenCode permission mode in generated agent config |
 | `OPENCODE_MCP_ENABLED` | no | `true` | enables generated OpenCode MCP config for normal non-utility runs |
 | `OPENCODE_SLACK_MCP_ENABLED` | no | `true` | includes the local Slack MCP entry when MCP is enabled |
