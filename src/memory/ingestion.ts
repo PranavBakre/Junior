@@ -195,22 +195,22 @@ export class MemoryIngestor {
   }
 }
 
-function sourceIdFor(prefix: string, threadId: string, ts: string, suffix: string): string {
+export function sourceIdFor(prefix: string, threadId: string, ts: string, suffix: string): string {
   return `${prefix}_${slug(threadId)}_${slug(ts)}_${slug(suffix)}`;
 }
 
-function slug(value: string): string {
+export function slug(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
 }
 
-function importanceForText(text: string, command: string | null): number {
+export function importanceForText(text: string, command: string | null): number {
   if (command) return 0.7;
   if (/\b(blocked|failed|error|wrong|correct|decision|remember|prefer)\b/i.test(text)) return 0.8;
   if (text.length < 20) return 0.2;
   return 0.5;
 }
 
-function tagsForMessage(text: string, command: string | null, agentName: string): string[] {
+export function tagsForMessage(text: string, command: string | null, agentName: string): string[] {
   const tags = ["slack_message", `agent:${agentName}`];
   if (command) tags.push(`command:${command}`);
   if (/\bPR\s*#?\d+|github\.com\/.*\/pull\/\d+/i.test(text)) tags.push("pr_review");
@@ -220,7 +220,7 @@ function tagsForMessage(text: string, command: string | null, agentName: string)
   return tags;
 }
 
-function entitiesForMessage(text: string): Array<{ kind: string; name: string }> {
+export function entitiesForMessage(text: string): Array<{ kind: string; name: string }> {
   const entities: Array<{ kind: string; name: string }> = [];
   for (const match of text.matchAll(/\b[A-Za-z0-9_.-]+\.(?:ts|tsx|js|jsx|md|json)\b/g)) {
     entities.push({ kind: "file", name: match[0] });
