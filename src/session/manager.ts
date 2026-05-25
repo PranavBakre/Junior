@@ -494,7 +494,7 @@ export class SessionManager {
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
           "`!agent <junior|lead>` — Set thread default agent",
-          "`!provider <claude|opencode|opencode-sdk>` — Set runner provider for this thread",
+          "`!provider <claude|opencode|opencode-sdk|codex-app-server>` — Set runner provider for this thread",
           "`!cancel` — Kill running process, keep session",
           "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
           "`!status` — Show session status",
@@ -590,14 +590,14 @@ export class SessionManager {
         if (isRunnerProvider(provider) && !isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\`, \`!provider opencode\`, or \`!provider opencode-sdk\`.`,
+            `Provider *${provider}* is planned but not yet implemented. Use \`!provider claude\`, \`!provider opencode\`, \`!provider opencode-sdk\`, or \`!provider codex-app-server\`.`,
           );
           return true;
         }
         if (!isImplementedRunnerProvider(provider)) {
           this.onCommandResponse?.(
             event,
-            `Unknown provider "${provider}". Use \`!provider claude\`, \`!provider opencode\`, or \`!provider opencode-sdk\`.`,
+            `Unknown provider "${provider}". Use \`!provider claude\`, \`!provider opencode\`, \`!provider opencode-sdk\`, or \`!provider codex-app-server\`.`,
           );
           return true;
         }
@@ -906,6 +906,7 @@ export class SessionManager {
           await this.store.set(session.threadId, session);
         }
       }
+      runSession.agentPermissions = agentDefinition?.permissions;
 
       // Build the prompt. On the first turn (no sessionId yet), inject the
       // preamble blocks the agent asked for. On resumed turns, --resume already

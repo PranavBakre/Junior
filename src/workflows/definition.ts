@@ -221,7 +221,12 @@ function normalizeWorkflowPath(path: string): string {
 
 function parseRunner(raw: Record<string, unknown>): WorkflowRunnerConfig {
   const provider = stringField(raw, "provider");
-  if (provider !== "default" && provider !== "opencode" && provider !== "claude") {
+  if (
+    provider !== "default" &&
+    provider !== "opencode" &&
+    provider !== "codex-app-server" &&
+    provider !== "claude"
+  ) {
     throw new Error(`Invalid runner provider: ${provider}`);
   }
   const timeoutMs = raw.timeoutMs == null ? undefined : positiveNumber(raw.timeoutMs, "timeoutMs");
