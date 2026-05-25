@@ -7,16 +7,27 @@ export interface PendingMessage {
 }
 
 export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";
-export type RunnerProvider = "claude" | "opencode" | "codex";
+export type RunnerProvider =
+  | "claude"
+  | "opencode"
+  | "opencode-sdk"
+  | "codex-app-server"
+  | "codex";
 export type ImplementedRunnerProvider = Exclude<RunnerProvider, "codex">;
 
 export function isRunnerProvider(value: unknown): value is RunnerProvider {
-  return value === "claude" || value === "opencode" || value === "codex";
+  return (
+    value === "claude" ||
+    value === "opencode" ||
+    value === "opencode-sdk" ||
+    value === "codex-app-server" ||
+    value === "codex"
+  );
 }
 
 /**
  * Subset of RunnerProvider that the runtime can actually spawn today. `codex`
- * is in the union as a planned provider but is rejected at every user-facing
+ * is in the union as a planned CLI-fallback provider but is rejected at every user-facing
  * boundary (env parse, `!provider` command) so an operator never reaches the
  * point where `spawnRunner` throws mid-turn with the cause buried in a
  * session-manager catch.
@@ -26,7 +37,12 @@ export function isRunnerProvider(value: unknown): value is RunnerProvider {
 export function isImplementedRunnerProvider(
   value: unknown,
 ): value is ImplementedRunnerProvider {
-  return value === "claude" || value === "opencode";
+  return (
+    value === "claude" ||
+    value === "opencode" ||
+    value === "opencode-sdk" ||
+    value === "codex-app-server"
+  );
 }
 
 export function normalizeRunnerProvider(value: unknown): RunnerProvider {
@@ -77,6 +93,7 @@ export interface ThreadSession {
   baseRef: string | null;
   agentType: string | null;
   systemPrompt: string | null;
+  agentPermissions?: import("../agents/loader.ts").AgentPermissions;
   activeAgentName?: string;
   slackIdentity?: AgentIdentity;
   status: SessionStatus;
