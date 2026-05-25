@@ -34,6 +34,54 @@ describe("loadAgentDefinition", () => {
     expect(def!.tools).toBe("Read, Edit, Write, Bash, Grep, Glob, Agent");
     expect(def!.model).toBeNull();
     expect(def!.common).toEqual(["core", "building-philosophy"]);
+    expect(def!.permissions).toEqual({
+      intent: null,
+      mcp: [],
+      tools: ["Read", "Edit", "Write", "Bash", "Grep", "Glob", "Agent"],
+    });
+  });
+
+  it("parses typed permission frontmatter", async () => {
+    const tmpPath = path.join(import.meta.dir, "__test_permissions_fm.md");
+    const content = `---
+name: readonly
+description: Test
+permissions.intent: read-only
+permissions.mcp: slack-bot, playwright
+---
+
+body`;
+    await Bun.write(tmpPath, content);
+
+    try {
+      const def = await loadAgentDefinition(tmpPath);
+      expect(def).not.toBeNull();
+      expect(def!.permissions).toEqual({
+        intent: "read-only",
+        mcp: ["slack-bot", "playwright"],
+        tools: [],
+      });
+    } finally {
+      await fs.unlink(tmpPath).catch(() => {});
+    }
+  });
+
+  it("fails closed for unknown permission intent", async () => {
+    const tmpPath = path.join(import.meta.dir, "__test_permissions_unknown_fm.md");
+    await Bun.write(tmpPath, `---
+name: risky
+description: Test
+permission: all-the-things
+---
+
+body`);
+
+    try {
+      const def = await loadAgentDefinition(tmpPath);
+      expect(def!.permissions.intent).toBe("no-tools");
+    } finally {
+      await fs.unlink(tmpPath).catch(() => {});
+    }
   });
 
   it("parses optional username + iconEmoji frontmatter fields", async () => {
