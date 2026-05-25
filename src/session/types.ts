@@ -7,11 +7,11 @@ export interface PendingMessage {
 }
 
 export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";
-export type RunnerProvider = "claude" | "opencode" | "codex";
+export type RunnerProvider = "claude" | "opencode" | "opencode-sdk" | "codex";
 export type ImplementedRunnerProvider = Exclude<RunnerProvider, "codex">;
 
 export function isRunnerProvider(value: unknown): value is RunnerProvider {
-  return value === "claude" || value === "opencode" || value === "codex";
+  return value === "claude" || value === "opencode" || value === "opencode-sdk" || value === "codex";
 }
 
 /**
@@ -26,7 +26,7 @@ export function isRunnerProvider(value: unknown): value is RunnerProvider {
 export function isImplementedRunnerProvider(
   value: unknown,
 ): value is ImplementedRunnerProvider {
-  return value === "claude" || value === "opencode";
+  return value === "claude" || value === "opencode" || value === "opencode-sdk";
 }
 
 export function normalizeRunnerProvider(value: unknown): RunnerProvider {
