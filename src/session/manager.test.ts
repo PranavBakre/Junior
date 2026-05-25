@@ -148,9 +148,11 @@ const testConfig: Config = {
     store: "sqlite",
     sqlitePath: "data/sessions.db",
     homeWindowMs: 172800000,
-      defaultVerbosity: "quiet",
+    defaultVerbosity: "quiet",
   },
-  memory: { sqlitePath: "data/memory.db" },
+  memory: {
+    sqlitePath: "data/memory.db",
+  },
   channelDefaults: {},
   adminSlackUserId: null,
   http: { enabled: false, port: 0 },
