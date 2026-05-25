@@ -39,3 +39,7 @@ and MCP wiring.
   `session.cwd` runs and use a constrained read/search/MCP permission surface.
 - Persistent workers (`reproducer`, `thinker`, `review`) are not generated as
   OpenCode Task subagents; they are Slack-dispatched persistent sessions.
+- Future OpenCode SDK/server support should be added as a separate provider or
+  driver. Its interrupt path should call OpenCode's `session.abort` API and then
+  prompt the same session to continue, rather than sending Escape bytes or
+  changing the current CLI adapter's stdin policy.
