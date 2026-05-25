@@ -264,6 +264,34 @@ describe("SqliteMemoryStore", () => {
     expect(historical.map((result) => result.id)).toContain("fact-old");
   });
 
+  it("keeps memory_node kind in sync when updating fact kind", async () => {
+    const now = Date.now();
+    await store.upsertFact({
+      id: "fact-kind",
+      kind: "curated_fact",
+      title: "Review route",
+      body: "PR requests should go to review.",
+      createdAt: now,
+    });
+
+    await store.updateFact("fact-kind", { kind: "routing_memory" });
+
+    const db = (store as unknown as { db: Database }).db;
+    const node = db
+      .query<{ kind: string }, [string]>(
+        "SELECT kind FROM memory_node WHERE id = ?",
+      )
+      .get("fact-kind");
+    const doc = db
+      .query<{ kind: string }, [string]>(
+        "SELECT kind FROM memory_search_doc WHERE id = ?",
+      )
+      .get("fact-kind");
+
+    expect(node?.kind).toBe("routing_memory");
+    expect(doc?.kind).toBe("routing_memory");
+  });
+
   it("logs classifications and corrections for ingestion rule learning", async () => {
     const now = Date.now();
     await store.logClassification({

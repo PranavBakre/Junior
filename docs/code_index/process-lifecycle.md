@@ -11,7 +11,7 @@ Timeout guards, graceful shutdown, stale session cleanup, orphan detection, and 
 | `withTimeout(handle, timeoutMs, onTimeout?)` | `timeout.ts` | Wraps `SpawnHandle`; kills + resolves with `error: "Process timed out..."` after timeout |
 | workflow runner idle recovery | `src/workflows/executor.ts` | For workflow runner configs with `idleTimeoutMs`, sends SIGINT after a silent period, SIGKILL after 10s grace if needed, then respawns with provider-native resume and a continuation prompt up to `maxIdleInterrupts`. |
 | `setupGracefulShutdown(manager, store, devServerManager?)` | `shutdown.ts` | SIGINT/SIGTERM handler — `resetSession` busy threads, `killAll` dev servers, hard exit after 30s |
-| `cleanupStaleSessions(store, staleTimeoutMs)` | `cleanup.ts` | Deletes idle/draining sessions older than threshold (skips `busy`) |
+| `cleanupStaleSessions(store, staleTimeoutMs)` | `cleanup.ts` | Deletes stale idle sessions; skips top-level busy/draining and rows with any busy persistent agent |
 | `checkOrphanedSessions(store)` | `health.ts` | Marks `busy` sessions/agents idle when their pid is dead. Scans top-level pid + every `agentSessions[*].pid`. |
 | `isPidAlive(pid)` | `process-utils.ts` | `process.kill(pid, 0)` returns true if ESRCH not thrown |
 | `isPortHeld(port)` | `process-utils.ts` | Non-blocking TCP connect probe on `127.0.0.1:<port>`, 3s timeout |
@@ -52,7 +52,7 @@ A session/agent is "orphaned" when `status === "busy"` but `process.kill(pid, 0)
 
 ### Stale cleanup
 
-Skips `busy` and `draining` sessions to avoid killing active work. Only removes `idle` sessions past `staleTimeoutMs` (default 24h).
+Skips top-level `busy` and `draining` sessions to avoid killing active work. Also skips rows where any `agentSessions[*].status === "busy"`, because the parent thread can be idle while a worker is still running. Only removes idle rows past `staleTimeoutMs` (default 24h) when all worker sessions are terminal/non-busy.
 
 ### Dev-server queue serialization
 
