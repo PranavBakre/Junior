@@ -37,6 +37,21 @@ describe("mapCodexRunPolicy", () => {
     });
   });
 
+  it("uses danger-full-access when configured for normal agents", () => {
+    const session = createSession("t", "c");
+
+    expect(mapCodexRunPolicy({
+      config: { ...config, sandbox: "danger-full-access" },
+      session,
+      cwd: "/repo",
+    })).toMatchObject({
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      sandboxPolicy: { type: "fullAccess" },
+      mcpAllowed: true,
+    });
+  });
+
   it("maps read-only agents to read-only sandbox with approval", () => {
     const session = createSession("t", "c");
     session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
@@ -44,7 +59,7 @@ describe("mapCodexRunPolicy", () => {
     expect(mapCodexRunPolicy({ config, session, cwd: "/repo" })).toMatchObject({
       approvalPolicy: "on-request",
       sandbox: "read-only",
-      sandboxPolicy: { type: "readOnly" },
+      sandboxPolicy: { type: "readOnlyAccess" },
       mcpAllowed: true,
     });
   });
@@ -75,7 +90,7 @@ describe("mapCodexRunPolicy", () => {
     expect(mapCodexRunPolicy({ config, session, cwd: "/repo" })).toMatchObject({
       approvalPolicy: "on-request",
       sandbox: "read-only",
-      sandboxPolicy: { type: "readOnly" },
+      sandboxPolicy: { type: "readOnlyAccess" },
     });
   });
 

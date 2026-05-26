@@ -39,6 +39,8 @@ describe("buildCodexConfigToml", () => {
     expect(
       buildCodexConfigToml({
         model: "gpt-5.1-codex",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
         mcp: {
           "slack-bot": {
             transport: "http",
@@ -48,6 +50,14 @@ describe("buildCodexConfigToml", () => {
         trustedProjectPath: "/repo",
       }),
     ).toContain('[projects."/repo"]\ntrust_level = "trusted"');
+    expect(
+      buildCodexConfigToml({
+        model: "gpt-5.1-codex",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        mcp: null,
+      }),
+    ).toContain('sandbox_mode = "danger-full-access"');
   });
 });
 

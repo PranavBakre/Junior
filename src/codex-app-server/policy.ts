@@ -6,7 +6,7 @@ export type CodexApprovalPolicy = "untrusted" | "on-request" | "never";
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 
 export interface CodexSandboxPolicy {
-  type: "readOnly" | "workspaceWrite" | "dangerFullAccess";
+  type: "readOnlyAccess" | "workspaceWrite" | "fullAccess";
   writableRoots?: string[];
   networkAccess?: boolean;
   excludeTmpdirEnvVar?: boolean;
@@ -33,7 +33,7 @@ export function mapCodexRunPolicy(options: {
     return {
       approvalPolicy: "on-request",
       sandbox: "read-only",
-      sandboxPolicy: { type: "readOnly" },
+      sandboxPolicy: { type: "readOnlyAccess" },
       mcpAllowed: intent !== "no-tools" && !session.cwd,
     };
   }
@@ -95,8 +95,8 @@ export function sandboxPolicyFor(
   sandbox: CodexSandbox,
   cwd: string,
 ): CodexSandboxPolicy {
-  if (sandbox === "read-only") return { type: "readOnly" };
-  if (sandbox === "danger-full-access") return { type: "dangerFullAccess" };
+  if (sandbox === "read-only") return { type: "readOnlyAccess" };
+  if (sandbox === "danger-full-access") return { type: "fullAccess" };
   return workspaceWritePolicy(cwd);
 }
 

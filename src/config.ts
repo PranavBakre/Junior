@@ -182,7 +182,7 @@ export function loadConfig(): Config {
       mode: parseCodexMode(optional("CODEX_MODE", "app-server")),
       model: process.env.CODEX_MODEL ?? null,
       timeoutMs: Number(optional("CODEX_TIMEOUT_MS", "300000")),
-      sandbox: parseCodexSandbox(optional("CODEX_SANDBOX", "workspace-write")),
+      sandbox: parseCodexSandbox(optional("CODEX_SANDBOX", "danger-full-access")),
       askForApproval: parseCodexApproval(optional("CODEX_ASK_FOR_APPROVAL", "never")),
       searchEnabled: parseBooleanEnv("CODEX_SEARCH_ENABLED", false),
       appServerContinuityEnabled: parseBooleanEnv(

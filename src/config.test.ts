@@ -92,7 +92,7 @@ describe("loadConfig runner providers", () => {
       mode: "app-server",
       model: null,
       timeoutMs: 300000,
-      sandbox: "workspace-write",
+      sandbox: "danger-full-access",
       askForApproval: "never",
       searchEnabled: false,
       appServerContinuityEnabled: false,
