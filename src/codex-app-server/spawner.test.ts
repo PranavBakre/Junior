@@ -75,8 +75,8 @@ describe("spawnCodexAppServer", () => {
       const threadStart = requests.find((request) => request.method === "thread/start");
       const turnStart = requests.find((request) => request.method === "turn/start");
       expect(threadStart.params.sandbox).toBe("danger-full-access");
-      expect(threadStart.params.sandboxPolicy).toEqual({ type: "fullAccess" });
-      expect(turnStart.params.sandboxPolicy).toEqual({ type: "fullAccess" });
+      expect(threadStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
+      expect(turnStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
     } finally {
       fakeCodex.cleanup();
     }
