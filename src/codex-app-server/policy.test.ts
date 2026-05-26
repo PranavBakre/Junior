@@ -47,7 +47,7 @@ describe("mapCodexRunPolicy", () => {
     })).toMatchObject({
       approvalPolicy: "never",
       sandbox: "danger-full-access",
-      sandboxPolicy: { type: "fullAccess" },
+      sandboxPolicy: { type: "dangerFullAccess" },
       mcpAllowed: true,
     });
   });
@@ -59,7 +59,7 @@ describe("mapCodexRunPolicy", () => {
     expect(mapCodexRunPolicy({ config, session, cwd: "/repo" })).toMatchObject({
       approvalPolicy: "on-request",
       sandbox: "read-only",
-      sandboxPolicy: { type: "readOnlyAccess" },
+      sandboxPolicy: { type: "readOnly" },
       mcpAllowed: true,
     });
   });
@@ -90,7 +90,7 @@ describe("mapCodexRunPolicy", () => {
     expect(mapCodexRunPolicy({ config, session, cwd: "/repo" })).toMatchObject({
       approvalPolicy: "on-request",
       sandbox: "read-only",
-      sandboxPolicy: { type: "readOnlyAccess" },
+      sandboxPolicy: { type: "readOnly" },
     });
   });
 
