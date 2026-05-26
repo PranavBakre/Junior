@@ -81,6 +81,49 @@ describe("spawnCodexAppServer", () => {
       fakeCodex.cleanup();
     }
   });
+
+  it("starts a fresh app-server thread when persisted resume rollout is missing", async () => {
+    const fakeCodex = installFakeCodex(missingRolloutThenStartFakeCodexScript());
+    process.env.CODEX_BIN = fakeCodex.command;
+
+    try {
+      const session = createSession("thread-1", "C01");
+      session.provider = "codex-app-server";
+      session.sessionId = "missing-thread";
+      const config = {
+        ...testConfig,
+        codex: {
+          ...testConfig.codex,
+          isolatedHomePath: join(fakeCodex.root, "codex-home"),
+        },
+      };
+
+      const handle = spawnCodexAppServer(session, "hello after restart", config);
+      const result = await Promise.race([
+        handle.result,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), 1000)),
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.error).toBeNull();
+      expect(result.sessionId).toBe("thread-created");
+
+      const requests = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(requests.map((request) => request.method)).toEqual([
+        "initialize",
+        "thread/resume",
+        "thread/start",
+        "turn/start",
+      ]);
+      expect(requests.find((request) => request.method === "turn/start").params.threadId)
+        .toBe("thread-created");
+    } finally {
+      fakeCodex.cleanup();
+    }
+  });
 });
 
 function installFakeCodex(
@@ -124,6 +167,47 @@ rl.on("line", (line) => {
       jsonrpc: "2.0",
       method: "turn/completed",
       params: { thread: { id: "thread-created" }, finalResponse: "done" },
+    });
+    setTimeout(() => process.exit(0), 10);
+  }
+});
+`;
+}
+
+function missingRolloutThenStartFakeCodexScript(): string {
+  return `#!/usr/bin/env node
+const fs = require("node:fs");
+const readline = require("node:readline");
+const root = __ROOT__;
+const requestsPath = root + "/requests.jsonl";
+const rl = readline.createInterface({ input: process.stdin });
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+
+rl.on("line", (line) => {
+  const request = JSON.parse(line);
+  fs.appendFileSync(requestsPath, JSON.stringify(request) + "\\n");
+  if (request.method === "initialize") {
+    send({ jsonrpc: "2.0", id: request.id, result: {} });
+  } else if (request.method === "thread/resume") {
+    send({
+      jsonrpc: "2.0",
+      id: request.id,
+      error: {
+        code: -32600,
+        message: "no rollout found for thread id missing-thread",
+      },
+    });
+  } else if (request.method === "thread/start") {
+    send({ jsonrpc: "2.0", id: request.id, result: { thread: { id: "thread-created" } } });
+  } else if (request.method === "turn/start") {
+    send({ jsonrpc: "2.0", id: request.id, result: { turn: { id: "turn-created" } } });
+    send({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { thread: { id: "thread-created" }, finalResponse: "done after fallback" },
     });
     setTimeout(() => process.exit(0), 10);
   }
