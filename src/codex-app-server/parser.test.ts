@@ -140,10 +140,10 @@ describe("createCodexAppServerEventMapper", () => {
           threadId: "thr_1",
           turnId: "turn_1",
           item: {
-            type: "collabToolCall",
-            sender: "default",
-            receiver: "reviewer",
-            newThreadId: "thr_child",
+            type: "collabAgentToolCall",
+            tool: "spawn",
+            senderThreadId: "thr_1",
+            receiverThreadIds: ["thr_child"],
           },
         },
       },
@@ -169,6 +169,14 @@ describe("createCodexAppServerEventMapper", () => {
           threadId: "thr_1",
           turnId: "turn_1",
           item: { type: "imageView", path: "bug.png" },
+        },
+      },
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "imageGeneration", status: "completed", result: "image" },
         },
       },
       {
@@ -211,9 +219,9 @@ describe("createCodexAppServerEventMapper", () => {
         provider: "codex-app-server",
         name: "Task",
         input: {
-          codexItemType: "collabToolCall",
-          receiver: "reviewer",
-          newThreadId: "thr_child",
+          codexItemType: "collabAgentToolCall",
+          tool: "spawn",
+          receiverThreadIds: ["thr_child"],
         },
         status: "completed",
       },
@@ -241,6 +249,13 @@ describe("createCodexAppServerEventMapper", () => {
       {
         type: "tool",
         provider: "codex-app-server",
+        name: "ImageGeneration",
+        input: { status: "completed", result: "image" },
+        status: "completed",
+      },
+      {
+        type: "tool",
+        provider: "codex-app-server",
         name: "Review",
         input: { reviewType: "auto" },
         status: "completed",
@@ -251,6 +266,10 @@ describe("createCodexAppServerEventMapper", () => {
   it("ignores known telemetry notifications and non-tool item types", () => {
     const mapper = createCodexAppServerEventMapper();
     const runnerEvents = [
+      {
+        method: "rawResponseItem/completed",
+        params: { item: { type: "response.output_text.done" } },
+      },
       {
         method: "remoteControl/status/changed",
         params: { status: "disconnected" },
@@ -270,6 +289,22 @@ describe("createCodexAppServerEventMapper", () => {
       {
         method: "item/commandExecution/outputDelta",
         params: { threadId: "thr_1", itemId: "item_2", delta: "stdout" },
+      },
+      {
+        method: "item/started",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "hookPrompt", fragments: [] },
+        },
+      },
+      {
+        method: "item/started",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          item: { type: "agentMessage" },
+        },
       },
       {
         method: "item/started",
