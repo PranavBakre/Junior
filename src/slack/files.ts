@@ -1,12 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
-
-const IMAGE_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-]);
+import { basename, join } from "node:path";
 
 export interface SlackFile {
   url: string;
@@ -15,8 +8,7 @@ export interface SlackFile {
 }
 
 /**
- * Download image files from Slack to local disk so Claude can read them.
- * Only downloads image types; non-image files are silently skipped.
+ * Download Slack files to local disk so the runner can read them.
  * Returns array of local file paths for successfully downloaded files.
  */
 export async function downloadSlackFiles(
@@ -24,15 +16,12 @@ export async function downloadSlackFiles(
   threadId: string,
   botToken: string,
 ): Promise<string[]> {
-  const imageFiles = files.filter((f) => IMAGE_TYPES.has(f.mimetype));
-  if (imageFiles.length === 0) return [];
-
   const dir = join("/tmp", "junior-files", threadId);
   await mkdir(dir, { recursive: true });
 
   const paths: string[] = [];
 
-  for (const file of imageFiles) {
+  for (const file of files) {
     try {
       const response = await fetch(file.url, {
         headers: { Authorization: `Bearer ${botToken}` },
@@ -45,7 +34,7 @@ export async function downloadSlackFiles(
         continue;
       }
 
-      const filePath = join(dir, file.name);
+      const filePath = join(dir, basename(file.name));
       const buffer = await response.arrayBuffer();
       await Bun.write(filePath, buffer);
       paths.push(filePath);

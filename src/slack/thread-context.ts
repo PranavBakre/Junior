@@ -293,7 +293,7 @@ async function fetchThreadHistory(
         : `User(${m.userName}${m.user !== "unknown" ? ` <@${m.user}>` : ""})`;
       let line = `${role}: ${m.text}`;
       if (m.fileNames.length > 0) {
-        const fileNotes = m.fileNames.map((f) => `[shared image: ${f}]`).join(" ");
+        const fileNotes = m.fileNames.map((f) => `[shared file: ${f}]`).join(" ");
         line += ` ${fileNotes}`;
       }
       return line;

@@ -176,4 +176,51 @@ describe("buildPromptPreamble", () => {
     expect(preamble).not.toContain("private aside");
     expect(preamble).not.toContain("User(U5 <@U5>): current message");
   });
+
+  it("labels historical attachments as shared files", async () => {
+    const app = {
+      client: {
+        users: {
+          info: async ({ user }: { user: string }) => ({
+            user: { profile: { display_name: user } },
+          }),
+        },
+        conversations: {
+          replies: async () => ({
+            messages: [
+              { ts: "1", user: "U1", text: "root message" },
+              {
+                ts: "2",
+                user: "U2",
+                text: "see attached",
+                files: [{ name: "assignments.csv" }],
+              },
+              { ts: "3", user: "U3", text: "current message" },
+            ],
+          }),
+        },
+      },
+    } as unknown as App;
+
+    const preamble = await buildPromptPreamble(
+      app,
+      "C1",
+      "1",
+      "3",
+      "UBOT",
+      null,
+      undefined,
+      undefined,
+      {
+        identity: false,
+        slack: false,
+        workspace: false,
+        threadHistory: true,
+        threadHistoryLimit: 100,
+        agentState: false,
+      },
+    );
+
+    expect(preamble).toContain("[shared file: assignments.csv]");
+  });
 });
