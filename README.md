@@ -147,6 +147,8 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | `true` | Include Playwright MCP in generated OpenCode config; set `false` to disable |
 | `CODEX_MODEL` | *(unset)* | Override default Codex app-server model |
 | `CODEX_TIMEOUT_MS` | `300000` | Per-turn Codex timeout before SIGINT |
+| `CODEX_SANDBOX` | `workspace-write` | Codex app-server sandbox. Set `danger-full-access` for YOLO-style full filesystem/network access. |
+| `CODEX_ASK_FOR_APPROVAL` | `never` | Codex app-server approval policy |
 | `CODEX_APP_SERVER_CONTINUITY_ENABLED` | `false` | Enables Codex app-server idle-timeout recovery: native `turn/interrupt` plus automatic continue turn. Normal `thread/resume` across app restarts stays enabled. |
 | `CODEX_ISOLATED_HOME_PATH` | `data/codex-home` | Junior-owned Codex home with generated config and symlinked auth |
 

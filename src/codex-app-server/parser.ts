@@ -25,16 +25,20 @@ const TOOL_ITEM_TYPES = new Set([
   "mcpToolCall",
   "dynamicToolCall",
   "collabToolCall",
+  "collabAgentToolCall",
   "webSearch",
   "fileChange",
   "imageView",
+  "imageGeneration",
   "enteredReviewMode",
   "exitedReviewMode",
 ]);
 
 const IGNORED_ITEM_TYPES = new Set([
+  "agentMessage",
   "compacted",
   "contextCompaction",
+  "hookPrompt",
   "plan",
   "reasoning",
   "userMessage",
@@ -66,6 +70,7 @@ const KNOWN_METHODS = new Set([
   "item/autoApprovalReview/started",
   "item/autoApprovalReview/completed",
   "item/plan/delta",
+  "rawResponseItem/completed",
   "item/reasoning/summaryTextDelta",
   "item/reasoning/summaryPartAdded",
   "item/reasoning/textDelta",
@@ -294,11 +299,12 @@ function mapToolItem(
 function codexToolName(type: string, item: Record<string, unknown>): string {
   if (type === "commandExecution") return "Bash";
   if (type === "mcpToolCall") return stringValue(item.tool) ?? "MCP";
-  if (type === "dynamicToolCall") return stringValue(item.name) ?? "DynamicTool";
-  if (type === "collabToolCall") return "Task";
+  if (type === "dynamicToolCall") return stringValue(item.tool) ?? stringValue(item.name) ?? "DynamicTool";
+  if (type === "collabToolCall" || type === "collabAgentToolCall") return "Task";
   if (type === "webSearch") return "WebSearch";
   if (type === "fileChange") return "Edit";
   if (type === "imageView") return "Read";
+  if (type === "imageGeneration") return "ImageGeneration";
   if (type === "enteredReviewMode" || type === "exitedReviewMode") return "Review";
   return type;
 }
