@@ -961,18 +961,28 @@ export class SessionManager {
         }
       }
 
-      // Download image files from Slack and append their paths to the prompt
+      // Download files from Slack and append their paths to the prompt.
+      let filePaths: string[] = [];
       let imagePaths: string[] = [];
       if (files && files.length > 0) {
         try {
-          imagePaths = await downloadSlackFiles(
+          filePaths = await downloadSlackFiles(
             files,
             session.threadId,
             this.config.slack.botToken,
           );
-          if (imagePaths.length > 0) {
-            const pathList = imagePaths.map((p) => `- ${p}`).join("\n");
-            prompt += `\n\nThe user shared images. They are saved at these paths — use the Read tool to view them:\n${pathList}`;
+          if (filePaths.length > 0) {
+            const imageNames = new Set(
+              files
+                .filter((f) => f.mimetype.startsWith("image/"))
+                .map((f) => f.name.split(/[\\/]/).pop() ?? f.name),
+            );
+            imagePaths = filePaths.filter((p) => {
+              const name = p.split(/[\\/]/).pop() ?? p;
+              return imageNames.has(name);
+            });
+            const pathList = filePaths.map((p) => `- ${p}`).join("\n");
+            prompt += `\n\nThe user shared files. They are saved at these paths — read them from disk when needed:\n${pathList}`;
           }
         } catch (err) {
           console.error("[manager] Failed to download Slack files:", err);

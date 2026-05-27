@@ -14,7 +14,7 @@ When Junior spawns a `claude -p` process, that process has zero knowledge of the
 1. **`<identity>`** — Junior's persona (see [agent-definitions](agent-definitions.md)) + the bot's Slack user ID so Claude can recognize its own messages.
 2. **`<slack-context>`** — channel name + ID, thread_ts, instruction not to search Slack, how to tag users via `<@USERID>`, the `NO_SLACK_MESSAGE` sentinel, and the no-double-post rule when `slack_send_message` was used.
 3. **`<workspace>`** — see Workspace Block below.
-4. **`<thread-context>`** — prior messages from `conversations.replies` (limit 100, excluding the current message), labeled `User(Name <@U…>)` or `Junior (you)`, with `[shared image: name]` annotations.
+4. **`<thread-context>`** — prior messages from `conversations.replies` (limit 100, excluding the current message), labeled `User(Name <@U…>)` or `Junior (you)`, with `[shared file: name]` annotations.
 5. **`<persistent-agent-state>`** — injected by the manager (not preamble itself) when the agent has `context.agentState`; lists per-thread agent sessions and pending counts.
 6. **`<dispatch-allow>`** — appended to the system prompt by the manager (`buildDispatchAllowBlock`) so every agent sees the authoritative list of `!<agent>` directives it may emit. See [agent-routing](agent-routing.md).
 
@@ -43,8 +43,8 @@ User and channel names are cached in module-level Maps.
 
 ## File Handling
 
-- **Images on the message** — downloaded to `/tmp/junior-files/<threadId>/` via `files.ts`, then appended to the prompt as Read-tool paths. Image MIME only (png/jpeg/gif/webp).
-- **Historical images** — surfaced as `[shared image: name.png]` annotations in `<thread-context>` (no download).
+- **Files on the message** — downloaded to `/tmp/junior-files/<threadId>/` via `files.ts`, then appended to the prompt as local paths.
+- **Historical files** — surfaced as `[shared file: name]` annotations in `<thread-context>` (no download).
 - **Outbound files** — the spawner exports `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `SLACK_BOT_TOKEN`; `bin/slack-upload.sh` and Playwright MCP screenshots use them with zero per-thread config.
 
 ## Key Files
@@ -56,7 +56,7 @@ User and channel names are cached in module-level Maps.
 | `src/agents/loader.ts` | `AgentContextProfile` + `DEFAULT_CONTEXT_PROFILE` |
 | `src/agents/router.ts` | Agent resolution with target-repo → org overlay → fallback search order |
 | `src/support/agents.ts` | `buildDispatchAllowBlock` (injected per agent) |
-| `src/slack/files.ts` | Image download |
+| `src/slack/files.ts` | Slack file download |
 | `src/session/manager.ts` | Calls preamble on first turn, workspace-only on resume, appends agent-state + dispatch-allow |
 | `src/claude/spawner.ts` | Exports Slack env vars |
 | `bin/slack-upload.sh` | Outbound uploads via env vars |

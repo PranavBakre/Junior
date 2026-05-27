@@ -36,7 +36,7 @@ The bot needs to receive Slack messages and route them to the right session. A m
 - `src/slack/commands.ts` — `parseCommand(text)` extracts a leading `!<word>` from `KNOWN_COMMANDS`. `!<persistent-agent>` directives (e.g. `!lead`, `!reproducer`, `!thinker`, `!review`) are **not** in this set — they pass through with the prefix intact for the agent dispatcher.
 - `src/slack/responder.ts` — `SlackResponder` wraps `chat.postMessage`, `chat.update`, `chat.delete`, and `reactions.add`. Handles response splitting (via `formatting.ts`), agent identity (`username` + `icon_emoji` on posts), and per-agent status pills keyed by `${threadTs}:${agentName}` with a 1s debounce.
 - `src/slack/home.ts` — `registerHomeTab` listens for `app_home_opened` and `home_session_details` button actions. `publishHomeTab` calls `store.getRecent(windowMs)`, resolves Slack permalinks, and renders blocks: stats summary (active/idle/draining/errors/muted/total), Active Sessions, Recent Sessions (last 10 idle), Recent Errors (last 5). Each session block stays compact (status, lead agent, provider, repo, last activity, mute flag, pending count, agent count) and includes a `View details` button. Detail modals show worktree path, resume command, per-agent resume/status rows, and last error, split into Slack-safe section blocks. Last-error text is passed through the same prompt-leak sanitizer used for runner error replies before it appears in Home or modals.
-- `src/slack/files.ts` — `downloadSlackFiles(files, threadId, botToken)` fetches image attachments (`image/png|jpeg|gif|webp`) to `/tmp/junior-files/<threadId>/` so Claude can read them. Non-image files are skipped.
+- `src/slack/files.ts` — `downloadSlackFiles(files, threadId, botToken)` fetches Slack attachments to `/tmp/junior-files/<threadId>/` so the runner can read them from disk.
 
 ### Drop rules in `events.ts`
 
@@ -95,7 +95,7 @@ Drop rules, `threadId` extraction, structured event passed to session manager. N
 
 - DMs (`channel_type === "im"`) bypass the mention requirement.
 - Message edits/deletes have no `text` and fall through `no-text`.
-- File uploads: image attachments are downloaded by `files.ts` and the local paths are passed to Claude as context. Non-image files are skipped today.
+- File uploads: attachments are downloaded by `files.ts` and the local paths are passed to the runner as context.
 - No outgoing rate-limit beyond the 1s status-pill debounce.
 
 ## Shortcuts
