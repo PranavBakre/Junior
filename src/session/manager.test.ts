@@ -330,6 +330,34 @@ describe("SessionManager", () => {
     expect(callArgs[1]).toBe("Build me a feature");
   });
 
+  it("adds downloaded non-image Slack file paths to the prompt", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () => new Response("a,b\n1,2\n", { status: 200 })) as unknown as typeof fetch;
+    try {
+      await manager.handleMessage(
+        makeEvent({
+          text: "review this csv",
+          files: [
+            {
+              url: "https://files.slack.com/files-pri/T/F/download/input.csv",
+              name: "input.csv",
+              mimetype: "text/csv",
+            },
+          ],
+        }),
+      );
+      await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
+    const prompt = mockSpawnFn.mock.calls[0][1] as string;
+    expect(prompt).toContain("review this csv");
+    expect(prompt).toContain("The user shared files.");
+    expect(prompt).toContain("/tmp/junior-files/thread-1/input.csv");
+  });
+
   // --- Message buffering ---
 
   it("buffers message when thread is busy", async () => {
