@@ -339,6 +339,33 @@ describe("AgentDispatcher", () => {
     expect(call.dedupeKey).toBeUndefined();
   });
 
+  it("auto-dispatches GitHub PR review requests to review in non-support channels", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(
+      managerMock as unknown as SessionManager,
+      new Set(["CBUGS"]),
+    );
+
+    await router.handleMessage(
+      makeEvent({
+        channel: "CTECH",
+        text: "https://github.com/GrowthX-Club/gx-backend/pull/3150 please review",
+      }),
+    );
+
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ dedupeKey: "123.456:review:auto" }),
+      "review",
+    );
+  });
+
   it("uses routing memory body even when the memory has a title", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),

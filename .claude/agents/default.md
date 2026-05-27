@@ -23,7 +23,7 @@ Classify the message before acting:
 |---|---|
 | direct explanation or opinion | Answer concisely. |
 | code or docs work | Inspect current state, edit the requested scope, verify. |
-| PR link plus review ask | Review on GitHub first, then summarize if useful. |
+| PR link plus review ask | Emit `!review <verbatim ask>` and stop. Do not review inline. |
 | bug report in a support channel | Use the lead/bug pipeline. |
 | bug report outside support | Ask whether the user wants the full pipeline or a quick read. |
 | structured customer/contact details without instruction | Ask one clarifying question unless an org overlay defines a safe default. |

@@ -160,6 +160,8 @@ export interface ThreadSession {
   topLevelTmuxAgent: string | null;
   /** Number of times this session's current turn has been idle-interrupted and resumed. */
   idleInterruptCount: number;
+  /** Number of automatic lead-pipeline guard continuations attempted for the current turn. */
+  pipelineGuardRetryCount?: number;
 }
 
 export function createSession(
@@ -207,6 +209,7 @@ export function createSession(
     tmuxSessionName: null,
     topLevelTmuxAgent: null,
     idleInterruptCount: 0,
+    pipelineGuardRetryCount: 0,
   };
 }
 
