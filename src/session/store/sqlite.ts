@@ -256,6 +256,7 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   session.dormant ??= false;
   session.dormantAnnounced ??= false;
   session.humanParticipants ??= [];
+  session.pipelineGuardRetryCount ??= 0;
   return session;
 }
 

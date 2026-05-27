@@ -9,6 +9,9 @@ import type { SlackMessageEvent } from "../slack/events.ts";
 import type { Config } from "../config.ts";
 import { createSession } from "./types.ts";
 import type { App } from "@slack/bolt";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // --- Mock setup ---
 
@@ -476,6 +479,67 @@ describe("SessionManager", () => {
     const session = await store.get("thread-1");
     expect(session!.status).toBe("idle");
     expect(responses).toEqual([]);
+  });
+
+  it("continues lead instead of posting leaked observability worker output", async () => {
+    const bugRoot = mkdtempSync(join(tmpdir(), "junior-bugs-"));
+    const previousBugRoot = process.env.JUNIOR_BUG_ROOT;
+    process.env.JUNIOR_BUG_ROOT = bugRoot;
+    try {
+      const bugDir = join(bugRoot, "growthx", "6a167cfb");
+      mkdirSync(bugDir, { recursive: true });
+      writeFileSync(
+        join(bugDir, "state.json"),
+        JSON.stringify({
+          bugId: "6a167cfb",
+          product: "growthx",
+          status: "researching",
+          slackChannel: "C-BUGS",
+          slackThread: "thread-1",
+        }),
+      );
+
+      const supportConfig = cloneConfig({
+        channelDefaults: { "C-BUGS": { agentType: "lead" } },
+      });
+      const handle1 = createMockHandle();
+      const handle2 = createMockHandle();
+      let spawnCount = 0;
+      mockSpawnFn = mock(() => (spawnCount++ === 0 ? handle1 : handle2));
+      manager = new SessionManager(
+        store,
+        supportConfig,
+        ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+      );
+
+      const responses: string[] = [];
+      manager.onResponse = (_session, response) => responses.push(response);
+
+      await manager.handleLeadMessage(
+        makeEvent({ channel: "C-BUGS", text: "bug report" }),
+      );
+      handle1._complete(
+        "DONE: New Relic findings written to `/Users/psbakre/Projects/junior/support/bugs/growthx/6a167cfb/research.md`.",
+      );
+
+      await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+      expect(responses).toEqual([]);
+      expect(mockSpawnFn.mock.calls[1][1]).toContain("Your previous lead turn ended before advancing");
+      expect(mockSpawnFn.mock.calls[1][1]).toContain("Previous invalid response");
+
+      handle2._complete("!reproducer reproduce as affected member");
+      await waitFor(async () => (await store.get("thread-1"))?.status === "idle");
+
+      expect(responses).toEqual(["!reproducer reproduce as affected member"]);
+      expect((await store.get("thread-1"))!.pipelineGuardRetryCount).toBe(0);
+    } finally {
+      if (previousBugRoot === undefined) {
+        delete process.env.JUNIOR_BUG_ROOT;
+      } else {
+        process.env.JUNIOR_BUG_ROOT = previousBugRoot;
+      }
+      rmSync(bugRoot, { recursive: true, force: true });
+    }
   });
 
   it("captures sessionId from init event", async () => {
