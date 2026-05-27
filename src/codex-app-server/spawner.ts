@@ -48,6 +48,8 @@ export function spawnCodexAppServer(
   const codexHome = prepareCodexHome({
     isolatedHomePath: config.codex.isolatedHomePath ?? resolve(process.cwd(), "data/codex-home"),
     model,
+    approvalPolicy: config.codex.askForApproval,
+    sandbox: config.codex.sandbox,
     mcp,
     trustedProjectPath: runtime.cwd,
   });
@@ -162,40 +164,33 @@ export function spawnCodexAppServer(
       });
 
       if (session.sessionId) {
-        const resumed = record(await send("thread/resume", {
-          threadId: session.sessionId,
-          cwd: runtime.cwd,
-          approvalPolicy: policy.approvalPolicy,
-          sandbox: policy.sandbox,
-          sandboxPolicy: policy.sandboxPolicy,
-          developerInstructions: developerInstructions(session),
-          excludeTurns: true,
-          persistExtendedHistory: false,
-        }));
-        activeThreadId = stringValue(record(resumed?.thread)?.id) ?? session.sessionId;
-      } else {
-        const started = record(await send("thread/start", {
+        try {
+          const resumed = record(await send("thread/resume", {
+            threadId: session.sessionId,
+            cwd: runtime.cwd,
+            approvalPolicy: policy.approvalPolicy,
+            sandbox: policy.sandbox,
+            sandboxPolicy: policy.sandboxPolicy,
+            developerInstructions: developerInstructions(session),
+            excludeTurns: true,
+            persistExtendedHistory: false,
+          }));
+          activeThreadId = stringValue(record(resumed?.thread)?.id) ?? session.sessionId;
+        } catch (err) {
+          if (!isMissingRolloutError(err)) throw err;
+          activeThreadId = null;
+        }
+      }
+
+      if (!activeThreadId) {
+        const started = record(await send("thread/start", threadStartParams({
           cwd: runtime.cwd,
           model,
-          approvalPolicy: policy.approvalPolicy,
-          sandbox: policy.sandbox,
-          sandboxPolicy: policy.sandboxPolicy,
-          baseInstructions: baseInstructions(),
-          developerInstructions: developerInstructions(session),
-          ephemeral: false,
-          experimentalRawEvents: false,
-          persistExtendedHistory: false,
-          threadSource: "user",
-        }));
+          policy,
+          session,
+        })));
         activeThreadId = stringValue(record(started?.thread)?.id);
-        if (activeThreadId) {
-          for (const event of mapper.map({
-            method: "thread/started",
-            params: { thread: { id: activeThreadId } },
-          })) {
-            emit(event);
-          }
-        }
+        emitThreadStarted(activeThreadId, mapper.map, emit);
       }
 
       if (!activeThreadId) {
@@ -284,6 +279,45 @@ function inputItems(prompt: string, imagePaths: string[]): Array<Record<string, 
     { type: "text", text: prompt, text_elements: [] },
     ...imagePaths.map((path) => ({ type: "localImage", path })),
   ];
+}
+
+function threadStartParams(options: {
+  cwd: string;
+  model: string | null;
+  policy: ReturnType<typeof mapCodexRunPolicy>;
+  session: ThreadSession;
+}): Record<string, unknown> {
+  return {
+    cwd: options.cwd,
+    model: options.model,
+    approvalPolicy: options.policy.approvalPolicy,
+    sandbox: options.policy.sandbox,
+    sandboxPolicy: options.policy.sandboxPolicy,
+    baseInstructions: baseInstructions(),
+    developerInstructions: developerInstructions(options.session),
+    ephemeral: false,
+    experimentalRawEvents: false,
+    persistExtendedHistory: false,
+    threadSource: "user",
+  };
+}
+
+function emitThreadStarted(
+  threadId: string | null,
+  map: (event: { method: string; params?: Record<string, unknown> }) => RunnerEvent[],
+  emit: (event: RunnerEvent) => void,
+): void {
+  if (!threadId) return;
+  for (const event of map({
+    method: "thread/started",
+    params: { thread: { id: threadId } },
+  })) {
+    emit(event);
+  }
+}
+
+function isMissingRolloutError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("no rollout found for thread id");
 }
 
 function responseForServerRequest(method: string): Record<string, unknown> {

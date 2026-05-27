@@ -27,7 +27,7 @@ export function mapCodexRunPolicy(options: {
 }): CodexRunPolicy {
   const { config, session, cwd } = options;
   const permissions: AgentPermissions | undefined = session.agentPermissions;
-  const intent = permissions?.intent ?? inferIntentFromTools(permissions?.tools);
+  const intent = permissions?.intent ?? null;
 
   if (intent === "read-only" || intent === "no-tools") {
     return {
@@ -62,33 +62,6 @@ export function mapCodexRunPolicy(options: {
     sandboxPolicy: sandboxPolicyFor(config.sandbox, cwd),
     mcpAllowed: !session.cwd,
   };
-}
-
-function inferIntentFromTools(
-  tools: string[] | undefined,
-): AgentPermissions["intent"] {
-  if (!tools || tools.length === 0) return null;
-  const normalized = tools.map((tool) => tool.trim().toLowerCase()).filter(Boolean);
-  if (normalized.some((tool) => tool === "none" || tool === "no-tools")) {
-    return "no-tools";
-  }
-  const known = new Set([
-    "read",
-    "grep",
-    "glob",
-    "ls",
-    "agent",
-    "task",
-    "bash",
-    "edit",
-    "write",
-    "multiedit",
-    "notebookedit",
-  ]);
-  if (normalized.some((tool) => !known.has(tool))) return "no-tools";
-  const mutating = new Set(["bash", "edit", "write", "multiedit", "notebookedit"]);
-  if (normalized.some((tool) => mutating.has(tool))) return "normal";
-  return "read-only";
 }
 
 export function sandboxPolicyFor(
