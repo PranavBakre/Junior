@@ -691,7 +691,7 @@ export class SqliteMemoryStore implements MemoryStore {
       archivedEventIds.push(row.id);
     }
 
-    // --- Lesson promotion: promote repeated high-importance event patterns ---
+    // --- Lesson promotion: promote repeated high-importance semantic event patterns ---
     const lessonRows = this.db
       .query<{ tag: string; count: number; event_ids: string }, [number, number, number]>(
         `SELECT mt.tag_id AS tag, COUNT(*) AS count,
@@ -705,6 +705,8 @@ export class SqliteMemoryStore implements MemoryStore {
       .all(0.7, now - 14 * 24 * 60 * 60 * 1000, repeatedThreshold);
 
     for (const row of lessonRows) {
+      if (!isPromotableLessonTag(row.tag)) continue;
+
       const eventIds = row.event_ids.split(",");
       const lessonId = `lesson_${slug(row.tag)}_${now}`;
       await this.upsertLesson({
@@ -1251,6 +1253,25 @@ function normalizeName(value: string): string {
 function slug(value: string): string {
   return normalizeName(value).replace(/[^a-z0-9_:-]/g, "_").slice(0, 80) || "unknown";
 }
+
+function isPromotableLessonTag(tagId: string): boolean {
+  const tag = tagId.startsWith("tag:") ? tagId.slice(4) : tagId;
+  if (tag.startsWith("agent:") || tag.startsWith("command:")) return false;
+  if (tag.includes("worktree") || tag.includes("worktrees")) return false;
+  if (tag.includes("import")) return false;
+
+  return !NON_LESSON_TAGS.has(tag);
+}
+
+const NON_LESSON_TAGS = new Set([
+  "error",
+  "growthx",
+  "gx_learnings",
+  "learnings",
+  "runner_output",
+  "runner_tool_error",
+  "slack_message",
+]);
 
 function unique<T>(values: T[]): T[] {
   return [...new Set(values.filter(Boolean))];

@@ -330,7 +330,7 @@ describe("SqliteMemoryStore", () => {
     expect(correction?.correct_value).toBe("frontend");
   });
 
-  it("consolidates by archiving cold events, promoting routing memories, proposing draft rules, promoting lessons, and pruning edges", async () => {
+  it("consolidates by archiving cold events, promoting routing memories, proposing draft rules, semantic lessons, and pruning edges", async () => {
     const now = Date.now();
     const old = now - 60 * 24 * 60 * 60 * 1000;
     await store.appendSourceRecord({ id: "source-old", kind: "slack_message", body: "ok", createdAt: old });
@@ -343,7 +343,7 @@ describe("SqliteMemoryStore", () => {
       createdAt: old,
     });
 
-    // Lesson promotion: multiple high-importance events with the same tag
+    // Semantic repeated tags can promote; operational/import tags should not.
     const recent = now - 1000;
     await store.appendSourceRecord({ id: "src-a", kind: "slack_message", body: "auth middleware broken", createdAt: recent });
     await store.upsertEvent({
@@ -351,7 +351,7 @@ describe("SqliteMemoryStore", () => {
       sourceRecordId: "src-a",
       threadId: "T2",
       body: "auth middleware broken on /api/v2",
-      tags: ["auth", "bug"],
+      tags: ["auth", "bug", "agent:default", "runner_tool_error", "gx_learnings"],
       importance: 0.8,
       createdAt: recent,
     });
@@ -361,7 +361,7 @@ describe("SqliteMemoryStore", () => {
       sourceRecordId: "src-b",
       threadId: "T2",
       body: "JWT token expired after 5 min",
-      tags: ["auth", "error"],
+      tags: ["auth", "error", "agent:default", "runner_tool_error", "gx_learnings"],
       importance: 0.9,
       createdAt: recent,
     });
@@ -371,7 +371,7 @@ describe("SqliteMemoryStore", () => {
       sourceRecordId: "src-c",
       threadId: "T2",
       body: "fixed auth middleware with token refresh",
-      tags: ["auth"],
+      tags: ["auth", "agent:default", "runner_tool_error", "gx_learnings"],
       importance: 0.75,
       createdAt: recent,
     });
@@ -428,8 +428,12 @@ describe("SqliteMemoryStore", () => {
     expect(result.proposedRuleIds).toContain("rule_tag_frontend");
     expect(result.decisions.map((decision) => decision.action)).toContain("propose_rule");
 
-    // Lesson promotion (3+ high-importance events with same tag)
+    // Semantic tag promotion remains, but bad input tags are ignored.
     expect(result.decisions.map((decision) => decision.action)).toContain("promote_lesson");
+    expect(result.promotedMemoryIds).toContain(`lesson_tag:auth_${now}`);
+    expect(result.promotedMemoryIds).not.toContain(`lesson_tag:agent:default_${now}`);
+    expect(result.promotedMemoryIds).not.toContain(`lesson_tag:runner_tool_error_${now}`);
+    expect(result.promotedMemoryIds).not.toContain(`lesson_tag:gx_learnings_${now}`);
 
     // Edge pruning (weak old edge removed)
     expect(result.decisions.map((decision) => decision.action)).toContain("prune_edges");
