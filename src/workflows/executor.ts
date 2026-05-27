@@ -196,14 +196,19 @@ export class WorkflowExecutor {
     session: ReturnType<typeof createSession>;
     initialPrompt: string;
   }): Promise<string> {
-    const maxIdleInterrupts = options.runner.idleTimeoutMs
+    const idleResumeEnabled = this.idleResumeEnabled(options.provider);
+    const maxIdleInterrupts = options.runner.idleTimeoutMs && idleResumeEnabled
       ? (options.runner.maxIdleInterrupts ?? DEFAULT_MAX_IDLE_INTERRUPTS)
       : 0;
     let idleInterrupts = 0;
     let prompt = options.initialPrompt;
 
     for (;;) {
-      const attempt = await this.runWorkflowRunnerAttempt({ ...options, prompt });
+      const attempt = await this.runWorkflowRunnerAttempt({
+        ...options,
+        prompt,
+        idleResumeEnabled,
+      });
       if (attempt.result.sessionId) {
         options.session.sessionId = attempt.result.sessionId;
       }
@@ -213,7 +218,12 @@ export class WorkflowExecutor {
         return response;
       }
 
-      if (attempt.idleInterrupted && options.session.sessionId && idleInterrupts < maxIdleInterrupts) {
+      if (
+        attempt.idleInterrupted &&
+        idleResumeEnabled &&
+        options.session.sessionId &&
+        idleInterrupts < maxIdleInterrupts
+      ) {
         idleInterrupts += 1;
         log.warn(
           "workflow",
@@ -244,6 +254,7 @@ export class WorkflowExecutor {
     provider: ImplementedRunnerProvider;
     session: ReturnType<typeof createSession>;
     prompt: string;
+    idleResumeEnabled: boolean;
   }): Promise<{ result: Awaited<SpawnHandle["result"]>; idleInterrupted: boolean }> {
     const handle = this.spawn(
       options.session,
@@ -261,7 +272,7 @@ export class WorkflowExecutor {
     };
     const armIdleTimer = () => {
       clearIdleTimer();
-      if (!options.runner.idleTimeoutMs) return;
+      if (!options.idleResumeEnabled || !options.runner.idleTimeoutMs) return;
       idleTimer = setTimeout(() => {
         idleInterrupted = true;
         log.warn(
@@ -302,6 +313,11 @@ export class WorkflowExecutor {
     );
     const result = await bounded.result.finally(clearIdleTimer);
     return { result, idleInterrupted };
+  }
+
+  private idleResumeEnabled(provider: ImplementedRunnerProvider): boolean {
+    if (provider === "opencode") return this.config.opencode.continuityEnabled;
+    return provider !== "opencode-sdk" && provider !== "codex-app-server";
   }
 
   private async emitOutputs(

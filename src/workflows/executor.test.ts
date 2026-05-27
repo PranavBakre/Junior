@@ -247,8 +247,10 @@ describe("WorkflowExecutor", () => {
         pid: null,
       };
     };
+    const config = testConfig();
+    config.opencode.continuityEnabled = true;
     const executor = new WorkflowExecutor({
-      config: testConfig(),
+      config,
       store,
       spawn,
       now: () => new Date("2026-05-24T11:00:00.000Z"),
@@ -262,6 +264,108 @@ describe("WorkflowExecutor", () => {
       expect(killSignals).toContain("SIGINT");
       expect(seenSessionIds).toEqual([null, "ses-idle"]);
       expect((await store.getRun(result.run.id))?.providerSessionId).toBe("ses-idle");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not idle-interrupt workflow runners for server-attached providers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-server-provider-test-"));
+    const definition = workflowDefinition(dir);
+    definition.runner = {
+      provider: "default",
+      agentName: "default",
+      timeoutMs: 1000,
+      idleTimeoutMs: 10,
+      maxIdleInterrupts: 1,
+    };
+    const store = new InMemoryWorkflowStore();
+    const killSignals: Array<string | undefined> = [];
+    const spawn: SpawnRunnerFn = (): SpawnHandle => {
+      return {
+        provider: "codex-app-server",
+        result: new Promise((resolve) => {
+          setTimeout(() => resolve({
+            provider: "codex-app-server",
+            sessionId: null,
+            response: "Completed after quiet server-attached work.",
+            events: [],
+            exitCode: 0,
+            error: null,
+          }), 30);
+        }),
+        onEvent: () => {},
+        kill: (signal) => {
+          killSignals.push(signal);
+        },
+        pid: null,
+      };
+    };
+    const config = testConfig();
+    config.runner.provider = "codex-app-server";
+    const executor = new WorkflowExecutor({
+      config,
+      store,
+      spawn,
+      now: () => new Date("2026-05-24T11:30:00.000Z"),
+    });
+
+    try {
+      const result = await executor.run({ definition, reason: "manual" });
+
+      expect(result.summary).toBe("Completed after quiet server-attached work.");
+      expect(killSignals).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not idle-interrupt opencode workflow runners when continuity is disabled", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-opencode-no-continuity-test-"));
+    const definition = workflowDefinition(dir);
+    definition.runner = {
+      provider: "default",
+      agentName: "default",
+      timeoutMs: 1000,
+      idleTimeoutMs: 10,
+      maxIdleInterrupts: 1,
+    };
+    const store = new InMemoryWorkflowStore();
+    const killSignals: Array<string | undefined> = [];
+    const spawn: SpawnRunnerFn = (): SpawnHandle => {
+      return {
+        provider: "opencode",
+        result: new Promise((resolve) => {
+          setTimeout(() => resolve({
+            provider: "opencode",
+            sessionId: null,
+            response: "Completed without continuity.",
+            events: [],
+            exitCode: 0,
+            error: null,
+          }), 30);
+        }),
+        onEvent: () => {},
+        kill: (signal) => {
+          killSignals.push(signal);
+        },
+        pid: null,
+      };
+    };
+    const config = testConfig();
+    config.opencode.continuityEnabled = false;
+    const executor = new WorkflowExecutor({
+      config,
+      store,
+      spawn,
+      now: () => new Date("2026-05-24T12:00:00.000Z"),
+    });
+
+    try {
+      const result = await executor.run({ definition, reason: "manual" });
+
+      expect(result.summary).toBe("Completed without continuity.");
+      expect(killSignals).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
