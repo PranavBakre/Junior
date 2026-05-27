@@ -43,9 +43,19 @@ Expected work:
 
 1. Inspect recent memory source records, derived events, ingestion classifications, and corrections.
 2. Promote repeated corrections into routing memories only when the evidence is explicit.
-3. Promote repeated high-importance patterns into lessons/facts only when source records support them.
+3. Promote repeated high-importance patterns into lessons/facts only when source records support a reusable behavioral rule, user preference, domain fact, or operating procedure.
 4. Archive low-importance stale events out of active recall without deleting source records.
 5. Propose draft bounded-DSL ingestion rules from repeated corrections; do not mark them accepted without review.
 6. Record a compact summary of decisions: promoted memories, archived event ids, draft rule ids, and any blockers.
+
+Quality bar:
+
+- Tag-based promotion is allowed only for semantic tags that describe reusable work patterns, domains, products, features, user preferences, or procedures.
+- Tags may help find candidate evidence, but a promoted lesson must be backed by source bodies that explain why the pattern matters.
+- Reject or flag promotions from operational/indexing tags, including `agent:*`, `runner_tool_error`, `runner_output`, `slack_message`, `error`, `command:*`, `growthx`, `gx_learnings`, `learnings`, worktree/repo labels, import labels, or similarly broad metadata tags.
+- GrowthX/imported-learning tags are retrieval labels, not lessons. If they reveal useful guidance, extract the actual guidance from the event bodies and preserve provenance.
+- Before accepting any promotion, check whether an equivalent lesson/fact/summary already exists. Prefer stable IDs, update, merge, or report a duplicate instead of creating timestamped near-duplicates.
+- Treat clusters of tool errors, runner failures, agent activity, or Slack message counts as health/telemetry findings, not associative-memory lessons.
+- If the deterministic/native pass promotes low-value tag summaries caused by bad input labels, explicitly call them out in the final report and recommend cleanup rather than validating them as good memories.
 
 Do not run this on every Slack message. This is an offline/operator-triggered pass, not the hot capture path.
