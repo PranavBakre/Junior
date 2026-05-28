@@ -892,7 +892,7 @@ describe("SessionManager", () => {
       archiveDir = mkdtempSync(join(tmpdir(), "junior-clear-"));
     });
 
-    function makeSlackApp(deleted: string[]) {
+    function makeSlackApp(deleted: string[], failDeletes = new Set<string>()) {
       return {
         client: {
           conversations: {
@@ -912,6 +912,7 @@ describe("SessionManager", () => {
           },
           chat: {
             delete: async ({ ts }: { ts: string }) => {
+              if (failDeletes.has(ts)) throw new Error("cant_delete_message");
               deleted.push(ts);
             },
           },
@@ -945,6 +946,31 @@ describe("SessionManager", () => {
       expect(onCmd.mock.calls[0][1]).toContain("Cleared *1* Junior message");
       expect(onCmd.mock.calls[0][1]).toContain(archiveDir);
       expect(await store.get("thread-1")).toBeDefined();
+    });
+
+    it("reports delete failures instead of saying nothing was cleared", async () => {
+      const deleted: string[] = [];
+      const clearConfig: Config = {
+        ...adminConfig,
+        threadArchives: { dir: archiveDir },
+      };
+      const adminManager = new SessionManager(store, clearConfig);
+      adminManager.slackApp = makeSlackApp(deleted, new Set(["101.0"]));
+      adminManager.selfBotId = "B_SELF";
+      adminManager.botUserId = "U_BOT";
+
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      adminManager.onCommandResponse = onCmd;
+
+      await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+      await adminManager.handleMessage(
+        makeEvent({ user: "U-ADMIN", command: "clear", text: "", ts: "ts-clear" }),
+      );
+
+      expect(deleted).toEqual([]);
+      expect(onCmd.mock.calls[0][1]).toContain("failed to delete *1* Junior message");
+      expect(onCmd.mock.calls[0][1]).toContain("Deleted *0* messages");
+      expect(onCmd.mock.calls[0][1]).not.toContain("No Junior messages to clear");
     });
 
     it("rejects non-admin with silent x", async () => {

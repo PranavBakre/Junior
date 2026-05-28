@@ -499,7 +499,14 @@ export class SessionManager {
           this.onClearThreadStatus?.(session.threadId);
 
           const archiveLabel = result.archivePath;
-          if (result.deletedCount === 0) {
+          if (result.deleteFailedCount > 0) {
+            const failed = result.deleteFailedCount;
+            const deleted = result.deletedCount;
+            this.onCommandResponse?.(
+              event,
+              `Archived thread to \`${archiveLabel}\`, but failed to delete *${failed}* Junior message${failed === 1 ? "" : "s"}. Deleted *${deleted}* message${deleted === 1 ? "" : "s"}. Check logs for details.`,
+            );
+          } else if (result.deletedCount === 0) {
             this.onCommandResponse?.(
               event,
               `No Junior messages to clear. Archive saved to \`${archiveLabel}\` anyway.`,
