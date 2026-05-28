@@ -38,7 +38,7 @@ describe("buildCodexConfigToml", () => {
   it("serializes minimal isolated Codex config", () => {
     expect(
       buildCodexConfigToml({
-        model: "gpt-5.1-codex",
+        model: "gpt-5.5",
         approvalPolicy: "never",
         sandbox: "danger-full-access",
         mcp: {
@@ -52,7 +52,7 @@ describe("buildCodexConfigToml", () => {
     ).toContain('[projects."/repo"]\ntrust_level = "trusted"');
     expect(
       buildCodexConfigToml({
-        model: "gpt-5.1-codex",
+        model: "gpt-5.5",
         approvalPolicy: "never",
         sandbox: "danger-full-access",
         mcp: null,

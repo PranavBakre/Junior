@@ -38,7 +38,7 @@ export function spawnCodexAppServer(
     botToken,
     agentIdentity,
   });
-  const model = session.model ?? config.codex.model ?? null;
+  const model = resolveCodexModel(session.model, config.codex.model);
   const policy = mapCodexRunPolicy({
     config: config.codex,
     session,
@@ -260,6 +260,30 @@ export function spawnCodexAppServer(
     },
     pid: proc.pid,
   };
+}
+
+export function resolveCodexModel(
+  sessionModel: string | null,
+  configModel: string | null,
+): string | null {
+  const sessionCodexModel = codexCompatibleModel(sessionModel);
+  if (sessionCodexModel) return sessionCodexModel;
+  return codexCompatibleModel(configModel);
+}
+
+function codexCompatibleModel(model: string | null): string | null {
+  if (!model) return null;
+
+  // Private/public agent definitions historically used Claude shorthand
+  // frontmatter (`sonnet`, `opus`, `haiku`) because agents first ran on the
+  // Claude runner. Passing those aliases through to Codex app-server breaks
+  // ChatGPT-authenticated Codex accounts with "model is not supported".
+  // Treat them as runner-specific hints, not Codex overrides, and let Codex
+  // use the configured/default model instead.
+  if (/^(sonnet|opus|haiku)$/i.test(model)) return null;
+  if (/^claude[-/]/i.test(model)) return null;
+
+  return model;
 }
 
 function baseInstructions(): string {

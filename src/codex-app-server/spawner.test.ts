@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { createSession } from "../session/types.ts";
-import { spawnCodexAppServer } from "./spawner.ts";
+import { resolveCodexModel, spawnCodexAppServer } from "./spawner.ts";
 
 const originalCodexBin = process.env.CODEX_BIN;
 
@@ -123,6 +123,24 @@ describe("spawnCodexAppServer", () => {
     } finally {
       fakeCodex.cleanup();
     }
+  });
+});
+
+describe("resolveCodexModel", () => {
+  it("ignores Claude agent aliases and falls back to Codex config", () => {
+    expect(resolveCodexModel("sonnet", "gpt-5.5")).toBe("gpt-5.5");
+    expect(resolveCodexModel("opus", "gpt-5.5")).toBe("gpt-5.5");
+    expect(resolveCodexModel("haiku", "gpt-5.5")).toBe("gpt-5.5");
+  });
+
+  it("omits unsupported Claude model names when no Codex fallback is configured", () => {
+    expect(resolveCodexModel("claude-sonnet-4-5", null)).toBeNull();
+    expect(resolveCodexModel("claude/opus", null)).toBeNull();
+  });
+
+  it("keeps explicit Codex-compatible model overrides", () => {
+    expect(resolveCodexModel("gpt-5.5", "gpt-5.1-codex")).toBe("gpt-5.5");
+    expect(resolveCodexModel(null, "gpt-5.1-codex")).toBe("gpt-5.1-codex");
   });
 });
 
