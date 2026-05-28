@@ -164,7 +164,7 @@ describe("loadConfig runner providers", () => {
   it("parses codex-app-server provider and Codex env vars", () => {
     process.env.RUNNER_PROVIDER = "codex-app-server";
     process.env.CODEX_MODE = "app-server";
-    process.env.CODEX_MODEL = "gpt-5.1-codex";
+    process.env.CODEX_MODEL = "gpt-5.5";
     process.env.CODEX_TIMEOUT_MS = "2345";
     process.env.CODEX_SANDBOX = "read-only";
     process.env.CODEX_ASK_FOR_APPROVAL = "on-request";
@@ -183,7 +183,7 @@ describe("loadConfig runner providers", () => {
     expect(config.runner.provider).toBe("codex-app-server");
     expect(config.codex).toEqual({
       mode: "app-server",
-      model: "gpt-5.1-codex",
+      model: "gpt-5.5",
       timeoutMs: 2345,
       sandbox: "read-only",
       askForApproval: "on-request",
