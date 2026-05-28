@@ -11,6 +11,7 @@ import {
   isPersistentAgent,
   workerMayDispatch,
 } from "./agents.ts";
+import { looksLikePrReviewRequest } from "./pipeline-guard.ts";
 import { log } from "../logger.ts";
 
 export interface AgentDirective {
@@ -205,6 +206,14 @@ export class AgentDispatcher {
         if (session?.defaultAgent) {
           targetAgent = session.defaultAgent;
         }
+      }
+
+      if (targetAgent !== "lead" && looksLikePrReviewRequest(event.text)) {
+        await this.manager.handleAgentMessage({
+          ...event,
+          dedupeKey: event.dedupeKey ?? `${event.ts}:review:auto`,
+        }, "review");
+        return;
       }
 
       const memoryAgent = await this.memorySuggestedAgent(event);
