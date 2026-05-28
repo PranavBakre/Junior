@@ -90,8 +90,9 @@ export function registerEventHandlers(
       selfBotId &&
       (event as { bot_id: string }).bot_id === selfBotId;
     const isAutoTrigger = !!autoTriggerChannels?.has(event.channel);
-    const selfBotText = "text" in event ? event.text : undefined;
-    const hasDirective = isSelfBot && containsDispatchDirective(selfBotText);
+    const eventText = "text" in event ? event.text : undefined;
+    const commandText = eventText ? stripOwnMention(eventText, selfUserId) : undefined;
+    const hasDirective = containsDispatchDirective(commandText ?? eventText);
 
     // Only support auto-trigger channels route our own bot messages; other
     // channels keep the legacy self-filter to avoid ordinary response loops.
@@ -104,7 +105,7 @@ export function registerEventHandlers(
       return;
     }
 
-    const text = "text" in event ? event.text : undefined;
+    const text = eventText;
     if (!text) {
       logDrop("no-text", evMeta);
       return;
@@ -132,13 +133,16 @@ export function registerEventHandlers(
     const isThread = "thread_ts" in event && !!event.thread_ts;
     const isDM = event.channel_type === "im";
 
-    if (!isThread && !isDM && !isAutoTrigger) {
-      // Top-level channel message without mention — app_mention handler covers @mentions.
+    if (!isThread && !isDM && !isAutoTrigger && !hasDirective) {
+      // Top-level channel message without mention — app_mention handler covers
+      // @mentions. `!<agent>` directives are explicit dispatch requests, so
+      // don't drop them just because the channel normally requires tagging
+      // Junior first.
       logDrop("top-level-no-mention", evMeta);
       return;
     }
 
-    if (isThread && !isAutoTrigger && store) {
+    if (isThread && !isAutoTrigger && store && !hasDirective) {
       // Only respond in threads where the bot has an active session
       const threadTs = "thread_ts" in event ? event.thread_ts! : event.ts;
       const session = await store.get(threadTs);
@@ -152,8 +156,9 @@ export function registerEventHandlers(
       "thread_ts" in event && event.thread_ts ? event.thread_ts : event.ts;
 
     const mentionsJunior = detectSelfMention(text, selfUserId);
-    const cleanText = stripOwnMention(text, selfUserId);
-    const parsed = parseCommand(cleanText);
+    const routingText = commandText ?? text;
+    const parsed = parseCommand(routingText);
+    const deliveredText = deliveredEventText(text, routingText, parsed);
 
     // Extract file attachments if present
     const files = extractFiles(event);
@@ -167,7 +172,7 @@ export function registerEventHandlers(
       threadId,
       channel: event.channel,
       user,
-      text: parsed.text,
+      text: deliveredText,
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
@@ -199,8 +204,9 @@ export function registerEventHandlers(
     // the attention gate's wake-on-mention path works uniformly across both
     // event sources.
     const mentionsJunior = true;
-    const cleanText = stripOwnMention(event.text, selfUserId);
-    const parsed = parseCommand(cleanText);
+    const routingText = stripOwnMention(event.text, selfUserId);
+    const parsed = parseCommand(routingText);
+    const deliveredText = deliveredEventText(event.text, routingText, parsed);
 
     // Extract file attachments if present
     const files = extractFiles(event);
@@ -220,7 +226,7 @@ export function registerEventHandlers(
       threadId,
       channel: event.channel,
       user: event.user,
-      text: parsed.text,
+      text: deliveredText,
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
@@ -243,6 +249,16 @@ function stripOwnMention(text: string, selfUserId?: string): string {
       .trim();
   }
   return text.replace(/^<@[A-Z0-9_]+>\s*/g, "").trim();
+}
+
+function deliveredEventText(
+  originalText: string,
+  routingText: string,
+  parsed: { command: string | null; text: string },
+): string {
+  if (parsed.command) return parsed.text;
+  if (containsDispatchDirective(routingText)) return routingText;
+  return originalText;
 }
 
 function escapeRegExp(value: string): string {

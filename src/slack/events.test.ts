@@ -164,6 +164,117 @@ describe("registerEventHandlers — ✽ filter", () => {
     expect(onMessage.mock.calls[0][0].isSelfBot).toBe(true);
   });
 
+  it("self-bot directive is let through as a top-level post in mention-required channels", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    registerEventHandlers(app, onMessage, undefined, "B_SELF", "U_BOT");
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "!review take a look at PR 21",
+        channel: "C_OTHER",
+        channel_type: "channel",
+        ts: "1700000000.000013",
+        bot_id: "B_SELF",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        threadId: "1700000000.000013",
+        text: "!review take a look at PR 21",
+        isSelfBot: true,
+      }),
+    );
+  });
+
+  it("self-bot directive is let through in a new thread even when no session exists", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    const store = {
+      get: mock(async () => undefined),
+    } as unknown as Parameters<typeof registerEventHandlers>[2];
+    registerEventHandlers(app, onMessage, store, "B_SELF", "U_BOT");
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "!review take a look at PR 21",
+        channel: "C_OTHER",
+        channel_type: "channel",
+        ts: "1700000000.000014",
+        thread_ts: "1700000000.000000",
+        bot_id: "B_SELF",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        threadId: "1700000000.000000",
+        text: "!review take a look at PR 21",
+        isSelfBot: true,
+      }),
+    );
+  });
+
+  it("human !<persistent-agent> directive is let through without mentioning Junior", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    registerEventHandlers(app, onMessage, undefined, "B_SELF", "U_BOT");
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "!review take a look at PR 21",
+        channel: "C_OTHER",
+        channel_type: "channel",
+        ts: "1700000000.000015",
+        user: "U_HUMAN",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        threadId: "1700000000.000015",
+        text: "!review take a look at PR 21",
+        command: null,
+      }),
+    );
+  });
+
+  it("human !<persistent-agent> directive is let through in a new thread without an existing session", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    const store = {
+      get: mock(async () => undefined),
+    } as unknown as Parameters<typeof registerEventHandlers>[2];
+    registerEventHandlers(app, onMessage, store, "B_SELF", "U_BOT");
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "!review take a look at PR 21",
+        channel: "C_OTHER",
+        channel_type: "channel",
+        ts: "1700000000.000016",
+        thread_ts: "1700000000.000000",
+        user: "U_HUMAN",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        threadId: "1700000000.000000",
+        text: "!review take a look at PR 21",
+      }),
+    );
+  });
+
   it("self-bot message with a non-agent !word is still dropped", async () => {
     const { app, handlers } = makeMockApp();
     const onMessage = mock((_e: SlackMessageEvent) => {});
@@ -183,7 +294,7 @@ describe("registerEventHandlers — ✽ filter", () => {
     expect(onMessage).not.toHaveBeenCalled();
   });
 
-  it("app_mention handler passes through a normal mention", async () => {
+  it("app_mention handler preserves and resolves the normal mention later", async () => {
     const { app, handlers } = makeMockApp();
     const onMessage = mock((_e: SlackMessageEvent) => {});
     registerEventHandlers(app, onMessage, undefined, undefined, "U_BOT");
@@ -199,6 +310,53 @@ describe("registerEventHandlers — ✽ filter", () => {
     });
 
     expect(onMessage).toHaveBeenCalledTimes(1);
-    expect(onMessage.mock.calls[0][0].text).toBe("hello");
+    expect(onMessage.mock.calls[0][0].text).toBe("<@U_BOT> hello");
+    expect(onMessage.mock.calls[0][0].mentionsJunior).toBe(true);
+  });
+
+  it("app_mention handler preserves Junior when other users are mentioned too", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    registerEventHandlers(app, onMessage, undefined, undefined, "U_BOT");
+
+    await handlers.get("app_mention")!({
+      event: {
+        type: "app_mention",
+        text: "<@U_BOT> <@U_A> <@U_B> can you check this?",
+        channel: "C123",
+        ts: "1700000000.000017",
+        user: "U_HUMAN",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage.mock.calls[0][0].text).toBe(
+      "<@U_BOT> <@U_A> <@U_B> can you check this?",
+    );
+  });
+
+  it("app_mention handler still routes directives after Junior mention", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    registerEventHandlers(app, onMessage, undefined, undefined, "U_BOT");
+
+    await handlers.get("app_mention")!({
+      event: {
+        type: "app_mention",
+        text: "<@U_BOT> !review take a look at PR 21",
+        channel: "C123",
+        ts: "1700000000.000018",
+        user: "U_HUMAN",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        text: "!review take a look at PR 21",
+        command: null,
+        mentionsJunior: true,
+      }),
+    );
   });
 });
