@@ -455,6 +455,7 @@ function testConfig(): Config {
       maxIdleInterrupts: 3,
     },
     memory: { sqlitePath: "data/memory.db" },
+    threadArchives: { dir: "data/thread-archives" },
     channelDefaults: {},
     adminSlackUserId: null,
     http: { enabled: false, port: 0 },

@@ -82,6 +82,7 @@ describe("parseCommand", () => {
       "frontend",
       "architect",
       "reset",
+      "clear",
       "status",
       "repo",
       "branch",

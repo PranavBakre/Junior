@@ -116,6 +116,9 @@ export interface Config {
   memory: {
     sqlitePath: string;
   };
+  threadArchives: {
+    dir: string;
+  };
   channelDefaults: Record<string, { agentType: string }>;
   /**
    * Single Slack user ID allowed to run elevated commands (`!mute`, `!unmute`,
@@ -222,6 +225,9 @@ export function loadConfig(): Config {
     },
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
+    },
+    threadArchives: {
+      dir: optional("THREAD_ARCHIVE_DIR", "data/thread-archives"),
     },
     channelDefaults: parseChannelDefaults(
       optional(
