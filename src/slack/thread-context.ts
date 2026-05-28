@@ -1,4 +1,5 @@
 import type { App } from "@slack/bolt";
+import type { WebClient } from "@slack/web-api";
 import type { RepoConfig } from "../config.ts";
 import { loadPersona } from "../persona.ts";
 import { NO_SLACK_MESSAGE } from "./formatting.ts";
@@ -19,12 +20,16 @@ interface ThreadMessage {
 const channelNameCache = new Map<string, string>();
 const userNameCache = new Map<string, string>();
 
-async function resolveChannelName(app: App, channelId: string): Promise<string> {
+export async function resolveChannelName(
+  clientOrApp: App | WebClient,
+  channelId: string,
+): Promise<string> {
   const cached = channelNameCache.get(channelId);
   if (cached) return cached;
 
   try {
-    const info = await app.client.conversations.info({ channel: channelId });
+    const client = "client" in clientOrApp ? clientOrApp.client : clientOrApp;
+    const info = await client.conversations.info({ channel: channelId });
     const name = info.channel?.name ?? channelId;
     channelNameCache.set(channelId, name);
     return name;
@@ -33,12 +38,16 @@ async function resolveChannelName(app: App, channelId: string): Promise<string> 
   }
 }
 
-async function resolveUserName(app: App, userId: string): Promise<string> {
+export async function resolveUserName(
+  clientOrApp: App | WebClient,
+  userId: string,
+): Promise<string> {
   const cached = userNameCache.get(userId);
   if (cached) return cached;
 
   try {
-    const info = await app.client.users.info({ user: userId });
+    const client = "client" in clientOrApp ? clientOrApp.client : clientOrApp;
+    const info = await client.users.info({ user: userId });
     const user = info.user as
       | {
           name?: string;
@@ -60,7 +69,7 @@ async function resolveUserName(app: App, userId: string): Promise<string> {
 }
 
 export async function resolveSlackMentions(
-  app: App,
+  clientOrApp: App | WebClient,
   text: string,
 ): Promise<string> {
   const mentionPattern = /<@([A-Z0-9]+)>/g;
@@ -73,7 +82,7 @@ export async function resolveSlackMentions(
   const uniqueIds = [...new Set(matches.map((m) => m[1]))];
   const nameMap = new Map(
     await Promise.all(
-      uniqueIds.map(async (id) => [id, await resolveUserName(app, id)] as const),
+      uniqueIds.map(async (id) => [id, await resolveUserName(clientOrApp, id)] as const),
     ),
   );
 

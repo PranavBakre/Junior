@@ -41,6 +41,7 @@ import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loa
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
+import { clearThreadJuniorMessages } from "../slack/thread-archive.ts";
 
 export class SessionManager {
   private store: SessionStore;
@@ -53,6 +54,7 @@ export class SessionManager {
 
   slackApp?: App;
   botUserId?: string;
+  selfBotId?: string;
   agentRouter?: AgentRouter;
   worktreeManager?: WorktreeManager;
   onResponse?: (session: ThreadSession, response: string) => void;
@@ -61,6 +63,7 @@ export class SessionManager {
   onError?: (session: ThreadSession, error: string | null) => void;
   onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
   onReaction?: (event: SlackMessageEvent, emoji: string) => void;
+  onClearThreadStatus?: (threadTs: string) => void;
 
   constructor(
     store: SessionStore,
@@ -465,6 +468,68 @@ export class SessionManager {
         return true;
       }
 
+      case "clear": {
+        if (await this.denyIfNotAdmin(event)) return true;
+
+        for (const key of this.handles.keys()) {
+          if (key.startsWith(`${session.threadId}:`)) {
+            this.onCommandResponse?.(
+              event,
+              "Cannot clear while a runner is active. Use `!cancel` or wait for the turn to finish.",
+            );
+            return true;
+          }
+        }
+
+        if (!this.slackApp) {
+          this.onCommandResponse?.(event, "Slack client not available.");
+          return true;
+        }
+
+        try {
+          const result = await clearThreadJuniorMessages({
+            client: this.slackApp.client,
+            channelId: event.channel,
+            threadTs: session.threadId,
+            selfBotId: this.selfBotId,
+            botUserId: this.botUserId,
+            archiveDir: this.config.threadArchives.dir,
+            triggeredByUserId: event.user,
+          });
+          this.onClearThreadStatus?.(session.threadId);
+
+          const archiveLabel = result.archivePath;
+          if (result.deleteFailedCount > 0) {
+            const failed = result.deleteFailedCount;
+            const deleted = result.deletedCount;
+            this.onCommandResponse?.(
+              event,
+              `Archived thread to \`${archiveLabel}\`, but failed to delete *${failed}* Junior message${failed === 1 ? "" : "s"}. Deleted *${deleted}* message${deleted === 1 ? "" : "s"}. Check logs for details.`,
+            );
+          } else if (result.deletedCount === 0) {
+            this.onCommandResponse?.(
+              event,
+              `No Junior messages to clear. Archive saved to \`${archiveLabel}\` anyway.`,
+            );
+          } else {
+            this.onCommandResponse?.(
+              event,
+              `Cleared *${result.deletedCount}* Junior message${result.deletedCount === 1 ? "" : "s"} from this thread.\nArchive: \`${archiveLabel}\``,
+            );
+          }
+        } catch (err) {
+          _log.error(
+            "thread-archive",
+            `clear.fail thread=${session.threadId} err=${err instanceof Error ? err.message : String(err)}`,
+          );
+          this.onCommandResponse?.(
+            event,
+            "Failed to clear thread messages. Check logs for details.",
+          );
+        }
+        return true;
+      }
+
       case "status": {
         const ago = session.lastActivity
           ? `${Math.round((Date.now() - session.lastActivity) / 1000)}s ago`
@@ -498,6 +563,7 @@ export class SessionManager {
           "`!provider <claude|opencode|opencode-sdk|codex-app-server>` — Set runner provider for this thread",
           "`!cancel` — Kill running process, keep session",
           "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
+          "`!clear` — Archive thread to markdown and delete Junior messages (admin only)",
           "`!status` — Show session status",
           "`!quiet` — Minimal output",
           "`!normal` — Normal output",
