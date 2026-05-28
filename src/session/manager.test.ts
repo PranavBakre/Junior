@@ -175,6 +175,9 @@ const testConfig: Config = {
   memory: {
     sqlitePath: "data/memory.db",
   },
+  threadArchives: {
+    dir: "data/thread-archives",
+  },
   channelDefaults: {},
   adminSlackUserId: null,
   http: { enabled: false, port: 0 },
@@ -878,6 +881,126 @@ describe("SessionManager", () => {
         expect(onReaction.mock.calls[0][1]).toBe("x");
         expect((await store.get("thread-1"))!.muted).toBe(false);
       });
+    });
+  });
+
+  describe("!clear", () => {
+    const adminConfig: Config = { ...testConfig, adminSlackUserId: "U-ADMIN" };
+    let archiveDir: string;
+
+    beforeEach(() => {
+      archiveDir = mkdtempSync(join(tmpdir(), "junior-clear-"));
+    });
+
+    function makeSlackApp(deleted: string[]) {
+      return {
+        client: {
+          conversations: {
+            replies: async () => ({
+              messages: [
+                { ts: "100.0", user: "U_HUMAN", text: "human msg" },
+                { ts: "101.0", bot_id: "B_SELF", user: "U_BOT", text: "bot msg" },
+              ],
+              response_metadata: {},
+            }),
+            info: async () => ({ channel: { name: "tech" } }),
+          },
+          users: {
+            info: async ({ user }: { user: string }) => ({
+              user: { profile: { display_name: user === "U-ADMIN" ? "Admin" : "Human" } },
+            }),
+          },
+          chat: {
+            delete: async ({ ts }: { ts: string }) => {
+              deleted.push(ts);
+            },
+          },
+        },
+      } as unknown as App;
+    }
+
+    it("archives thread and deletes Junior messages for admin", async () => {
+      const deleted: string[] = [];
+      const clearConfig: Config = {
+        ...adminConfig,
+        threadArchives: { dir: archiveDir },
+      };
+      const adminManager = new SessionManager(store, clearConfig);
+      adminManager.slackApp = makeSlackApp(deleted);
+      adminManager.selfBotId = "B_SELF";
+      adminManager.botUserId = "U_BOT";
+
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      const onClear = mock((_threadTs: string) => {});
+      adminManager.onCommandResponse = onCmd;
+      adminManager.onClearThreadStatus = onClear;
+
+      await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+      await adminManager.handleMessage(
+        makeEvent({ user: "U-ADMIN", command: "clear", text: "", ts: "ts-clear" }),
+      );
+
+      expect(deleted).toEqual(["101.0"]);
+      expect(onClear).toHaveBeenCalledWith("thread-1");
+      expect(onCmd.mock.calls[0][1]).toContain("Cleared *1* Junior message");
+      expect(onCmd.mock.calls[0][1]).toContain(archiveDir);
+      expect(await store.get("thread-1")).toBeDefined();
+    });
+
+    it("rejects non-admin with silent x", async () => {
+      const deleted: string[] = [];
+      const clearConfig: Config = {
+        ...adminConfig,
+        threadArchives: { dir: archiveDir },
+      };
+      const adminManager = new SessionManager(store, clearConfig);
+      adminManager.slackApp = makeSlackApp(deleted);
+      adminManager.selfBotId = "B_SELF";
+
+      const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      adminManager.onReaction = onReaction;
+      adminManager.onCommandResponse = onCmd;
+
+      await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+      await adminManager.handleMessage(
+        makeEvent({ user: "U-OTHER", command: "clear", text: "", ts: "ts-clear" }),
+      );
+
+      expect(onReaction).toHaveBeenCalledTimes(1);
+      expect(onReaction.mock.calls[0][1]).toBe("x");
+      expect(onCmd).not.toHaveBeenCalled();
+      expect(deleted).toEqual([]);
+    });
+
+    it("blocks clear while runner is active", async () => {
+      const deleted: string[] = [];
+      const clearConfig: Config = {
+        ...adminConfig,
+        threadArchives: { dir: archiveDir },
+      };
+      const adminManager = new SessionManager(store, clearConfig);
+      adminManager.slackApp = makeSlackApp(deleted);
+      adminManager.selfBotId = "B_SELF";
+
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      adminManager.onCommandResponse = onCmd;
+
+      await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+      const handle = createMockHandle();
+      mockSpawnFn.mockReturnValueOnce(handle);
+      void adminManager.handleMessage(
+        makeEvent({ user: "U-ADMIN", text: "run", ts: "ts-run" }),
+      );
+      await Bun.sleep(20);
+      expect((await store.get("thread-1"))!.status).toBe("busy");
+
+      await adminManager.handleMessage(
+        makeEvent({ user: "U-ADMIN", command: "clear", text: "", ts: "ts-clear" }),
+      );
+
+      expect(deleted).toEqual([]);
+      expect(onCmd.mock.calls.at(-1)?.[1]).toContain("Cannot clear while a runner is active");
     });
   });
 

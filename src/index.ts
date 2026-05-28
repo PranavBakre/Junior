@@ -169,6 +169,10 @@ sessionManager.onCommandResponse = (event, response) => {
   responder.postResponse(event.channel, event.threadId, response);
 };
 
+sessionManager.onClearThreadStatus = (threadTs) => {
+  responder.clearStatusForThread(threadTs);
+};
+
 sessionManager.onReaction = (event, emoji) => {
   responder.addReaction(event.channel, event.ts, emoji);
 };
@@ -283,6 +287,7 @@ setInterval(() => {
     }
     if (auth.bot_id) {
       selfBotId = auth.bot_id;
+      sessionManager.selfBotId = auth.bot_id;
       log.info("boot", `Bot ID: ${auth.bot_id}`);
     }
   } catch (err) {

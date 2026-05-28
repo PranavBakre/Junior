@@ -12,6 +12,7 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 ## Full Vision
 
 - `!reset <agent|all>` — Clear one agent's slice of the session, or the whole thread. Bare `!reset` is rejected with usage help so admins don't accidentally nuke an active reproducer/thinker turn. (admin only)
+- `!clear` — Archive the full thread to markdown on disk, then delete all Junior bot messages from the thread. Session state is untouched. (admin only)
 - `!status` — Show session state (agent type, worktree, busy/idle, last activity, pending messages count)
 - `!build [prompt]` — Set agent to build, create worktree if needed, run prompt
 - `!frontend [prompt]` — Set agent to frontend, create worktree, run prompt
@@ -28,7 +29,7 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 
 ## Admin-only commands
 
-`!mute`, `!unmute`, and `!reset` are admin-gated. Two tiers:
+`!mute`, `!unmute`, `!reset`, and `!clear` are admin-gated. Two tiers:
 
 1. **Env bootstrap** — `ADMIN_SLACK_USER_ID` names one Slack user ID. This is the bootstrap admin; the system stays bootable on a fresh DB.
 2. **SQLite extras** — the `admins` table in the session DB (`data/sessions.db`) lists additional admins. Added by **direct SQL only** (no Slack command, no CLI script — intentional minimal UX):
