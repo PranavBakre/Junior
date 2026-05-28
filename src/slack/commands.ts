@@ -9,6 +9,7 @@ export const KNOWN_COMMANDS = new Set([
   "frontend",
   "architect",
   "cancel",
+  "clear",
   "reset",
   "status",
   "repo",

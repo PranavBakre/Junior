@@ -184,6 +184,7 @@ Slash-style commands are parsed in [`src/slack/commands.ts`](src/slack/commands.
 
 !cancel                    -- cancel the in-flight turn
 !reset                     -- drop session + worktree state for this thread
+!clear                     -- archive thread and delete Junior bot messages (admin)
 !status                    -- show this thread's session state
 !repo <name>               -- pin this thread to a target repo
 !branch <name>             -- pin this thread to a base ref

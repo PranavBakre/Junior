@@ -286,4 +286,19 @@ export class SlackResponder {
   private statusKey(threadTs: string, agentName: string): string {
     return `${threadTs}:${agentName}`;
   }
+
+  /**
+   * Drop in-memory status tracking for a thread after `!clear` removes bot
+   * messages from Slack.
+   */
+  clearStatusForThread(threadTs: string): void {
+    const prefix = `${threadTs}:`;
+    for (const key of [...this.pendingStatusPosts.keys()]) {
+      if (key.startsWith(prefix)) this.pendingStatusPosts.delete(key);
+    }
+    for (const key of [...this.statusMessages.keys()]) {
+      if (key.startsWith(prefix)) this.statusMessages.delete(key);
+    }
+    log.info("responder", `status.clear.thread thread=${threadTs}`);
+  }
 }
