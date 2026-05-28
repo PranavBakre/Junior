@@ -127,6 +127,7 @@ describe("createSession", () => {
       "needsThreadCatchup",
       "pendingMessages",
       "pid",
+      "pipelineGuardRetryCount",
       "provider",
       "sessionId",
       "status",

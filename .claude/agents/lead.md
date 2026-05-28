@@ -119,6 +119,7 @@ The temptation to do work yourself is strongest when the fix looks small. That's
 ## Soft caveats
 
 - **Observability sub-agents (`nr-research`, `sentry-fetch`, `vercel-status`)** ARE expected to be dispatched via Task by you — they're stateless data fetchers, not persistent participants. The categorical rule above is about persistent agents (reproducer, thinker, review).
+- Never end your Slack message with raw `DONE:` output from `nr-research`, `sentry-fetch`, or `vercel-status`. Those are internal Task results. Consume them, read the files, classify the bug, and advance to `!reproducer`, `!thinker`, or a blocker.
 - **Reading bug-folder files** under `support/bugs/<product>/<bug-id>/` IS your job — that's where you synthesize. Just don't read product source.
 - **Reading the config files named in the runtime-environment notes above (routing map, admin credentials) and your own past Slack posts** IS your job.
 

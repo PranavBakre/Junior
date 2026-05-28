@@ -28,6 +28,7 @@ import {
 import { createDrivers, type DriverMap } from "../claude/factory.ts";
 import { tmuxSessionNameFor } from "../claude/tmux-driver.ts";
 import { buildDispatchAllowBlock, identityForAgent } from "../support/agents.ts";
+import { validateLeadPipelineResponse } from "../support/pipeline-guard.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
@@ -1347,6 +1348,57 @@ export class SessionManager {
         this.buildRunSession(fresh, agentName, agentIdentity),
         result.error,
       );
+    }
+
+    if (!result.error && isTopLevel && result.response) {
+      const supportChannels = new Set(
+        Object.entries(this.config.channelDefaults)
+          .filter(([, def]) => def.agentType === "lead")
+          .map(([channel]) => channel),
+      );
+      const validation = validateLeadPipelineResponse(
+        this.buildRunSession(fresh, agentName, agentIdentity),
+        result.response,
+        supportChannels,
+        fresh.pipelineGuardRetryCount ?? 0,
+      );
+      if (validation.action === "continue") {
+        fresh.pipelineGuardRetryCount = (fresh.pipelineGuardRetryCount ?? 0) + 1;
+        fresh.status = "busy";
+        fresh.pid = null;
+        await this.store.set(fresh.threadId, fresh);
+        _log.warn(
+          "pipeline",
+          `guard.continue thread=${fresh.threadId} bug=${validation.state.bugId ?? "-"} reason=${validation.reason}`,
+        );
+        this.runRunnerWithAgent(
+          fresh,
+          validation.prompt,
+          undefined,
+          undefined,
+          agentName,
+        ).catch(async (err) => {
+          _log.error(
+            "pipeline",
+            `guard.continue.fail thread=${fresh.threadId} err=${err instanceof Error ? err.message : String(err)}`,
+          );
+          const guardFresh = (await this.store.get(fresh.threadId)) ?? fresh;
+          guardFresh.status = "idle";
+          guardFresh.pid = null;
+          await this.store.set(guardFresh.threadId, guardFresh);
+        });
+        return;
+      }
+      if (validation.action === "blocker") {
+        _log.warn(
+          "pipeline",
+          `guard.blocker thread=${fresh.threadId} bug=${validation.state.bugId ?? "-"} reason=${validation.reason}`,
+        );
+        result = { ...result, response: validation.message };
+        fresh.pipelineGuardRetryCount = 0;
+      } else {
+        fresh.pipelineGuardRetryCount = 0;
+      }
     }
 
     if (result.response && isDuplicateSlackToolResponse(result.response, result.events)) {
