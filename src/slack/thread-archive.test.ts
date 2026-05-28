@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  deleteJuniorMessages,
   fetchFullThreadReplies,
   formatThreadArchiveMarkdown,
   isJuniorMessage,
@@ -95,5 +96,31 @@ describe("fetchFullThreadReplies", () => {
     expect(messages).toHaveLength(2);
     expect(messages[0]?.ts).toBe("1.0");
     expect(messages[1]?.ts).toBe("2.0");
+  });
+});
+
+describe("deleteJuniorMessages", () => {
+  it("reports delete failures separately from successful deletes", async () => {
+    const client = {
+      chat: {
+        delete: async ({ ts }: { ts: string }) => {
+          if (ts === "101.0") throw new Error("cant_delete_message");
+        },
+      },
+    };
+
+    const result = await deleteJuniorMessages(
+      client as never,
+      "C123",
+      [
+        { ts: "100.0", bot_id: "B_SELF" },
+        { ts: "101.0", bot_id: "B_SELF" },
+        { ts: "102.0", user: "U_HUMAN" },
+      ],
+      "B_SELF",
+      "U_BOT",
+    );
+
+    expect(result).toEqual({ deletedCount: 1, failedCount: 1 });
   });
 });

@@ -50,8 +50,14 @@ export interface ClearThreadOptions {
 export interface ClearThreadResult {
   archivePath: string;
   deletedCount: number;
+  deleteFailedCount: number;
   totalMessages: number;
   juniorMessageCount: number;
+}
+
+export interface DeleteJuniorMessagesResult {
+  deletedCount: number;
+  failedCount: number;
 }
 
 export function isJuniorMessage(
@@ -221,8 +227,9 @@ export async function deleteJuniorMessages(
   messages: SlackReplyMessage[],
   selfBotId?: string,
   botUserId?: string,
-): Promise<number> {
+): Promise<DeleteJuniorMessagesResult> {
   let deletedCount = 0;
+  let failedCount = 0;
 
   for (const msg of messages) {
     if (!msg.ts || !isJuniorMessage(msg, selfBotId, botUserId)) continue;
@@ -230,6 +237,7 @@ export async function deleteJuniorMessages(
       await client.chat.delete({ channel: channelId, ts: msg.ts });
       deletedCount++;
     } catch (err) {
+      failedCount++;
       log.warn(
         "thread-archive",
         `delete.fail channel=${channelId} ts=${msg.ts} err=${err instanceof Error ? err.message : String(err)}`,
@@ -237,7 +245,7 @@ export async function deleteJuniorMessages(
     }
   }
 
-  return deletedCount;
+  return { deletedCount, failedCount };
 }
 
 export async function clearThreadJuniorMessages(
@@ -279,7 +287,7 @@ export async function clearThreadJuniorMessages(
   const markdown = formatThreadArchiveMarkdown(meta, archivedMessages);
   const filename = threadArchiveFilename(channelName, threadTs, archivedAt);
   const archivePath = await writeThreadArchive(archiveDir, filename, markdown);
-  const deletedCount = await deleteJuniorMessages(
+  const deleteResult = await deleteJuniorMessages(
     client,
     channelId,
     rawMessages,
@@ -289,7 +297,8 @@ export async function clearThreadJuniorMessages(
 
   return {
     archivePath,
-    deletedCount,
+    deletedCount: deleteResult.deletedCount,
+    deleteFailedCount: deleteResult.failedCount,
     totalMessages: archivedMessages.length,
     juniorMessageCount,
   };
