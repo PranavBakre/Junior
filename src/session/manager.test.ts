@@ -594,7 +594,7 @@ describe("SessionManager", () => {
     await manager.terminateActiveRuns("shutdown");
 
     const session = (await store.get("thread-1"))!;
-    expect(killSignals).toContain("SIGINT");
+    expect(killSignals).toEqual(["SIGINT"]);
     expect(session.sessionId).toBe("claude-live-1");
     expect(session.leadSessionId).toBe("claude-live-1");
     expect(session.status).toBe("idle");
@@ -647,7 +647,7 @@ describe("SessionManager", () => {
     expect(session.agentSessions.echo.sessionId).toBe("echo-live-1");
     expect(session.agentSessions.echo.status).toBe("idle");
     expect(session.agentSessions.echo.pid).toBeNull();
-    expect(killSignals).toContain("SIGINT");
+    expect(killSignals).toEqual(["SIGINT"]);
   });
 
   it("does not idle-interrupt opencode when continuity is disabled", async () => {

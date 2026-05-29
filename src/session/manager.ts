@@ -341,17 +341,24 @@ export class SessionManager {
    */
   async terminateActiveRuns(reason = "shutdown"): Promise<void> {
     const handles = [...this.handles.entries()];
+    const unsettledHandles = new Set(handles.map(([, handle]) => handle));
     for (const [key, handle] of handles) {
       this.handles.delete(key);
       handle.kill("SIGINT");
     }
 
     await Promise.race([
-      Promise.allSettled(handles.map(([, handle]) => handle.result)),
+      Promise.allSettled(
+        handles.map(([, handle]) =>
+          handle.result.finally(() => {
+            unsettledHandles.delete(handle);
+          })
+        ),
+      ),
       new Promise((resolve) => setTimeout(resolve, 10_000)),
     ]);
 
-    for (const [, handle] of handles) {
+    for (const handle of unsettledHandles) {
       handle.kill("SIGKILL");
     }
 
