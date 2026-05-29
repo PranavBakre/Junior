@@ -17,6 +17,7 @@ import { log } from "../logger.ts";
 import type { RepoConfig } from "../config.ts";
 import { WorktreeManager } from "../worktree/manager.ts";
 import { isPidAlive, isPortHeld } from "./process-utils.ts";
+import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.ts";
 
 export interface DevServerState {
   pid: number | null;
@@ -167,6 +168,7 @@ export class DevServerManager {
       cwd: worktreePath,
       stdout: "pipe",
       stderr: "pipe",
+      detached: true,
       // Don't inherit stdin — we don't want the process to block on stdin.
     });
 
@@ -196,37 +198,18 @@ export class DevServerManager {
     // Clear state immediately so concurrent calls are idempotent.
     this.state.delete(repoName);
 
-    if (!isPidAlive(pid)) {
+    if (!isProcessTreeAlive(pid)) {
       log.info("dev-server", `kill repo=${repoName} pid=${pid} already dead`);
       await this.waitForPortRelease(repoName);
       return;
     }
 
-    log.info("dev-server", `kill repo=${repoName} pid=${pid} SIGINT`);
-    try {
-      process.kill(pid, "SIGINT");
-    } catch {
-      // Process may have just exited — that's fine.
-      return;
-    }
-
-    // Wait up to SIGINT_GRACE_MS for the process to exit gracefully.
-    const deadline = Date.now() + SIGINT_GRACE_MS;
-    while (Date.now() < deadline) {
-      await sleep(200);
-      if (!isPidAlive(pid)) {
-        log.info("dev-server", `kill repo=${repoName} pid=${pid} exited after SIGINT`);
-        await this.waitForPortRelease(repoName);
-        return;
-      }
-    }
-
-    // Escalate to SIGKILL.
-    log.warn("dev-server", `kill repo=${repoName} pid=${pid} escalating to SIGKILL`);
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Already dead.
+    log.info("dev-server", `kill repo=${repoName} pid=${pid} SIGINT tree`);
+    await terminateProcessTree(pid, { signal: "SIGINT", forceAfterMs: SIGINT_GRACE_MS });
+    if (isProcessTreeAlive(pid)) {
+      log.warn("dev-server", `kill repo=${repoName} pid=${pid} tree still alive after SIGKILL`);
+    } else {
+      log.info("dev-server", `kill repo=${repoName} pid=${pid} tree exited`);
     }
     await this.waitForPortRelease(repoName);
   }

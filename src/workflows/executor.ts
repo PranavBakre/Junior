@@ -50,6 +50,7 @@ export class WorkflowExecutor {
   private spawn: SpawnRunnerFn;
   private now: () => Date;
   private memoryStore?: MemoryStore;
+  private activeHandles = new Set<SpawnHandle>();
 
   constructor(options: WorkflowExecutorOptions) {
     this.config = options.config;
@@ -147,6 +148,22 @@ export class WorkflowExecutor {
       await this.store.updateRun(run);
       await this.updateStateAfterRun(request.definition, run);
       throw err;
+    }
+  }
+
+  async terminateActiveRuns(): Promise<void> {
+    const handles = [...this.activeHandles];
+    for (const handle of handles) {
+      handle.kill("SIGINT");
+    }
+    await Promise.race([
+      Promise.allSettled(handles.map((handle) => handle.result)),
+      new Promise((resolve) => setTimeout(resolve, 10_000)),
+    ]);
+    for (const handle of handles) {
+      if (!this.activeHandles.has(handle)) continue;
+      handle.kill("SIGKILL");
+      this.activeHandles.delete(handle);
     }
   }
 
@@ -261,6 +278,7 @@ export class WorkflowExecutor {
       options.prompt,
       this.config,
     );
+    this.activeHandles.add(handle);
     let idleInterrupted = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let idleKillTimer: ReturnType<typeof setTimeout> | null = null;
@@ -311,7 +329,10 @@ export class WorkflowExecutor {
       options.runner.timeoutMs ?? this.timeoutFor(options.provider),
       () => handle.kill(),
     );
-    const result = await bounded.result.finally(clearIdleTimer);
+    const result = await bounded.result.finally(() => {
+      clearIdleTimer();
+      this.activeHandles.delete(handle);
+    });
     return { result, idleInterrupted };
   }
 
