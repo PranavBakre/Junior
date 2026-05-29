@@ -117,6 +117,7 @@ export class SessionManager {
    * - `!aside` — drop with 👀.
    * - `!listen` — clear dormant (if set) and drop with 👂.
    * - Wake on @mention — clear dormant and fall through to routing.
+   * - Drop everything while muted, except `!unmute`.
    * - Drop everything while dormant.
    * - One-shot auto-dormant trigger when a second human posts without
    *   mentioning Junior. Announcement only fires once per thread (sticky
@@ -151,6 +152,13 @@ export class SessionManager {
     const isAutoTrigger = !!this.config.channelDefaults[event.channel];
 
     const session = await this.store.get(event.threadId);
+
+    // Muted means no thread replies or runner dispatch until an admin sends
+    // !unmute. Check this before auto-dormant so muted threads cannot still
+    // emit the side-conversation notice.
+    if (session?.muted && event.command !== "unmute") {
+      return true;
+    }
 
     // !listen: wake from dormant if needed. Anyone in the thread.
     if (event.command === "listen") {
@@ -324,6 +332,59 @@ export class SessionManager {
       }
     }
     await this.store.delete(threadId);
+  }
+
+  /**
+   * Shutdown path: interrupt live handles but keep the session rows and native
+   * provider session ids. The next Slack turn can resume with --resume/--session
+   * instead of starting from a blank conversation.
+   */
+  async terminateActiveRuns(reason = "shutdown"): Promise<void> {
+    const handles = [...this.handles.entries()];
+    const unsettledHandles = new Set(handles.map(([, handle]) => handle));
+    for (const [key, handle] of handles) {
+      this.handles.delete(key);
+      handle.kill("SIGINT");
+    }
+
+    await Promise.race([
+      Promise.allSettled(
+        handles.map(([, handle]) =>
+          handle.result.finally(() => {
+            unsettledHandles.delete(handle);
+          })
+        ),
+      ),
+      new Promise((resolve) => setTimeout(resolve, 10_000)),
+    ]);
+
+    for (const handle of unsettledHandles) {
+      handle.kill("SIGKILL");
+    }
+
+    const sessions = await this.store.getAll();
+    for (const [threadId, session] of sessions) {
+      let mutated = false;
+      if (session.status === "busy" || session.status === "draining" || session.pid !== null) {
+        session.status = "idle";
+        session.pid = null;
+        session.lastError = {
+          type: reason,
+          message: "Junior terminated an in-flight runner; send a new message to resume.",
+          timestamp: Date.now(),
+        };
+        mutated = true;
+      }
+      for (const agentSession of Object.values(session.agentSessions ?? {})) {
+        if (agentSession.status !== "busy" && agentSession.pid === null) continue;
+        agentSession.status = "idle";
+        agentSession.pid = null;
+        mutated = true;
+      }
+      if (mutated) {
+        await this.store.set(threadId, session);
+      }
+    }
   }
 
   /**
@@ -1190,6 +1251,12 @@ export class SessionManager {
             agentSession.sessionId = event.sessionId;
             agentSession.provider = event.provider;
           }
+          void this.persistRunSessionId(
+            session.threadId,
+            agentName,
+            event.provider,
+            event.sessionId,
+          );
         }
         this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
       });
@@ -1290,6 +1357,12 @@ export class SessionManager {
                 agentSession.sessionId = event.sessionId;
                 agentSession.provider = event.provider;
               }
+              void this.persistRunSessionId(
+                session.threadId,
+                agentName,
+                event.provider,
+                event.sessionId,
+              );
             }
             this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
           });
@@ -1349,6 +1422,32 @@ export class SessionManager {
       const agentSession = fresh.agentSessions?.[agentName];
       if (agentSession?.status === "busy") {
         agentSession.pid = pid;
+      }
+    }
+
+    await this.store.set(threadId, fresh);
+  }
+
+  private async persistRunSessionId(
+    threadId: string,
+    agentName: string,
+    provider: RunnerProvider,
+    sessionId: string,
+  ): Promise<void> {
+    const fresh = await this.store.get(threadId);
+    if (!fresh) return;
+
+    if (agentName === "lead" || agentName === "default") {
+      if (fresh.status === "busy" || fresh.status === "draining") {
+        fresh.sessionId = sessionId;
+        fresh.leadSessionId = sessionId;
+        fresh.provider = provider;
+      }
+    } else {
+      const agentSession = fresh.agentSessions?.[agentName];
+      if (agentSession?.status === "busy") {
+        agentSession.sessionId = sessionId;
+        agentSession.provider = provider;
       }
     }
 

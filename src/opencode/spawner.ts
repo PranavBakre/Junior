@@ -15,6 +15,7 @@ import {
 } from "./parser.ts";
 import { buildOpenCodeAgentPrompt, OPENCODE_PROVIDER_AGENT } from "./prompt.ts";
 import { loadOpenCodeSupportSubagents } from "./support-agents.ts";
+import { signalProcessTree } from "../lifecycle/process-tree.ts";
 
 export interface OpenCodeEnvContext {
   session: ThreadSession;
@@ -109,6 +110,7 @@ export function spawnOpenCode(
     stderr: "pipe",
     stdin: "ignore",
     env,
+    detached: true,
   });
 
   const listeners: Array<(event: RunnerEvent) => void> = [];
@@ -159,7 +161,7 @@ export function spawnOpenCode(
       listeners.push(cb);
     },
     kill: (signal) => {
-      signal ? proc.kill(signal) : proc.kill();
+      signalProcessTree(proc.pid, signal ?? "SIGTERM");
     },
     pid: proc.pid,
   };

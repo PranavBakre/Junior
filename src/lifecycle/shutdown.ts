@@ -1,10 +1,8 @@
 import type { SessionManager } from "../session/manager.ts";
-import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerManager } from "./dev-server.ts";
 
 export function setupGracefulShutdown(
   manager: SessionManager,
-  store: SessionStore,
   devServerManager?: DevServerManager,
   extraShutdown?: () => void | Promise<void>,
 ): void {
@@ -17,14 +15,8 @@ export function setupGracefulShutdown(
     }, 30_000);
 
     try {
-      const sessions = await store.getAll();
       const kills: Promise<void>[] = [];
-
-      for (const [threadId, session] of sessions) {
-        if (session.status === "busy") {
-          kills.push(manager.resetSession(threadId));
-        }
-      }
+      kills.push(manager.terminateActiveRuns("shutdown"));
 
       // Kill all managed dev servers in parallel with session teardown.
       if (devServerManager) {

@@ -192,8 +192,8 @@ sessionManager.onError = (session, error) => {
 
 registerHomeTab(app, store, config.session.homeWindowMs, workflowStore);
 
-setupGracefulShutdown(sessionManager, store, devServerManager, () => {
-  workflowScheduler.stop();
+setupGracefulShutdown(sessionManager, devServerManager, async () => {
+  await workflowScheduler.shutdown();
   workflowRegistry.stopWatching();
   workflowStore.close?.();
   memoryStore.close();
