@@ -6,6 +6,7 @@ import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts"
 import { buildRunnerRuntime } from "../runners/runtime.ts";
 import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
+import { signalProcessTree } from "../lifecycle/process-tree.ts";
 
 // Junior's .mcp.json — pass to spawned processes so they find the slack-bot server
 const PROJECT_MCP_CONFIG = resolve(import.meta.dirname ?? ".", "../../.mcp.json");
@@ -33,6 +34,7 @@ export function spawnClaude(
     stderr: "pipe",
     stdin: "ignore",
     env: runtime.env,
+    detached: true,
   });
 
   const listeners: Array<(event: RunnerEvent) => void> = [];
@@ -122,7 +124,7 @@ export function spawnClaude(
       listeners.push(cb);
     },
     kill: (signal) => {
-      signal ? proc.kill(signal) : proc.kill();
+      signalProcessTree(proc.pid, signal ?? "SIGTERM");
     },
     pid: proc.pid,
   };

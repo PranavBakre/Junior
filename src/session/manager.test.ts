@@ -555,6 +555,101 @@ describe("SessionManager", () => {
     expect(session!.sessionId).toBe("claude-session-42");
   });
 
+  it("persists sessionId before completion so shutdown can resume the turn", async () => {
+    const killSignals: Array<string | undefined> = [];
+    const listeners: Array<(event: RunnerEvent) => void> = [];
+    let resolveResult!: (result: SpawnResult) => void;
+    const result = new Promise<SpawnResult>((resolve) => {
+      resolveResult = resolve;
+    });
+    mockSpawnFn = mock(() => ({
+      provider: "claude",
+      result,
+      onEvent: (cb) => listeners.push(cb),
+      kill: (signal) => {
+        killSignals.push(signal);
+        resolveResult({
+          provider: "claude",
+          sessionId: "claude-live-1",
+          response: "",
+          events: [],
+          exitCode: 130,
+          error: "shutdown",
+        });
+      },
+      pid: 43210,
+    }));
+    manager = new SessionManager(
+      store,
+      testConfig,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
+
+    await manager.handleMessage(makeEvent());
+    for (const listener of listeners) {
+      listener({ type: "init", provider: "claude", sessionId: "claude-live-1" });
+    }
+    await waitFor(async () => (await store.get("thread-1"))?.sessionId === "claude-live-1");
+
+    await manager.terminateActiveRuns("shutdown");
+
+    const session = (await store.get("thread-1"))!;
+    expect(killSignals).toContain("SIGINT");
+    expect(session.sessionId).toBe("claude-live-1");
+    expect(session.leadSessionId).toBe("claude-live-1");
+    expect(session.status).toBe("idle");
+    expect(session.pid).toBeNull();
+    expect(session.lastError?.type).toBe("shutdown");
+  });
+
+  it("shutdown terminates busy persistent agents even when top-level session is idle", async () => {
+    const killSignals: Array<string | undefined> = [];
+    const listeners: Array<(event: RunnerEvent) => void> = [];
+    let resolveResult!: (result: SpawnResult) => void;
+    const result = new Promise<SpawnResult>((resolve) => {
+      resolveResult = resolve;
+    });
+    mockSpawnFn = mock(() => ({
+      provider: "opencode",
+      result,
+      onEvent: (cb) => listeners.push(cb),
+      kill: (signal) => {
+        killSignals.push(signal);
+        resolveResult({
+          provider: "opencode",
+          sessionId: "echo-live-1",
+          response: "",
+          events: [],
+          exitCode: 130,
+          error: "shutdown",
+        });
+      },
+      pid: 54321,
+    }));
+    manager = new SessionManager(
+      store,
+      cloneConfig({ runner: { provider: "opencode" } }),
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
+
+    await manager.handleAgentMessage(makeEvent({ text: "hello echo" }), "echo");
+    for (const listener of listeners) {
+      listener({ type: "init", provider: "opencode", sessionId: "echo-live-1" });
+    }
+    await waitFor(async () =>
+      (await store.get("thread-1"))?.agentSessions.echo.sessionId === "echo-live-1"
+    );
+
+    await manager.terminateActiveRuns("shutdown");
+
+    const session = (await store.get("thread-1"))!;
+    expect(session.status).toBe("idle");
+    expect(session.agentSessions.echo.sessionId).toBe("echo-live-1");
+    expect(session.agentSessions.echo.status).toBe("idle");
+    expect(session.agentSessions.echo.pid).toBeNull();
+    expect(killSignals).toContain("SIGINT");
+  });
+
   it("does not idle-interrupt opencode when continuity is disabled", async () => {
     const config = cloneConfig({
       runner: { provider: "opencode" },
@@ -1632,6 +1727,47 @@ describe("SessionManager", () => {
         makeEvent({ user: "U-A", text: "hello", ts: "ts-drop" }),
       );
       expect(drop).toBe(true);
+    });
+
+    it("drops messages silently while muted and does not auto-dormant", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const seeded = (await store.get("thread-1"))!;
+      seeded.muted = true;
+      await store.set("thread-1", seeded);
+
+      const responses: string[] = [];
+      manager.onCommandResponse = (_e, r) => responses.push(r);
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "side chat", ts: "ts-muted" }),
+      );
+
+      expect(drop).toBe(true);
+      expect(responses).toEqual([]);
+      const after = (await store.get("thread-1"))!;
+      expect(after.muted).toBe(true);
+      expect(after.dormant).toBe(false);
+      expect(after.dormantAnnounced).toBe(false);
+      expect(after.humanParticipants).toEqual(["U-A"]);
+    });
+
+    it("lets !unmute through while muted", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      const seeded = (await store.get("thread-1"))!;
+      seeded.muted = true;
+      await store.set("thread-1", seeded);
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-A", command: "unmute", text: "", ts: "ts-unmute" }),
+      );
+
+      expect(drop).toBe(false);
     });
 
     it("triggers dormancy when a second human posts without @mention", async () => {
