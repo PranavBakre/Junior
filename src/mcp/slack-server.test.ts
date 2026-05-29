@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { createSession } from "../session/types.ts";
-import { resolveMcpCallerAgent, searchAgentDefinitions } from "./slack-server.ts";
+import { searchAgentDefinitions } from "./slack-server.ts";
 
 describe("MCP agent search", () => {
   it("finds public agent definitions", async () => {
@@ -30,45 +29,5 @@ describe("MCP agent search", () => {
         path: "agents-org/db-executioner.md",
       }),
     );
-  });
-});
-
-describe("MCP agent dispatch caller resolution", () => {
-  it("authenticates the busy top-level caller from session state", () => {
-    const session = createSession("thread-1", "C123", "normal", "claude", "headless");
-    session.status = "busy";
-    session.activeAgentName = "default";
-
-    expect(resolveMcpCallerAgent(session)).toEqual({ ok: true, agent: "default" });
-  });
-
-  it("authenticates the busy persistent-agent caller from session state", () => {
-    const session = createSession("thread-1", "C123", "normal", "claude", "headless");
-    session.agentSessions.review = {
-      agentName: "review",
-      sessionId: null,
-      status: "busy",
-      pendingMessages: [],
-      lastActivity: Date.now(),
-      pid: null,
-    };
-
-    expect(resolveMcpCallerAgent(session)).toEqual({ ok: true, agent: "review" });
-  });
-
-  it("fails closed when caller identity is ambiguous", () => {
-    const session = createSession("thread-1", "C123", "normal", "claude", "headless");
-    session.status = "busy";
-    session.activeAgentName = "default";
-    session.agentSessions.review = {
-      agentName: "review",
-      sessionId: null,
-      status: "busy",
-      pendingMessages: [],
-      lastActivity: Date.now(),
-      pid: null,
-    };
-
-    expect(resolveMcpCallerAgent(session)).toMatchObject({ ok: false });
   });
 });

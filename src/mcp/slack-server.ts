@@ -26,7 +26,7 @@ import {
   isPersistentAgent,
   loadOverlayIdentities,
 } from "../support/agents.ts";
-import type { ThreadSession } from "../session/types.ts";
+import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -38,7 +38,7 @@ let sessionStore: SessionStore | undefined;
 let worktreeManager: WorktreeManager | undefined;
 let sessionManager: SessionManager | undefined;
 
-function registerTools(server: McpServer) {
+function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
   server.registerTool(
     "slack_send_message",
     {
@@ -341,10 +341,6 @@ function registerTools(server: McpServer) {
       if (!sessionManager) {
         return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
       }
-      if (!sessionStore) {
-        return { content: [{ type: "text" as const, text: "Error: session store not available" }] };
-      }
-
       const targetAgent = agent_name.trim();
       if (!isPersistentAgent(targetAgent)) {
         return {
@@ -357,13 +353,21 @@ function registerTools(server: McpServer) {
         };
       }
 
-      const session = await sessionStore.get(thread_ts);
-      const callerResult = resolveMcpCallerAgent(session);
-      if (!callerResult.ok) {
-        return { content: [{ type: "text" as const, text: `Error: ${callerResult.error}` }] };
+      if (!runContext) {
+        return { content: [{ type: "text" as const, text: "Error: MCP run context missing; cannot authenticate caller" }] };
+      }
+      if (runContext.threadId !== thread_ts || runContext.channel !== channel_id) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: dispatch target does not match authenticated MCP run context",
+            },
+          ],
+        };
       }
 
-      const caller = callerResult.agent;
+      const caller = runContext.agent;
       const allowed = dispatchableAgentsFor(caller);
       if (!allowed.includes(targetAgent)) {
         return {
@@ -563,40 +567,6 @@ async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemorySto
   }
 }
 
-export type McpCallerResolution =
-  | { ok: true; agent: string }
-  | { ok: false; error: string };
-
-export function resolveMcpCallerAgent(
-  session: ThreadSession | undefined,
-): McpCallerResolution {
-  if (!session) {
-    return { ok: false, error: "no session found for thread; cannot authenticate caller" };
-  }
-
-  const candidates: string[] = [];
-  if (session.status === "busy") {
-    candidates.push(session.activeAgentName ?? session.topLevelTmuxAgent ?? topLevelAgentForSession(session));
-  }
-  for (const agentSession of Object.values(session.agentSessions ?? {})) {
-    if (agentSession.status === "busy") candidates.push(agentSession.agentName);
-  }
-
-  const unique = [...new Set(candidates.filter(Boolean))];
-  if (unique.length !== 1) {
-    return {
-      ok: false,
-      error: `could not authenticate exactly one active caller for thread ${session.threadId}; active callers: ${unique.join(", ") || "(none)"}`,
-    };
-  }
-  return { ok: true, agent: unique[0] };
-}
-
-function topLevelAgentForSession(session: ThreadSession): "lead" | "default" {
-  if (session.defaultAgent === "lead" || session.agentType === "lead") return "lead";
-  return "default";
-}
-
 interface SearchAgentDefinitionsOptions {
   query?: string;
   includePublic: boolean;
@@ -690,7 +660,7 @@ export function startMcpServer(
     // Each request gets its own transport (stateless mode).
     // Tools are registered fresh but share the same WebClient.
     const mcpServer = new McpServer({ name: "slack-bot", version: "0.1.0" });
-    registerTools(mcpServer);
+    registerTools(mcpServer, parseSlackMcpRunContext(req.url));
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
