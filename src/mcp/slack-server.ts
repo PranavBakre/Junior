@@ -26,6 +26,7 @@ import {
   isPersistentAgent,
   loadOverlayIdentities,
 } from "../support/agents.ts";
+import type { ThreadSession } from "../session/types.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -332,14 +333,16 @@ function registerTools(server: McpServer) {
         prompt: z.string().describe("Prompt to send to the agent"),
         channel_id: z.string().describe("Slack channel ID for the thread context"),
         thread_ts: z.string().describe("Slack thread timestamp / session key"),
-        source_agent: z.string().optional().describe("Calling agent name for dispatch-allow enforcement (default: default)"),
         user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
         trigger_ts: z.string().optional().describe("Slack message timestamp that caused the dispatch. Defaults to thread_ts."),
       },
     },
-    async ({ agent_name, prompt, channel_id, thread_ts, source_agent, user_id, trigger_ts }) => {
+    async ({ agent_name, prompt, channel_id, thread_ts, user_id, trigger_ts }) => {
       if (!sessionManager) {
         return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
+      }
+      if (!sessionStore) {
+        return { content: [{ type: "text" as const, text: "Error: session store not available" }] };
       }
 
       const targetAgent = agent_name.trim();
@@ -354,7 +357,13 @@ function registerTools(server: McpServer) {
         };
       }
 
-      const caller = source_agent?.trim() || "default";
+      const session = await sessionStore.get(thread_ts);
+      const callerResult = resolveMcpCallerAgent(session);
+      if (!callerResult.ok) {
+        return { content: [{ type: "text" as const, text: `Error: ${callerResult.error}` }] };
+      }
+
+      const caller = callerResult.agent;
       const allowed = dispatchableAgentsFor(caller);
       if (!allowed.includes(targetAgent)) {
         return {
@@ -552,6 +561,40 @@ async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemorySto
   } finally {
     memory.close();
   }
+}
+
+export type McpCallerResolution =
+  | { ok: true; agent: string }
+  | { ok: false; error: string };
+
+export function resolveMcpCallerAgent(
+  session: ThreadSession | undefined,
+): McpCallerResolution {
+  if (!session) {
+    return { ok: false, error: "no session found for thread; cannot authenticate caller" };
+  }
+
+  const candidates: string[] = [];
+  if (session.status === "busy") {
+    candidates.push(session.activeAgentName ?? session.topLevelTmuxAgent ?? topLevelAgentForSession(session));
+  }
+  for (const agentSession of Object.values(session.agentSessions ?? {})) {
+    if (agentSession.status === "busy") candidates.push(agentSession.agentName);
+  }
+
+  const unique = [...new Set(candidates.filter(Boolean))];
+  if (unique.length !== 1) {
+    return {
+      ok: false,
+      error: `could not authenticate exactly one active caller for thread ${session.threadId}; active callers: ${unique.join(", ") || "(none)"}`,
+    };
+  }
+  return { ok: true, agent: unique[0] };
+}
+
+function topLevelAgentForSession(session: ThreadSession): "lead" | "default" {
+  if (session.defaultAgent === "lead" || session.agentType === "lead") return "lead";
+  return "default";
 }
 
 interface SearchAgentDefinitionsOptions {
