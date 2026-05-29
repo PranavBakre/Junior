@@ -129,7 +129,7 @@ export function spawnClaude(
   };
 }
 
-function writeClaudeMcpConfig(session: ThreadSession): string {
+export function writeClaudeMcpConfig(session: ThreadSession): string {
   mkdirSync(MCP_CONFIG_DIR, { recursive: true });
   const agent = session.activeAgentName ?? "default";
   const path = join(MCP_CONFIG_DIR, `${session.threadId}-${agent}.json`);
