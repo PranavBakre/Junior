@@ -370,6 +370,58 @@ describe("WorkflowExecutor", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("terminates active workflow runner handles on shutdown", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-shutdown-test-"));
+    const definition = workflowDefinition(dir);
+    const store = new InMemoryWorkflowStore();
+    const killSignals: Array<string | undefined> = [];
+    let resolveResult!: (result: Awaited<SpawnHandle["result"]>) => void;
+    const spawn: SpawnRunnerFn = (): SpawnHandle => ({
+      provider: "opencode",
+      result: new Promise((resolve) => {
+        resolveResult = resolve;
+      }),
+      onEvent: (cb) => setTimeout(() => cb({
+        type: "init",
+        provider: "opencode",
+        sessionId: "ses-shutdown",
+      }), 0),
+      kill: (signal) => {
+        killSignals.push(signal);
+        resolveResult({
+          provider: "opencode",
+          sessionId: "ses-shutdown",
+          response: "",
+          events: [],
+          exitCode: 130,
+          error: "shutdown",
+        });
+      },
+      pid: 98765,
+    });
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store,
+      spawn,
+      now: () => new Date("2026-05-24T12:00:00.000Z"),
+    });
+
+    try {
+      const runPromise = executor.run({ definition, reason: "manual" }).catch((err) => err);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await executor.terminateActiveRuns();
+      const outcome = await runPromise;
+
+      expect(killSignals).toContain("SIGINT");
+      expect(outcome).toBeInstanceOf(Error);
+      const runs = await store.listRuns(definition.name, 1);
+      expect(runs[0]?.providerSessionId).toBe("ses-shutdown");
+      expect(runs[0]?.status).toBe("failed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 function workflowDefinition(root: string): WorkflowDefinition {

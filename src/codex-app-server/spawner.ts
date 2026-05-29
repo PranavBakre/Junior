@@ -9,6 +9,7 @@ import {
 } from "./config.ts";
 import { createCodexAppServerEventMapper } from "./parser.ts";
 import { mapCodexRunPolicy } from "./policy.ts";
+import { signalProcessTree } from "../lifecycle/process-tree.ts";
 
 interface JsonRpcResponse {
   id: number;
@@ -65,6 +66,7 @@ export function spawnCodexAppServer(
     stderr: "pipe",
     stdin: "pipe",
     env,
+    detached: true,
   });
 
   const listeners: Array<(event: RunnerEvent) => void> = [];
@@ -207,7 +209,7 @@ export function spawnCodexAppServer(
 
       await waitForDone(events, proc.exited);
       processKilled = true;
-      proc.kill("SIGTERM");
+      signalProcessTree(proc.pid, "SIGTERM");
       await stdoutDone;
       const exitCode = await proc.exited;
       const stderr = await stderrText;
@@ -221,7 +223,7 @@ export function spawnCodexAppServer(
         error: mapperError ?? (exitCode === 0 || exitCode === 143 ? null : stderr || `Process exited with code ${exitCode}`),
       };
     } catch (err) {
-      if (!processKilled) proc.kill("SIGTERM");
+      if (!processKilled) signalProcessTree(proc.pid, "SIGTERM");
       const stderr = await stderrText;
       return {
         provider,
@@ -251,12 +253,12 @@ export function spawnCodexAppServer(
           threadId: activeThreadId,
           turnId: activeTurnId,
         }).catch(() => {
-          proc.kill("SIGTERM");
+          signalProcessTree(proc.pid, "SIGTERM");
         });
         return;
       }
       processKilled = true;
-      proc.kill(signal ?? "SIGTERM");
+      signalProcessTree(proc.pid, signal ?? "SIGTERM");
     },
     pid: proc.pid,
   };
