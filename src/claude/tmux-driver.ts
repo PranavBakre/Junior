@@ -7,7 +7,7 @@ import type { ClaudeDriver, DriverMode, DriverSendInput } from "./driver.ts";
 import type { StreamEvent } from "./types.ts";
 import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
 import { buildClaudeArgs } from "./args.ts";
-import { mapClaudeEvent } from "./spawner.ts";
+import { mapClaudeEvent, writeClaudeMcpConfig } from "./spawner.ts";
 import { adaptTranscriptLine } from "./transcript-adapter.ts";
 
 /**
@@ -581,7 +581,12 @@ function encodeCwd(cwd: string): string {
 function buildInteractiveClaudeArgs(input: DriverSendInput): string[] {
   // Lean on the existing arg builder but strip the `-p <prompt>` and
   // `--output-format` flags — those are headless-only.
-  const all = buildClaudeArgs(input.session, /*prompt*/ "", input.config);
+  const all = buildClaudeArgs(
+    input.session,
+    /*prompt*/ "",
+    input.config,
+    writeClaudeMcpConfig(input.session),
+  );
   const out: string[] = [];
   for (let i = 0; i < all.length; i++) {
     const arg = all[i];
