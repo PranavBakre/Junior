@@ -11,7 +11,7 @@ describe("buildCodexMcpConfig", () => {
     expect(mcp).toMatchObject({
       "slack-bot": {
         transport: "http",
-        url: "http://localhost:3456/mcp",
+        url: expect.stringContaining("http://localhost:3456/mcp?agent=default&channel=c&thread=t"),
       },
       playwright: {
         command: "npx",

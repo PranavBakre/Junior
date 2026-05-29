@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { AgentIdentity, ThreadSession } from "../session/types.ts";
 import type { ContentBlockToolUse, StreamEvent } from "./types.ts";
@@ -6,9 +7,9 @@ import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts"
 import { buildRunnerRuntime } from "../runners/runtime.ts";
 import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
+import { buildSlackMcpUrl } from "../mcp/context.ts";
 
-// Junior's .mcp.json — pass to spawned processes so they find the slack-bot server
-const PROJECT_MCP_CONFIG = resolve(import.meta.dirname ?? ".", "../../.mcp.json");
+const MCP_CONFIG_DIR = resolve(import.meta.dirname ?? ".", "../../data/mcp-configs");
 
 export function spawnClaude(
   session: ThreadSession,
@@ -24,7 +25,7 @@ export function spawnClaude(
     botToken,
     agentIdentity,
   });
-  const mcpConfigPath = runtime.needsProjectMcp ? PROJECT_MCP_CONFIG : undefined;
+  const mcpConfigPath = writeClaudeMcpConfig(session);
   const args = buildClaudeArgs(session, prompt, config, mcpConfigPath);
 
   const proc = Bun.spawn(["claude", ...args], {
@@ -126,6 +127,34 @@ export function spawnClaude(
     },
     pid: proc.pid,
   };
+}
+
+function writeClaudeMcpConfig(session: ThreadSession): string {
+  mkdirSync(MCP_CONFIG_DIR, { recursive: true });
+  const agent = session.activeAgentName ?? "default";
+  const path = join(MCP_CONFIG_DIR, `${session.threadId}-${agent}.json`);
+  const config = {
+    mcpServers: {
+      playwright: {
+        command: "npx",
+        args: ["@playwright/mcp", "--headless"],
+      },
+      "slack-bot": {
+        type: "http",
+        url: buildSlackMcpUrl(session),
+      },
+      mongodb: {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "mongodb-mcp-server@latest", "--readOnly"],
+        env: {
+          MDB_MCP_CONNECTION_STRING: "${MDB_MCP_CONNECTION_STRING}",
+        },
+      },
+    },
+  };
+  writeFileSync(path, JSON.stringify(config, null, 2));
+  return path;
 }
 
 export function mapClaudeEvent(event: StreamEvent): RunnerEvent[] {
