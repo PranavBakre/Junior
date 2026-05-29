@@ -288,6 +288,8 @@ export class SessionManager {
     }
 
     session.status = "busy";
+    session.activeAgentName = agentName;
+    session.slackIdentity = identityForAgent(agentName);
     session.lastActivity = Date.now();
     await this.store.set(session.threadId, session);
 
