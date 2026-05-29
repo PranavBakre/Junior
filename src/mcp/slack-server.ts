@@ -18,10 +18,12 @@ import { loadAgentDefinition } from "../agents/loader.ts";
 import { log } from "../logger.ts";
 import { createMemoryStore } from "../memory/factory.ts";
 import type { SessionStore } from "../session/store/interface.ts";
+import type { SessionManager } from "../session/manager.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import {
   AGENT_IDENTITIES,
   dispatchableAgentsFor,
+  isPersistentAgent,
   loadOverlayIdentities,
 } from "../support/agents.ts";
 
@@ -33,6 +35,7 @@ const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH ?? "data/memory.db";
 let slack: WebClient;
 let sessionStore: SessionStore | undefined;
 let worktreeManager: WorktreeManager | undefined;
+let sessionManager: SessionManager | undefined;
 
 function registerTools(server: McpServer) {
   server.registerTool(
@@ -320,6 +323,78 @@ function registerTools(server: McpServer) {
   );
 
   server.registerTool(
+    "agent_dispatch",
+    {
+      description:
+        "Internally dispatch a prompt to a registered Junior persistent agent in a Slack thread without posting a Slack !<agent> directive.",
+      inputSchema: {
+        agent_name: z.string().describe("Target persistent agent name, e.g. review, thinker, reproducer"),
+        prompt: z.string().describe("Prompt to send to the agent"),
+        channel_id: z.string().describe("Slack channel ID for the thread context"),
+        thread_ts: z.string().describe("Slack thread timestamp / session key"),
+        source_agent: z.string().optional().describe("Calling agent name for dispatch-allow enforcement (default: default)"),
+        user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
+        trigger_ts: z.string().optional().describe("Slack message timestamp that caused the dispatch. Defaults to thread_ts."),
+      },
+    },
+    async ({ agent_name, prompt, channel_id, thread_ts, source_agent, user_id, trigger_ts }) => {
+      if (!sessionManager) {
+        return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
+      }
+
+      const targetAgent = agent_name.trim();
+      if (!isPersistentAgent(targetAgent)) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: unknown agent "${targetAgent}". Use agent_search to find registered agents.`,
+            },
+          ],
+        };
+      }
+
+      const caller = source_agent?.trim() || "default";
+      const allowed = dispatchableAgentsFor(caller);
+      if (!allowed.includes(targetAgent)) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${caller} is not allowed to dispatch ${targetAgent}. Allowed: ${allowed.join(", ") || "(none)"}.`,
+            },
+          ],
+        };
+      }
+
+      const now = Date.now();
+      await sessionManager.handleAgentMessage(
+        {
+          threadId: thread_ts,
+          channel: channel_id,
+          user: user_id ?? "mcp-internal",
+          text: prompt,
+          ts: trigger_ts ?? thread_ts,
+          command: null,
+          isSelfBot: true,
+          botUsername: AGENT_IDENTITIES[caller]?.username,
+          dedupeKey: `${thread_ts}:mcp:${targetAgent}:${now}`,
+        },
+        targetAgent,
+      );
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ok: true, agent: targetAgent, thread: thread_ts }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
     "agent_search",
     {
       description:
@@ -561,10 +636,12 @@ export function startMcpServer(
   botToken: string,
   store?: SessionStore,
   wtManager?: WorktreeManager,
+  manager?: SessionManager,
 ): void {
   slack = new WebClient(botToken);
   sessionStore = store;
   worktreeManager = wtManager;
+  sessionManager = manager;
 
   const httpServer = createServer(async (req, res) => {
     // Each request gets its own transport (stateless mode).
