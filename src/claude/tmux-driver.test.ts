@@ -185,6 +185,30 @@ describe("TmuxDriver with stubbed exec", () => {
     );
   });
 
+  it("does not pass generated MCP config for utility cwd runs", async () => {
+    const { driver, calls } = setup();
+    const cwd = mkdtempSync(join(tmpdir(), "junior-utility-cwd-"));
+    const session = makeSession({
+      cwd,
+      worktreePath: mkdtempSync(join(tmpdir(), "junior-worktree-")),
+      activeAgentName: "lead",
+    });
+
+    const handle = driver.send({
+      session,
+      prompt: "hello",
+      config: claudeConfig(),
+      threadId: session.threadId,
+      agentName: "lead",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    handle.kill();
+
+    const startCall = calls.find((c) => c.args[0] === "new-session");
+    expect(startCall).toBeDefined();
+    expect(startCall!.args).not.toContain("--mcp-config");
+  });
+
   it("close() invokes kill-session for that (thread, agent)", async () => {
     const { driver, calls } = setup();
     const cwd = mkdtempSync(join(tmpdir(), "junior-cwd-"));
