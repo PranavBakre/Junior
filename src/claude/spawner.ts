@@ -25,7 +25,9 @@ export function spawnClaude(
     botToken,
     agentIdentity,
   });
-  const mcpConfigPath = writeClaudeMcpConfig(session);
+  const mcpConfigPath = runtime.needsProjectMcp
+    ? writeClaudeMcpConfig(session)
+    : undefined;
   const args = buildClaudeArgs(session, prompt, config, mcpConfigPath);
 
   const proc = Bun.spawn(["claude", ...args], {
