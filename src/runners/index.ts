@@ -6,6 +6,7 @@ import { spawnOpenCodeSdk } from "../opencode/sdk-provider.ts";
 import { spawnCodexAppServer } from "../codex-app-server/spawner.ts";
 import type { OpenCodeMcpConfig } from "../opencode/config.ts";
 import type { SpawnHandle } from "./types.ts";
+import { buildSlackMcpUrl } from "../mcp/context.ts";
 
 export function sessionProvider(
   session: ThreadSession,
@@ -108,7 +109,7 @@ export function buildOpenCodeMcpConfig(
   if (config.opencode.slackMcpEnabled) {
     mcp["slack-bot"] = {
       type: "remote",
-      url: "http://localhost:3456/mcp",
+      url: buildSlackMcpUrl(session),
       enabled: true,
     };
   }

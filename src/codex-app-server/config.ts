@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { ThreadSession } from "../session/types.ts";
 import type { CodexApprovalPolicy, CodexSandbox } from "./policy.ts";
+import { buildSlackMcpUrl } from "../mcp/context.ts";
 
 export interface CodexMcpServerConfig {
   transport?: "http";
@@ -28,7 +29,7 @@ export function buildCodexMcpConfig(
   if (config.codex.slackMcpEnabled && wants("slack-bot")) {
     mcp["slack-bot"] = {
       transport: "http",
-      url: "http://localhost:3456/mcp",
+      url: buildSlackMcpUrl(session),
     };
   }
   if (config.codex.playwrightMcpEnabled && wants("playwright")) {
