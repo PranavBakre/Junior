@@ -49,7 +49,7 @@ export class SlackResponder {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       try {
-        const result = await this.app.client.chat.postMessage({
+        const message = {
           channel,
           thread_ts: threadTs,
           text: chunk,
@@ -57,9 +57,15 @@ export class SlackResponder {
             ? {
                 username: identity.username,
                 ...(identity.iconEmoji ? { icon_emoji: identity.iconEmoji } : {}),
+                ...(identity.imageUrl && !identity.iconEmoji
+                  ? { icon_url: identity.imageUrl }
+                  : {}),
               }
             : {}),
-        });
+        };
+        const result = await this.app.client.chat.postMessage(
+          message as Parameters<typeof this.app.client.chat.postMessage>[0],
+        );
         log.info(
           "responder",
           `post.ok thread=${threadTs} chunk=${i + 1}/${chunks.length} ts=${result.ts ?? "?"} preview="${preview(chunk)}"`,

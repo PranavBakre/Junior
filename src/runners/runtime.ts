@@ -59,12 +59,18 @@ export function buildRunnerEnv(
     env.JUNIOR_SLACK_USERNAME = agentIdentity.username;
     if (agentIdentity.iconEmoji) {
       env.JUNIOR_SLACK_ICON_EMOJI = agentIdentity.iconEmoji;
+      delete env.JUNIOR_SLACK_ICON_URL;
+    } else if (agentIdentity.imageUrl) {
+      env.JUNIOR_SLACK_ICON_URL = agentIdentity.imageUrl;
+      delete env.JUNIOR_SLACK_ICON_EMOJI;
     } else {
       delete env.JUNIOR_SLACK_ICON_EMOJI;
+      delete env.JUNIOR_SLACK_ICON_URL;
     }
   } else {
     delete env.JUNIOR_SLACK_USERNAME;
     delete env.JUNIOR_SLACK_ICON_EMOJI;
+    delete env.JUNIOR_SLACK_ICON_URL;
   }
 
   return env;

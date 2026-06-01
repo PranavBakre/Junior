@@ -220,7 +220,31 @@ body
     });
   });
 
-  it("skips .md files that declare only one of username/iconEmoji", async () => {
+  it("registers identities that use imageUrl instead of iconEmoji", async () => {
+    await fs.mkdir(tmpDir, { recursive: true });
+    await Bun.write(
+      path.join(tmpDir, "image-worker.md"),
+      `---
+name: image-worker
+description: Test image worker
+username: ImagePerson
+imageUrl: "https://example.com/icon.png"
+---
+
+body
+`,
+    );
+
+    cleanupKeys.push("image-worker");
+    await loadOverlayIdentities(tmpDir);
+
+    expect(AGENT_IDENTITIES["image-worker"]).toEqual({
+      username: "ImagePerson",
+      imageUrl: "https://example.com/icon.png",
+    });
+  });
+
+  it("skips .md files that declare only one identity field", async () => {
     await fs.mkdir(tmpDir, { recursive: true });
     await Bun.write(
       path.join(tmpDir, "half-identity.md"),

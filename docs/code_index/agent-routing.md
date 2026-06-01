@@ -80,7 +80,7 @@ Missing flags default to `true`. Invalid values fall back to default (silent typ
 
 ### Agent identity in frontmatter
 
-`username:` + `iconEmoji:` declare the slack identity of overlay/private agents. Loaded by `loadOverlayIdentities` (see `persistent-agents.md`). Both fields required; partial declarations are ignored.
+`username:` + `iconEmoji:` or `imageUrl:` declare the slack identity of overlay/private agents. Loaded by `loadOverlayIdentities` (see `persistent-agents.md`). Username plus one visual field is required; partial declarations are ignored.
 
 ## Dependencies
 
