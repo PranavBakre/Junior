@@ -35,7 +35,7 @@ The active dev config and any production-like fallback paths (e.g. `/etc/hosts` 
 
 Pre-loaded — do NOT `ToolSearch` for them:
 
-- **Slack bot** (HTTP MCP, runs in junior's process): `slack_send_message`, `slack_read_thread`, `slack_read_channel`, `slack_search`, `slack_search_users`, `slack_upload_file`. Primary write path for posting to Slack. Pass `username` + `icon_emoji` per `AGENT_IDENTITIES` so attribution is correct.
+- **Slack bot** (HTTP MCP, runs in junior's process): `slack_send_message`, `slack_send_dm`, `slack_read_thread`, `slack_read_channel`, `slack_search`, `slack_search_users`, `slack_upload_file`. Primary write paths for posting to Slack: use `slack_send_message` for channels/threads and `slack_send_dm` for direct messages by Slack user ID. Pass `username` + `icon_emoji` per `AGENT_IDENTITIES` so attribution is correct.
 - **MongoDB (read-only)**: `mcp__mongodb__find`, `mcp__mongodb__aggregate`, `mcp__mongodb__count`, `mcp__mongodb__collection-schema`, `mcp__mongodb__list-collections`, `mcp__mongodb__list-databases`. Use to verify data shape during research / reproduction. NEVER mutate.
 - **Playwright** (browser automation, reproducer's primary tool): `mcp__playwright__browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_take_screenshot`, `browser_console_messages`, `browser_network_requests`, `browser_evaluate`, `browser_wait_for`, `browser_navigate_back`, `browser_fill_form`, `browser_close`.
 
