@@ -230,8 +230,8 @@ setInterval(() => {
 
 (async () => {
   // Load private/overlay agent identities BEFORE accepting events. Each
-  // `agents-org/*.md` files may declare `username` + `iconEmoji` in
-  // frontmatter; those get merged into `AGENT_IDENTITIES` so dispatch,
+  // `agents-org/*.md` files may declare `username` + `iconEmoji`/`imageUrl`
+  // in frontmatter; those get merged into `AGENT_IDENTITIES` so dispatch,
   // `agentForUsername`, and slack posting all see them. Failure is
   // non-fatal — overlay is optional.
   try {

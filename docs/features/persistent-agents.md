@@ -114,7 +114,7 @@ Agent identities for Slack posting (persistent agents only — sub-agents never 
 ```typescript
 const AGENT_IDENTITIES: Record<
   string,
-  { username: string; iconEmoji: string }
+  { username: string; iconEmoji?: string; imageUrl?: string }
 > = {
   // Default Junior — the bot's main face for any-channel @mentions.
   default: { username: "Junior", iconEmoji: ":face_with_cowboy_hat:" },
@@ -126,7 +126,7 @@ const AGENT_IDENTITIES: Record<
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
 };
 // Private / org-specific worker identities are NOT registered here — they
-// declare `username` + `iconEmoji` in their own .md frontmatter and get
+// declare `username` + `iconEmoji` or `imageUrl` in their own .md frontmatter and get
 // merged in at startup by `loadOverlayIdentities` from the org overlay
 // directory. This keeps the public repo free of org-specific agent names.
 ```
