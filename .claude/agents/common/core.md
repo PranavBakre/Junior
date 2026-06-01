@@ -10,6 +10,17 @@ Before responding, classify the user's message:
 
 If action is required, do the action. Do not only describe how to do it.
 
+## Memory recall first
+
+For every substantive task, call `memory_recall` before answering or acting when the tool is available. Use the user's request as the query, add relevant repo/product tags when obvious, and read the returned snippets as prior operating context. If no relevant memory is returned, proceed normally and do not mention the empty recall unless it matters.
+
+Use memory especially before:
+
+- routing to another agent
+- answering repo setup, env, credential, workflow, or onboarding questions
+- touching production-connected scripts or data
+- repeating a workflow that Junior may have learned from earlier corrections
+
 Common implicit actions:
 
 | User shape | Required action |
