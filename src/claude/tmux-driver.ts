@@ -7,8 +7,9 @@ import type { ClaudeDriver, DriverMode, DriverSendInput } from "./driver.ts";
 import type { StreamEvent } from "./types.ts";
 import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
 import { buildClaudeArgs } from "./args.ts";
-import { mapClaudeEvent } from "./spawner.ts";
+import { mapClaudeEvent, writeClaudeMcpConfig } from "./spawner.ts";
 import { adaptTranscriptLine } from "./transcript-adapter.ts";
+import { buildRunnerRuntime } from "../runners/runtime.ts";
 
 /**
  * Test seam — let unit tests inject a fake tmux invoker and override the
@@ -306,16 +307,14 @@ export class TmuxDriver implements ClaudeDriver {
       this.sessions.delete(key);
     }
 
-    const cwd = input.session.cwd
-      ?? input.session.worktreePath
-      ?? input.targetRepoCwd
-      ?? process.cwd();
+    const runtime = buildRunnerRuntime(input);
+    const cwd = runtime.cwd;
     mkdirSync(cwd, { recursive: true });
 
     const sessionName = computeSessionName(input.threadId, input.agentName);
     const startedAt = Date.now();
 
-    const claudeArgs = buildInteractiveClaudeArgs(input);
+    const claudeArgs = buildInteractiveClaudeArgs(input, runtime.needsProjectMcp);
     await this.execImpl(this.tmuxBin, [
       "new-session",
       "-d",
@@ -578,10 +577,15 @@ function encodeCwd(cwd: string): string {
   return cwd.replace(/\//g, "-");
 }
 
-function buildInteractiveClaudeArgs(input: DriverSendInput): string[] {
+function buildInteractiveClaudeArgs(input: DriverSendInput, needsProjectMcp: boolean): string[] {
   // Lean on the existing arg builder but strip the `-p <prompt>` and
   // `--output-format` flags — those are headless-only.
-  const all = buildClaudeArgs(input.session, /*prompt*/ "", input.config);
+  const all = buildClaudeArgs(
+    input.session,
+    /*prompt*/ "",
+    input.config,
+    needsProjectMcp ? writeClaudeMcpConfig(input.session) : undefined,
+  );
   const out: string[] = [];
   for (let i = 0; i < all.length; i++) {
     const arg = all[i];

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { tmuxSessionNameFor, TmuxDriver } from "./tmux-driver.ts";
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ThreadSession } from "../session/types.ts";
@@ -153,6 +153,60 @@ describe("TmuxDriver with stubbed exec", () => {
 
     // Same session — no second new-session call.
     expect(calls.filter((c) => c.args[0] === "new-session").length).toBe(1);
+  });
+
+  it("starts Claude tmux with a per-run contextual MCP config", async () => {
+    const { driver, calls } = setup();
+    const cwd = mkdtempSync(join(tmpdir(), "junior-cwd-"));
+    const session = makeSession({
+      worktreePath: cwd,
+      activeAgentName: "lead",
+    });
+
+    const handle = driver.send({
+      session,
+      prompt: "hello",
+      config: claudeConfig(),
+      threadId: session.threadId,
+      agentName: "lead",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    handle.kill();
+
+    const startCall = calls.find((c) => c.args[0] === "new-session");
+    expect(startCall).toBeDefined();
+    const mcpArgIndex = startCall!.args.indexOf("--mcp-config");
+    expect(mcpArgIndex).toBeGreaterThan(0);
+
+    const mcpConfigPath = startCall!.args[mcpArgIndex + 1];
+    const mcpConfig = JSON.parse(readFileSync(mcpConfigPath, "utf8"));
+    expect(mcpConfig.mcpServers["slack-bot"].url).toContain(
+      "agent=lead&channel=C01&thread=T-thread1",
+    );
+  });
+
+  it("does not pass generated MCP config for utility cwd runs", async () => {
+    const { driver, calls } = setup();
+    const cwd = mkdtempSync(join(tmpdir(), "junior-utility-cwd-"));
+    const session = makeSession({
+      cwd,
+      worktreePath: mkdtempSync(join(tmpdir(), "junior-worktree-")),
+      activeAgentName: "lead",
+    });
+
+    const handle = driver.send({
+      session,
+      prompt: "hello",
+      config: claudeConfig(),
+      threadId: session.threadId,
+      agentName: "lead",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    handle.kill();
+
+    const startCall = calls.find((c) => c.args[0] === "new-session");
+    expect(startCall).toBeDefined();
+    expect(startCall!.args).not.toContain("--mcp-config");
   });
 
   it("close() invokes kill-session for that (thread, agent)", async () => {
