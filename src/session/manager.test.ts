@@ -452,6 +452,44 @@ describe("SessionManager", () => {
     expect(reviewRunSession.slackIdentity?.username).toBe("Reviewer");
   });
 
+  it("serializes same-agent internal directive dispatches", async () => {
+    const leadHandle = createMockHandle();
+    const reviewHandle = createMockHandle();
+    const handles = [leadHandle, reviewHandle];
+    mockSpawnFn = mock(() => {
+      return handles.shift() ?? createMockHandle();
+    }) as ReturnType<typeof mock<SpawnRunnerFn>>;
+    manager = new SessionManager(
+      store,
+      testConfig,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
+
+    const responses: string[] = [];
+    manager.onResponse = (_session, response) => responses.push(response);
+
+    await manager.handleLeadMessage(makeEvent({ text: "route this" }));
+    leadHandle._complete(
+      "!review first review prompt\n!review second review prompt",
+      "lead-session-1",
+    );
+
+    await waitFor(async () => {
+      const session = await store.get("thread-1");
+      return session?.agentSessions.review?.pendingMessages.length === 1;
+    });
+
+    expect(responses).toEqual([]);
+    expect(mockSpawnFn).toHaveBeenCalledTimes(2);
+    expect(mockSpawnFn.mock.calls[1][1]).toContain("first review prompt");
+
+    const session = await store.get("thread-1");
+    expect(session!.agentSessions.review.status).toBe("busy");
+    expect(session!.agentSessions.review.pendingMessages[0].text).toBe(
+      "second review prompt",
+    );
+  });
+
   it("buffers per-agent messages while that agent is busy and drains them", async () => {
     await manager.handleAgentMessage(makeEvent({ text: "first echo" }), "echo");
     await manager.handleAgentMessage(
