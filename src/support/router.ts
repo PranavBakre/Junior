@@ -11,14 +11,14 @@ import {
   isPersistentAgent,
   workerMayDispatch,
 } from "./agents.ts";
+import {
+  parseAgentDirectives,
+  type AgentDirective,
+} from "./directives.ts";
 import { looksLikePrReviewRequest } from "./pipeline-guard.ts";
 import { log } from "../logger.ts";
 
-export interface AgentDirective {
-  agentName: string;
-  prompt: string;
-  line: string;
-}
+export { parseAgentDirectives, type AgentDirective } from "./directives.ts";
 
 // ---------------------------------------------------------------------------
 // Devserver directive types
@@ -81,27 +81,6 @@ export function parseDevserverDirective(line: string): DevserverDirective | null
   }
   // More than 2 tokens — not recognized.
   return null;
-}
-
-export function parseAgentDirectives(text: string): AgentDirective[] {
-  const directives: AgentDirective[] = [];
-  const lines = text.split(/\r?\n/);
-
-  for (const line of lines) {
-    const match = line.match(/^!(\S+)(?:\s+(.*))?$/);
-    if (!match) continue;
-
-    const agentName = match[1];
-    if (!isPersistentAgent(agentName)) continue;
-
-    directives.push({
-      agentName,
-      prompt: (match[2] ?? "").trim(),
-      line,
-    });
-  }
-
-  return directives;
 }
 
 /**
