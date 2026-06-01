@@ -44,6 +44,7 @@ Junior main process
 | Tool | Slack API | Purpose |
 |---|---|---|
 | `slack_send_message` | `chat.postMessage` | Send/reply in channels and threads as the bot |
+| `slack_send_dm` | `conversations.open` + `chat.postMessage` | Open a DM by Slack user ID and send as the bot |
 | `slack_read_channel` | `conversations.history` | Read recent channel messages |
 | `slack_read_thread` | `conversations.replies` | Read thread replies |
 | `slack_search` | `search.messages` | Search across channels (requires `search:read` scope) |
