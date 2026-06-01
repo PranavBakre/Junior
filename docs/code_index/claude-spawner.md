@@ -53,6 +53,7 @@ Bun.spawn(["claude", ...args], { cwd, env })
 | `JUNIOR_AGENT_NAME` | `session.activeAgentName ?? "lead"` |
 | `JUNIOR_SLACK_USERNAME` | From `agentIdentity` (when present) |
 | `JUNIOR_SLACK_ICON_EMOJI` | From `agentIdentity` (when present) |
+| `JUNIOR_SLACK_ICON_URL` | From `agentIdentity.imageUrl` (when present and no emoji icon is set) |
 | `SLACK_BOT_TOKEN` | When `botToken` arg passed — enables `bin/slack-upload.sh` |
 
 ### MCP config injection
