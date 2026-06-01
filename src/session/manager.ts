@@ -27,7 +27,15 @@ import {
 } from "../runners/index.ts";
 import { createDrivers, type DriverMap } from "../claude/factory.ts";
 import { tmuxSessionNameFor } from "../claude/tmux-driver.ts";
-import { buildDispatchAllowBlock, identityForAgent } from "../support/agents.ts";
+import {
+  buildDispatchAllowBlock,
+  dispatchableAgentsFor,
+  identityForAgent,
+} from "../support/agents.ts";
+import {
+  parsePureAgentDirectiveResponse,
+  type AgentDirective,
+} from "../support/directives.ts";
 import { validateLeadPipelineResponse } from "../support/pipeline-guard.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
@@ -1486,6 +1494,7 @@ export class SessionManager {
     const agentSession = isTopLevel
       ? null
       : this.getOrCreateAgentSession(fresh, agentName);
+    let internalDispatchDirectives: AgentDirective[] = [];
 
     if (isTopLevel) {
       fresh.pid = null;
@@ -1574,10 +1583,24 @@ export class SessionManager {
         `thread=${fresh.threadId} agent=${agentName} suppressed reason=duplicate-slack-tool-post`,
       );
     } else if (result.response) {
-      this.onResponse?.(
-        this.buildRunSession(fresh, agentName, agentIdentity),
-        result.response,
-      );
+      const parsedDirectives = parsePureAgentDirectiveResponse(result.response);
+      const allowedAgents = new Set(dispatchableAgentsFor(agentName));
+      internalDispatchDirectives = parsedDirectives.every((directive) =>
+        allowedAgents.has(directive.agentName)
+      )
+        ? parsedDirectives
+        : [];
+      if (internalDispatchDirectives.length > 0) {
+        _log.info(
+          "dispatch",
+          `thread=${fresh.threadId} agent=${agentName} internalized directives=${internalDispatchDirectives.map((d) => d.agentName).join(",")}`,
+        );
+      } else {
+        this.onResponse?.(
+          this.buildRunSession(fresh, agentName, agentIdentity),
+          result.response,
+        );
+      }
     }
 
     const pendingMessages = isTopLevel
@@ -1628,6 +1651,45 @@ export class SessionManager {
       }
       await this.store.set(fresh.threadId, fresh);
     }
+
+    if (internalDispatchDirectives.length > 0) {
+      await this.dispatchInternalAgentDirectives(
+        fresh.threadId,
+        agentName,
+        internalDispatchDirectives,
+      );
+    }
+  }
+
+  private async dispatchInternalAgentDirectives(
+    threadId: string,
+    sourceAgentName: string,
+    directives: AgentDirective[],
+  ): Promise<void> {
+    const session = await this.store.get(threadId);
+    if (!session) return;
+
+    const sourceIdentity = identityForAgent(sourceAgentName);
+    const now = Date.now();
+    await Promise.all(
+      directives.map((directive, index) =>
+        this.handleAgentMessage(
+          {
+            threadId: session.threadId,
+            channel: session.channel,
+            user: this.botUserId ?? "junior-internal-dispatch",
+            text: directive.prompt,
+            ts: session.threadId,
+            command: null,
+            isSelfBot: true,
+            botId: this.selfBotId,
+            botUsername: sourceIdentity?.username,
+            dedupeKey: `${session.threadId}:internal:${sourceAgentName}:${directive.agentName}:${index}:${now}`,
+          },
+          directive.agentName,
+        )
+      ),
+    );
   }
 
   private async captureSlackMemory(
