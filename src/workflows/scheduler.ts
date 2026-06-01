@@ -123,6 +123,11 @@ export class WorkflowScheduler {
     this.timers.clear();
   }
 
+  async shutdown(): Promise<void> {
+    this.stop();
+    await this.executor.terminateActiveRuns();
+  }
+
   private async schedule(definition: WorkflowDefinition): Promise<void> {
     this.cancel(definition.name);
     const state = await this.ensureState(definition);

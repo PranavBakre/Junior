@@ -3,6 +3,8 @@
 > **Two process classes live under junior's lifecycle ownership.**
 > 1. **Claude CLI subprocesses** — short-lived, one per Slack message turn. Owned by `src/claude/spawner.ts` + the timeout/shutdown helpers in `src/lifecycle/`. Original scope of this doc.
 > 2. **Dev servers** — long-lived `pnpm dev` / `npm run dev` processes for bug-pipeline validation. Owned by `DevServerManager` (`src/lifecycle/dev-server.ts`) and serialized by `DevServerQueue` (`src/lifecycle/dev-server-queue.ts`). See [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md) for the full design and the Dev-server section below for the runtime invariants.
+>
+> Process-tree cleanup and resumability are specified in [process-tree-cleanup.md](process-tree-cleanup.md).
 
 ## Problem
 
@@ -17,6 +19,7 @@ Claude Code CLI processes can hang, crash, or produce errors. The bot needs to h
 
 - Timeout guard on every spawned process (configurable, default 5 min)
 - Graceful shutdown: SIGINT first, SIGKILL after grace period
+- Process-tree cleanup: spawned CLIs run in their own process group, and cleanup signals the group so wrapper commands cannot leave grandchildren behind
 - Error categorization: timeout, crash, rate limit, auth failure, unknown
 - User-facing error messages in Slack (not raw stderr)
 - Session state recovery: if process dies mid-turn, session stays resumable
@@ -132,6 +135,7 @@ When the bot itself shuts down (SIGINT, SIGTERM, restart), handle running proces
 - **Branch-keyed reuse.** `ensure(repoName, branch)` reuses the running process if its branch matches; otherwise kills, `git fetch && git reset --hard origin/<branch>` (reset, not checkout — checkout rejects branches checked out elsewhere), respawns, polls `<readyUrl>` until 200 (90s timeout).
 - **Idle TTL** = 20 min default. `setInterval` sweeper kills servers whose `lastUsedAt` is past the TTL. Tunable via `DevServerManagerOptions` for tests.
 - **Junior shutdown.** `setupGracefulShutdown` calls `devServerManager.killAll()` in parallel with session teardown. SIGINT first, 5s grace, SIGKILL fallback.
+- **Process group ownership.** Dev servers are spawned as detached process groups. `kill()` tears down the whole group, not only the direct wrapper PID.
 - **Startup orphan check.** `bootstrap()` probes each configured `devPort` via TCP connect. If something else holds it, junior logs loudly and skips spawning that repo's server (does NOT kill the unknown listener — that would be unsafe; see "human's bare-repo dev server" in the design doc).
 - **Worktree ignores written to `.git/info/exclude`.** `bootstrap()` writes `.lock*\n.queue*\n` into the dev-server worktree's per-clone `info/exclude` (resolved via `git rev-parse --git-dir`), not `.gitignore`. `info/exclude` is per-worktree and untracked, so the write is idempotent and invisible to `git status`; writing `.gitignore` would clobber the upstream-tracked file.
 - **Self-heal legacy `.gitignore` overwrite.** A previous bootstrap wrote those ignore lines into `.gitignore` directly. `bootstrap()` detects the exact-match fingerprint (`.lock*\n.queue*\n`), unlinks the file, and runs `git checkout -- .gitignore` to restore from HEAD. Exact-match only — non-matching `.gitignore` files are left alone.
