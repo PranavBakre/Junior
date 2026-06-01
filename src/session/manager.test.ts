@@ -490,6 +490,49 @@ describe("SessionManager", () => {
     );
   });
 
+  it("serializes cross-agent internal directive dispatches to preserve session state", async () => {
+    const leadHandle = createMockHandle();
+    const reviewHandle = createMockHandle();
+    const reproducerHandle = createMockHandle();
+    const handles = [leadHandle, reviewHandle, reproducerHandle];
+    mockSpawnFn = mock(() => {
+      return handles.shift() ?? createMockHandle();
+    }) as ReturnType<typeof mock<SpawnRunnerFn>>;
+    manager = new SessionManager(
+      store,
+      testConfig,
+      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    );
+
+    const responses: string[] = [];
+    manager.onResponse = (_session, response) => responses.push(response);
+
+    await manager.handleLeadMessage(makeEvent({ text: "route this" }));
+    leadHandle._complete(
+      "!review review the PR\n!reproducer validate the branch",
+      "lead-session-1",
+    );
+
+    await waitFor(async () => {
+      const session = await store.get("thread-1");
+      return (
+        session?.agentSessions.review?.status === "busy" &&
+        session?.agentSessions.reproducer?.status === "busy"
+      );
+    });
+
+    expect(responses).toEqual([]);
+    expect(mockSpawnFn).toHaveBeenCalledTimes(3);
+    expect(mockSpawnFn.mock.calls[1][1]).toContain("review the PR");
+    expect(mockSpawnFn.mock.calls[2][1]).toContain("validate the branch");
+
+    const session = await store.get("thread-1");
+    expect(Object.keys(session!.agentSessions).sort()).toEqual([
+      "reproducer",
+      "review",
+    ]);
+  });
+
   it("buffers per-agent messages while that agent is busy and drains them", async () => {
     await manager.handleAgentMessage(makeEvent({ text: "first echo" }), "echo");
     await manager.handleAgentMessage(

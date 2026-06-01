@@ -1671,34 +1671,23 @@ export class SessionManager {
 
     const sourceIdentity = identityForAgent(sourceAgentName);
     const now = Date.now();
-    const byAgent = new Map<string, Array<{ directive: AgentDirective; index: number }>>();
-    directives.forEach((directive, index) => {
-      const entries = byAgent.get(directive.agentName) ?? [];
-      entries.push({ directive, index });
-      byAgent.set(directive.agentName, entries);
-    });
-
-    await Promise.all(
-      [...byAgent].map(async ([agentName, entries]) => {
-        for (const { directive, index } of entries) {
-          await this.handleAgentMessage(
-            {
-              threadId: session.threadId,
-              channel: session.channel,
-              user: this.botUserId ?? "junior-internal-dispatch",
-              text: directive.prompt,
-              ts: session.threadId,
-              command: null,
-              isSelfBot: true,
-              botId: this.selfBotId,
-              botUsername: sourceIdentity?.username,
-              dedupeKey: `${session.threadId}:internal:${sourceAgentName}:${agentName}:${index}:${now}`,
-            },
-            agentName,
-          );
-        }
-      }),
-    );
+    for (const [index, directive] of directives.entries()) {
+      await this.handleAgentMessage(
+        {
+          threadId: session.threadId,
+          channel: session.channel,
+          user: this.botUserId ?? "junior-internal-dispatch",
+          text: directive.prompt,
+          ts: session.threadId,
+          command: null,
+          isSelfBot: true,
+          botId: this.selfBotId,
+          botUsername: sourceIdentity?.username,
+          dedupeKey: `${session.threadId}:internal:${sourceAgentName}:${directive.agentName}:${index}:${now}`,
+        },
+        directive.agentName,
+      );
+    }
   }
 
   private async captureSlackMemory(
