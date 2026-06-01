@@ -27,7 +27,7 @@ Conditional:
 - `cwd` precedence: `session.cwd` (utility commands) -> `session.worktreePath` (per-thread worktree, see [worktree-manager](worktree-manager.md)) -> `targetRepoCwd` -> `process.cwd()`
 - If `session.cwd` is set, it's `mkdirSync`'d first (e.g. `/tmp/junior-utility` for `!adhoc` / `!bugs`). This keeps utility commands away from any project `CLAUDE.md`.
 - `--mcp-config` points at junior's `.mcp.json` (so worktrees can reach the slack-bot MCP server, see [mcp-server](mcp-server.md)). Skipped when `session.cwd` is an override — utility commands rely on cloud integrations, not local MCP.
-- Env passed to child: `JUNIOR_SPAWNED=1`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `JUNIOR_AGENT_NAME`, optional `JUNIOR_SLACK_USERNAME` / `JUNIOR_SLACK_ICON_EMOJI` (per-agent identity for [mcp-server](mcp-server.md) postings, see [thread-context](thread-context.md)), and `SLACK_BOT_TOKEN` when provided.
+- Env passed to child: `JUNIOR_SPAWNED=1`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `JUNIOR_AGENT_NAME`, optional `JUNIOR_SLACK_USERNAME` plus optional `JUNIOR_SLACK_ICON_EMOJI` or `JUNIOR_SLACK_ICON_URL` (per-agent identity for [mcp-server](mcp-server.md) postings, see [thread-context](thread-context.md)), and `SLACK_BOT_TOKEN` when provided.
 
 Process is `Bun.spawn(["claude", ...args])` with piped stdout/stderr. `kill()` forwards to the child; lifecycle (timeout, zombie cleanup) lives in [process-lifecycle](process-lifecycle.md).
 
