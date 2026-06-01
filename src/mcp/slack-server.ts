@@ -69,6 +69,50 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
   );
 
   server.registerTool(
+    "slack_send_dm",
+    {
+      description: "Send a direct message to a Slack user ID as Junior (the bot). Opens the DM channel first.",
+      inputSchema: {
+        user_id: z.string().describe("Slack user ID to DM, e.g. U03PNSJ33S5"),
+        text: z.string().describe("Message text (supports Slack mrkdwn formatting)"),
+        username: z.string().optional().describe("Optional display name for this bot message"),
+        icon_emoji: z.string().optional().describe("Optional emoji icon for this bot message"),
+      },
+    },
+    async ({ user_id, text, username, icon_emoji }) => {
+      try {
+        const result = await sendSlackDirectMessage(slack, {
+          userId: user_id,
+          text,
+          username,
+          iconEmoji: icon_emoji,
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `DM sent (channel: ${result.channelId}, ts: ${result.ts})`,
+            },
+          ],
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("missing_scope") || msg.includes("not_allowed")) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "Error: Bot token lacks permission to open or post DMs. Required Slack scopes include im:write and chat:write.",
+              },
+            ],
+          };
+        }
+        throw err;
+      }
+    },
+  );
+
+  server.registerTool(
     "slack_read_channel",
     {
       description: "Read recent messages from a Slack channel (newest first).",
@@ -556,6 +600,48 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
       });
     },
   );
+}
+
+interface SlackDirectMessageClient {
+  conversations: {
+    open: (args: { users: string; return_im: boolean }) => Promise<{ channel?: { id?: string } }>;
+  };
+  chat: {
+    postMessage: (args: {
+      channel: string;
+      text: string;
+      username?: string;
+      icon_emoji?: string;
+    }) => Promise<{ ts?: string }>;
+  };
+}
+
+export async function sendSlackDirectMessage(
+  client: SlackDirectMessageClient,
+  options: {
+    userId: string;
+    text: string;
+    username?: string;
+    iconEmoji?: string;
+  },
+): Promise<{ channelId: string; ts: string | undefined }> {
+  const opened = await client.conversations.open({
+    users: options.userId,
+    return_im: true,
+  });
+  const channelId = opened.channel?.id;
+  if (!channelId) {
+    throw new Error(`Slack did not return a DM channel for user ${options.userId}`);
+  }
+
+  const result = await client.chat.postMessage({
+    channel: channelId,
+    text: options.text,
+    ...(options.username ? { username: options.username } : {}),
+    ...(options.iconEmoji ? { icon_emoji: options.iconEmoji } : {}),
+  });
+
+  return { channelId, ts: result.ts };
 }
 
 async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemoryStore>) => Promise<T>): Promise<T> {
