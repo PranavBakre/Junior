@@ -3,6 +3,8 @@
 > **Two process classes live under junior's lifecycle ownership.**
 > 1. **Claude CLI subprocesses** — short-lived, one per Slack message turn. Owned by `src/claude/spawner.ts` + the timeout/shutdown helpers in `src/lifecycle/`. Original scope of this doc.
 > 2. **Dev servers** — long-lived `pnpm dev` / `npm run dev` processes for bug-pipeline validation. Owned by `DevServerManager` (`src/lifecycle/dev-server.ts`) and serialized by `DevServerQueue` (`src/lifecycle/dev-server-queue.ts`). See [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md) for the full design and the Dev-server section below for the runtime invariants.
+>
+> Process-tree cleanup and resumability are specified in [process-tree-cleanup.md](process-tree-cleanup.md).
 
 ## Problem
 
@@ -17,9 +19,11 @@ Claude Code CLI processes can hang, crash, or produce errors. The bot needs to h
 
 - Timeout guard on every spawned process (configurable, default 5 min)
 - Graceful shutdown: SIGINT first, SIGKILL after grace period
+- Process-tree cleanup: spawned CLIs run in their own process group, and cleanup signals the group so wrapper commands cannot leave grandchildren behind
 - Error categorization: timeout, crash, rate limit, auth failure, unknown
 - User-facing error messages in Slack (not raw stderr)
 - Session state recovery: if process dies mid-turn, session stays resumable
+- Stale cleanup must not delete an idle parent thread while any persistent agent session is still busy.
 - Health check: periodic scan for orphaned processes
 - Metrics: track success/failure/timeout rates per agent type
 - Graceful bot shutdown: on SIGINT/SIGTERM, wait for running processes to finish
@@ -127,18 +131,22 @@ When the bot itself shuts down (SIGINT, SIGTERM, restart), handle running proces
 `DevServerManager` (`src/lifecycle/dev-server.ts`) owns long-lived dev servers for the bug-pipeline validation flow. The full design is in [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md); the runtime invariants:
 
 - **One dev server per repo.** Tracked as `Map<repoName, DevServerState>` where `DevServerState = { pid, branch, startedAt, lastUsedAt }`. Never two on the same configured `devPort`.
-- **Dev servers always run from a dedicated worktree.** Bootstrapped to `<repo.path>/.claude/worktrees/slack-dev-server` on branch `dev-server-slot/<repo>`. Bare repos are never touched by junior.
+- **Dev servers always run from a dedicated worktree.** Bootstrapped to `<repo.path>.junior-worktrees/slack-dev-server` (sibling to the repo, not under `.claude/`) on branch `dev-server-slot/<repo>`. Bare repos are never touched by junior.
 - **Branch-keyed reuse.** `ensure(repoName, branch)` reuses the running process if its branch matches; otherwise kills, `git fetch && git reset --hard origin/<branch>` (reset, not checkout — checkout rejects branches checked out elsewhere), respawns, polls `<readyUrl>` until 200 (90s timeout).
 - **Idle TTL** = 20 min default. `setInterval` sweeper kills servers whose `lastUsedAt` is past the TTL. Tunable via `DevServerManagerOptions` for tests.
 - **Junior shutdown.** `setupGracefulShutdown` calls `devServerManager.killAll()` in parallel with session teardown. SIGINT first, 5s grace, SIGKILL fallback.
+- **Process group ownership.** Dev servers are spawned as detached process groups. `kill()` tears down the whole group, not only the direct wrapper PID.
 - **Startup orphan check.** `bootstrap()` probes each configured `devPort` via TCP connect. If something else holds it, junior logs loudly and skips spawning that repo's server (does NOT kill the unknown listener — that would be unsafe; see "human's bare-repo dev server" in the design doc).
+- **Worktree ignores written to `.git/info/exclude`.** `bootstrap()` writes `.lock*\n.queue*\n` into the dev-server worktree's per-clone `info/exclude` (resolved via `git rev-parse --git-dir`), not `.gitignore`. `info/exclude` is per-worktree and untracked, so the write is idempotent and invisible to `git status`; writing `.gitignore` would clobber the upstream-tracked file.
+- **Self-heal legacy `.gitignore` overwrite.** A previous bootstrap wrote those ignore lines into `.gitignore` directly. `bootstrap()` detects the exact-match fingerprint (`.lock*\n.queue*\n`), unlinks the file, and runs `git checkout -- .gitignore` to restore from HEAD. Exact-match only — non-matching `.gitignore` files are left alone.
+- **Git invocations via `runGit`.** All git calls in this module (`fetch`, `reset --hard`, `rev-parse`, `checkout`) go through a single `runGit(args, cwd)` helper that spawns git, awaits exit, and throws with stderr on non-zero. Replaces the per-call spawn boilerplate.
 - **Re-entrancy precondition.** `DevServerManager.ensure()` is NOT thread-safe on its own — concurrent callers double-spawn and orphan one PID. `DevServerQueue.acquire()` (Scope-2b) is the per-repo `proper-lockfile` lock that serializes calls. Any new caller of `ensure()` MUST acquire through the queue.
 
 ## Dev-server queue (`DevServerQueue`)
 
 Wraps `DevServerManager.ensure` with a `proper-lockfile`-based per-repo queue (`src/lifecycle/dev-server-queue.ts`). Accessed via the `!devserver` directive (`src/support/router.ts`); humans and agents post the same form.
 
-- **Lock dir.** `<repo.path>/.claude/worktrees/slack-dev-server` — the dev-server worktree itself. `proper-lockfile.lock(...)` creates a `.lock` directory inside.
+- **Lock dir.** `<repo.path>.junior-worktrees/slack-dev-server` — the dev-server worktree itself. `proper-lockfile.lock(...)` creates a `.lock` directory inside. `DevServerManager.bootstrap()` hides `.lock*` / `.queue*` from `git status` via the worktree's `.git/info/exclude` (see Dev-server lifecycle section).
 - **Holder metadata.** `<lockDir>/.lock.meta.json` written atomically (`write-tmp + rename`) on acquire with `{ holderThreadId, holderPid, branch, acquiredAt }`. Cleared on release.
 - **Waiter queue.** `<lockDir>/.queue` — append-only NDJSON, one line per waiter. Append uses O_APPEND atomic semantics. On release, the line is removed via read-modify-write under the lock that's about to be released. Read by `!devserver status` for "you're 3rd in line" UX.
 - **Slot timeout.** 10 min default. The auto-release timer lives in `handleDevserverAcquire` (`src/support/router.ts`), NOT inside `acquire()` itself: after the queue acquires and junior posts the ready message, the handler `await sleep(slotTimeoutMs)` then calls `release()` in a `finally`. `acquire()` itself has no built-in timer — direct callers (i.e. anything that bypasses the `!devserver` directive) are responsible for calling `release()` themselves. The `proper-lockfile` `stale` config (passed through `acquire()`) is the secondary backstop: a held lock that lives past `stale` is eligible for takeover by the next acquirer, which fires `onCompromised` on the original holder.

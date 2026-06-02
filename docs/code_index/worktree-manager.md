@@ -1,40 +1,58 @@
 # Code Index: Worktree Manager
 
-Creates, removes, and checks git worktrees in target repos for per-thread code isolation.
+Creates, removes, and inspects git worktrees in target repos for per-thread code isolation. Supports inline `git worktree add` and delegated setup scripts.
 
 ## Code Index
 
 ### src/worktree
 
-| Function | File | Purpose |
-|----------|------|---------|
-| `WorktreeManager(repos)` | `manager.ts` | Constructor: takes `RepoConfig[]` with `{ name, path, defaultBase }` |
-| `WorktreeManager.create(repoName, threadId)` | `manager.ts` | Creates worktree, returns path |
-| `WorktreeManager.remove(worktreePath)` | `manager.ts` | Force-removes worktree and prunes |
-| `WorktreeManager.exists(worktreePath)` | `manager.ts` | Checks if worktree directory exists |
-| `WorktreeManager.isDirty(worktreePath)` | `manager.ts` | `git status --porcelain` — checks for uncommitted changes |
-| `WorktreeManager.getRepo(repoName)` | `manager.ts` | Looks up repo config by name |
+| Symbol | File | Purpose |
+|---|---|---|
+| `WorktreeManager(repos)` | `manager.ts` | Constructor — keeps `RepoConfig[]` |
+| `createWorktree(repoName, threadId, baseRef?, branchOverride?)` | `manager.ts` | Creates worktree. `baseRef` defaults to `repo.defaultBase`. `branchOverride` defaults to `slack/<threadId>`. Returns absolute path. |
+| `removeWorktree(repoName, threadId)` | `manager.ts` | `git worktree remove --force` + `git branch -D` (queries actual branch name from the worktree first to handle `branchOverride`) |
+| `worktreeExists(repoName, threadId)` | `manager.ts` | Filesystem check via `node:fs/promises.stat` |
+| `isWorktreeDirty(worktreePath)` | `manager.ts` | `git status --porcelain` |
+| `getWorktreePath(repoName, threadId)` | `manager.ts` | `<repo.path>.junior-worktrees/slack-<threadId>` — sibling, NOT under `.claude/` |
+| `getBranchName(threadId)` | `manager.ts` | `slack/<threadId>` |
+| `getRepo(name)` | `manager.ts` | Lookup in `repos` |
 
 ## Layout
 
 ```
-target-repo/
-  ├── .worktrees/
-  │     ├── slack-1234567890.123456/    ← thread A's isolated copy
-  │     └── slack-9876543210.654321/    ← thread B's isolated copy
-  ├── src/
-  └── ...
+<repo>.junior-worktrees/
+  ├── slack-1234567890.123456/    ← thread A's worktree
+  ├── slack-9876543210.654321/    ← thread B's worktree
+  └── slack-dev-server/           ← shared dev-server worktree (DevServerManager)
 ```
 
-Branch naming: `slack/{threadId}` off `defaultBase` (e.g., `main`).
+Default branch: `slack/<threadId>` off `repo.defaultBase`.
+
+## Setup-script delegation
+
+When `repo.worktreeSetupCommand` is set, Junior calls the script instead of running git inline:
+
+```
+<repo.path>/<command> <branch> --path <abs> --base <ref>
+```
+
+The script owns `git fetch`, `git worktree add`, env copy, install, MCP migration. Junior always passes `--base` (defaults to `repo.defaultBase`) so worktrees are reproducible. When unset, Junior runs `git fetch origin --prune` then `git worktree add <path> -b <branch> <base>` inline.
 
 ## Key Concepts
 
-### Cleanup Safety
+### Sibling path, NOT under `.claude/`
 
-`isDirty()` should be checked before `remove()` — dirty worktrees with uncommitted work should warn the user, not silently delete. `cleanupStaleSessions()` in lifecycle handles this.
+Setup scripts that `cp -R .claude/.` would otherwise pull every sibling thread's worktree (and the destination itself) into the new worktree — a recursive copy. The trailing-slash strip at both config load and `getWorktreePath` is belt-and-suspenders.
+
+### Always create a worktree
+
+`SessionManager` creates a worktree whenever `session.targetRepo` is set — not gated on agent type. Previously gated on `build`/`frontend`, which let other agents `cwd` into the shared origin repo and modify it.
+
+### Dirty-check before remove
+
+Callers should `isWorktreeDirty(path)` before `removeWorktree` so uncommitted work isn't silently destroyed. The cleanup pass in `lifecycle/cleanup.ts` skips busy/draining and deletes only stale idle sessions; worktree removal itself is not currently automatic on cleanup (worktrees outlive the session row).
 
 ## Dependencies
 
-- **Uses**: `config` (RepoConfig), git CLI (via Bun.spawn)
-- **Used by**: `SessionManager` (creates on `!build`, stores path in `session.worktreePath`)
+- **Uses**: `config.RepoConfig`, `Bun.spawn` (git, optional setup script), `node:fs/promises` (stat)
+- **Used by**: `SessionManager.runClaudeWithAgent` (per-thread create), `DevServerManager.bootstrap` (shared dev-server worktree), MCP `register_worktree` tool (bug-pipeline intake)

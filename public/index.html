@@ -82,6 +82,10 @@
       .row.devserver {
         grid-template-columns: minmax(160px, 1fr) 2fr 1fr;
       }
+      .row.workflow {
+        grid-template-columns: minmax(180px, 1fr) 1.2fr 1.4fr;
+        align-items: start;
+      }
       .row .col-label {
         font-size: 11px;
         color: var(--fg-faint);
@@ -155,6 +159,8 @@
       }
       .threadId, .sessionId { color: var(--accent); word-break: break-all; }
       .truncate { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .run-list { margin-top: 6px; }
+      .run-row { display: block; padding: 2px 0; color: var(--fg-dim); }
     </style>
   </head>
   <body>
@@ -171,6 +177,10 @@
       <section>
         <h2>Dev Servers</h2>
         <div class="panel" id="devservers"><div class="empty">loading…</div></div>
+      </section>
+      <section>
+        <h2>Workflows</h2>
+        <div class="panel" id="workflows"><div class="empty">loading…</div></div>
       </section>
       <section>
         <h2>Threads</h2>
@@ -321,6 +331,77 @@
         );
       }
 
+      function renderWorkflows(payload) {
+        const root = document.getElementById("workflows");
+        const items = payload.workflows || [];
+        const errors = payload.errors || [];
+        if (items.length === 0 && errors.length === 0) {
+          root.innerHTML = '<div class="empty">No workflows loaded.</div>';
+          return;
+        }
+        const workflowRows = items.map(renderWorkflowRow).join("");
+        const errorRows = errors.length
+          ? '<div class="row workflow"><div><div class="col-label">validation errors</div><span class="' +
+            pillClass("failed") + '">' + errors.length + '</span></div><div class="dim" style="grid-column: span 2">' +
+            errors.map((e) => '<div><code>' + escapeHtml(e.path) + '</code> ' + escapeHtml(e.message) + '</div>').join("") +
+            "</div></div>"
+          : "";
+        root.innerHTML = workflowRows + errorRows;
+      }
+
+      function renderWorkflowRow(w) {
+        const state = w.state || {};
+        const status = state.status || (w.enabled ? "active" : "stopped");
+        const runner = w.runner
+          ? escapeHtml(w.runner.provider + "/" + w.runner.agentName)
+          : '<span class="faint">none</span>';
+        const nextRun = state.nextRunAt
+          ? new Date(state.nextRunAt).toLocaleString()
+          : '<span class="faint">none</span>';
+        const lastRun = state.lastRunAt
+          ? new Date(state.lastRunAt).toLocaleString()
+          : '<span class="faint">never</span>';
+        const triggers = (w.triggers || [])
+          .map((t) => t.type === "schedule" ? t.cron + " " + t.timezone : t.type)
+          .join(", ") || "none";
+        const latestRuns = (w.runs || []).length
+          ? '<div class="run-list">' + w.runs.map(renderWorkflowRun).join("") + "</div>"
+          : '<div class="faint run-list">no runs yet</div>';
+        const error = state.lastError
+          ? '<div class="dim" style="margin-top:4px;color:var(--red)">' + escapeHtml(state.lastError) + "</div>"
+          : "";
+
+        return (
+          '<div class="row workflow">' +
+          '<div><div class="col-label">workflow</div><b>' + escapeHtml(w.name) +
+          '</b><div class="dim">' + escapeHtml(w.description || "no description") +
+          '</div><div class="dim"><code>' + escapeHtml(w.sourcePath) + '</code></div></div>' +
+          '<div><div class="col-label">state</div><span class="' + pillClass(status) + '">' +
+          escapeHtml(status) + '</span> · ' + (w.enabled ? "enabled" : "disabled") +
+          '<div class="dim">next ' + nextRun + '</div><div class="dim">last ' + lastRun +
+          '</div>' + error + '</div>' +
+          '<div><div class="col-label">runs</div><div class="dim">runner ' + runner +
+          ' · triggers ' + escapeHtml(triggers) + '</div>' + latestRuns + '</div>' +
+          "</div>"
+        );
+      }
+
+      function renderWorkflowRun(run) {
+        const duration = run.finishedAt && run.startedAt
+          ? " · " + fmtRemaining(run.finishedAt - run.startedAt)
+          : "";
+        const sid = run.providerSessionId
+          ? ' · sid <code class="sessionId">' + escapeHtml(shortId(run.providerSessionId)) + '</code>'
+          : "";
+        const err = run.error ? ' <span style="color:var(--red)">' + escapeHtml(run.error) + "</span>" : "";
+        return (
+          '<span class="run-row"><span class="' + pillClass(run.status) + '">' +
+          escapeHtml(run.status) + '</span> ' + new Date(run.startedAt).toLocaleTimeString() +
+          ' · ' + escapeHtml(run.reason) + duration + sid +
+          ' · <code>' + escapeHtml(shortId(run.id)) + '</code>' + err + '</span>'
+        );
+      }
+
       function renderThreads(payload) {
         const root = document.getElementById("threads");
         const sessions = payload.sessions || [];
@@ -392,14 +473,16 @@
 
       async function refresh() {
         try {
-          const [health, sessions, devServers] = await Promise.all([
+          const [health, sessions, devServers, workflows] = await Promise.all([
             fetchJson("/api/health"),
             fetchJson("/api/sessions"),
             fetchJson("/api/dev-server"),
+            fetchJson("/api/workflows"),
           ]);
           renderHealth(health);
           renderThreads(sessions);
           renderDevServers(devServers);
+          renderWorkflows(workflows);
         } catch (err) {
           console.error("refresh failed", err);
         }

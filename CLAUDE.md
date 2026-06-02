@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-junior is a Slack bot that acts as the control plane for Claude Code sessions. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents) — same role (Junior the orchestrator), rebuilt on Claude Code as a subprocess instead of OpenClaw.
+junior is a Slack bot that acts as the control plane for coding agent sessions. OpenCode is the default runner provider for automated Slack turns; Claude Code remains available through the Claude adapter and tmux driver. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents).
 
-The server owns the lifecycle. When a Slack message arrives in a thread, the bot either spawns a new Claude Code CLI process or routes the message to an existing session. Each thread gets its own isolated session with its own worktree, skills, and MCP config.
+The server owns the lifecycle. When a Slack message arrives in a thread, the bot spawns a runner turn through the selected provider. Headless OpenCode/Claude turns are short-lived subprocesses; Claude tmux mode keeps an interactive process alive behind a per-thread driver flag. Each thread gets its own isolated session and optional target-repo worktree.
 
-**Stack:** Node.js / Bun, TypeScript, Slack Event API, Claude Code CLI (Max subscription auth)
+**Stack:** Node.js / Bun, TypeScript, Slack Event API, OpenCode (default) / Claude Code CLI.
 
-**Key architectural choice:** CLI subprocess (`claude -p`), not SDK. The CLI authenticates via Max subscription — no API keys, no usage-based billing. Each Slack message spawns a short-lived process; `--resume` picks up conversation context from the last completed turn.
+**Key architectural choice:** CLI subprocess, not SDK. Headless turns spawn one provider CLI process per Slack turn; provider-native resume (`--session` for OpenCode, `--resume` for Claude) carries conversation context.
 
 ## Where to Look
 
@@ -27,7 +27,13 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | What agent definitions exist and how are they structured? | [docs/features/agent-definitions.md](docs/features/agent-definitions.md) |
 | How do thread commands (!build, !reset, !status) work? | [docs/features/thread-commands.md](docs/features/thread-commands.md) |
 | How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
+| How are spawned child process trees cleaned up on shutdown? | [docs/features/process-tree-cleanup.md](docs/features/process-tree-cleanup.md) |
 | How does the bot Slack MCP server work? | [docs/features/mcp-server.md](docs/features/mcp-server.md) |
+| Headless vs tmux driver, why two paths exist, how tmux runs the TUI? | [docs/features/interactive-driver.md](docs/features/interactive-driver.md) |
+| How do persistent agents (lead, reproducer, thinker, …) work? | [docs/features/persistent-agents.md](docs/features/persistent-agents.md) |
+| How are bug-pipeline worktrees laid out? | [docs/features/bug-pipeline-worktrees.md](docs/features/bug-pipeline-worktrees.md) |
+| How do sessions persist across restarts? | [docs/features/session-persistence.md](docs/features/session-persistence.md) |
+| How does the localhost HTTP dashboard work? | [docs/features/http-dashboard.md](docs/features/http-dashboard.md) |
 | Project setup, config, directory structure? | [docs/features/project-setup.md](docs/features/project-setup.md) |
 | Known limitations and open questions? | [docs/features/v2-backlog.md](docs/features/v2-backlog.md) |
 | Code index for a specific module? | `docs/code_index/<module>.md` (matches feature doc names) |
@@ -48,31 +54,49 @@ Slack Bot Server (Node.js / Bun)
     +-- On message:
     |     1. Look up thread_id
     |     2. If busy -> buffer message (react with eyes)
-    |     3. If idle -> spawn claude -p with --resume, --worktree, --output-format stream-json
+    |     3. If idle -> spawn selected runner provider
     |     4. On exit -> post response to Slack, drain buffer
     |
-    +-- Claude Code CLI Process (short-lived, one per message turn)
-          claude -p "<prompt>" --resume <session_id> --worktree "slack-<threadId>"
-            --output-format stream-json --mcp-config <per-thread> --max-turns 25
+    +-- Runner CLI Process (short-lived, one per message turn)
+          opencode run --format json --dir "<worktree>" --session <id> --agent build "<prompt>"
+          claude -p "<prompt>" --output-format stream-json --resume <id> --mcp-config .mcp.json
 ```
+
+## Prerequisites
+
+Install and authenticate the tools required by the provider and agents you enable:
+- **OpenCode** (default runner provider)
+- **Claude Code CLI** (Claude provider and tmux driver)
+- **Vercel CLI** (required by `vercel-status`)
+- **New Relic CLI** (required by `nr-research`)
+- **Sentry CLI** (required by `sentry-fetch`)
+- **tmux 3.4+** (required only for `DEFAULT_CLAUDE_DRIVER=tmux`)
 
 ## Critical Rules
 
-1. **CLI subprocess, not SDK.** Spawn `claude -p` as a child process. Authenticate via Max subscription. Never use `@anthropic-ai/claude-code` as a library — that requires API keys.
-2. **One process per message turn.** Each Slack message spawns a short-lived `claude -p` process. The process exits after responding. No long-lived processes between messages.
-3. **`--resume` for continuity.** Use `--resume <sessionId>` to pick up conversation context. Session IDs are extracted from the first `stream-json` event on stdout.
-4. **Buffer, don't interrupt.** If Claude is mid-execution and new messages arrive, buffer them. Never kill a running process — it risks corrupted session state. Drain the buffer as a combined prompt after the current turn exits.
+1. **CLI subprocess, not SDK.** Spawn `opencode` or `claude -p` as a child process. Never use `@anthropic-ai/claude-code` as a library — that requires API keys.
+2. **One process per message turn.** Each Slack message spawns a short-lived runner process. The process exits after responding. No long-lived processes between messages (except in experimental TMUX mode).
+3. **Native resume for continuity.** Use `--session` (OpenCode) or `--resume` (Claude) to pick up conversation context. Session IDs are extracted from the first stream event on stdout.
+4. **Buffer, don't interrupt.** If a runner is mid-execution and new messages arrive, buffer them. Do not kill the running turn except through the explicit stop/driver interrupt path. Drain the buffer as a combined prompt after the current turn exits.
 5. **Worktrees for target repos only.** Junior's workspace is shared across all threads (learnings accumulate). Worktrees are created in TARGET repos (example-backend, example-frontend) when threads need code isolation. Threads that only read or discuss don't need worktrees.
-6. **Stream events for status.** Parse `--output-format stream-json` events (tool_use, text, result) and post incremental Slack updates. The final `result` event is the response to post.
+6. **Stream events for status.** Parse provider-native JSON streams (`opencode run --format json`, Claude `--output-format stream-json`) into normalized runner events and post incremental Slack updates.
 7. **Session state is authoritative.** The session map (thread_id -> session) is the single source of truth for whether a thread is idle/busy, what its session ID is, and what messages are pending.
-8. **Cleanup stale threads.** Worktrees and sessions for inactive threads (24h default) must be cleaned up. Check for uncommitted changes before force-removing a worktree.
-9. **MCP config is per-thread.** Pass `--mcp-config <path>` to scope each thread's available tools. Global MCP servers are NOT loaded when this flag is present.
+8. **Cleanup stale sessions.** The cleanup job deletes stale idle/draining session rows (24h default). Worktree removal is separate and must dirty-check before destructive cleanup.
+9. **Runner MCP contract.** Worktree-backed target-repo runs get Junior's local MCP wiring. Claude receives the project `.mcp.json` via `--mcp-config`; OpenCode receives generated MCP config through `OPENCODE_CONFIG_CONTENT`. Runs with an explicit `session.cwd` skip Junior's project MCP wiring because utility commands need their own cloud integrations. Keep this aligned with [docs/features/runner-providers.md](docs/features/runner-providers.md).
 10. **No `--input-format stream-json` in production.** The bidirectional streaming flag exists but is undocumented and unstable. Use `--resume` for multi-turn until the protocol is specified.
 11. **SQLite for persistence.** Sessions persist in a SQLite file via `bun:sqlite` (`data/sessions.db` by default, `SESSION_DB_PATH` to override). Single-writer, no extra service, survives restarts. `SESSION_STORE=memory` switches to the in-memory store for tests/dev. The home tab shows only sessions active in the last `HOME_WINDOW_MS` (2 days default); cleanup and health still scan all rows. Pending messages are persisted but treated as stale on restart — the Claude process they were queued behind is dead.
 12. **Always handle zombie processes.** Set a timeout guard (5 min default). Kill with SIGINT on timeout. Handle process errors. Clear the timeout on exit.
 13. **Design for swappability.** When adding infrastructure that could have multiple implementations (persistence, message queue, notification), use a provider/factory pattern. Each provider gets its own file, a factory selects the right one.
 14. **Pure functions over framework ceremony.** If a library's core value is bypassed, replace it with the simplest implementation. A 20-line function beats a dependency you're working around.
-15. **Test against real infrastructure, mock at boundaries.** Mock Slack API and Claude CLI at system boundaries. Don't mock internal session management or message routing.
+15. **Test against real infrastructure, mock at boundaries.** Mock Slack API and runner CLIs at system boundaries. Don't mock internal session management or message routing.
+
+## Engineering Principles
+
+1. **Sync before reading.** Any agent dispatch (or you reading source to draw a conclusion) needs `git fetch && git log @{u}` first. Stale checkouts produce confidently-wrong analysis with no error signal.
+2. **Read current state before planning.** Run `git status` / `git diff --stat` / the obvious query before proposing a multi-step plan. Plans built from recall stay plausible until execution touches reality.
+3. **Trust the build, not the LSP.** When editor diagnostics fire but `bun run typecheck` is green, the LSP is reading stale context. Verify against the build before refactoring code that wasn't broken.
+4. **Code tracing is inference, not evidence — execute to verify.** Pure mock-runs prove the shape of intermediate values; only an integration test proves behavior. Match verification scope to the claim.
+5. **Categorize before bulk action.** "Dirty," "globally," "missing" each name several distinct cases. Classify per-item (junk / extractable / mergeable / real-work) before picking the operation.
 
 ## Project Structure
 
@@ -94,8 +118,14 @@ junior/
         factory.ts        -- createSessionStore(config)
         memory.ts         -- InMemorySessionStore (tests, dev)
         sqlite.ts         -- SqliteSessionStore (production)
+    runners/
+      index.ts            -- select OpenCode/Claude provider
+      runtime.ts          -- shared cwd/env/MCP runtime contract
+    opencode/
+      spawner.ts          -- spawn opencode run, parse JSON events
     claude/
-      spawner.ts          -- spawn claude -p, manage child process
+      spawner.ts          -- spawn claude -p for headless mode
+      tmux-driver.ts      -- interactive Claude driver behind tmux
       args.ts             -- build CLI args from session state
       parser.ts           -- stream-json line parser
       types.ts            -- stream-json event types
@@ -167,7 +197,7 @@ bun run build                   # Build for production
 bun run typecheck               # Type checking without emit
 
 # Slack bot management
-bun run cleanup                 # Clean stale worktrees and sessions
+bun run cleanup                 # Delete stale idle/draining session rows
 
 # Upload files/screenshots to the current Slack thread
 bin/slack-upload.sh <file-path> [comment]  # Uses SLACK_BOT_TOKEN, SLACK_CHANNEL, SLACK_THREAD_TS env vars (auto-set)

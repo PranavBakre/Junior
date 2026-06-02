@@ -58,18 +58,3 @@ export type StreamEvent =
   | StreamEventResult
   | StreamEventUser
   | StreamEventRateLimit;
-
-export interface SpawnResult {
-  sessionId: string | null;
-  response: string;
-  events: StreamEvent[];
-  exitCode: number | null;
-  error: string | null;
-}
-
-export interface SpawnHandle {
-  result: Promise<SpawnResult>;
-  onEvent: (cb: (event: StreamEvent) => void) => void;
-  kill: () => void;
-  pid: number | null;
-}

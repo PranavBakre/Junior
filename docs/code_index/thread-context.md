@@ -1,62 +1,71 @@
 # Code Index: Thread Context
 
-Builds the prompt preamble that gives spawned Claude processes identity, channel awareness, and conversation history.
+Builds the prompt preamble that gives spawned Claude processes identity, channel awareness, workspace safety rules, and conversation history.
 
 ## Code Index
 
-### src/slack + src/persona
+### src/slack/thread-context.ts
 
-| Function | File | Purpose |
-|----------|------|---------|
-| `buildPromptPreamble(app, channel, threadTs, latestTs, botUserId?)` | `slack/thread-context.ts` | Composes identity + channel + history preamble |
-| `resolveChannelName(app, channelId)` | `slack/thread-context.ts` | Cached `conversations.info` lookup |
-| `fetchThreadHistory(app, channel, threadTs, latestTs, botUserId?)` | `slack/thread-context.ts` | Fetches thread via `conversations.replies`, formats as labeled messages |
-| `loadPersona()` | `persona.ts` | Reads `~/.openclaw/workspace/IDENTITY.md` + `SOUL.md`, caches |
-| `downloadSlackFiles(files, threadId, botToken)` | `slack/files.ts` | Downloads image attachments to `/tmp/junior-files/{threadId}/` |
+| Symbol | Purpose |
+|---|---|
+| `buildPromptPreamble(app, channel, threadTs, latestTs, botUserId?, workspace?, worktreePaths?, repos?, contextProfile?)` | Composes the full preamble. Each block (`identity`, `slack-context`, `workspace`, `thread-context`) emitted only if its flag in `contextProfile` is true. Defaults to all-true via `DEFAULT_CONTEXT_PROFILE`. |
+| `buildWorkspaceBlock(workspace, worktreePaths?, repos?, threadId?)` | Standalone workspace-rules block. Used in the full preamble AND on resumed turns (cheap safety reminder). Multi-repo format when `worktreePaths` non-empty, single-repo format otherwise. |
+| `resolveSlackMentions(app, text)` | Rewrites `<@U…>` → `@DisplayName (<@U…>)` so agents can address users by name. Pre-resolves unique IDs in parallel, then single-pass regex replace. |
+| `WorkspaceContext` | Type: `{ worktreePath, repoName, repoPath, branchName }` |
 
-### Types
+### Caches (module-private)
 
-| Type | File | Purpose |
-|------|------|---------|
-| `SlackFile` | `slack/files.ts` | `{ localPath, name, mimetype }` |
+| Cache | Keyed | Filled by |
+|---|---|---|
+| `channelNameCache` | channel ID → name | `resolveChannelName` (`conversations.info`) |
+| `userNameCache` | user ID → display name | `resolveUserName` (`users.info`); picks `profile.display_name → real_name → name → id`) |
+
+Both caches live for the process lifetime — no TTL. Tradeoff: renames/relabels need a restart to refresh.
 
 ## Preamble Structure
 
 ```xml
 <identity>
-{persona from SOUL.md + IDENTITY.md}
-Your Slack user ID is {botUserId}. Messages from this user ID are yours.
+{persona from IDENTITY.md + SOUL.md}
+Your Slack user ID is {botUserId}. Messages from this user ID in the thread are yours.
 </identity>
 
 <slack-context>
-Channel: #channel-name (C123)
-Thread: 1234567890.123456
-You are responding in this thread. You already have the full thread history below.
-Do NOT use Slack search or read tools to find this thread.
+Channel: #{name} ({channelId})
+Thread: {ts}
+... (NO_SLACK_MESSAGE sentinel rules, no-double-post rule)
 </slack-context>
+
+<workspace>
+(single-repo: Target repo / Worktree / branch / RULES)
+(multi-repo:  per-repo blocks of worktree + bare-repo + branch + base)
+</workspace>
 
 <thread-context>
 Junior (you): previous response
-User(U123): their message [shared image: screenshot.png]
+User(Name <@U123>): their message [shared image: screenshot.png]
 </thread-context>
 ```
 
 ## Key Concepts
 
-### Caching
+### Context-profile gating
 
-- **Channel names**: `Map<channelId, name>` — avoids re-fetching `conversations.info` per message
-- **Persona**: loaded once on first call, reused for all sessions
+`buildPromptPreamble` only fetches data for enabled blocks — skipping `threadHistory` means no `conversations.replies` round-trip. Saves tokens AND latency for lightweight task agents.
 
-### Image Handling
+### Workspace block on resumed turns
 
-`downloadSlackFiles()` only downloads image types (png, jpg, gif, webp). Files are saved to `/tmp/junior-files/{threadId}/` and paths are injected into the prompt so Claude can read them natively.
+`runClaudeWithAgent` injects the full preamble on first turn (when there's no `sessionId` yet) and only the workspace block on resumed turns. The workspace safety rule ("don't edit the bare repo") is cheap insurance that's worth re-asserting every turn.
 
-### Thread History Filtering
+### Multi-repo workspace format
 
-The current message (`latestTs`) is excluded from history — it's the prompt itself. Bot messages are labeled "Junior (you)", user messages as "User(userId)". @mentions are stripped.
+Bug-pipeline threads have `worktreePaths: Record<repoName, path>`. The multi-repo block lists each repo's worktree, bare repo (off-limits), branch (`slack/<threadId>`), and base ref, plus a numbered RULES list that forbids editing outside the worktrees and running dev servers directly (`!devserver` is the supported path).
+
+### Thread history
+
+Excludes the current message (`latestTs`), max 100 replies. Bot messages labeled `"Junior (you)"`; users labeled `User(DisplayName <@USERID>)`. File names appended as `[shared image: foo.png]`. Mentions in body text resolved via `resolveSlackMentions`.
 
 ## Dependencies
 
-- **Uses**: `@slack/bolt` (conversations.replies, conversations.info), filesystem (persona files, image downloads)
-- **Used by**: `SessionManager.handleMessage()` (composes prompt before spawning)
+- **Uses**: `@slack/bolt` (`conversations.replies`, `conversations.info`, `users.info`), `persona.loadPersona`, `agents/loader` (`AgentContextProfile`, `DEFAULT_CONTEXT_PROFILE`), `slack/formatting` (`NO_SLACK_MESSAGE`)
+- **Used by**: `SessionManager.runClaudeWithAgent` (first-turn preamble + per-turn workspace block + mention resolution on prompts)

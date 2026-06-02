@@ -11,11 +11,14 @@ export class WorktreeManager {
    * Create a worktree in the target repo for a thread.
    *
    * - `baseRef` is the starting point (a git ref/commit like `origin/main`).
-   *   Defaults to `repo.defaultBase`. This becomes the worktree's HEAD.
+   *   Defaults to `repo.defaultBase` on both the inline and delegated paths.
    * - `branchOverride` renames the new branch the worktree tracks. Defaults
    *   to `slack/<threadId>`. The two are independent — pass `branchOverride`
    *   to name the branch differently from the default thread-keyed slug,
    *   pass `baseRef` to fork from a non-main starting point.
+   *
+   * Setup-script delegation contract:
+   *   `<repo.path>/<command> <branch> --path <abs> --base <ref>`
    *
    * Returns the worktree path.
    */
@@ -34,22 +37,22 @@ export class WorktreeManager {
     const branchName = branchOverride ?? `slack/${threadId}`;
 
     if (repo.worktreeSetupCommand) {
-      // Delegate to the repo's own setup script: `<repo.path>/<command> <worktreePath> <branch>`
-      // Resolve the command relative to repo.path so paths like "bin/setup-worktree.sh"
-      // work without requiring the script to be on PATH.
+      // Delegate worktree creation to the repo's setup script. The script
+      // owns `git fetch`, `git worktree add`, env-file copying, dependency
+      // install, and MCP migration. Junior hands it the branch, the absolute
+      // target path, and the base ref (always — defaulting to repo.defaultBase
+      // so the script's own HEAD-based fallback is never reached).
       const setupCmd = repo.worktreeSetupCommand.startsWith("/")
         ? repo.worktreeSetupCommand
         : `${repo.path}/${repo.worktreeSetupCommand}`;
-      await this.runCommand(
-        [setupCmd, worktreePath, branchName],
-        repo.path,
-      );
-    } else {
       const base = baseRef ?? repo.defaultBase;
-      // Fetch latest from origin so the base ref is fresh
-      await this.runGit(["fetch", "origin"], repo.path);
-
-      // Create the worktree with a new branch off the base ref
+      const args = [setupCmd, branchName, "--path", worktreePath, "--base", base];
+      await this.runCommand(args, repo.path);
+    } else {
+      // No setup hook configured — Junior creates the worktree inline. Fetch
+      // fresh first so the base ref is up to date, then `git worktree add`.
+      const base = baseRef ?? repo.defaultBase;
+      await this.runGit(["fetch", "origin", "--prune"], repo.path);
       await this.runGit(
         ["worktree", "add", worktreePath, "-b", branchName, base],
         repo.path,
@@ -132,13 +135,24 @@ export class WorktreeManager {
 
   /**
    * Get the worktree path for a thread (without creating it).
+   *
+   * Worktrees live in a sibling directory to the repo, NOT under `.claude/`.
+   * Setup scripts that recursively copy `.claude/` (e.g. `cp -R .claude/.`)
+   * would otherwise pull every sibling thread's worktree — and the destination
+   * itself — into a freshly-creating worktree, producing a recursive copy
+   * that loops on its own destination.
    */
   getWorktreePath(repoName: string, threadId: string): string {
     const repo = this.getRepo(repoName);
     if (!repo) {
       throw new Error(`Unknown repo: ${repoName}`);
     }
-    return `${repo.path}/.claude/worktrees/slack-${threadId}`;
+    // Strip trailing slashes — without this, a config with `path: "/r/"` would
+    // resolve to `/r/.junior-worktrees/...`, a hidden subdir INSIDE the repo
+    // rather than a sibling, recreating the recursive-copy bug. Belt-and-
+    // suspenders with the same normalization at config load.
+    const base = repo.path.replace(/\/+$/, "");
+    return `${base}.junior-worktrees/slack-${threadId}`;
   }
 
   getBranchName(threadId: string): string {

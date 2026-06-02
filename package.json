@@ -6,13 +6,17 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "cleanup": "bun run src/lifecycle/cleanup.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@playwright/mcp": "^0.0.70",
     "@slack/bolt": "^4.3.0",
-    "proper-lockfile": "^4.1.2"
+    "cron-parser": "^5.5.0",
+    "proper-lockfile": "^4.1.2",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

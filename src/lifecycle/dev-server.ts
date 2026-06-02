@@ -4,18 +4,20 @@
  * Junior owns the lifecycle of dev servers that are used for bug-pipeline
  * validation. Each repo with `devCommand` configured gets a single shared
  * dev-server process running from a dedicated worktree at
- * `<repo>/.claude/worktrees/slack-dev-server`.
+ * `<repo>.junior-worktrees/slack-dev-server` (sibling to the repo, NOT under
+ * `.claude/` — see WorktreeManager.getWorktreePath for why).
  *
  * Scope-2b will layer the per-repo lock/queue on top; this module only handles
  * spawn / probe / kill / idle-TTL.
  */
 
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { log } from "../logger.ts";
 import type { RepoConfig } from "../config.ts";
 import { WorktreeManager } from "../worktree/manager.ts";
 import { isPidAlive, isPortHeld } from "./process-utils.ts";
+import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.ts";
 
 export interface DevServerState {
   pid: number | null;
@@ -47,6 +49,9 @@ const IDLE_SWEEP_INTERVAL_MS = 60_000;
 
 /** Grace period for SIGINT before escalating to SIGKILL (ms). */
 const SIGINT_GRACE_MS = 5_000;
+
+/** After a kill, wait briefly for the listener to release its TCP port. */
+const PORT_RELEASE_TIMEOUT_MS = 5_000;
 
 export interface DevServerManagerOptions {
   /** Override the 20-min idle TTL. Tests use this to drive the sweeper. */
@@ -163,6 +168,7 @@ export class DevServerManager {
       cwd: worktreePath,
       stdout: "pipe",
       stderr: "pipe",
+      detached: true,
       // Don't inherit stdin — we don't want the process to block on stdin.
     });
 
@@ -192,36 +198,20 @@ export class DevServerManager {
     // Clear state immediately so concurrent calls are idempotent.
     this.state.delete(repoName);
 
-    if (!isPidAlive(pid)) {
+    if (!isProcessTreeAlive(pid)) {
       log.info("dev-server", `kill repo=${repoName} pid=${pid} already dead`);
+      await this.waitForPortRelease(repoName);
       return;
     }
 
-    log.info("dev-server", `kill repo=${repoName} pid=${pid} SIGINT`);
-    try {
-      process.kill(pid, "SIGINT");
-    } catch {
-      // Process may have just exited — that's fine.
-      return;
+    log.info("dev-server", `kill repo=${repoName} pid=${pid} SIGINT tree`);
+    await terminateProcessTree(pid, { signal: "SIGINT", forceAfterMs: SIGINT_GRACE_MS });
+    if (isProcessTreeAlive(pid)) {
+      log.warn("dev-server", `kill repo=${repoName} pid=${pid} tree still alive after SIGKILL`);
+    } else {
+      log.info("dev-server", `kill repo=${repoName} pid=${pid} tree exited`);
     }
-
-    // Wait up to SIGINT_GRACE_MS for the process to exit gracefully.
-    const deadline = Date.now() + SIGINT_GRACE_MS;
-    while (Date.now() < deadline) {
-      await sleep(200);
-      if (!isPidAlive(pid)) {
-        log.info("dev-server", `kill repo=${repoName} pid=${pid} exited after SIGINT`);
-        return;
-      }
-    }
-
-    // Escalate to SIGKILL.
-    log.warn("dev-server", `kill repo=${repoName} pid=${pid} escalating to SIGKILL`);
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Already dead.
-    }
+    await this.waitForPortRelease(repoName);
   }
 
   /** Kill all tracked dev servers in parallel. Called during shutdown. */
@@ -236,6 +226,11 @@ export class DevServerManager {
       return this.state.get(repoName);
     }
     return new Map(this.state);
+  }
+
+  /** Configured idle TTL in ms. Surfaced for diagnostics (HTTP dashboard). */
+  getIdleTtlMs(): number {
+    return this.idleTtlMs;
   }
 
   /**
@@ -271,20 +266,56 @@ export class DevServerManager {
         }
       }
 
-      // Write .gitignore for lock/queue files so they don't appear as
-      // untracked in the dev-server worktree. Fixed content — overwrite on
-      // each boot for idempotency. Only write if the worktree directory
-      // actually exists (creation above may have failed).
+      // Hide the queue's lock/state files from `git status` in the dev-server
+      // worktree. We write to the worktree's per-clone `info/exclude` rather
+      // than `.gitignore` — these are operational artifacts, not source-tree
+      // ignores. Writing to `.gitignore` would clobber the upstream-tracked
+      // file (it's shared-owner: upstream repo + user + tools all contribute).
+      // `info/exclude` is per-worktree (lives in `<main>/.git/worktrees/<name>/info/exclude`)
+      // and untracked, so this write is idempotent and invisible to git status.
       const wtPath = this.worktreeManager.getWorktreePath(repo.name, DEV_SERVER_THREAD_ID);
-      const gitignorePath = join(wtPath, ".gitignore");
       try {
-        // Attempt write regardless of whether `exists` was true at the start of
-        // this iteration: the worktree may have been created just above.
-        writeFileSync(gitignorePath, ".lock*\n.queue*\n");
+        const rawGitDir = (await runGit(["rev-parse", "--git-dir"], wtPath)).trim();
+        const gitDir = isAbsolute(rawGitDir) ? rawGitDir : join(wtPath, rawGitDir);
+        const infoDir = join(gitDir, "info");
+        mkdirSync(infoDir, { recursive: true });
+        writeFileSync(join(infoDir, "exclude"), ".lock*\n.queue*\n");
       } catch (err) {
         log.warn(
           "dev-server",
-          `bootstrap: failed to write .gitignore for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
+          `bootstrap: failed to write info/exclude for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Self-heal: a previous version of bootstrap (before this fix) wrote
+      // ".lock*\n.queue*\n" into .gitignore directly, clobbering the
+      // upstream-tracked file. Detect that exact fingerprint and restore.
+      // Exact-match only — zero risk of overwriting legitimate edits.
+      // Separate try-block so failure here doesn't mask info/exclude success.
+      try {
+        const gitignorePath = join(wtPath, ".gitignore");
+        if (existsSync(gitignorePath)) {
+          const content = readFileSync(gitignorePath, "utf8");
+          if (content === ".lock*\n.queue*\n") {
+            log.info(
+              "dev-server",
+              `bootstrap: detected legacy .gitignore overwrite in repo=${repo.name}, restoring upstream`,
+            );
+            // Remove the corrupt file, then ask git to restore from HEAD.
+            // If upstream doesn't track .gitignore, the unlink alone is the
+            // correct cleanup and the restore will fail harmlessly.
+            unlinkSync(gitignorePath);
+            try {
+              await runGit(["checkout", "--", ".gitignore"], wtPath);
+            } catch {
+              // Upstream doesn't track .gitignore; unlink is sufficient.
+            }
+          }
+        }
+      } catch (err) {
+        log.warn(
+          "dev-server",
+          `bootstrap: failed to self-heal .gitignore for repo=${repo.name}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
 
@@ -367,6 +398,22 @@ export class DevServerManager {
     await this.kill(repoName);
     throw new Error(
       `dev server for ${repoName} did not become ready within ${READY_TIMEOUT_MS / 1000}s (url=${readyUrl}, last error: ${lastErr})`,
+    );
+  }
+
+  private async waitForPortRelease(repoName: string): Promise<void> {
+    const repo = this.repos.find((r) => r.name === repoName);
+    if (repo?.devPort == null) return;
+
+    const deadline = Date.now() + PORT_RELEASE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (!(await isPortHeld(repo.devPort))) return;
+      await sleep(100);
+    }
+
+    log.warn(
+      "dev-server",
+      `port ${repo.devPort} for ${repoName} is still held after killing dev server`,
     );
   }
 

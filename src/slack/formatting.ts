@@ -1,4 +1,5 @@
 import type { ContentBlockToolUse, ContentBlockText, StreamEventAssistant } from "../claude/types.ts";
+import type { RunnerEvent, RunnerEventMessage, RunnerEventTool } from "../runners/types.ts";
 
 /**
  * Extract tool_use content blocks from an assistant event and format as status lines.
@@ -7,18 +8,30 @@ export function formatToolStatuses(event: StreamEventAssistant): string[] {
   const toolBlocks = event.message.content.filter(
     (c): c is ContentBlockToolUse => c.type === "tool_use",
   );
-  const taskBlocks = toolBlocks.filter((block) => block.name === "Task");
-  const otherBlocks = toolBlocks.filter((block) => block.name !== "Task");
+  return formatRunnerToolStatuses(toolBlocks.map(toClaudeRunnerToolEvent));
+}
+
+/**
+ * Extract normalized tool events and format them as Slack status lines.
+ */
+export function formatRunnerToolStatuses(
+  events: RunnerEvent | RunnerEvent[],
+): string[] {
+  const toolEvents = (Array.isArray(events) ? events : [events]).filter(
+    (event): event is RunnerEventTool => event.type === "tool",
+  );
+  const taskBlocks = toolEvents.filter((event) => event.name === "Task");
+  const otherBlocks = toolEvents.filter((event) => event.name !== "Task");
 
   const statuses: string[] = [];
   if (taskBlocks.length > 1) {
     const names = taskBlocks.map(getTaskSubagentName);
     statuses.push(`Calling ${names.join(", ")} (${names.length} in progress)`);
   } else if (taskBlocks.length === 1) {
-    statuses.push(formatToolBlock(taskBlocks[0]));
+    statuses.push(formatToolEvent(taskBlocks[0]));
   }
 
-  statuses.push(...otherBlocks.map(formatToolBlock));
+  statuses.push(...otherBlocks.map(formatToolEvent));
   return statuses;
 }
 
@@ -32,22 +45,163 @@ export function extractAssistantText(event: StreamEventAssistant): string | null
   return texts.length > 0 ? texts.join("") : null;
 }
 
-export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
-
-export function shouldPostResponseToSlack(text: string): boolean {
-  const normalized = text.trim();
-  if (!normalized) return false;
-  if (normalized === NO_SLACK_MESSAGE) return false;
-  return true;
+/**
+ * Extract text from a normalized runner message event, if any.
+ */
+export function extractRunnerMessageText(event: RunnerEvent): string | null {
+  return isRunnerMessageEvent(event) && event.text ? event.text : null;
 }
 
-function formatToolBlock(block: ContentBlockToolUse): string {
-  const tool = block.name ?? "Unknown";
-  const input = block.input ?? {};
+export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
+
+const MAX_SLACK_ERROR_LENGTH = 500;
+const PROMPT_LEAK_MARKERS = [
+  /<\/?[a-z][a-z0-9-]*(?:\s[^>]*)?>/i,
+  /#\s*(?:IDENTITY|SOUL)\.md\b/i,
+  /Do NOT use Slack search/i,
+  /CRITICAL\s+[—-]\s+no double-posting/i,
+  /Your Slack user ID is\b/i,
+  /File not found:\s*</i,
+];
+
+/**
+ * Convert a runner/tool error into a Slack-safe message.
+ *
+ * Raw provider stderr can include the full prompt when a tool wrapper echoes a
+ * bad argument (e.g. `File not found: <identity>...`). Keep the full error in
+ * server logs, but never mirror prompt/context blocks back into Slack.
+ */
+export function sanitizeErrorForSlack(error: string | null | undefined): string {
+  const cleaned = stripAnsi(error ?? "").trim();
+  if (!cleaned) return "runner failed. Check server logs for details.";
+
+  if (containsPromptLeak(cleaned)) {
+    return "runner failed. Raw error withheld because it contained injected prompt/context; check server logs.";
+  }
+
+  if (cleaned.length > MAX_SLACK_ERROR_LENGTH) {
+    return "runner failed. Raw error was too long to post safely; check server logs.";
+  }
+
+  return cleaned;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function containsPromptLeak(text: string): boolean {
+  return PROMPT_LEAK_MARKERS.some((marker) => marker.test(text));
+}
+
+/**
+ * Decide whether to post `text` to Slack and what to post.
+ * Returns null to suppress entirely; otherwise the cleaned text to post.
+ *
+ * Suppress when:
+ *   - text is empty/whitespace
+ *   - text is exactly the sentinel
+ *
+ * Strip + post when:
+ *   - text has real content followed by a trailing sentinel — the agent
+ *     intended to reply and habitually appended the sentinel; the reply
+ *     itself is what humans need.
+ */
+export function prepareSlackResponse(text: string): string | null {
+  let normalized = text.trim();
+  if (!normalized) return null;
+  if (normalized === NO_SLACK_MESSAGE) return null;
+  if (normalized.endsWith(NO_SLACK_MESSAGE)) {
+    normalized = normalized.slice(0, -NO_SLACK_MESSAGE.length).trimEnd();
+    if (!normalized) return null;
+  }
+  return normalized;
+}
+
+/**
+ * Return true when the final runner response would duplicate text already sent
+ * via the Slack MCP post tool in the same turn.
+ *
+ * Agents are instructed to return NO_SLACK_MESSAGE after calling
+ * slack_send_message, but the failure mode is expensive: the MCP post lands,
+ * then Junior posts the identical final response again. Suppress only exact
+ * duplicate text so useful follow-up responses are still shown.
+ */
+export function isDuplicateSlackToolResponse(
+  text: string,
+  events: RunnerEvent[],
+): boolean {
+  const prepared = prepareSlackResponse(text);
+  if (prepared === null) return false;
+
+  const normalizedResponse = normalizeSlackPostText(prepared);
+  return events.some((event) => {
+    if (event.type !== "tool") return false;
+    if (!isSlackSendMessageEvent(event)) return false;
+    const postedText = findSlackPostText(event.input);
+    return (
+      typeof postedText === "string" &&
+      normalizeSlackPostText(postedText) === normalizedResponse
+    );
+  });
+}
+
+function normalizeSlackPostText(text: string): string {
+  return text.trim();
+}
+
+function isSlackSendMessageEvent(event: RunnerEventTool): boolean {
+  if (isSlackSendMessageToolName(event.name)) return true;
+
+  // Provider adapters don't all expose MCP tool names identically. Claude uses
+  // names like `mcp__slack-bot__slack_send_message`; OpenCode may surface MCP
+  // calls as a generic tool with the concrete name nested in the input.
+  const inputToolName = findToolName(event.input);
+  return !!inputToolName && isSlackSendMessageToolName(inputToolName);
+}
+
+function isSlackSendMessageToolName(toolName: string): boolean {
+  const normalized = toolName.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  return normalized === "slack_send_message" || normalized.endsWith("_slack_send_message");
+}
+
+function findToolName(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  for (const key of ["tool", "toolName", "tool_name", "name", "method"]) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && isSlackSendMessageToolName(candidate)) {
+      return candidate;
+    }
+  }
+  for (const nested of Object.values(value)) {
+    const candidate = findToolName(nested);
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+function findSlackPostText(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const direct = value.text;
+  if (typeof direct === "string") return direct;
+  for (const nested of Object.values(value)) {
+    const text = findSlackPostText(nested);
+    if (text) return text;
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatToolEvent(event: RunnerEventTool): string {
+  const tool = event.name || "Unknown";
+  const input = event.input ?? {};
 
   switch (tool) {
     case "Task": {
-      return `Calling ${getTaskSubagentName(block)}`;
+      return `Calling ${getTaskSubagentName(event)}`;
     }
     case "Bash": {
       const cmd = typeof input.command === "string" ? input.command : "";
@@ -76,9 +230,22 @@ function formatToolBlock(block: ContentBlockToolUse): string {
   }
 }
 
-function getTaskSubagentName(block: ContentBlockToolUse): string {
-  const input = block.input ?? {};
+function getTaskSubagentName(event: RunnerEventTool): string {
+  const input = event.input ?? {};
   return typeof input.subagent_type === "string" ? input.subagent_type : "agent";
+}
+
+function toClaudeRunnerToolEvent(block: ContentBlockToolUse): RunnerEventTool {
+  return {
+    type: "tool",
+    provider: "claude",
+    name: block.name ?? "Unknown",
+    input: block.input ?? {},
+  };
+}
+
+function isRunnerMessageEvent(event: RunnerEvent): event is RunnerEventMessage {
+  return event.type === "message";
 }
 
 const DEFAULT_MAX_LENGTH = 4000;

@@ -1,7 +1,11 @@
 import type { App } from "@slack/bolt";
+import type { WebClient } from "@slack/web-api";
 import type { RepoConfig } from "../config.ts";
 import { loadPersona } from "../persona.ts";
 import { NO_SLACK_MESSAGE } from "./formatting.ts";
+import { isAsideText } from "./commands.ts";
+import type { AgentContextProfile } from "../agents/loader.ts";
+import { DEFAULT_CONTEXT_PROFILE } from "../agents/loader.ts";
 
 interface ThreadMessage {
   user: string;
@@ -16,12 +20,16 @@ interface ThreadMessage {
 const channelNameCache = new Map<string, string>();
 const userNameCache = new Map<string, string>();
 
-async function resolveChannelName(app: App, channelId: string): Promise<string> {
+export async function resolveChannelName(
+  clientOrApp: App | WebClient,
+  channelId: string,
+): Promise<string> {
   const cached = channelNameCache.get(channelId);
   if (cached) return cached;
 
   try {
-    const info = await app.client.conversations.info({ channel: channelId });
+    const client = "client" in clientOrApp ? clientOrApp.client : clientOrApp;
+    const info = await client.conversations.info({ channel: channelId });
     const name = info.channel?.name ?? channelId;
     channelNameCache.set(channelId, name);
     return name;
@@ -30,12 +38,16 @@ async function resolveChannelName(app: App, channelId: string): Promise<string> 
   }
 }
 
-async function resolveUserName(app: App, userId: string): Promise<string> {
+export async function resolveUserName(
+  clientOrApp: App | WebClient,
+  userId: string,
+): Promise<string> {
   const cached = userNameCache.get(userId);
   if (cached) return cached;
 
   try {
-    const info = await app.client.users.info({ user: userId });
+    const client = "client" in clientOrApp ? clientOrApp.client : clientOrApp;
+    const info = await client.users.info({ user: userId });
     const user = info.user as
       | {
           name?: string;
@@ -57,7 +69,7 @@ async function resolveUserName(app: App, userId: string): Promise<string> {
 }
 
 export async function resolveSlackMentions(
-  app: App,
+  clientOrApp: App | WebClient,
   text: string,
 ): Promise<string> {
   const mentionPattern = /<@([A-Z0-9]+)>/g;
@@ -70,7 +82,7 @@ export async function resolveSlackMentions(
   const uniqueIds = [...new Set(matches.map((m) => m[1]))];
   const nameMap = new Map(
     await Promise.all(
-      uniqueIds.map(async (id) => [id, await resolveUserName(app, id)] as const),
+      uniqueIds.map(async (id) => [id, await resolveUserName(clientOrApp, id)] as const),
     ),
   );
 
@@ -108,22 +120,33 @@ export function buildWorkspaceBlock(
       const repoConfig = repos?.find((r) => r.name === repoName);
       const branch = threadId ? `slack/${threadId}` : "slack/<thread>";
       const base = repoConfig?.defaultBase ?? "origin/main";
-      return [
+      const lines = [
         `repo: ${repoName}`,
-        `  worktree: ${wPath}`,
-        `  branch:   ${branch}`,
-        `  base:     ${base}`,
-      ].join("\n");
+        `  worktree (your sandbox): ${wPath}`,
+      ];
+      if (repoConfig?.path) {
+        lines.push(`  bare repo (OFF-LIMITS):  ${repoConfig.path}`);
+      }
+      lines.push(
+        `  branch:                 ${branch}`,
+        `  base:                   ${base}`,
+      );
+      return lines.join("\n");
     });
 
     return [
       `<workspace>`,
-      `You have isolated git worktrees for this thread. ALWAYS use these paths`,
-      `for reading code, editing files, and running git commands. NEVER touch`,
-      `the bare repos under ~/openclaw-projects/. NEVER run dev servers`,
-      `yourself — post \`!devserver <branch>\` instead.`,
+      `You have isolated git worktrees for this thread. The bare repos at the`,
+      `paths shown below are shared across all threads — DO NOT touch them.`,
+      `Work ONLY inside the worktree paths listed below.`,
       ``,
       ...repoBlocks.flatMap((block, i) => (i < repoBlocks.length - 1 ? [block, ""] : [block])),
+      ``,
+      `RULES — non-negotiable:`,
+      `1. ALL reads, writes, edits, and git commands MUST happen inside the worktree paths listed above.`,
+      `2. NEVER write, edit, or commit files at any bare-repo path listed above — those are the shared origin repos.`,
+      `3. NEVER \`cd\` out of your worktree to do work. Read-only references to other paths are OK via absolute Read paths, but do not Edit or Write outside the worktrees.`,
+      `4. NEVER run dev servers yourself — post \`!devserver <branch>\` instead.`,
       `</workspace>`,
     ].join("\n");
   }
@@ -163,43 +186,67 @@ export async function buildPromptPreamble(
   workspace?: WorkspaceContext | null,
   worktreePaths?: Record<string, string>,
   repos?: RepoConfig[],
+  contextProfile: AgentContextProfile = DEFAULT_CONTEXT_PROFILE,
 ): Promise<string> {
+  // Only fetch the data we'll actually emit — skipping thread history matters
+  // for lightweight task agents, both for tokens and for latency.
   const [persona, channelName, threadContext] = await Promise.all([
-    loadPersona(),
-    resolveChannelName(app, channel),
-    fetchThreadHistory(app, channel, threadTs, latestTs, botUserId),
+    contextProfile.identity ? loadPersona() : Promise.resolve(""),
+    contextProfile.slack ? resolveChannelName(app, channel) : Promise.resolve(channel),
+    contextProfile.threadHistory
+      ? fetchThreadHistory(
+          app,
+          channel,
+          threadTs,
+          latestTs,
+          botUserId,
+          contextProfile.threadHistoryLimit,
+        )
+      : Promise.resolve(""),
   ]);
 
-  const parts: string[] = [
-    `<identity>`,
-    persona,
-    ``,
-    `Your Slack user ID is ${botUserId ?? "unknown"}. Messages from this user ID in the thread are yours.`,
-    `</identity>`,
-    ``,
-    `<slack-context>`,
-    `Channel: #${channelName} (${channel})`,
-    `Thread: ${threadTs}`,
-    `You are responding in this thread. You already have the full thread history below.`,
-    `Do NOT use Slack search or read tools to find this thread — you already have all the context you need.`,
-    `To tag a user, use their Slack mention format \`<@USERID>\` (shown in thread history as \`User(Name <@USERID>)\`). Plain \`@Name\` does not notify them.`,
-    ``,
-    `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
-    ``,
-    `CRITICAL — no double-posting: if you used \`slack_send_message\` (or any other Slack post tool) during this turn, that tool call IS your reply. Your final response in this turn MUST be exactly \`${NO_SLACK_MESSAGE}\`. Do NOT also return a recap, summary, or "Posted X..." narration — the human already saw what you posted, and a second message restating it is a duplicate. Pick one channel: either post via the tool and return \`${NO_SLACK_MESSAGE}\`, or skip the tool and return prose as your reply. Never both.`,
-    `</slack-context>`,
-  ];
+  const parts: string[] = [];
 
-  const workspaceBlock = buildWorkspaceBlock(workspace, worktreePaths, repos, threadTs);
-  if (workspaceBlock) {
-    parts.push(``, workspaceBlock);
+  if (contextProfile.identity) {
+    parts.push(
+      `<identity>`,
+      persona,
+      ``,
+      `Your Slack user ID is ${botUserId ?? "unknown"}. Messages from this user ID in the thread are yours.`,
+      `</identity>`,
+      ``,
+    );
   }
 
-  if (threadContext) {
+  if (contextProfile.slack) {
+    parts.push(
+      `<slack-context>`,
+      `Channel: #${channelName} (${channel})`,
+      `Thread: ${threadTs}`,
+      `You are responding in this thread. You already have the full thread history below.`,
+      `Do NOT use Slack search or read tools to find this thread — you already have all the context you need.`,
+      `To tag a user, use their Slack mention format \`<@USERID>\` (shown in thread history as \`User(Name <@USERID>)\`). Plain \`@Name\` does not notify them.`,
+      ``,
+      `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
+      ``,
+      `CRITICAL — no double-posting: if you used \`slack_send_message\` (or any other Slack post tool) during this turn, that tool call IS your reply. Your final response in this turn MUST be exactly \`${NO_SLACK_MESSAGE}\`. Do NOT also return a recap, summary, or "Posted X..." narration — the human already saw what you posted, and a second message restating it is a duplicate. Pick one channel: either post via the tool and return \`${NO_SLACK_MESSAGE}\`, or skip the tool and return prose as your reply. Never both.`,
+      `</slack-context>`,
+    );
+  }
+
+  if (contextProfile.workspace) {
+    const workspaceBlock = buildWorkspaceBlock(workspace, worktreePaths, repos, threadTs);
+    if (workspaceBlock) {
+      parts.push(``, workspaceBlock);
+    }
+  }
+
+  if (contextProfile.threadHistory && threadContext) {
     parts.push("", threadContext);
   }
 
-  return parts.join("\n");
+  // Trim leading/trailing empty separators left by skipped blocks.
+  return parts.join("\n").replace(/^\n+|\n+$/g, "");
 }
 
 async function fetchThreadHistory(
@@ -208,13 +255,14 @@ async function fetchThreadHistory(
   threadTs: string,
   latestTs: string,
   botUserId?: string,
+  limit = DEFAULT_CONTEXT_PROFILE.threadHistoryLimit,
 ): Promise<string | null> {
   try {
     const result = await app.client.conversations.replies({
       channel,
       ts: threadTs,
       inclusive: true,
-      limit: 100,
+      limit,
     });
 
     if (!result.messages || result.messages.length <= 1) {
@@ -224,6 +272,7 @@ async function fetchThreadHistory(
     // TODO: pre-collect unique user IDs and batch-resolve to avoid Slack rate limits on large threads
     const messages: ThreadMessage[] = await Promise.all(result.messages
       .filter((m) => m.ts !== latestTs)
+      .filter((m) => !isAsideText(m.text ?? ""))
       .map(async (m) => {
         // Extract file names from message attachments
         const files = (m as Record<string, unknown>).files;
@@ -253,7 +302,7 @@ async function fetchThreadHistory(
         : `User(${m.userName}${m.user !== "unknown" ? ` <@${m.user}>` : ""})`;
       let line = `${role}: ${m.text}`;
       if (m.fileNames.length > 0) {
-        const fileNotes = m.fileNames.map((f) => `[shared image: ${f}]`).join(" ");
+        const fileNotes = m.fileNames.map((f) => `[shared file: ${f}]`).join(" ");
         line += ` ${fileNotes}`;
       }
       return line;

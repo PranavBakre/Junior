@@ -20,9 +20,10 @@ import {
   writeFileSync,
   chmodSync,
   existsSync,
+  readFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { RepoConfig } from "../config.ts";
 import { WorktreeManager } from "../worktree/manager.ts";
 import { DevServerManager, resolveReadyUrl } from "./dev-server.ts";
@@ -96,24 +97,13 @@ describe("DevServerManager (integration)", () => {
     await spawnRun(["git", "add", "."], repoRoot);
     await spawnRun(["git", "commit", "-q", "-m", "init"], repoRoot);
 
-    // A `fix` branch for branch-change tests.
-    await spawnRun(["git", "checkout", "-q", "-b", "fix/test"], repoRoot);
-    writeFileSync(join(repoRoot, "FIX.md"), "fix\n");
-    await spawnRun(["git", "add", "."], repoRoot);
-    await spawnRun(["git", "commit", "-q", "-m", "fix"], repoRoot);
-    await spawnRun(["git", "checkout", "-q", "main"], repoRoot);
-
-    // Point origin at ourselves so git fetch works inside worktrees.
-    await spawnRun(["git", "remote", "add", "origin", repoRoot], repoRoot);
-    await spawnRun(["git", "fetch", "-q", "origin"], repoRoot);
-
     // Write a fake "dev server" using Node.js (always available alongside Bun).
     // It listens on a high port, responds HTTP 200 to every request, and exits
     // cleanly on SIGINT. No nc/socat needed — pure Node http module.
     //
     // IMPORTANT: the script must be committed to git so the worktree checkout
-    // includes it. After writing, commit and re-fetch so the dev-server worktree
-    // (created from origin/main) gets the script.
+    // includes it. Branch-change tests also checkout `fix/test`, so create
+    // that branch after this commit to keep the dev command available there.
     const serverScript = join(repoRoot, "fake-server.js");
     writeFileSync(
       serverScript,
@@ -133,6 +123,16 @@ process.on('SIGTERM', () => { server.close(); process.exit(0); });
     // Commit the script into git so the worktree picks it up.
     await spawnRun(["git", "add", "fake-server.js"], repoRoot);
     await spawnRun(["git", "commit", "-q", "-m", "add fake dev server"], repoRoot);
+
+    // A `fix` branch for branch-change tests.
+    await spawnRun(["git", "checkout", "-q", "-b", "fix/test"], repoRoot);
+    writeFileSync(join(repoRoot, "FIX.md"), "fix\n");
+    await spawnRun(["git", "add", "."], repoRoot);
+    await spawnRun(["git", "commit", "-q", "-m", "fix"], repoRoot);
+    await spawnRun(["git", "checkout", "-q", "main"], repoRoot);
+
+    // Point origin at ourselves so git fetch works inside worktrees.
+    await spawnRun(["git", "remote", "add", "origin", repoRoot], repoRoot);
     await spawnRun(["git", "fetch", "-q", "origin"], repoRoot);
 
     repos = [
@@ -149,6 +149,7 @@ process.on('SIGTERM', () => { server.close(); process.exit(0); });
 
   afterAll(() => {
     rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(`${repoRoot}.junior-worktrees`, { recursive: true, force: true });
   });
 
   it("bootstrap creates the dev-server worktree if it does not exist", async () => {
@@ -164,7 +165,41 @@ process.on('SIGTERM', () => { server.close(); process.exit(0); });
     }
   });
 
-  it("bootstrap is idempotent — does not fail if worktree already exists", async () => {
+  it("bootstrap writes lock/queue patterns to info/exclude and leaves .gitignore unchanged", async () => {
+    const manager = new DevServerManager(repos, worktreeManager);
+    try {
+      await manager.bootstrap();
+
+      const wtPath = worktreeManager.getWorktreePath("test-repo", "dev-server");
+
+      // Lock/queue patterns are written to the per-worktree info/exclude.
+      // Resolve the worktree's gitdir via `git rev-parse --git-dir` — for
+      // `git worktree add` it lives at <main>/.git/worktrees/<name>/.
+      // Mirror the production code's isAbsolute normalization for parity.
+      const gitDirProc = Bun.spawnSync({
+        cmd: ["git", "-C", wtPath, "rev-parse", "--git-dir"],
+        stdout: "pipe",
+      });
+      const rawGitDir = new TextDecoder().decode(gitDirProc.stdout).trim();
+      const gitDir = isAbsolute(rawGitDir) ? rawGitDir : join(wtPath, rawGitDir);
+      const excludeContent = readFileSync(join(gitDir, "info", "exclude"), "utf8");
+      expect(excludeContent).toContain(".lock*");
+      expect(excludeContent).toContain(".queue*");
+
+      // Regression guard for the bug this test was added to catch: .gitignore
+      // must not be modified relative to HEAD by bootstrap. The previous code
+      // overwrote it, surfacing every upstream-ignored file as untracked.
+      const statusProc = Bun.spawnSync({
+        cmd: ["git", "-C", wtPath, "status", "--porcelain", ".gitignore"],
+        stdout: "pipe",
+      });
+      expect(new TextDecoder().decode(statusProc.stdout).trim()).toBe("");
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it("bootstrap is idempotent — does not fail or re-modify .gitignore on second call", async () => {
     const manager = new DevServerManager(repos, worktreeManager);
     try {
       // Second call after the first bootstrap already created the worktree.
@@ -173,6 +208,46 @@ process.on('SIGTERM', () => { server.close(); process.exit(0); });
 
       const wtPath = worktreeManager.getWorktreePath("test-repo", "dev-server");
       expect(existsSync(wtPath)).toBe(true);
+
+      // .gitignore must remain unchanged on the second bootstrap too —
+      // re-clobbering on subsequent boots is the same class of bug as the
+      // initial overwrite.
+      const statusProc = Bun.spawnSync({
+        cmd: ["git", "-C", wtPath, "status", "--porcelain", ".gitignore"],
+        stdout: "pipe",
+      });
+      expect(new TextDecoder().decode(statusProc.stdout).trim()).toBe("");
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it("bootstrap self-heals a legacy .gitignore overwritten by the previous code path", async () => {
+    const manager = new DevServerManager(repos, worktreeManager);
+    try {
+      // Pre-create the worktree, then plant the exact fingerprint of the bug
+      // (".lock*\n.queue*\n" as the entire .gitignore content) to simulate a
+      // worktree that booted under the old buggy code.
+      await manager.bootstrap();
+      const wtPath = worktreeManager.getWorktreePath("test-repo", "dev-server");
+      const gitignorePath = join(wtPath, ".gitignore");
+      writeFileSync(gitignorePath, ".lock*\n.queue*\n");
+
+      // Confirm the planted state shows as modified vs HEAD.
+      const dirtyProc = Bun.spawnSync({
+        cmd: ["git", "-C", wtPath, "status", "--porcelain", ".gitignore"],
+        stdout: "pipe",
+      });
+      expect(new TextDecoder().decode(dirtyProc.stdout).trim()).not.toBe("");
+
+      // Re-bootstrap — should detect the fingerprint and restore upstream.
+      await manager.bootstrap();
+
+      const cleanProc = Bun.spawnSync({
+        cmd: ["git", "-C", wtPath, "status", "--porcelain", ".gitignore"],
+        stdout: "pipe",
+      });
+      expect(new TextDecoder().decode(cleanProc.stdout).trim()).toBe("");
     } finally {
       manager.dispose();
     }

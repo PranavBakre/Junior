@@ -1,12 +1,23 @@
 # junior
 
-A Slack bot that acts as the control plane for [Claude Code](https://claude.com/claude-code) sessions. Each Slack thread maps to its own short-lived `claude -p` subprocess. Across turns, conversation continuity comes from `--resume <sessionId>` rather than a long-lived process.
+A Slack bot that acts as the control plane for headless coding-agent sessions. OpenCode is the default runner provider; Claude Code remains available as a fallback provider. Each Slack thread maps to its own short-lived runner subprocess, and continuity comes from the provider's native resume session ID rather than a long-lived process.
 
-Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](https://github.com/PranavBakre/openclaw-agents) — same role (orchestrator + sub-agent dispatcher), rebuilt on top of Claude Code's CLI.
+Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](https://github.com/PranavBakre/openclaw-agents) — same role (orchestrator + sub-agent dispatcher), rebuilt on top of coding-agent CLIs.
 
-**Stack:** Bun, TypeScript, [@slack/bolt](https://github.com/slackapi/bolt-js) (Socket Mode), Claude Code CLI authenticated via Max subscription, SQLite for session persistence.
+**Stack:** Bun, TypeScript, [@slack/bolt](https://github.com/slackapi/bolt-js) (Socket Mode), OpenCode by default with Claude Code as an alternate provider, SQLite for session persistence.
 
 For deep architecture and the canonical "critical rules" list, see [CLAUDE.md](./CLAUDE.md). This README is the on-ramp.
+
+## Prerequisites
+
+Junior orchestrates external coding agents and observability tools. Ensure the following are installed and authenticated on your host:
+
+- **[OpenCode](https://opencode.ai)** (default runner provider)
+- **[Claude Code CLI](https://anthropic.com)** (Claude provider and tmux driver)
+- **[Vercel CLI](https://vercel.com/docs/cli)** (required by `vercel-status`)
+- **[New Relic CLI](https://github.com/newrelic/newrelic-cli)** (required by `nr-research`)
+- **[Sentry CLI](https://docs.sentry.io/product/cli/)** (required by `sentry-fetch`)
+- **tmux 3.4+** (required only for `DEFAULT_CLAUDE_DRIVER=tmux`)
 
 ---
 
@@ -24,7 +35,7 @@ A single Slack thread can host multiple agents at once. The dispatcher is in [`s
 
 | Agent | Username | Emoji | Use |
 | --- | --- | --- | --- |
-| `lead` | Junior | :face_with_cowboy_hat: | Default in support channels — orchestrator / rubber duck |
+| `lead` | Junior | 🤠 | Default in support channels — orchestrator / rubber duck |
 | `reproducer` | Reproducer | :mag: | Reproduce a reported bug deterministically |
 | `thinker` | Thinker | :wrench: | Form and mock-test a hypothesis |
 | `review` | Reviewer | :eyes: | Code review |
@@ -34,7 +45,7 @@ Each agent stores its own row in the `agent_sessions` SQLite table so threading 
 
 ### Slack MCP server
 
-While Claude is running, it can post to and read from Slack autonomously through an in-process HTTP MCP server ([`src/mcp/slack-server.ts`](src/mcp/slack-server.ts)). Tools exposed:
+While a runner is active, it can post to and read from Slack autonomously through an in-process HTTP MCP server ([`src/mcp/slack-server.ts`](src/mcp/slack-server.ts)). Tools exposed:
 
 - `slack_send_message`, `slack_read_channel`, `slack_read_thread`
 - `slack_search`, `slack_search_users`
@@ -56,7 +67,7 @@ Implementation: [`src/lifecycle/dev-server.ts`](src/lifecycle/dev-server.ts), [`
 
 ### Worktrees per (repo, thread)
 
-Each thread that touches a target repo gets its own git worktree under `<repo>/.claude/worktrees/slack-<threadId>`. A thread can have worktrees in multiple repos at once (full-stack bug → backend + frontend). See [`src/worktree/manager.ts`](src/worktree/manager.ts) and the `worktreePaths` field on `ThreadSession`.
+Each thread that touches a target repo gets its own git worktree at `<repo>.junior-worktrees/slack-<threadId>` (sibling to the repo, deliberately outside `.claude/` so target-repo setup scripts that recursively copy `.claude/` don't pull every sibling thread's source tree into a fresh worktree). A thread can have worktrees in multiple repos at once (full-stack bug → backend + frontend). See [`src/worktree/manager.ts`](src/worktree/manager.ts) and the `worktreePaths` field on `ThreadSession`.
 
 ### SQLite persistence
 
@@ -77,7 +88,7 @@ HTTP_DASHBOARD_PORT=8787 bun run dev
 # open http://127.0.0.1:8787
 ```
 
-Binds `127.0.0.1` only — there is no auth. Do not put it behind a reverse proxy without adding one.
+Binds `127.0.0.1` only. Junior is intentionally insecure as a networked product: there is no dashboard auth, and it assumes a trusted local operator. Do not put it behind a reverse proxy without adding auth and a real security review.
 
 | Path | Description |
 | --- | --- |
@@ -124,9 +135,22 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
+| `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode`, `opencode-sdk`, `codex-app-server`, or `claude` (`codex` is reserved for a future CLI fallback) |
 | `CLAUDE_MAX_TURNS` | `25` | Max turns per `claude -p` invocation |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Per-turn timeout before SIGINT |
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |
+| `OPENCODE_MODEL` | *(unset)* | Override default OpenCode model |
+| `OPENCODE_TIMEOUT_MS` | `300000` | Per-turn OpenCode timeout before SIGINT |
+| `OPENCODE_CONTINUITY_ENABLED` | `false` | Enables OpenCode session reuse across completed turns: CLI `--session` / SDK reattach. SDK provider kill still uses OpenCode native abort; CLI interrupt-and-resume is not verified. |
+| `JUNIOR_OPENCODE_PERMISSION` | `allow` | OpenCode permission mode for generated agent config |
+| `OPENCODE_MCP_ENABLED` | `true` | Enables generated OpenCode MCP config for normal non-utility runs |
+| `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | `true` | Include Playwright MCP in generated OpenCode config; set `false` to disable |
+| `CODEX_MODEL` | *(unset)* | Override default Codex app-server model |
+| `CODEX_TIMEOUT_MS` | `300000` | Per-turn Codex timeout before SIGINT |
+| `CODEX_SANDBOX` | `workspace-write` | Codex app-server sandbox. Set `danger-full-access` for YOLO-style full filesystem/network access. |
+| `CODEX_ASK_FOR_APPROVAL` | `never` | Codex app-server approval policy |
+| `CODEX_APP_SERVER_CONTINUITY_ENABLED` | `false` | Enables Codex app-server idle-timeout recovery: native `turn/interrupt` plus automatic continue turn. Normal `thread/resume` across app restarts stays enabled. |
+| `CODEX_ISOLATED_HOME_PATH` | `data/codex-home` | Junior-owned Codex home with generated config and symlinked auth |
 
 `REPOS` example:
 
@@ -160,9 +184,11 @@ Slash-style commands are parsed in [`src/slack/commands.ts`](src/slack/commands.
 
 !cancel                    -- cancel the in-flight turn
 !reset                     -- drop session + worktree state for this thread
+!clear                     -- archive thread and delete Junior bot messages (admin)
 !status                    -- show this thread's session state
 !repo <name>               -- pin this thread to a target repo
 !branch <name>             -- pin this thread to a base ref
+!provider <name>           -- switch this thread's runner provider
 !quiet | !normal | !verbose -- per-thread verbosity
 !mute | !unmute            -- silence/unsilence this thread
 !adhoc / !bugs / !help     -- channel-specific entry points
@@ -170,7 +196,17 @@ Slash-style commands are parsed in [`src/slack/commands.ts`](src/slack/commands.
 !devserver <branch> [repo] -- acquire dev-server slot
 !devserver status          -- queue depth
 !devserver kill <repo>     -- drop slot
+
+!driver <headless|tmux>    -- switch driver (tmux is EXPERIMENTAL)
 ```
+
+### Experimental: TMUX Mode
+
+Junior supports an experimental "Interactive Driver" that runs Claude Code inside a persistent `tmux` session. The implementation is present behind a flag and still needs production soak before becoming the default.
+
+To try it:
+- Set `DEFAULT_CLAUDE_DRIVER=tmux` in your `.env`.
+- Ensure `tmux` version ≥ 3.4 is installed.
 
 ---
 
@@ -190,10 +226,11 @@ AgentDispatcher (src/support/router.ts)
     +-- (default)   -> SessionManager.handleLeadMessage / handleMessage
                           |
                           v
-                  Spawn `claude -p`
-                    --resume <sessionId>          (continuity)
-                    --output-format stream-json   (tool/text/result events)
-                    --mcp-config <per-thread>     (Slack MCP)
+                  Spawn runner provider
+                    claude -p / opencode run      (per-thread provider)
+                    native resume id              (continuity)
+                    normalized runner events      (tool/text/result events)
+                    project MCP config            (worktree-backed runs)
                     cwd = worktree per (repo, thread)
                           |
                           v
@@ -203,8 +240,8 @@ AgentDispatcher (src/support/router.ts)
 
 Three invariants that the rest of the code hangs off (see [CLAUDE.md](./CLAUDE.md) for the full list):
 
-1. **One `claude -p` process per turn.** Spawn → respond → exit. No long-lived processes between messages.
-2. **`--resume` for continuity.** Session IDs are extracted from the first stream-json event and cached.
+1. **One runner process per turn.** Spawn → respond → exit. No long-lived processes between messages.
+2. **Native resume for continuity.** Session IDs are extracted from provider events and cached with their provider.
 3. **Buffer, don't interrupt.** Messages arriving during a turn are queued and drained as a combined prompt afterwards.
 
 ---
@@ -217,7 +254,9 @@ src/
   config.ts             env loading, RepoConfig
   slack/                Bolt app, event handlers, formatting, home tab
   session/              ThreadSession, SessionManager, SQLite + memory stores
-  claude/               spawner, args, stream-json parser
+  runners/              provider selection, shared runtime contract
+  opencode/             OpenCode args, config, parser, spawner
+  claude/               Claude headless spawner, tmux driver, parsers
   worktree/             per-(repo, thread) worktree manager
   agents/               agent loader (.md frontmatter)
   support/              AgentDispatcher, persistent-agent identities
@@ -235,9 +274,11 @@ For per-feature deep dives, see the [`docs/`](docs/) tree — `docs/architecture
 ## Running tests + typecheck
 
 ```sh
+bun run dev         # start bot server with hot reload
 bun run typecheck   # tsc --noEmit
 bun test            # bun:test
-bun run cleanup     # remove stale worktrees + sessions
+bun run build       # build for production
+bun run cleanup     # delete stale idle/draining session rows
 ```
 
 ---

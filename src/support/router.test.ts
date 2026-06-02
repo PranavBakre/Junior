@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { SessionManager } from "../session/manager.ts";
 import { parseAgentDirectives, parseDevserverDirective, AgentDispatcher } from "./router.ts";
+import type { MemoryStore } from "../memory/store.ts";
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
   return {
@@ -75,7 +76,7 @@ describe("AgentDispatcher", () => {
     );
   });
 
-  it("does not let worker-authored bot messages dispatch agents", async () => {
+  it("does not let workers dispatch agents outside the allow-list", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
@@ -91,10 +92,86 @@ describe("AgentDispatcher", () => {
       }),
     );
 
-    // Worker self-bot directives get re-routed to lead as plain text.
+    // Reproducer is not allowed to dispatch thinker — stripped, re-routed to lead.
     expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleMessage).not.toHaveBeenCalled();
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+  });
+
+  it("lets thinker dispatch !review (allow-listed worker chain)", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text: "scoping done — see PR #5033\n!review check the conditional Joi validation",
+        isSelfBot: true,
+        botUsername: "Thinker",
+      }),
+    );
+
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "check the conditional Joi validation" }),
+      "review",
+    );
+    // Lead does not get a re-route copy when the directive was allowed.
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+  });
+
+  it("lets thinker dispatch !reproducer for validation (allow-listed worker chain)", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text: "scoping done — see PR\n!reproducer validate the fix on branch feature/abc123",
+        isSelfBot: true,
+        botUsername: "Thinker",
+      }),
+    );
+
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "validate the fix on branch feature/abc123",
+      }),
+      "reproducer",
+    );
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+  });
+
+  it("dispatches both !review and !reproducer when thinker emits both", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text:
+          "scoping done — see PR\n!reproducer validate fix on branch feature/abc123\n!review check Joi conditional",
+        isSelfBot: true,
+        botUsername: "Thinker",
+      }),
+    );
+
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(2);
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+    const targets = managerMock.handleAgentMessage.mock.calls.map((c) => c[1]);
+    expect(targets).toContain("reproducer");
+    expect(targets).toContain("review");
   });
 
   it("drops lead's own no-directive commentary to break the wake-loop", async () => {
@@ -109,12 +186,56 @@ describe("AgentDispatcher", () => {
       makeEvent({
         text: "research done, waiting on sentry/vercel",
         isSelfBot: true,
+        botUsername: "Junior (Lead)",
+      }),
+    );
+
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+  });
+
+  it("drops default Junior's own no-directive commentary to break the wake-loop", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set(["CBUGS"]));
+
+    await router.handleMessage(
+      makeEvent({
+        text: "checking the script, one moment",
+        isSelfBot: true,
         botUsername: "Junior",
       }),
     );
 
     expect(managerMock.handleMessage).not.toHaveBeenCalled();
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+  });
+
+  it("default Junior may dispatch multiple core workers in a non-support channel", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    // No support channels — exercises the non-support dispatch path.
+    const router = new AgentDispatcher(managerMock as unknown as SessionManager, new Set());
+
+    await router.handleMessage(
+      makeEvent({
+        text: "!review take a look at PR 21\n!thinker root-cause the timeout",
+        isSelfBot: true,
+        botUsername: "Junior",
+        channel: "C_TECH",
+      }),
+    );
+
+    const targets = managerMock.handleAgentMessage.mock.calls.map((c) => c[1]);
+    expect(targets).toContain("review");
+    expect(targets).toContain("thinker");
   });
 
   it("forwards worker no-directive responses to lead", async () => {
@@ -218,6 +339,68 @@ describe("AgentDispatcher", () => {
     expect(call.dedupeKey).toBeUndefined();
   });
 
+  it("auto-dispatches GitHub PR review requests to review in non-support channels", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(
+      managerMock as unknown as SessionManager,
+      new Set(["CBUGS"]),
+    );
+
+    await router.handleMessage(
+      makeEvent({
+        channel: "CTECH",
+        text: "https://github.com/GrowthX-Club/gx-backend/pull/3150 please review",
+      }),
+    );
+
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ dedupeKey: "123.456:review:auto" }),
+      "review",
+    );
+  });
+
+  it("uses routing memory body even when the memory has a title", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const memoryStore = {
+      recall: mock(async () => [
+        {
+          id: "routing-1",
+          kind: "routing_memory",
+          title: "Learned routing memory",
+          body: "Send pull request review requests to review.",
+          outcome: null,
+          score: 1,
+          reasons: [],
+          sourceIds: [],
+        },
+      ]),
+    } as unknown as MemoryStore;
+    const router = new AgentDispatcher(
+      managerMock as unknown as SessionManager,
+      new Set(),
+      { memoryStore },
+    );
+
+    await router.handleMessage(makeEvent({ channel: "C_GENERAL", text: "please look at this PR" }));
+
+    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ dedupeKey: "123.456:review:memory" }),
+      "review",
+    );
+    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+  });
+
   it("drops self-bot posts with unknown username (no usable identity)", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
@@ -250,9 +433,9 @@ describe("parseDevserverDirective (router smoke)", () => {
   });
 
   it("parses !devserver kill <repo>", () => {
-    expect(parseDevserverDirective("!devserver kill gx-backend")).toEqual({
+    expect(parseDevserverDirective("!devserver kill app-backend")).toEqual({
       kind: "kill",
-      repo: "gx-backend",
+      repo: "app-backend",
     });
   });
 
@@ -296,8 +479,8 @@ describe("AgentDispatcher !devserver interception", () => {
         slackClient: slackClientMock as unknown as import("@slack/web-api").WebClient,
         repos: [
           {
-            name: "gx-backend",
-            path: "/tmp/gx-backend",
+            name: "app-backend",
+            path: "/tmp/app-backend",
             defaultBase: "origin/main",
             devCommand: "echo dev",
             devPort: 8000,

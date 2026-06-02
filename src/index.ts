@@ -1,7 +1,14 @@
 import { loadConfig } from "./config.ts";
+import { resolve } from "node:path";
 import { createSlackApp } from "./slack/app.ts";
+import { KNOWN_COMMANDS } from "./slack/commands.ts";
 import { registerEventHandlers } from "./slack/events.ts";
-import { formatToolStatuses, extractAssistantText, shouldPostResponseToSlack } from "./slack/formatting.ts";
+import {
+  extractRunnerMessageText,
+  formatRunnerToolStatuses,
+  prepareSlackResponse,
+  sanitizeErrorForSlack,
+} from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
 import { SessionManager } from "./session/manager.ts";
 import { createSessionStore } from "./session/store/factory.ts";
@@ -9,25 +16,47 @@ import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
 import { registerHomeTab } from "./slack/home.ts";
 import { checkOrphanedSessions } from "./lifecycle/health.ts";
 import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
+import { reconcileTmuxSessions } from "./lifecycle/tmux-reconcile.ts";
+import { evictIdleTmuxSessions } from "./lifecycle/tmux-evict.ts";
+import type { TmuxDriver } from "./claude/tmux-driver.ts";
 import { AgentRouter } from "./agents/router.ts";
 import { AgentDispatcher } from "./support/router.ts";
+import { loadOverlayIdentities } from "./support/agents.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
 import { DevServerManager } from "./lifecycle/dev-server.ts";
 import { DevServerQueue } from "./lifecycle/dev-server-queue.ts";
 import { startMcpServer } from "./mcp/slack-server.ts";
 import { log } from "./logger.ts";
+import { WorkflowController } from "./workflows/controller.ts";
+import { WorkflowExecutor } from "./workflows/executor.ts";
+import { WorkflowRegistry } from "./workflows/registry.ts";
+import { WorkflowScheduler } from "./workflows/scheduler.ts";
+import { createMemoryStore } from "./memory/factory.ts";
+import { MemoryIngestor } from "./memory/ingestion.ts";
+import {
+  InMemoryWorkflowStore,
+  SqliteWorkflowStore,
+  type WorkflowStore,
+} from "./workflows/store.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
 
 const store = createSessionStore(config);
 log.info("boot", `Session store: ${config.session.store}`);
+const memoryStore = createMemoryStore(config.memory.sqlitePath);
+const memoryIngestor = new MemoryIngestor(memoryStore);
 const sessionManager = new SessionManager(store, config);
-const agentRouter = new AgentRouter(config.repos, ".claude/agents");
+sessionManager.setMemoryIngestor(memoryIngestor);
+const agentRouter = new AgentRouter(
+  config.repos,
+  ".claude/agents",
+  "agents-org",
+);
 const worktreeManager = new WorktreeManager(config.repos);
 const devServerManager = new DevServerManager(config.repos, worktreeManager);
 const devServerQueue = new DevServerQueue(devServerManager, config.repos);
-startMcpServer(config.slack.botToken, store, worktreeManager);
+startMcpServer(config.slack.botToken, store, worktreeManager, sessionManager);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
 sessionManager.slackApp = app;
@@ -46,21 +75,47 @@ const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
   sessionStore: store,
   slackClient: app.client,
   repos: config.repos,
+  memoryStore,
+});
+const workflowRegistry = new WorkflowRegistry({
+  repos: config.repos,
+  builtInCommands: KNOWN_COMMANDS,
+});
+const workflowStore: WorkflowStore = config.session.store === "memory"
+  ? new InMemoryWorkflowStore()
+  : new SqliteWorkflowStore(resolve(config.session.sqlitePath));
+const workflowExecutor = new WorkflowExecutor({
+  config,
+  store: workflowStore,
+  slackClient: app.client,
+  memoryStore,
+});
+const workflowScheduler = new WorkflowScheduler({
+  registry: workflowRegistry,
+  store: workflowStore,
+  executor: workflowExecutor,
+});
+const workflowController = new WorkflowController({
+  registry: workflowRegistry,
+  store: workflowStore,
+  scheduler: workflowScheduler,
+  slackClient: app.client,
+  isAdmin: (userId) => sessionManager.isAdmin(userId),
 });
 
 sessionManager.onResponse = (session, response) => {
-  const willPost = shouldPostResponseToSlack(response);
+  const prepared = prepareSlackResponse(response);
   const agentName = session.activeAgentName ?? "lead";
   log.info(
     "response",
-    `thread=${session.threadId} agent=${agentName} len=${response.length} willPost=${willPost}`,
+    `thread=${session.threadId} agent=${agentName} len=${response.length} willPost=${prepared !== null}`,
   );
   responder.deleteStatus(session.channel, session.threadId, agentName);
-  if (willPost) {
+  if (prepared !== null) {
     responder.postResponse(
       session.channel,
       session.threadId,
-      response,
+      prepared,
       session.slackIdentity,
     );
   } else {
@@ -73,25 +128,30 @@ sessionManager.onResponse = (session, response) => {
 
 sessionManager.onEvent = (session, event) => {
   const agentName = session.activeAgentName ?? "lead";
-  if (event.type === "system" && event.subtype === "init") {
-    log.info("session", `thread=${session.threadId} agent=${agentName} sessionId=${session.sessionId}`);
+  if (event.type === "init") {
+    log.info("session", `thread=${session.threadId} agent=${agentName} provider=${event.provider} sessionId=${event.sessionId}`);
   }
   if (session.verbosity === "quiet") return;
-  if (event.type === "assistant") {
+  if (event.type === "message") {
     // Show text content as live status (gets overwritten each turn)
-    const text = extractAssistantText(event);
-    if (text && !shouldPostResponseToSlack(text)) {
-      log.info(
-        "response",
-        `thread=${session.threadId} status.suppressed reason=${text.trim() ? "sentinel" : "empty"}`,
-      );
+    const text = extractRunnerMessageText(event);
+    if (text) {
+      const prepared = prepareSlackResponse(text);
+      if (prepared === null) {
+        log.info(
+          "response",
+          `thread=${session.threadId} status.suppressed reason=${text.trim() ? "sentinel" : "empty"}`,
+        );
+      } else {
+        responder.updateStatus(session.channel, session.threadId, prepared, agentName);
+      }
     }
-    if (text && shouldPostResponseToSlack(text)) {
-      responder.updateStatus(session.channel, session.threadId, text, agentName);
-    }
+    return;
+  }
 
+  if (event.type === "tool") {
     // Show tool use as status
-    const statuses = formatToolStatuses(event);
+    const statuses = formatRunnerToolStatuses(event);
     for (const status of statuses) {
       log.info("tool", `thread=${session.threadId} ${status}`);
       responder.updateStatus(session.channel, session.threadId, status, agentName);
@@ -109,21 +169,35 @@ sessionManager.onCommandResponse = (event, response) => {
   responder.postResponse(event.channel, event.threadId, response);
 };
 
+sessionManager.onClearThreadStatus = (threadTs) => {
+  responder.clearStatusForThread(threadTs);
+};
+
+sessionManager.onReaction = (event, emoji) => {
+  responder.addReaction(event.channel, event.ts, emoji);
+};
+
 sessionManager.onError = (session, error) => {
   const agentName = session.activeAgentName ?? "lead";
   log.error("error", `thread=${session.threadId} agent=${agentName} ${error ?? "Unknown error"}`);
+  const safeError = sanitizeErrorForSlack(error);
   responder.deleteStatus(session.channel, session.threadId, agentName);
   responder.postResponse(
     session.channel,
     session.threadId,
-    `Error: ${error ?? "Unknown error"}`,
+    `Error: ${safeError}`,
     session.slackIdentity,
   );
 };
 
-registerHomeTab(app, store, config.session.homeWindowMs);
+registerHomeTab(app, store, config.session.homeWindowMs, workflowStore);
 
-setupGracefulShutdown(sessionManager, store, devServerManager);
+setupGracefulShutdown(sessionManager, devServerManager, async () => {
+  await workflowScheduler.shutdown();
+  workflowRegistry.stopWatching();
+  workflowStore.close?.();
+  memoryStore.close();
+});
 
 // Periodic health checks
 setInterval(() => {
@@ -142,7 +216,33 @@ setInterval(() => {
   });
 }, config.session.cleanupIntervalMs);
 
+// Eviction sweep — kill idle tmux sessions to bound RAM at active-thread scale.
+// Conversations resume on the next message via --resume <sessionId>.
+const tmuxDriver = sessionManager.driverFor("tmux") as TmuxDriver;
+setInterval(() => {
+  evictIdleTmuxSessions(store, tmuxDriver, {
+    ttlMs: config.claude.tmuxIdleTtlMs,
+    skipBusy: true,
+  }).catch((err) => {
+    log.warn("tmux-evict", `sweep error: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}, config.claude.tmuxSweepIntervalMs);
+
 (async () => {
+  // Load private/overlay agent identities BEFORE accepting events. Each
+  // `agents-org/*.md` files may declare `username` + `iconEmoji`/`imageUrl`
+  // in frontmatter; those get merged into `AGENT_IDENTITIES` so dispatch,
+  // `agentForUsername`, and slack posting all see them. Failure is
+  // non-fatal — overlay is optional.
+  try {
+    await loadOverlayIdentities("agents-org");
+  } catch (err) {
+    log.error(
+      "boot",
+      `overlay-identity load failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // Bootstrap dev-server worktrees and check for external port conflicts before
   // accepting any Slack events. Failure here is non-fatal — log loudly and
   // continue so other features keep working even if a single repo's worktree
@@ -153,6 +253,25 @@ setInterval(() => {
     log.error(
       "boot",
       `dev-server bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // Reconcile tmux sessions before accepting Slack events. Sessions whose
+  // tmux is still alive get reattached; sessions whose tmux died while the
+  // bot was down get downgraded so the next turn cold-starts with --resume.
+  try {
+    await reconcileTmuxSessions(store, tmuxDriver);
+  } catch (err) {
+    log.error("reconcile", `tmux reconcile threw: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  try {
+    await workflowRegistry.startWatching();
+    await workflowScheduler.reconcile();
+  } catch (err) {
+    log.error(
+      "workflow",
+      `workflow bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 
@@ -168,28 +287,48 @@ setInterval(() => {
     }
     if (auth.bot_id) {
       selfBotId = auth.bot_id;
+      sessionManager.selfBotId = auth.bot_id;
       log.info("boot", `Bot ID: ${auth.bot_id}`);
     }
   } catch (err) {
     log.warn("boot", `Failed to resolve bot identity: ${err}`);
   }
 
-  registerEventHandlers(app, (event) => {
+  registerEventHandlers(app, async (event) => {
     log.info("event", `thread=${event.threadId} user=${event.user} cmd=${event.command ?? "-"} text=${event.text.slice(0, 100)}`);
+    // Attention gate FIRST: !aside/!listen and auto-dormant short-circuit
+    // before any routing happens. Returns true when the message is consumed
+    // here (do not dispatch).
+    if (await sessionManager.gateAttention(event)) return;
+    if (await workflowController.handleMessage(event)) return;
     // Universal dispatch: AgentDispatcher decides whether to dispatch a persistent
     // agent (any channel) or fall through to the single-session manager.
     supportRouter.handleMessage(event);
   }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
 
   if (config.http.enabled) {
-    const { startHttpServer } = await import("./http/server.ts");
-    startHttpServer({
-      store,
-      config,
-      devServerManager,
-      devServerQueue,
-      repos: config.repos,
-    });
+    // Bun.serve throws synchronously on port conflict (EADDRINUSE) and a few
+    // other I/O failures. The dashboard is non-critical — its failure must
+    // not bring down the bot before "Junior is running" prints, otherwise
+    // Slack disconnects. Mirror the bootstrap try/catch above.
+    try {
+      const { startHttpServer } = await import("./http/server.ts");
+      startHttpServer({
+        store,
+        config,
+        devServerManager,
+        devServerQueue,
+        repos: config.repos,
+        workflowRegistry,
+        workflowStore,
+        memoryStore,
+      });
+    } catch (err) {
+      log.error(
+        "boot",
+        `HTTP dashboard failed to start: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   log.info("boot", "Junior is running (Socket Mode)");

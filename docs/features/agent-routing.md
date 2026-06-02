@@ -11,14 +11,19 @@ Different Slack threads need different Claude Code personalities. A thread askin
 
 ## Full Vision
 
-- Command selects agent type: `!build`, `!frontend`, `!review`, `!architect`, `!pm`, `!audit`
-- Agent definitions loaded from target repo's `.claude/agents/<type>.md`
-- Fallback to junior's own `.claude/agents/` if target repo doesn't have the agent
+- Command selects agent type: `!build`, `!frontend`, `!review`, `!architect`, `!pm`, `!audit`, `!reproducer`, `!thinker`, …
+- Agent definitions resolved across a **layered search chain** — first match wins:
+  1. Target repo's `.claude/agents/<type>.md`
+  2. Private org overlay's `<orgAgentsDir>/<type>.md` (e.g. `agents-org/`, a gitignored or submodule-mounted private repo)
+  3. Junior's own `.claude/agents/<type>.md` (fallback)
 - Agent definition injected via `--append-system-prompt`
-- Agent type persists across turns in a thread
-- Can be changed mid-thread with a new slash command
-- Default agent (no command) = generic Claude with CLAUDE.md context only
-- Common preamble loaded alongside agent definition (like example-backend's `common/building-philosophy.md`)
+- Agent type persists across turns in a thread; can be changed mid-thread with a new command
+- Lead and the default `@junior` path also flow through this composition (`lead.md` and `default.md` are explicit public fallback agents).
+- Common preamble is selected by each agent's `common:` frontmatter profile:
+  - `core.md` is the tiny always-on operating contract.
+  - Target repo common is checked first per selected file; missing selected files fall back individually to Junior's public common.
+  - Org overlay common is additive, but only for the selected filenames. Junior no longer appends every `common/*.md` to every agent.
+- **Per-agent context profile** (frontmatter flags) lets lightweight task agents opt out of preamble blocks (`identity`, `slack`, `workspace`, `threadHistory`, `agentState`). Defaults are all-true; missing or invalid flags preserve the heavy preamble.
 
 ## Dependencies
 
@@ -35,7 +40,7 @@ Agent definitions are markdown files with YAML frontmatter:
 name: build
 description: Senior backend engineer for the Example Org monorepo.
 tools: Read, Edit, Write, Bash, Grep, Glob, Agent
-model: opus
+common: core,building-philosophy
 ---
 
 # build — Backend Engineer
@@ -46,8 +51,8 @@ Role: A senior engineer who knows the Example Org monorepo architecture...
 
 The bot:
 1. Reads the `.md` file from the target repo
-2. Strips frontmatter, extracts `tools` for `--allowedTools`
-3. Passes the markdown body as `--append-system-prompt`
+2. Strips frontmatter, extracts `tools`, context flags, and `common:`
+3. Composes selected common files + markdown body as the system prompt
 
 ## Iterations
 
@@ -79,12 +84,12 @@ Load and prepend the common preamble that all agents share.
 
 **What it adds:**
 - Check for `<repoPath>/.claude/agents/common/` directory
-- Load all `.md` files in common/ and prepend to agent prompt
-- Order: common preamble first, then agent-specific prompt
+- Load only common files named by the agent's `common:` profile and prepend them to the agent prompt
+- Order: `core` first, then profile order, with per-file fallback from target repo common to Junior public common, then agent-specific prompt
 - example-backend already has `common/building-philosophy.md` — this gets loaded for all example-backend agents
 
 **Test:** Load "build" agent for example-backend → prompt starts with building-philosophy.md content, then build.md content.
-**Defers:** Caching, hot reload.
+**Defers:** Caching, hot reload, additive overlay (see Iteration 5).
 
 ### Iteration 3: Agent type from message context (~30 min)
 
@@ -115,6 +120,22 @@ Different agent types get different MCP server configurations.
 **Test:** Build session → MCP config includes DB server. Review session → MCP config excludes DB write tools. Temp files cleaned up after session ends.
 **Defers:** Dynamic MCP config updates mid-session.
 
+### Iteration 5: Private org overlay + per-agent context profile (~1 hr)
+
+Separate the public Junior repo from org-specific specifics, and let lightweight agents opt out of the heavy preamble.
+
+**What it adds:**
+- `AgentRouter` accepts a third constructor arg `orgAgentsDir` (e.g. `agents-org/`) — a gitignored or submodule-mounted private repo.
+- `resolveAgent`: search order becomes target repo → org overlay → public fallback (first match wins).
+- `composeSystemPrompt`: org overlay's `common/*.md` is appended **additively** after the public/target common — so org-wide invariants (credential paths, merge protocol, infra URLs) reach every agent regardless of which repo's common loaded first.
+- `composeSystemPrompt` also now returns the common preamble alone when no agent definition resolves — covers the default `@junior` path so it picks up the same invariants.
+- Per-agent **context profile** via frontmatter dot-notation flags: `context.identity`, `context.slack`, `context.workspace`, `context.threadHistory`, `context.agentState`. Each gates the corresponding block in `buildPromptPreamble`. Defaults are all-true; missing/invalid flags preserve the heavy preamble (safe-but-heavy).
+- OpenCode MCP config is generated per spawn. The private `feature-metrics` worker gets the Mixpanel MCP server only for its own runs; default Junior and other agents do not receive it.
+- `lead`/`default` agentName branches in `buildRunSession` set `agentType` so they participate in the new compose path (previously short-circuited).
+
+**Test:** Six-scenario load-path matrix (default-no-target, default-target-with-no-common, default-target-with-common, lead variants, worker-with-target) confirms overlay common reaches every agent; public common reaches all agents except those whose target repo has its own common; agent body resolves correctly per the search-chain order.
+**Defers:** Caching, hot reload of overlay files, additive merging across all three tiers (currently target-or-fallback is still exclusive).
+
 ## Shortcuts
 
 | Shortcut | Replaced in |
@@ -122,6 +143,8 @@ Different agent types get different MCP server configurations.
 | Hardcoded agent prompts | Iteration 1 (file-based) |
 | No auto-detection | Iteration 3 |
 | No MCP config | Iteration 4 |
+| Single tier of agent/common files | Iteration 5 (overlay) |
+| All agents get the full preamble | Iteration 5 (context profile) |
 | No caching of agent definitions | Post-MVP |
 
 ## Cut List (true v2)

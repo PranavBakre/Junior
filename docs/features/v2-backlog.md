@@ -2,22 +2,9 @@
 
 Features explicitly deferred from MVP. To be scoped when MVP is running.
 
-## Admin Dashboard
+## Admin Dashboard (DONE)
 
-**Problem:** No visibility into what's happening across threads. How many sessions are active? Which threads are stuck? What agent types are being used? Which repos? Without a dashboard, debugging requires reading server logs.
-
-**Scope (to be refined):**
-- Live session graph: threads as nodes, edges showing dependencies (drain chains, worktree sharing)
-- Per-session detail: agent type, status (idle/busy/draining), last activity, pending message count, worktree path, session ID
-- Activity timeline: message received → Claude spawned → events streamed → response posted, with timestamps
-- Error log: failed spawns, timeouts, orphaned sessions — filterable
-- Who's using what: Slack user → threads → agent types → repos
-- Metrics: response latency p50/p99, timeout rate, buffer frequency, agent type distribution
-
-**Open questions:**
-- Web UI or Slack-native (home tab)? Web gives more flexibility. Slack home tab is zero-deploy.
-- Real-time or polling? EventSource/WebSocket from the bot server, or periodic API calls?
-- Auth? If web UI, who can see the dashboard? Pranav only, or whole team?
+**Status:** Completed as the [HTTP Dashboard](./http-dashboard.md). Surfaces live sessions, dev-server queue, logs, and docs.
 
 ## Batch User Resolution in Thread Context
 
@@ -26,6 +13,55 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 **Fix:** Pre-collect all unique user IDs from the thread (message authors + mentioned users), resolve them in a single batch before building message objects, then read from cache.
 
 **Priority:** Low — current thread sizes are small. Becomes relevant when threads regularly exceed ~20 unique participants.
+
+## Hot Reload for Agent Org Assets
+
+**Status:** Deferred from Dynamic Workflows v1.
+
+**Problem:** Dynamic workflows use file-owned config plus `fs.watch` hot reload, so operators can add or fix workflows without restarting Junior. Agent org assets still depend mostly on boot-time loading.
+
+**Scope (to be refined):**
+- Apply the same watch-and-rescan model to supported agent org assets.
+- Keep roots fixed and explicit; avoid env-driven discovery until the operational model needs it.
+- Preserve last-known-good data when an edited private overlay becomes invalid.
+- Keep manual reload commands as diagnostic repair tools, not the normal deployment path.
+- Define which assets can be reloaded safely in-process and which require draining active sessions first.
+
+**Open questions:**
+- Should active sessions pin the identity/prompt version they started with, or adopt new identity data on the next turn?
+- Should invalid org overlays fail closed for private assets, or fall back to public defaults?
+- Which command surface owns this: a general `!org reload`, per-asset commands, or an admin dashboard action?
+
+## Per-agent mute
+
+**Problem:** `session.muted` is a single boolean on the parent `ThreadSession`. There is no way to mute *just* the reproducer (e.g. when it's looping noisily) while keeping the lead agent responsive.
+
+**Scope (to be refined):**
+- Move `muted: boolean` from `ThreadSession` onto each `agentSessions[name]` entry. Lead lives on the parent — either keep `ThreadSession.muted` as the lead's flag, or carve out a synthetic `agentSessions["lead"]` for symmetry.
+- `!mute <agent>` / `!unmute <agent>` toggle the per-agent flag. `!mute all` mutes every agent currently registered in `agentSessions`.
+- Update the home tab counter (`src/slack/home.ts`) to count *any* muted agent rather than `session.muted`.
+- SQLite migration: add a `muted` column to the `agent_sessions` table (or store on the existing JSON blob). Old `muted` column on the parent stays for the lead until the model is unified.
+- Buffer/drain logic in `src/session/manager.ts:86,127,651` must consult the agent in question, not the parent.
+
+**Open questions:**
+- Does `!mute` (no arg) become an alias for `!mute all`, or a usage error like `!reset`? Leaning toward usage error to stay consistent with `!reset`.
+- Should muting an agent kill an in-flight process for that agent, or only suppress *future* turns? Today muting mid-turn discards the buffer (`manager.ts:651`) but lets the running process complete — that behavior probably ports over.
+
+## Thread-owner-based command access
+
+**Status:** Two-tier admin (env + SQLite `admins` table) shipped — see [thread-commands.md](thread-commands.md#admin-only-commands). Thread-owner branch is still open.
+
+**Problem:** Today admin gating is env + SQLite. The original sketch also let the *thread owner* (first non-bot author) run elevated commands in their own thread.
+
+**Scope (to be refined):**
+- Persist `ownerSlackUserId` on `ThreadSession`, set from the first user message that creates the session. Survives `!reset all`.
+- `isAdmin(userId, session?)` returns true if env-match OR DB-match OR `userId === session.ownerSlackUserId`.
+- Slack-command admin management (`!admin add @user` / `!admin remove @user` / `!admin list`) was deliberately scoped out — admins added by direct SQL is the v1 UX. Revisit only if admin churn becomes frequent enough that SQL access is a bottleneck.
+- Decide: do owners get *all* elevated commands, or only a safe subset (e.g. mute/unmute on their own thread but not reset)?
+
+**Open questions:**
+- Legacy threads have no `ownerSlackUserId`. Fall back to admin-only, or backfill from the first message?
+- DMs — is the DM partner the "owner" by default? Probably yes.
 
 ## Image & Media Support from Slack
 

@@ -32,8 +32,8 @@ When a Slack thread needs to edit code in a target repo (example-backend, exampl
 
 ```typescript
 interface RepoConfig {
-  name: string;                       // "gx-backend"
-  path: string;                       // "/Users/.../openclaw-projects/growthx/gx-backend"
+  name: string;                       // "app-backend"
+  path: string;                       // "/Users/.../projects/app-backend"
   defaultBase: string;                // "origin/main"
   // Optional — bug-pipeline / dev-server fields:
   worktreeSetupCommand?: string;      // e.g. "bin/setup-worktree.sh" — resolved relative to `path`
@@ -49,7 +49,7 @@ The bug-pipeline + dev-server fields are optional. Repos that only need the `!re
 
 `WorktreeManager` (`src/worktree/manager.ts`):
 
-- `createWorktree(repoName, threadId, baseRef?, branchOverride?) → Promise<worktreePath>` — creates a worktree at `<repo.path>/.claude/worktrees/slack-<threadId>` (or whatever path `getWorktreePath` derives). The new branch is `branchOverride ?? slack/<threadId>`; the starting ref is `baseRef ?? repo.defaultBase`. If `repo.worktreeSetupCommand` is set, the manager runs `<repo.path>/<command> <worktreePath> <branch>` instead of `git fetch + git worktree add`.
+- `createWorktree(repoName, threadId, baseRef?, branchOverride?) → Promise<worktreePath>` — creates a worktree at `<repo.path>.junior-worktrees/slack-<threadId>` (or whatever path `getWorktreePath` derives — note this is a sibling directory to the repo, deliberately outside `.claude/`). The new branch is `branchOverride ?? slack/<threadId>`; the starting ref is `baseRef ?? repo.defaultBase`. If `repo.worktreeSetupCommand` is set, the manager runs `<repo.path>/<command> <worktreePath> <branch>` instead of `git fetch + git worktree add`.
 - `removeWorktree(repoName, threadId) → Promise<void>` — reads the actual current branch via `git -C <wt> branch --show-current` before deletion (so cleanup works for `branchOverride` callers), force-removes the worktree, and `git branch -D`s the branch. Both lookup and delete are wrapped in try/catch so missing/detached state is non-fatal.
 - `worktreeExists(repoName, threadId) → Promise<boolean>` and `isWorktreeDirty(worktreePath) → Promise<boolean>` — used by cleanup.
 - `getWorktreePath(repoName, threadId) → string` and `getBranchName(threadId) → string` — pure helpers (no I/O).

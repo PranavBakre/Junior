@@ -5,6 +5,7 @@
  * the dashboard UI.
  */
 import path from "node:path";
+import type { MemoryStore } from "../../memory/store.ts";
 
 const DOCS_DIR = path.resolve(import.meta.dir, "../../../docs");
 
@@ -41,4 +42,37 @@ export async function handleMemoryRead(filePath: string): Promise<Response> {
 
   const content = await file.text();
   return Response.json({ path: filePath, content });
+}
+
+export async function handleMemoryRecall(
+  store: MemoryStore,
+  params: URLSearchParams,
+): Promise<Response> {
+  const results = await store.recall({
+    query: params.get("query") ?? undefined,
+    tags: csv(params.get("tags")),
+    entities: csv(params.get("entities")),
+    kinds: csv(params.get("kinds")) as Parameters<MemoryStore["recall"]>[0]["kinds"],
+    limit: numberParam(params.get("limit")),
+    depth: numberParam(params.get("depth")),
+    includeInactive: params.get("includeInactive") === "true",
+    includeInvalid: params.get("includeInvalid") === "true",
+  });
+  return Response.json({ results });
+}
+
+export async function handleMemoryConsolidate(store: MemoryStore): Promise<Response> {
+  const result = await store.consolidate();
+  return Response.json(result);
+}
+
+function csv(value: string | null): string[] | undefined {
+  if (!value) return undefined;
+  return value.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+function numberParam(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

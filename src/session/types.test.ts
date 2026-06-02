@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { createSession } from "./types.ts";
+import { createSession, normalizeRunnerProvider } from "./types.ts";
 
 describe("createSession", () => {
   it("returns correct shape with threadId and channel", () => {
@@ -16,6 +16,11 @@ describe("createSession", () => {
   it("has sessionId as null", () => {
     const session = createSession("t1", "C01");
     expect(session.sessionId).toBeNull();
+  });
+
+  it("has provider set to claude by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.provider).toBe("claude");
   });
 
   it("has leadSessionId as null", () => {
@@ -78,6 +83,11 @@ describe("createSession", () => {
     expect(session.verbosity).toBe("verbose");
   });
 
+  it("has muted set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.muted).toBe(false);
+  });
+
   it("has lastActivity as a recent timestamp", () => {
     const before = Date.now();
     const session = createSession("t1", "C01");
@@ -104,20 +114,65 @@ describe("createSession", () => {
       "channel",
       "createdAt",
       "cwd",
+      "dormant",
+      "dormantAnnounced",
+      "driverMode",
+      "humanParticipants",
+      "idleInterruptCount",
       "lastActivity",
       "lastError",
       "leadSessionId",
       "model",
+      "muted",
+      "needsThreadCatchup",
       "pendingMessages",
       "pid",
+      "pipelineGuardRetryCount",
+      "provider",
       "sessionId",
       "status",
       "systemPrompt",
       "targetRepo",
       "threadId",
+      "tmuxSessionName",
+      "topLevelTmuxAgent",
       "verbosity",
       "worktreePath",
       "worktreePaths",
     ]);
+  });
+
+  it("has dormant set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.dormant).toBe(false);
+  });
+
+  it("has needsThreadCatchup set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.needsThreadCatchup).toBe(false);
+  });
+
+  it("has dormantAnnounced set to false by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.dormantAnnounced).toBe(false);
+  });
+
+  it("has humanParticipants as empty array by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.humanParticipants).toEqual([]);
+  });
+});
+
+describe("normalizeRunnerProvider", () => {
+  it("keeps supported providers", () => {
+    expect(normalizeRunnerProvider("claude")).toBe("claude");
+    expect(normalizeRunnerProvider("opencode")).toBe("opencode");
+    expect(normalizeRunnerProvider("codex")).toBe("codex");
+  });
+
+  it("defaults missing or invalid values to claude", () => {
+    expect(normalizeRunnerProvider(undefined)).toBe("claude");
+    expect(normalizeRunnerProvider(null)).toBe("claude");
+    expect(normalizeRunnerProvider("unknown")).toBe("claude");
   });
 });

@@ -13,18 +13,32 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { WebClient } from "@slack/web-api";
 import { z } from "zod";
-import { readFile } from "fs/promises";
+import { readdir, readFile } from "fs/promises";
+import { loadAgentDefinition } from "../agents/loader.ts";
 import { log } from "../logger.ts";
+import { createMemoryStore } from "../memory/factory.ts";
 import type { SessionStore } from "../session/store/interface.ts";
+import type { SessionManager } from "../session/manager.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
+import {
+  AGENT_IDENTITIES,
+  dispatchableAgentsFor,
+  isPersistentAgent,
+  loadOverlayIdentities,
+} from "../support/agents.ts";
+import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
+const FALLBACK_AGENTS_DIR = ".claude/agents";
+const ORG_AGENTS_DIR = "agents-org";
+const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH ?? "data/memory.db";
 
 let slack: WebClient;
 let sessionStore: SessionStore | undefined;
 let worktreeManager: WorktreeManager | undefined;
+let sessionManager: SessionManager | undefined;
 
-function registerTools(server: McpServer) {
+function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
   server.registerTool(
     "slack_send_message",
     {
@@ -36,21 +50,73 @@ function registerTools(server: McpServer) {
         reply_broadcast: z.boolean().optional().describe("Also post to the channel (for thread replies)"),
         username: z.string().optional().describe("Optional display name for this bot message"),
         icon_emoji: z.string().optional().describe("Optional emoji icon for this bot message"),
+        icon_url: z.string().optional().describe("Optional image URL icon for this bot message"),
+        image_url: z.string().optional().describe("Alias for icon_url"),
       },
     },
-    async ({ text, channel_id, thread_ts, reply_broadcast, username, icon_emoji }) => {
+    async ({ text, channel_id, thread_ts, reply_broadcast, username, icon_emoji, icon_url, image_url }) => {
+      const resolvedIconUrl = icon_url ?? image_url;
       const identity = {
         ...(username ? { username } : {}),
         ...(icon_emoji ? { icon_emoji } : {}),
+        ...(resolvedIconUrl && !icon_emoji ? { icon_url: resolvedIconUrl } : {}),
       };
-      const result = reply_broadcast && thread_ts
-        ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, reply_broadcast: true, ...identity })
+      const message = reply_broadcast && thread_ts
+        ? { channel: channel_id, text, thread_ts, reply_broadcast: true, ...identity }
         : thread_ts
-          ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, ...identity })
-          : await slack.chat.postMessage({ channel: channel_id, text, ...identity });
+          ? { channel: channel_id, text, thread_ts, ...identity }
+          : { channel: channel_id, text, ...identity };
+      const result = await slack.chat.postMessage(message as Parameters<typeof slack.chat.postMessage>[0]);
       return {
         content: [{ type: "text" as const, text: `Message sent (ts: ${result.ts})` }],
       };
+    },
+  );
+
+  server.registerTool(
+    "slack_send_dm",
+    {
+      description: "Send a direct message to a Slack user ID as Junior (the bot). Opens the DM channel first.",
+      inputSchema: {
+        user_id: z.string().describe("Slack user ID to DM, e.g. U03PNSJ33S5"),
+        text: z.string().describe("Message text (supports Slack mrkdwn formatting)"),
+        username: z.string().optional().describe("Optional display name for this bot message"),
+        icon_emoji: z.string().optional().describe("Optional emoji icon for this bot message"),
+        icon_url: z.string().optional().describe("Optional image URL icon for this bot message"),
+        image_url: z.string().optional().describe("Alias for icon_url"),
+      },
+    },
+    async ({ user_id, text, username, icon_emoji, icon_url, image_url }) => {
+      try {
+        const result = await sendSlackDirectMessage(slack, {
+          userId: user_id,
+          text,
+          username,
+          iconEmoji: icon_emoji,
+          imageUrl: icon_url ?? image_url,
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `DM sent (channel: ${result.channelId}, ts: ${result.ts})`,
+            },
+          ],
+        };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("missing_scope") || msg.includes("not_allowed")) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: "Error: Bot token lacks permission to open or post DMs. Required Slack scopes include im:write and chat:write.",
+              },
+            ],
+          };
+        }
+        throw err;
+      }
     },
   );
 
@@ -243,7 +309,7 @@ function registerTools(server: McpServer) {
         "Returns the worktree path and branch name.",
       inputSchema: {
         thread_id: z.string().describe("Slack thread timestamp (the session key)"),
-        repo: z.string().describe("Repo name as configured in REPOS (e.g. 'gx-backend')"),
+        repo: z.string().describe("Repo name as configured in REPOS"),
         branch: z.string().optional().describe("Branch name override. Defaults to slack/<thread_id>"),
       },
     },
@@ -308,6 +374,364 @@ function registerTools(server: McpServer) {
       };
     },
   );
+
+  server.registerTool(
+    "agent_dispatch",
+    {
+      description:
+        "Internally dispatch a prompt to a registered Junior persistent agent in a Slack thread without posting a Slack !<agent> directive.",
+      inputSchema: {
+        agent_name: z.string().describe("Target persistent agent name, e.g. review, thinker, reproducer"),
+        prompt: z.string().describe("Prompt to send to the agent"),
+        channel_id: z.string().describe("Slack channel ID for the thread context"),
+        thread_ts: z.string().describe("Slack thread timestamp / session key"),
+        user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
+        trigger_ts: z.string().optional().describe("Slack message timestamp that caused the dispatch. Defaults to thread_ts."),
+      },
+    },
+    async ({ agent_name, prompt, channel_id, thread_ts, user_id, trigger_ts }) => {
+      if (!sessionManager) {
+        return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
+      }
+      const targetAgent = agent_name.trim();
+      if (!isPersistentAgent(targetAgent)) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: unknown agent "${targetAgent}". Use agent_search to find registered agents.`,
+            },
+          ],
+        };
+      }
+
+      if (!runContext) {
+        return { content: [{ type: "text" as const, text: "Error: MCP run context missing; cannot authenticate caller" }] };
+      }
+      if (runContext.threadId !== thread_ts || runContext.channel !== channel_id) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Error: dispatch target does not match authenticated MCP run context",
+            },
+          ],
+        };
+      }
+
+      const caller = runContext.agent;
+      const allowed = dispatchableAgentsFor(caller);
+      if (!allowed.includes(targetAgent)) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error: ${caller} is not allowed to dispatch ${targetAgent}. Allowed: ${allowed.join(", ") || "(none)"}.`,
+            },
+          ],
+        };
+      }
+
+      const now = Date.now();
+      await sessionManager.handleAgentMessage(
+        {
+          threadId: thread_ts,
+          channel: channel_id,
+          user: user_id ?? "mcp-internal",
+          text: prompt,
+          ts: trigger_ts ?? thread_ts,
+          command: null,
+          isSelfBot: true,
+          botUsername: AGENT_IDENTITIES[caller]?.username,
+          dedupeKey: `${thread_ts}:mcp:${targetAgent}:${now}`,
+        },
+        targetAgent,
+      );
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ok: true, agent: targetAgent, thread: thread_ts }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "agent_search",
+    {
+      description:
+        "Search Junior agent definitions and show whether each agent is currently registered for !<agent> dispatch.",
+      inputSchema: {
+        query: z.string().optional().describe("Case-insensitive text to match against agent name, filename, or description"),
+        include_public: z.boolean().optional().describe("Include public .claude/agents definitions (default true)"),
+        include_private: z.boolean().optional().describe("Include private agents-org definitions (default true)"),
+        limit: z.number().optional().describe("Maximum results to return (default 25, max 100)"),
+      },
+    },
+    async ({ query, include_public, include_private, limit }) => {
+      const agents = await searchAgentDefinitions({
+        query,
+        includePublic: include_public ?? true,
+        includePrivate: include_private ?? true,
+        limit: Math.min(limit ?? 25, 100),
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ agents }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "reload_agent_registry",
+    {
+      description:
+        "Reload private overlay agent identities from agents-org so newly added !<agent> workers become dispatchable without restarting Junior.",
+      inputSchema: {},
+    },
+    async () => {
+      await loadOverlayIdentities(ORG_AGENTS_DIR);
+      const dispatchable = dispatchableAgentsFor("default").sort();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(
+              {
+                ok: true,
+                privateDir: ORG_AGENTS_DIR,
+                registeredAgents: Object.keys(AGENT_IDENTITIES).sort(),
+                defaultDispatchAllow: dispatchable,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "memory_recall",
+    {
+      description:
+        "Recall sourced associative-memory snippets from Junior's memory database using FTS, tags/entities, and bounded edge traversal.",
+      inputSchema: {
+        query: z.string().optional().describe("Optional full-text query"),
+        tags: z.array(z.string()).optional().describe("Optional normalized or natural tag names"),
+        entities: z.array(z.string()).optional().describe("Optional entity names"),
+        kinds: z.array(z.enum(["event", "lesson", "summary", "fact", "procedure", "routing_memory"])).optional().describe("Optional memory kinds to include"),
+        limit: z.number().optional().describe("Maximum results (default 5)"),
+        depth: z.number().optional().describe("Edge traversal depth 0-3 (default 2)"),
+        include_inactive: z.boolean().optional().describe("Include archived/inactive memories"),
+        include_invalid: z.boolean().optional().describe("Include superseded/stale memories"),
+      },
+    },
+    async ({ query, tags, entities, kinds, limit, depth, include_inactive, include_invalid }) => {
+      return withMemoryStore(async (memory) => {
+        const results = await memory.recall({
+          query,
+          tags,
+          entities,
+          kinds,
+          limit,
+          depth,
+          includeInactive: include_inactive,
+          includeInvalid: include_invalid,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify({ results }, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_consolidate",
+    {
+      description:
+        "Run Junior's deterministic associative-memory consolidation pass: archive cold events, promote repeated routing corrections, and propose draft rules.",
+      inputSchema: {
+        archive_before_ms: z.number().optional().describe("Archive active low-value events older than this age in ms"),
+        low_importance_threshold: z.number().optional().describe("Archive events at or below this importance (default 0.2)"),
+        repeated_correction_threshold: z.number().optional().describe("Corrections required for promotion/rule proposal (default 2)"),
+      },
+    },
+    async ({ archive_before_ms, low_importance_threshold, repeated_correction_threshold }) => {
+      return withMemoryStore(async (memory) => {
+        const result = await memory.consolidate({
+          archiveBeforeMs: archive_before_ms,
+          lowImportanceThreshold: low_importance_threshold,
+          repeatedCorrectionThreshold: repeated_correction_threshold,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_set_rule_status",
+    {
+      description:
+        "Accept or reject a proposed draft ingestion rule. Accepted rules become active in the live capture path.",
+      inputSchema: {
+        id: z.string().describe("Rule ID from a consolidation proposal (e.g., rule_tag_foo)"),
+        status: z.enum(["accepted", "rejected"]).describe("New status for the rule"),
+      },
+    },
+    async ({ id, status }) => {
+      return withMemoryStore(async (memory) => {
+        const ok = await memory.setRuleStatus(id, status);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ [status]: ok, id }, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_accepted_rules",
+    {
+      description:
+        "List all accepted ingestion rules currently active in the live capture path.",
+      inputSchema: {},
+    },
+    async () => {
+      return withMemoryStore(async (memory) => {
+        const rules = await memory.getAcceptedRules();
+        return { content: [{ type: "text" as const, text: JSON.stringify({ rules }, null, 2) }] };
+      });
+    },
+  );
+}
+
+interface SlackDirectMessageClient {
+  conversations: {
+    open: (args: { users: string; return_im: boolean }) => Promise<{ channel?: { id?: string } }>;
+  };
+  chat: {
+    postMessage: (args: any) => Promise<{ ts?: string }>;
+  };
+}
+
+export async function sendSlackDirectMessage(
+  client: SlackDirectMessageClient,
+  options: {
+    userId: string;
+    text: string;
+    username?: string;
+    iconEmoji?: string;
+    imageUrl?: string;
+  },
+): Promise<{ channelId: string; ts: string | undefined }> {
+  const opened = await client.conversations.open({
+    users: options.userId,
+    return_im: true,
+  });
+  const channelId = opened.channel?.id;
+  if (!channelId) {
+    throw new Error(`Slack did not return a DM channel for user ${options.userId}`);
+  }
+
+  const result = await client.chat.postMessage({
+    channel: channelId,
+    text: options.text,
+    ...(options.username ? { username: options.username } : {}),
+    ...(options.iconEmoji ? { icon_emoji: options.iconEmoji } : {}),
+    ...(options.imageUrl && !options.iconEmoji ? { icon_url: options.imageUrl } : {}),
+  });
+
+  return { channelId, ts: result.ts };
+}
+
+async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemoryStore>) => Promise<T>): Promise<T> {
+  const memory = createMemoryStore(MEMORY_DB_PATH);
+  try {
+    return await fn(memory);
+  } finally {
+    memory.close();
+  }
+}
+
+interface SearchAgentDefinitionsOptions {
+  query?: string;
+  includePublic: boolean;
+  includePrivate: boolean;
+  limit: number;
+}
+
+interface AgentSearchResult {
+  name: string;
+  path: string;
+  origin: "private" | "public";
+  description: string | null;
+  registeredForDispatch: boolean;
+  slackIdentity: { username: string; iconEmoji?: string; imageUrl?: string } | null;
+}
+
+export async function searchAgentDefinitions(
+  options: SearchAgentDefinitionsOptions,
+): Promise<AgentSearchResult[]> {
+  const dirs: Array<{ path: string; origin: "private" | "public" }> = [];
+  if (options.includePrivate) dirs.push({ path: ORG_AGENTS_DIR, origin: "private" });
+  if (options.includePublic) dirs.push({ path: FALLBACK_AGENTS_DIR, origin: "public" });
+
+  const query = options.query?.trim().toLowerCase();
+  const results: AgentSearchResult[] = [];
+  const seen = new Set<string>();
+
+  for (const dir of dirs) {
+    const files = await markdownFiles(dir.path);
+    for (const file of files) {
+      const path = `${dir.path}/${file}`;
+      const definition = await loadAgentDefinition(path);
+      const name = definition?.name ?? file.replace(/\.md$/, "");
+      const description = definition?.description ?? null;
+      const haystack = `${name} ${file} ${description ?? ""}`.toLowerCase();
+      if (query && !haystack.includes(query)) continue;
+
+      const key = `${dir.origin}:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const identity = AGENT_IDENTITIES[name];
+      results.push({
+        name,
+        path,
+        origin: dir.origin,
+        description,
+        registeredForDispatch: Boolean(identity),
+        slackIdentity: identity
+          ? {
+              username: identity.username,
+              ...(identity.iconEmoji ? { iconEmoji: identity.iconEmoji } : {}),
+              ...(identity.imageUrl ? { imageUrl: identity.imageUrl } : {}),
+            }
+          : null,
+      });
+
+      if (results.length >= options.limit) return results;
+    }
+  }
+
+  return results;
+}
+
+async function markdownFiles(dirPath: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dirPath, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -317,16 +741,18 @@ export function startMcpServer(
   botToken: string,
   store?: SessionStore,
   wtManager?: WorktreeManager,
+  manager?: SessionManager,
 ): void {
   slack = new WebClient(botToken);
   sessionStore = store;
   worktreeManager = wtManager;
+  sessionManager = manager;
 
   const httpServer = createServer(async (req, res) => {
     // Each request gets its own transport (stateless mode).
     // Tools are registered fresh but share the same WebClient.
     const mcpServer = new McpServer({ name: "slack-bot", version: "0.1.0" });
-    registerTools(mcpServer);
+    registerTools(mcpServer, parseSlackMcpRunContext(req.url));
 
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless

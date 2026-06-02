@@ -4,14 +4,21 @@ import type { SessionManager } from "../session/manager.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { RepoConfig } from "../config.ts";
-import { agentForUsername, isPersistentAgent } from "./agents.ts";
+import type { MemoryStore } from "../memory/store.ts";
+import {
+  agentForUsername,
+  isOrchestratorAgent,
+  isPersistentAgent,
+  workerMayDispatch,
+} from "./agents.ts";
+import {
+  parseAgentDirectives,
+  type AgentDirective,
+} from "./directives.ts";
+import { looksLikePrReviewRequest } from "./pipeline-guard.ts";
 import { log } from "../logger.ts";
 
-export interface AgentDirective {
-  agentName: string;
-  prompt: string;
-  line: string;
-}
+export { parseAgentDirectives, type AgentDirective } from "./directives.ts";
 
 // ---------------------------------------------------------------------------
 // Devserver directive types
@@ -76,27 +83,6 @@ export function parseDevserverDirective(line: string): DevserverDirective | null
   return null;
 }
 
-export function parseAgentDirectives(text: string): AgentDirective[] {
-  const directives: AgentDirective[] = [];
-  const lines = text.split(/\r?\n/);
-
-  for (const line of lines) {
-    const match = line.match(/^!(\S+)(?:\s+(.*))?$/);
-    if (!match) continue;
-
-    const agentName = match[1];
-    if (!isPersistentAgent(agentName)) continue;
-
-    directives.push({
-      agentName,
-      prompt: (match[2] ?? "").trim(),
-      line,
-    });
-  }
-
-  return directives;
-}
-
 /**
  * Universal entry point for Slack messages, used in any channel:
  *
@@ -120,6 +106,7 @@ export class AgentDispatcher {
   private sessionStore: SessionStore | null;
   private slackClient: WebClient | null;
   private repos: RepoConfig[];
+  private memoryStore: MemoryStore | null;
 
   constructor(
     manager: SessionManager,
@@ -129,6 +116,7 @@ export class AgentDispatcher {
       sessionStore?: SessionStore;
       slackClient?: WebClient;
       repos?: RepoConfig[];
+      memoryStore?: MemoryStore;
     } = {},
   ) {
     this.manager = manager;
@@ -137,6 +125,7 @@ export class AgentDispatcher {
     this.sessionStore = opts.sessionStore ?? null;
     this.slackClient = opts.slackClient ?? null;
     this.repos = opts.repos ?? [];
+    this.memoryStore = opts.memoryStore ?? null;
   }
 
   isSupportChannel(channel: string): boolean {
@@ -171,15 +160,16 @@ export class AgentDispatcher {
       : null;
 
     if (directives.length === 0) {
-      // Drop self-bot loops in support channels (lead reading its own posts).
-      // In non-support channels, drop self-bot too — bots shouldn't trigger
+      // Drop self-bot loops: an orchestrator (lead, default Junior) reading
+      // its own no-directive post would spawn a redundant turn. Unknown
+      // self-bots (sourceAgent === null) drop too — they shouldn't trigger
       // new turns on their own posts regardless of channel.
-      if (event.isSelfBot && (sourceAgent === "lead" || sourceAgent === null)) {
+      if (event.isSelfBot && (isOrchestratorAgent(sourceAgent) || sourceAgent === null)) {
         return;
       }
-      // Worker self-bot (non-lead) without directives: forward to lead in
-      // support channels so it can decide next step. In non-support channels
-      // there's no lead — fall through to the regular session manager.
+      // Worker self-bot (non-orchestrator) without directives: forward to lead
+      // in support channels so it can decide next step. In non-support
+      // channels there's no lead — fall through to the regular session manager.
       if (event.isSelfBot && isSupport) {
         await this.manager.handleLeadMessage({
           ...event,
@@ -188,38 +178,75 @@ export class AgentDispatcher {
         return;
       }
       // Human (or non-self-bot) with no directives.
-      if (isSupport) {
+      // Check if thread has a custom default agent set via !agent command.
+      let targetAgent: "lead" | "junior" = isSupport ? "lead" : "junior";
+      if (this.sessionStore) {
+        const session = await this.sessionStore.get(event.threadId);
+        if (session?.defaultAgent) {
+          targetAgent = session.defaultAgent;
+        }
+      }
+
+      if (targetAgent !== "lead" && looksLikePrReviewRequest(event.text)) {
+        await this.manager.handleAgentMessage({
+          ...event,
+          dedupeKey: event.dedupeKey ?? `${event.ts}:review:auto`,
+        }, "review");
+        return;
+      }
+
+      const memoryAgent = await this.memorySuggestedAgent(event);
+      if (memoryAgent && targetAgent !== "lead") {
+        await this.manager.handleAgentMessage({
+          ...event,
+          dedupeKey: event.dedupeKey ?? `${event.ts}:${memoryAgent}:memory`,
+        }, memoryAgent);
+        return;
+      }
+
+      if (targetAgent === "lead") {
         await this.manager.handleLeadMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
         });
       } else {
-        // Non-support channel: generic single-session Claude (no lead identity,
-        // no persistent-agent state block, no orchestrator system prompt).
+        // Junior (default) or non-support channel: generic single-session
+        // Claude (no lead identity, no persistent-agent state block, no
+        // orchestrator system prompt).
         await this.manager.handleMessage(event);
       }
       return;
     }
 
     // Has directives.
-    // In support channels, only lead may emit them; workers/unknown self-bots
-    // get the directives stripped (re-routed to lead as plain text).
-    // In non-support channels there's no lead-only invariant — humans drive.
-    // Self-bot directives in non-support channels are weird (single-session
-    // bots don't typically dispatch); drop them too rather than risk loops.
-    if (event.isSelfBot && sourceAgent !== "lead") {
-      if (isSupport) {
+    // Orchestrators (lead, default Junior) may emit anything; workers may emit
+    // only the dispatches in WORKER_DISPATCH_ALLOW (e.g. thinker → !review).
+    // Other worker directives are stripped and the message re-routes to lead
+    // as plain text so lead can decide what to do with the unauthorised
+    // attempt. Unknown self-bots are treated as workers with no allow-list.
+    // In non-support channels there's no lead to forward to — drop to avoid
+    // loops.
+    let dispatchableDirectives = directives;
+    if (event.isSelfBot && !isOrchestratorAgent(sourceAgent)) {
+      if (!isSupport) {
+        return;
+      }
+      const allowed = directives.filter((d) =>
+        sourceAgent ? workerMayDispatch(sourceAgent, d.agentName) : false,
+      );
+      if (allowed.length === 0) {
         await this.manager.handleLeadMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
         });
+        return;
       }
-      return;
+      dispatchableDirectives = allowed;
     }
 
     // Dispatch each directive (works in any channel).
     const byAgent = new Map<string, Array<{ directive: AgentDirective; index: number }>>();
-    directives.forEach((directive, index) => {
+    dispatchableDirectives.forEach((directive, index) => {
       const entries = byAgent.get(directive.agentName) ?? [];
       entries.push({ directive, index });
       byAgent.set(directive.agentName, entries);
@@ -452,6 +479,31 @@ export class AgentDispatcher {
       log.error("devserver", `postSlack failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  private memorySuggestedAgent = (() => {
+    const AGENTS = ["frontend", "review", "build", "architect", "pm", "reproducer", "thinker"] as const;
+    return async function (this: AgentDispatcher, event: SlackMessageEvent): Promise<string | null> {
+      if (!this.memoryStore || event.command || event.isSelfBot) return null;
+      try {
+        const memories = await this.memoryStore.recall({
+          query: event.text,
+          kinds: ["routing_memory"],
+          tags: ["routing_memory", "routing_decision", "learned_correction"],
+          limit: 5,
+          depth: 1,
+        });
+        for (const memory of memories) {
+          const h = `${memory.title ?? ""} ${memory.body}`.toLowerCase();
+          for (const agent of AGENTS) {
+            if (h.includes(agent) && isPersistentAgent(agent)) return agent;
+          }
+        }
+      } catch (err) {
+        log.warn("memory", `routing recall failed thread=${event.threadId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return null;
+    };
+  })();
 }
 
 // ---------------------------------------------------------------------------
