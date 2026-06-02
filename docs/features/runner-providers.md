@@ -122,7 +122,8 @@ adapter re-discovers it independently:
 - **env contract:** every adapter injects the same Junior/Slack env vars:
   `JUNIOR_SPAWNED`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`,
   `JUNIOR_AGENT_NAME`, optional `JUNIOR_SLACK_USERNAME`,
-  optional `JUNIOR_SLACK_ICON_EMOJI`, and optional `SLACK_BOT_TOKEN`.
+  optional `JUNIOR_SLACK_ICON_EMOJI` or `JUNIOR_SLACK_ICON_URL`, and optional
+  `SLACK_BOT_TOKEN`.
 - **identity contract:** missing `JUNIOR_AGENT_NAME` or identity env vars is a
   silent attribution bug for sub-agent Slack posts.
 

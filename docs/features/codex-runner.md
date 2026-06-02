@@ -18,7 +18,7 @@ We want Junior to be able to run Codex as well, without forking the whole app or
 Junior's Claude-specific behavior lives primarily in `src/claude`:
 
 - `args.ts` builds `claude` flags: `-p`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--resume`, `--append-system-prompt`, `--model`, `--permission-mode`, `--mcp-config`.
-- `spawner.ts` starts `claude`, selects cwd, injects Slack env (`SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`) plus Junior env (`JUNIOR_SPAWNED=1`, `JUNIOR_AGENT_NAME`, identity vars `JUNIOR_SLACK_USERNAME` / `JUNIOR_SLACK_ICON_EMOJI`), parses stdout, captures session ID and final response.
+- `spawner.ts` starts `claude`, selects cwd, injects Slack env (`SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`) plus Junior env (`JUNIOR_SPAWNED=1`, `JUNIOR_AGENT_NAME`, identity vars `JUNIOR_SLACK_USERNAME` plus `JUNIOR_SLACK_ICON_EMOJI` or `JUNIOR_SLACK_ICON_URL`), parses stdout, captures session ID and final response.
 - `parser.ts` parses Claude JSONL events.
 - `types.ts` defines the event model consumed by session lifecycle and Slack formatting.
 
@@ -134,7 +134,7 @@ Then:
 - Update `SessionManager` to depend on a `spawnRunner()` function rather than `spawnClaude()`.
 - Update Slack formatting to consume normalized `RunnerEventTool` and `RunnerEventMessage`.
 - Keep provider-native raw events inside adapter tests, not in app-level types.
-- The Codex spawner must inject the same env vars the Claude spawner does today: `JUNIOR_SPAWNED`, `JUNIOR_AGENT_NAME`, `JUNIOR_SLACK_USERNAME`, `JUNIOR_SLACK_ICON_EMOJI`, plus the Slack trio. Sub-agents read these to attribute Slack posts; missing them is a silent attribution bug.
+- The Codex spawner must inject the same env vars the Claude spawner does today: `JUNIOR_SPAWNED`, `JUNIOR_AGENT_NAME`, `JUNIOR_SLACK_USERNAME`, `JUNIOR_SLACK_ICON_EMOJI` or `JUNIOR_SLACK_ICON_URL`, plus the Slack trio. Sub-agents read these to attribute Slack posts; missing them is a silent attribution bug.
 
 ## MCP Configuration
 
@@ -303,7 +303,7 @@ Spawn Codex non-interactively.
   - `--sandbox workspace-write` for code worktrees, `--sandbox read-only` for review agents.
   - Supports fresh runs and `exec resume <thread_id> <prompt>`.
   - Sets cwd via spawn cwd plus `-C`.
-  - Injects `JUNIOR_SPAWNED`, `JUNIOR_AGENT_NAME`, `JUNIOR_SLACK_USERNAME`, `JUNIOR_SLACK_ICON_EMOJI`, `SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`.
+  - Injects `JUNIOR_SPAWNED`, `JUNIOR_AGENT_NAME`, `JUNIOR_SLACK_USERNAME`, `JUNIOR_SLACK_ICON_EMOJI` or `JUNIOR_SLACK_ICON_URL`, `SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`.
   - Honors the `session.cwd` override → no MCP injection (matches Claude carve-out).
   - Captures stderr and non-zero exits like Claude.
 

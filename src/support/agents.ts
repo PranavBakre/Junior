@@ -11,9 +11,9 @@ import type { AgentIdentity } from "../session/types.ts";
  * of the contract any fork of junior inherits.
  *
  * Private / org-specific workers (e.g. an org-specific worker) register
- * their identities via `username` + `iconEmoji` frontmatter on their `.md`
- * files, loaded at startup by `loadOverlayIdentities` from the org overlay
- * directory. This keeps the public repo free of org-specific names.
+ * their identities via `username` + `iconEmoji` or `imageUrl` frontmatter on
+ * their `.md` files, loaded at startup by `loadOverlayIdentities` from the org
+ * overlay directory. This keeps the public repo free of org-specific names.
  */
 export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   // Default Junior — the bot's main face, responds to @mentions in any channel.
@@ -54,11 +54,11 @@ export function registerAgentIdentity(
 
 /**
  * Scan a directory of agent `.md` files (typically the org overlay at
- * `agents-org/`) and register slack identities for any agent that
- * declares both `username` and `iconEmoji` in its frontmatter. Files
- * without those fields are skipped silently — agents are free to declare
- * just a prompt without a slack identity (e.g. they only run as Task-tool
- * sub-agents and never post to slack).
+ * `agents-org/`) and register slack identities for any agent that declares
+ * `username` plus either `iconEmoji` or `imageUrl` in its frontmatter. Files
+ * without those fields are skipped silently — agents are free to declare just
+ * a prompt without a slack identity (e.g. they only run as Task-tool sub-agents
+ * and never post to slack).
  *
  * Idempotent: re-running won't double-register. Call once at startup before
  * any session spawns; the registry is read at call-time by every consumer
@@ -75,7 +75,7 @@ export async function loadOverlayIdentities(dirPath: string): Promise<void> {
       const def = await loadAgentDefinition(`${dirPath}/${entry}`);
       if (!def) continue;
       const hasUsername = !!def.username;
-      const hasIcon = !!def.iconEmoji;
+      const hasIcon = !!def.iconEmoji || !!def.imageUrl;
       // Genuine "no slack identity declared" — fine. Many overlay files are
       // pure prompt with no slack-posting role (Task-tool sub-agents, etc.).
       if (!hasUsername && !hasIcon) continue;
@@ -85,20 +85,21 @@ export async function loadOverlayIdentities(dirPath: string): Promise<void> {
       if (!hasUsername || !hasIcon) {
         log.warn(
           "agents",
-          `loadOverlayIdentities: ${entry} declares ${hasUsername ? "username" : "iconEmoji"} but not ${hasUsername ? "iconEmoji" : "username"} — both fields are required; skipping`,
+          `loadOverlayIdentities: ${entry} declares ${hasUsername ? "username" : "iconEmoji/imageUrl"} but not ${hasUsername ? "iconEmoji/imageUrl" : "username"} — username plus iconEmoji or imageUrl is required; skipping`,
         );
         continue;
       }
       if (!def.name) {
         log.warn(
           "agents",
-          `loadOverlayIdentities: ${entry} declares username + iconEmoji but no name — skipping; add a 'name:' field in frontmatter`,
+          `loadOverlayIdentities: ${entry} declares username + iconEmoji/imageUrl but no name — skipping; add a 'name:' field in frontmatter`,
         );
         continue;
       }
       registerAgentIdentity(def.name, {
         username: def.username!,
-        iconEmoji: def.iconEmoji!,
+        ...(def.iconEmoji ? { iconEmoji: def.iconEmoji } : {}),
+        ...(def.imageUrl ? { imageUrl: def.imageUrl } : {}),
       });
     }
   } catch (err) {
