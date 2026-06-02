@@ -66,7 +66,7 @@ Handled by `AgentDispatcher`, not by spawning Claude. `acquire` calls `DevServer
 
 ### Overlay identities
 
-Private/org agents register slack identities via frontmatter (`username:` + `iconEmoji:`) in `agents-org/*.md`. Loaded at startup by `loadOverlayIdentities`. Core identities can't be overwritten — overlay can only add new names.
+Private/org agents register slack identities via frontmatter (`username:` + `iconEmoji:` or `imageUrl:`) in `agents-org/*.md`. Loaded at startup by `loadOverlayIdentities`. Core identities can't be overwritten — overlay can only add new names.
 
 ## Dependencies
 

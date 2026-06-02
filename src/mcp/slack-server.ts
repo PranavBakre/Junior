@@ -50,18 +50,23 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         reply_broadcast: z.boolean().optional().describe("Also post to the channel (for thread replies)"),
         username: z.string().optional().describe("Optional display name for this bot message"),
         icon_emoji: z.string().optional().describe("Optional emoji icon for this bot message"),
+        icon_url: z.string().optional().describe("Optional image URL icon for this bot message"),
+        image_url: z.string().optional().describe("Alias for icon_url"),
       },
     },
-    async ({ text, channel_id, thread_ts, reply_broadcast, username, icon_emoji }) => {
+    async ({ text, channel_id, thread_ts, reply_broadcast, username, icon_emoji, icon_url, image_url }) => {
+      const resolvedIconUrl = icon_url ?? image_url;
       const identity = {
         ...(username ? { username } : {}),
         ...(icon_emoji ? { icon_emoji } : {}),
+        ...(resolvedIconUrl && !icon_emoji ? { icon_url: resolvedIconUrl } : {}),
       };
-      const result = reply_broadcast && thread_ts
-        ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, reply_broadcast: true, ...identity })
+      const message = reply_broadcast && thread_ts
+        ? { channel: channel_id, text, thread_ts, reply_broadcast: true, ...identity }
         : thread_ts
-          ? await slack.chat.postMessage({ channel: channel_id, text, thread_ts, ...identity })
-          : await slack.chat.postMessage({ channel: channel_id, text, ...identity });
+          ? { channel: channel_id, text, thread_ts, ...identity }
+          : { channel: channel_id, text, ...identity };
+      const result = await slack.chat.postMessage(message as Parameters<typeof slack.chat.postMessage>[0]);
       return {
         content: [{ type: "text" as const, text: `Message sent (ts: ${result.ts})` }],
       };
@@ -77,15 +82,18 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         text: z.string().describe("Message text (supports Slack mrkdwn formatting)"),
         username: z.string().optional().describe("Optional display name for this bot message"),
         icon_emoji: z.string().optional().describe("Optional emoji icon for this bot message"),
+        icon_url: z.string().optional().describe("Optional image URL icon for this bot message"),
+        image_url: z.string().optional().describe("Alias for icon_url"),
       },
     },
-    async ({ user_id, text, username, icon_emoji }) => {
+    async ({ user_id, text, username, icon_emoji, icon_url, image_url }) => {
       try {
         const result = await sendSlackDirectMessage(slack, {
           userId: user_id,
           text,
           username,
           iconEmoji: icon_emoji,
+          imageUrl: icon_url ?? image_url,
         });
         return {
           content: [
@@ -607,12 +615,7 @@ interface SlackDirectMessageClient {
     open: (args: { users: string; return_im: boolean }) => Promise<{ channel?: { id?: string } }>;
   };
   chat: {
-    postMessage: (args: {
-      channel: string;
-      text: string;
-      username?: string;
-      icon_emoji?: string;
-    }) => Promise<{ ts?: string }>;
+    postMessage: (args: any) => Promise<{ ts?: string }>;
   };
 }
 
@@ -623,6 +626,7 @@ export async function sendSlackDirectMessage(
     text: string;
     username?: string;
     iconEmoji?: string;
+    imageUrl?: string;
   },
 ): Promise<{ channelId: string; ts: string | undefined }> {
   const opened = await client.conversations.open({
@@ -639,6 +643,7 @@ export async function sendSlackDirectMessage(
     text: options.text,
     ...(options.username ? { username: options.username } : {}),
     ...(options.iconEmoji ? { icon_emoji: options.iconEmoji } : {}),
+    ...(options.imageUrl && !options.iconEmoji ? { icon_url: options.imageUrl } : {}),
   });
 
   return { channelId, ts: result.ts };
@@ -666,7 +671,7 @@ interface AgentSearchResult {
   origin: "private" | "public";
   description: string | null;
   registeredForDispatch: boolean;
-  slackIdentity: { username: string; iconEmoji?: string } | null;
+  slackIdentity: { username: string; iconEmoji?: string; imageUrl?: string } | null;
 }
 
 export async function searchAgentDefinitions(
@@ -705,6 +710,7 @@ export async function searchAgentDefinitions(
           ? {
               username: identity.username,
               ...(identity.iconEmoji ? { iconEmoji: identity.iconEmoji } : {}),
+              ...(identity.imageUrl ? { imageUrl: identity.imageUrl } : {}),
             }
           : null,
       });

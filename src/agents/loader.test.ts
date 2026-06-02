@@ -84,13 +84,14 @@ body`);
     }
   });
 
-  it("parses optional username + iconEmoji frontmatter fields", async () => {
+  it("parses optional username + iconEmoji/imageUrl frontmatter fields", async () => {
     const tmpPath = path.join(import.meta.dir, "__test_identity_fm.md");
     const content = `---
 name: example-worker
 description: Test
 username: Examplor
 iconEmoji: ":wave:"
+imageUrl: "https://example.com/icon.png"
 ---
 
 body`;
@@ -101,6 +102,7 @@ body`;
       expect(def).not.toBeNull();
       expect(def!.username).toBe("Examplor");
       expect(def!.iconEmoji).toBe(":wave:");
+      expect(def!.imageUrl).toBe("https://example.com/icon.png");
     } finally {
       const fs = await import("node:fs/promises");
       await fs.unlink(tmpPath).catch(() => {});

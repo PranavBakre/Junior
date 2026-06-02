@@ -59,12 +59,14 @@ export interface AgentDefinition {
   permissions: AgentPermissions;
   /**
    * Optional slack identity declared in frontmatter. Lets private/overlay
-   * agents register their visual identity (username + emoji) without
-   * touching the public AGENT_IDENTITIES literal. Both fields must be
-   * present to take effect; a partial declaration is ignored.
+   * agents register their visual identity (username + emoji/image URL)
+   * without touching the public AGENT_IDENTITIES literal. Username plus at
+   * least one visual field must be present to take effect; a partial
+   * declaration is ignored.
    */
   username: string | null;
   iconEmoji: string | null;
+  imageUrl: string | null;
 }
 
 export async function loadAgentDefinition(
@@ -88,6 +90,7 @@ export async function loadAgentDefinition(
     permissions: readAgentPermissions(frontmatter),
     username: frontmatter["username"] ?? null,
     iconEmoji: frontmatter["iconEmoji"] ?? null,
+    imageUrl: frontmatter["imageUrl"] ?? frontmatter["iconUrl"] ?? null,
   };
 }
 

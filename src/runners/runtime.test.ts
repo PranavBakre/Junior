@@ -82,7 +82,20 @@ describe("runner runtime", () => {
     expect(env.JUNIOR_AGENT_NAME).toBe("reviewer");
     expect(env.JUNIOR_SLACK_USERNAME).toBe("Reviewer");
     expect(env.JUNIOR_SLACK_ICON_EMOJI).toBe(":eyes:");
+    expect(env.JUNIOR_SLACK_ICON_URL).toBeUndefined();
     expect(env.SLACK_BOT_TOKEN).toBe("xoxb-test");
+  });
+
+  it("sets JUNIOR_SLACK_ICON_URL for image URL identities", () => {
+    const env = buildRunnerEnv(
+      makeSession({ activeAgentName: "github-access" }),
+      "xoxb-test",
+      { username: "GitHub Access", imageUrl: "https://example.com/icon.png" },
+    );
+
+    expect(env.JUNIOR_SLACK_USERNAME).toBe("GitHub Access");
+    expect(env.JUNIOR_SLACK_ICON_URL).toBe("https://example.com/icon.png");
+    expect(env.JUNIOR_SLACK_ICON_EMOJI).toBeUndefined();
   });
 
   it("omits JUNIOR_SLACK_ICON_EMOJI when identity has no iconEmoji (default agent)", () => {
@@ -99,8 +112,10 @@ describe("runner runtime", () => {
   it("clears inherited Junior Slack identity env when not explicitly set", () => {
     const previousUsername = process.env.JUNIOR_SLACK_USERNAME;
     const previousIcon = process.env.JUNIOR_SLACK_ICON_EMOJI;
+    const previousIconUrl = process.env.JUNIOR_SLACK_ICON_URL;
     process.env.JUNIOR_SLACK_USERNAME = "Stale Agent";
     process.env.JUNIOR_SLACK_ICON_EMOJI = ":face_with_cowboy_hat:";
+    process.env.JUNIOR_SLACK_ICON_URL = "https://example.com/stale.png";
 
     try {
       const defaultEnv = buildRunnerEnv(
@@ -110,6 +125,7 @@ describe("runner runtime", () => {
       );
       expect(defaultEnv.JUNIOR_SLACK_USERNAME).toBe("Junior");
       expect(defaultEnv.JUNIOR_SLACK_ICON_EMOJI).toBeUndefined();
+      expect(defaultEnv.JUNIOR_SLACK_ICON_URL).toBeUndefined();
 
       const noIdentityEnv = buildRunnerEnv(
         makeSession({ activeAgentName: "lead" }),
@@ -117,6 +133,7 @@ describe("runner runtime", () => {
       );
       expect(noIdentityEnv.JUNIOR_SLACK_USERNAME).toBeUndefined();
       expect(noIdentityEnv.JUNIOR_SLACK_ICON_EMOJI).toBeUndefined();
+      expect(noIdentityEnv.JUNIOR_SLACK_ICON_URL).toBeUndefined();
     } finally {
       if (previousUsername === undefined) {
         delete process.env.JUNIOR_SLACK_USERNAME;
@@ -127,6 +144,11 @@ describe("runner runtime", () => {
         delete process.env.JUNIOR_SLACK_ICON_EMOJI;
       } else {
         process.env.JUNIOR_SLACK_ICON_EMOJI = previousIcon;
+      }
+      if (previousIconUrl === undefined) {
+        delete process.env.JUNIOR_SLACK_ICON_URL;
+      } else {
+        process.env.JUNIOR_SLACK_ICON_URL = previousIconUrl;
       }
     }
   });

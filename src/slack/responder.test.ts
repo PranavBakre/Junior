@@ -24,6 +24,7 @@ function mockApp(stubs?: {
       text: string;
       username?: string;
       icon_emoji?: string;
+      icon_url?: string;
     }>;
     delete: Array<{ channel: string; ts: string }>;
     update: Array<{ channel: string; ts: string; text: string }>;
@@ -460,6 +461,23 @@ describe("SlackResponder", () => {
 
       expect(calls.postMessage).toHaveLength(1);
       expect(calls.postMessage[0].username).toBe("Junior");
+      expect(calls.postMessage[0].icon_emoji).toBeUndefined();
+    });
+
+    it("includes icon_url when identity has imageUrl set", async () => {
+      const { app, calls } = mockApp();
+      const responder = new SlackResponder(app);
+
+      await responder.postResponse(
+        "C123",
+        "1234567890.123456",
+        "Hello!",
+        { username: "GitHub Access", imageUrl: "https://example.com/icon.png" },
+      );
+
+      expect(calls.postMessage).toHaveLength(1);
+      expect(calls.postMessage[0].username).toBe("GitHub Access");
+      expect(calls.postMessage[0].icon_url).toBe("https://example.com/icon.png");
       expect(calls.postMessage[0].icon_emoji).toBeUndefined();
     });
   });
