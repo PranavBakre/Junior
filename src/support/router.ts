@@ -4,7 +4,6 @@ import type { SessionManager } from "../session/manager.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { RepoConfig } from "../config.ts";
-import type { MemoryStore } from "../memory/store.ts";
 import {
   agentForUsername,
   isOrchestratorAgent,
@@ -106,7 +105,6 @@ export class AgentDispatcher {
   private sessionStore: SessionStore | null;
   private slackClient: WebClient | null;
   private repos: RepoConfig[];
-  private memoryStore: MemoryStore | null;
 
   constructor(
     manager: SessionManager,
@@ -116,7 +114,6 @@ export class AgentDispatcher {
       sessionStore?: SessionStore;
       slackClient?: WebClient;
       repos?: RepoConfig[];
-      memoryStore?: MemoryStore;
     } = {},
   ) {
     this.manager = manager;
@@ -125,7 +122,6 @@ export class AgentDispatcher {
     this.sessionStore = opts.sessionStore ?? null;
     this.slackClient = opts.slackClient ?? null;
     this.repos = opts.repos ?? [];
-    this.memoryStore = opts.memoryStore ?? null;
   }
 
   isSupportChannel(channel: string): boolean {
@@ -192,15 +188,6 @@ export class AgentDispatcher {
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:review:auto`,
         }, "review");
-        return;
-      }
-
-      const memoryAgent = await this.memorySuggestedAgent(event);
-      if (memoryAgent && targetAgent !== "lead") {
-        await this.manager.handleAgentMessage({
-          ...event,
-          dedupeKey: event.dedupeKey ?? `${event.ts}:${memoryAgent}:memory`,
-        }, memoryAgent);
         return;
       }
 
@@ -480,30 +467,6 @@ export class AgentDispatcher {
     }
   }
 
-  private memorySuggestedAgent = (() => {
-    const AGENTS = ["frontend", "review", "build", "architect", "pm", "reproducer", "thinker"] as const;
-    return async function (this: AgentDispatcher, event: SlackMessageEvent): Promise<string | null> {
-      if (!this.memoryStore || event.command || event.isSelfBot) return null;
-      try {
-        const memories = await this.memoryStore.recall({
-          query: event.text,
-          kinds: ["routing_memory"],
-          tags: ["routing_memory", "routing_decision", "learned_correction"],
-          limit: 5,
-          depth: 1,
-        });
-        for (const memory of memories) {
-          const h = `${memory.title ?? ""} ${memory.body}`.toLowerCase();
-          for (const agent of AGENTS) {
-            if (h.includes(agent) && isPersistentAgent(agent)) return agent;
-          }
-        }
-      } catch (err) {
-        log.warn("memory", `routing recall failed thread=${event.threadId}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      return null;
-    };
-  })();
 }
 
 // ---------------------------------------------------------------------------

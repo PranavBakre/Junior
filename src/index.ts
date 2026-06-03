@@ -75,7 +75,6 @@ const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
   sessionStore: store,
   slackClient: app.client,
   repos: config.repos,
-  memoryStore,
 });
 const workflowRegistry = new WorkflowRegistry({
   repos: config.repos,
