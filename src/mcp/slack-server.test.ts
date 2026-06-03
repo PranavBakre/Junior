@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { searchAgentDefinitions, sendSlackDirectMessage } from "./slack-server.ts";
+import {
+  dispatchAgentDirectivesFromSlackPost,
+  searchAgentDefinitions,
+  sendSlackDirectMessage,
+} from "./slack-server.ts";
 
 describe("MCP agent search", () => {
   it("finds public agent definitions", async () => {
@@ -71,5 +75,52 @@ describe("MCP Slack DM helper", () => {
         },
       ],
     ]);
+  });
+});
+
+describe("MCP Slack agent directive interception", () => {
+  it("ignores normal Slack post text", async () => {
+    await expect(
+      dispatchAgentDirectivesFromSlackPost({
+        text: "normal update",
+        channelId: "C123",
+        threadTs: "111.222",
+        runContext: { agent: "default", channel: "C123", threadId: "111.222" },
+        manager: { handleAgentMessage: async () => undefined },
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("dispatches pure persistent-agent directives instead of posting them", async () => {
+    const calls: unknown[] = [];
+
+    const result = await dispatchAgentDirectivesFromSlackPost({
+      text: "!review review https://github.com/GrowthX-Club/gx-backend/pull/3199 again",
+      channelId: "C123",
+      threadTs: "111.222",
+      runContext: { agent: "default", channel: "C123", threadId: "111.222" },
+      manager: {
+        handleAgentMessage: async (event, agentName) => {
+          calls.push({ event, agentName });
+        },
+      },
+    });
+
+    expect(JSON.parse(result ?? "{}")).toMatchObject({
+      ok: true,
+      dispatched: ["review"],
+      thread: "111.222",
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      agentName: "review",
+      event: {
+        threadId: "111.222",
+        channel: "C123",
+        text: "review https://github.com/GrowthX-Club/gx-backend/pull/3199 again",
+        isSelfBot: true,
+        botUsername: "Junior",
+      },
+    });
   });
 });
