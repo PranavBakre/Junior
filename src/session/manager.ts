@@ -1577,23 +1577,20 @@ export class SessionManager {
       }
     }
 
-    if (result.response && isDuplicateSlackToolResponse(result.response, result.events)) {
-      _log.info(
-        "response",
-        `thread=${fresh.threadId} agent=${agentName} suppressed reason=duplicate-slack-tool-post`,
+    if (result.response) {
+      internalDispatchDirectives = this.allowedInternalDirectivesForResponse(
+        agentName,
+        result.response,
       );
-    } else if (result.response) {
-      const parsedDirectives = parsePureAgentDirectiveResponse(result.response);
-      const allowedAgents = new Set(dispatchableAgentsFor(agentName));
-      internalDispatchDirectives = parsedDirectives.every((directive) =>
-        allowedAgents.has(directive.agentName)
-      )
-        ? parsedDirectives
-        : [];
       if (internalDispatchDirectives.length > 0) {
         _log.info(
           "dispatch",
           `thread=${fresh.threadId} agent=${agentName} internalized directives=${internalDispatchDirectives.map((d) => d.agentName).join(",")}`,
+        );
+      } else if (isDuplicateSlackToolResponse(result.response, result.events)) {
+        _log.info(
+          "response",
+          `thread=${fresh.threadId} agent=${agentName} suppressed reason=duplicate-slack-tool-post`,
         );
       } else {
         this.onResponse?.(
@@ -1659,6 +1656,21 @@ export class SessionManager {
         internalDispatchDirectives,
       );
     }
+  }
+
+  private allowedInternalDirectivesForResponse(
+    sourceAgentName: string,
+    response: string,
+  ): AgentDirective[] {
+    const parsedDirectives = parsePureAgentDirectiveResponse(response);
+    if (parsedDirectives.length === 0) return [];
+
+    const allowedAgents = new Set(dispatchableAgentsFor(sourceAgentName));
+    return parsedDirectives.every((directive) =>
+      allowedAgents.has(directive.agentName)
+    )
+      ? parsedDirectives
+      : [];
   }
 
   private async dispatchInternalAgentDirectives(

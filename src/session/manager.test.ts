@@ -579,9 +579,13 @@ describe("SessionManager", () => {
     expect(responses).toEqual(["Here is the answer"]);
   });
 
-  it("suppresses final response that duplicates a Slack MCP post", async () => {
+  it("internalizes duplicated Slack MCP persistent-agent directive posts", async () => {
     const responses: string[] = [];
     manager.onResponse = (_session, response) => responses.push(response);
+
+    const reviewHandle = createMockHandle();
+    const handles = [currentHandle, reviewHandle];
+    mockSpawnFn = mock(() => handles.shift() ?? createMockHandle()) as ReturnType<typeof mock<SpawnRunnerFn>>;
 
     await manager.handleMessage(makeEvent({ text: "dispatch review" }));
     currentHandle._complete("!review check PR 123", undefined, [
@@ -594,11 +598,13 @@ describe("SessionManager", () => {
       },
     ]);
 
-    await new Promise((r) => setTimeout(r, 10));
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
 
     const session = await store.get("thread-1");
-    expect(session!.status).toBe("idle");
     expect(responses).toEqual([]);
+    expect(mockSpawnFn.mock.calls[1][1]).toContain("check PR 123");
+    expect(session!.status).toBe("idle");
+    expect(session!.agentSessions.review.status).toBe("busy");
   });
 
   it("continues lead instead of posting leaked observability worker output", async () => {
