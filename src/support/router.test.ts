@@ -2,7 +2,6 @@ import { describe, expect, it, mock } from "bun:test";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { SessionManager } from "../session/manager.ts";
 import { parseAgentDirectives, parseDevserverDirective, AgentDispatcher } from "./router.ts";
-import type { MemoryStore } from "../memory/store.ts";
 
 function makeEvent(overrides: Partial<SlackMessageEvent> = {}): SlackMessageEvent {
   return {
@@ -366,39 +365,75 @@ describe("AgentDispatcher", () => {
     );
   });
 
-  it("uses routing memory body even when the memory has a title", async () => {
+  it("routes member onboarding-shaped prose to default", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const router = new AgentDispatcher(
+      managerMock as unknown as SessionManager,
+      new Set(["CBUGS"]),
+    );
+
+    await router.handleMessage(
+      makeEvent({
+        channel: "CTECH",
+        text: "<@U_BOT> onboard this member please _id: 6a1fa532c8ac89ad1eee54a6",
+      }),
+    );
+
+    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleLeadMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+  });
+
+  it("routes ordinary prose to default instead of memory-selected workers", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
     const memoryStore = {
-      recall: mock(async () => [
-        {
-          id: "routing-1",
-          kind: "routing_memory",
-          title: "Learned routing memory",
-          body: "Send pull request review requests to review.",
-          outcome: null,
-          score: 1,
-          reasons: [],
-          sourceIds: [],
-        },
-      ]),
-    } as unknown as MemoryStore;
+      recall: mock(async () => {
+        throw new Error("routing memory should not be consulted");
+      }),
+    };
     const router = new AgentDispatcher(
       managerMock as unknown as SessionManager,
       new Set(),
-      { memoryStore },
+      { memoryStore: memoryStore as never },
     );
 
     await router.handleMessage(makeEvent({ channel: "C_GENERAL", text: "please look at this PR" }));
 
-    expect(managerMock.handleAgentMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ dedupeKey: "123.456:review:memory" }),
-      "review",
+    expect(memoryStore.recall).not.toHaveBeenCalled();
+    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not use routing memory for mention-only pings", async () => {
+    const managerMock = {
+      handleMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
+      handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
+    };
+    const memoryStore = {
+      recall: mock(async () => {
+        throw new Error("routing memory should not be consulted");
+      }),
+    };
+    const router = new AgentDispatcher(
+      managerMock as unknown as SessionManager,
+      new Set(),
+      { memoryStore: memoryStore as never },
     );
-    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+
+    await router.handleMessage(makeEvent({ channel: "CTECH", text: "<@U0ABKQ4V065>" }));
+
+    expect(memoryStore.recall).not.toHaveBeenCalled();
+    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
+    expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 
   it("drops self-bot posts with unknown username (no usable identity)", async () => {
