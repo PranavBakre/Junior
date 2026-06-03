@@ -217,7 +217,7 @@ export class SessionManager {
         await this.store.set(event.threadId, session);
         this.onCommandResponse?.(
           event,
-          "Looks like a side conversation. I'll stay out — `@` me or `!listen` to bring me back.",
+          "Two people are interacting here, so I’ll stop replying. @ me or use !listen to bring me back.",
         );
         return true;
       }
