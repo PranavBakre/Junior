@@ -1916,7 +1916,7 @@ describe("SessionManager", () => {
       expect(after.humanParticipants).toContain("U-A");
       expect(after.humanParticipants).toContain("U-B");
       expect(responses.length).toBe(1);
-      expect(responses[0]).toContain("side conversation");
+      expect(responses[0]).toBe("Two people are interacting here, so I’ll stop replying. @ me or use !listen to bring me back.");
     });
 
     it("does not trigger when there is only one human participant", async () => {
