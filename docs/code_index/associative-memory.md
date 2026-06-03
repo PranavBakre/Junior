@@ -13,7 +13,7 @@
 - `src/memory/ingestion.test.ts` — Tests for live Slack message capture, routing decision capture, and runner result capture.
 - `src/mcp/slack-server.ts` — Exposes `memory_recall` and `memory_consolidate` MCP tools for normal Junior runner sessions.
 - `src/session/manager.ts` — Wires `MemoryIngestor` into live Slack hot path: captures incoming messages, routing decisions, and runner completions via `captureSlackMemory` / `captureRunnerMemory`.
-- `src/support/router.ts` — `AgentDispatcher.memorySuggestedAgent`: recalls routing-memory facts to suggest a persistent agent (e.g., `!build`, `!frontend`) for human messages without explicit directives.
+- `src/support/router.ts` — `AgentDispatcher` records routing decisions through `SessionManager`, but ordinary prose without explicit directives falls through to default/lead routing; memory no longer selects worker agents.
 - `src/workflows/executor.ts` — Runs memory consolidation natively via `MemoryStore` when a workflow is named `memory-consolidation`, bypassing the runner spawn.
 - `src/http/routes/memory.ts` — Dashboard HTTP routes for `GET /api/memory/recall` and `POST /api/memory/consolidate`.
 - `workflows/memory-consolidation.workflow.md` — Operator-triggered workflow shell for the offline V2 consolidation/dreaming pass.
@@ -41,10 +41,10 @@ consolidate()
 CLI / MCP / HTTP / workflow
   -> recall and consolidation are available to workflows/runners without direct DB edits
   -> workflow executor runs memory-consolidation natively through MemoryStore
-memory-suggested routing
-  -> AgentDispatcher calls MemoryStore.recall(routing_memory) for unmatched messages
-  -> top-k routing-memory haystack checked for persistent-agent name mentions
-  -> if matched, dispatches to that agent (e.g., review, build, frontend)
+router decisions
+  -> AgentDispatcher handles explicit !agent / !devserver directives and hard-coded PR-link review requests
+  -> ordinary prose falls through to default Junior or lead based on channel/session defaults
+  -> SessionManager captures the selected route as memory after dispatch; memory does not choose the route
 ```
 
 ## Current scope

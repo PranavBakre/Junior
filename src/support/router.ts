@@ -4,7 +4,6 @@ import type { SessionManager } from "../session/manager.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { RepoConfig } from "../config.ts";
-import type { MemoryStore } from "../memory/store.ts";
 import {
   agentForUsername,
   isOrchestratorAgent,
@@ -115,7 +114,6 @@ export class AgentDispatcher {
       sessionStore?: SessionStore;
       slackClient?: WebClient;
       repos?: RepoConfig[];
-      memoryStore?: MemoryStore;
     } = {},
   ) {
     this.manager = manager;

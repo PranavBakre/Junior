@@ -394,20 +394,13 @@ describe("AgentDispatcher", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const memoryStore = {
-      recall: mock(async () => {
-        throw new Error("routing memory should not be consulted");
-      }),
-    };
     const router = new AgentDispatcher(
       managerMock as unknown as SessionManager,
       new Set(),
-      { memoryStore: memoryStore as never },
     );
 
     await router.handleMessage(makeEvent({ channel: "C_GENERAL", text: "please look at this PR" }));
 
-    expect(memoryStore.recall).not.toHaveBeenCalled();
     expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
@@ -418,20 +411,13 @@ describe("AgentDispatcher", () => {
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleAgentMessage: mock(async (_event: SlackMessageEvent, _agent: string) => {}),
     };
-    const memoryStore = {
-      recall: mock(async () => {
-        throw new Error("routing memory should not be consulted");
-      }),
-    };
     const router = new AgentDispatcher(
       managerMock as unknown as SessionManager,
       new Set(),
-      { memoryStore: memoryStore as never },
     );
 
     await router.handleMessage(makeEvent({ channel: "CTECH", text: "<@U0ABKQ4V065>" }));
 
-    expect(memoryStore.recall).not.toHaveBeenCalled();
     expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
