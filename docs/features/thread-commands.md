@@ -124,7 +124,7 @@ The problem this solves: a thread that started with Junior often turns into a hu
 - `!aside [text]` — drop the current message before it reaches any agent. React with 👀 so the user knows it landed; do not spawn Claude. Anyone in the thread. Cheap, no state change.
 
 - **Auto-dormant trigger** — when a human posts a message that does NOT @mention Junior AND at least one other human has already posted in the thread, set `session.dormant = true`, post a single notice to the thread:
-  > Looks like a side conversation. I'll stay out — `@` me or `!listen` to bring me back.
+  > Two people are interacting here, so I’ll stop replying. @ me or use !listen to bring me back.
 
   After that, drop every message in the thread except:
     - `!listen` (wake)
