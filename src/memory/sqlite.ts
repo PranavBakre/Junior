@@ -485,7 +485,6 @@ export class SqliteMemoryStore implements MemoryStore {
           negative_example_ids_json, precision, recall, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
-          status = excluded.status,
           domain = excluded.domain,
           rule_text = excluded.rule_text,
           positive_example_ids_json = excluded.positive_example_ids_json,

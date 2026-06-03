@@ -461,6 +461,31 @@ describe("SqliteMemoryStore", () => {
     expect(await store.getAcceptedRules()).toEqual([]);
   });
 
+  it("does not demote accepted rules when consolidation re-proposes the same rule", async () => {
+    const now = Date.now();
+    await store.logCorrection({
+      eventId: "event-c",
+      field: "tag",
+      correctValue: "frontend",
+      correctedBy: "user",
+      createdAt: now - 1,
+    });
+    await store.logCorrection({
+      eventId: "event-d",
+      field: "tag",
+      correctValue: "frontend",
+      correctedBy: "user",
+      createdAt: now,
+    });
+
+    await store.consolidate({ now, repeatedCorrectionThreshold: 2 });
+    expect(await store.setRuleStatus("rule_tag_frontend", "accepted")).toBe(true);
+
+    await store.consolidate({ now: now + 1, repeatedCorrectionThreshold: 2 });
+
+    expect((await store.getAcceptedRules()).map((rule) => rule.id)).toContain("rule_tag_frontend");
+  });
+
   it("ranks actionable derived memories above raw event matches", async () => {
     const now = Date.now();
     await store.appendSourceRecord({ id: "source-merge", kind: "slack_message", body: "can we merge now", createdAt: now });
