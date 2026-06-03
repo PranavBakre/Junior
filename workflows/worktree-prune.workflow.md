@@ -32,8 +32,8 @@ Use the runtime context as the source of truth for repositories and their absolu
 
 1. Establish the protected primary checkout and default branch.
    - Use the repo path from runtime context as the primary checkout. Never delete or move this directory.
-   - Fetch the configured default base from the remote with pruning. Prefer `repo.defaultBase`, then `main`, then `master`.
-   - Resolve the base ref to the freshest available ref, preferring `origin/<base>`, then the local branch.
+   - Normalize `repo.defaultBase` before fetching or resolving it. If it starts with `origin/`, treat that full value as the preferred base ref and fetch only its branch part from the remote, e.g. `origin/main` means fetch `main`. Otherwise prefer `origin/<base>`, then the local `<base>` branch.
+   - If `repo.defaultBase` is missing, try `main` and then `master` with the same remote-first resolution. Never construct refs like `origin/origin/main`.
 2. Enumerate worktrees with `git worktree list --porcelain` from the primary checkout.
    - Run `git worktree prune` first to remove stale metadata for already-missing paths.
    - Skip the primary checkout.
