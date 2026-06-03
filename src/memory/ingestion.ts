@@ -92,7 +92,7 @@ export class MemoryIngestor {
     const body = result.error
       ? `Runner ${agentName} failed: ${result.error}`
       : (result.response.trim() || `Runner ${agentName} completed with no text response.`);
-    const sourceId = sourceIdFor("runner", threadId, String(now), agentName);
+    const sourceId = sourceIdFor("runner", threadId, `${now}_${result.sessionId ?? "nosession"}`, agentName);
     await this.store.appendSourceRecord({
       id: sourceId,
       kind: "runner_output",

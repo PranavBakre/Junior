@@ -35,6 +35,7 @@ Access memory through the supported tool surface, not by editing database rows d
 
 - CLI: `bun run <runtime context junior.memoryCli> recall --query "..." --json`
 - CLI: `bun run <runtime context junior.memoryCli> consolidate --json`
+- CLI: `bun run <runtime context junior.memoryCli> archive-memory --id <memory-id> --json` to remove a low-value derived memory from active recall (source records are preserved)
 - MCP, when available in a normal Junior run: `memory_recall` and `memory_consolidate`
 
 The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Workflow runner cwd is `/tmp/junior-utility`, so use the absolute `junior.memoryCli` path from runtime context rather than a relative `src/memory/cli.ts` path.
