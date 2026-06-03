@@ -26,6 +26,7 @@ import {
   isPersistentAgent,
   loadOverlayIdentities,
 } from "../support/agents.ts";
+import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
@@ -55,6 +56,18 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
       },
     },
     async ({ text, channel_id, thread_ts, reply_broadcast, username, icon_emoji, icon_url, image_url }) => {
+      const internalDispatch = await dispatchAgentDirectivesFromSlackPost({
+        text,
+        channelId: channel_id,
+        threadTs: thread_ts,
+        runContext,
+      });
+      if (internalDispatch) {
+        return {
+          content: [{ type: "text" as const, text: internalDispatch }],
+        };
+      }
+
       const resolvedIconUrl = icon_url ?? image_url;
       const identity = {
         ...(username ? { username } : {}),
@@ -647,6 +660,63 @@ export async function sendSlackDirectMessage(
   });
 
   return { channelId, ts: result.ts };
+}
+
+export async function dispatchAgentDirectivesFromSlackPost(args: {
+  text: string;
+  channelId: string;
+  threadTs?: string;
+  runContext: SlackMcpRunContext | null;
+  manager?: Pick<SessionManager, "handleAgentMessage">;
+}): Promise<string | null> {
+  const directives = parsePureAgentDirectiveResponse(args.text);
+  if (directives.length === 0) return null;
+
+  const manager = args.manager ?? sessionManager;
+  if (!manager) {
+    return "Error: session manager not available; refused to post persistent-agent directive as Slack text.";
+  }
+  if (!args.threadTs) {
+    return "Error: persistent-agent directives must target a Slack thread; refused to post directive as Slack text.";
+  }
+  if (!args.runContext) {
+    return "Error: MCP run context missing; refused to post persistent-agent directive as Slack text.";
+  }
+  if (args.runContext.threadId !== args.threadTs || args.runContext.channel !== args.channelId) {
+    return "Error: dispatch target does not match authenticated MCP run context; refused to post directive as Slack text.";
+  }
+
+  const caller = args.runContext.agent;
+  const allowedAgents = new Set(dispatchableAgentsFor(caller));
+  const disallowed = directives.find((directive) => !allowedAgents.has(directive.agentName));
+  if (disallowed) {
+    return `Error: ${caller} is not allowed to dispatch ${disallowed.agentName}; refused to post directive as Slack text.`;
+  }
+
+  const sourceIdentity = AGENT_IDENTITIES[caller];
+  const now = Date.now();
+  for (const [index, directive] of directives.entries()) {
+    await manager.handleAgentMessage(
+      {
+        threadId: args.threadTs,
+        channel: args.channelId,
+        user: "mcp-internal",
+        text: directive.prompt,
+        ts: args.threadTs,
+        command: null,
+        isSelfBot: true,
+        botUsername: sourceIdentity?.username,
+        dedupeKey: `${args.threadTs}:mcp-slack-send:${caller}:${directive.agentName}:${index}:${now}`,
+      },
+      directive.agentName,
+    );
+  }
+
+  return JSON.stringify({
+    ok: true,
+    dispatched: directives.map((directive) => directive.agentName),
+    thread: args.threadTs,
+  });
 }
 
 async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemoryStore>) => Promise<T>): Promise<T> {
