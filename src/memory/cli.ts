@@ -246,6 +246,15 @@ export async function runMemoryCli(argv: string[]): Promise<string> {
         : `Merged ${result.sourceIds.length} facts into ${result.mergedId} (${result.supersededIds.join(", ")} superseded)\n`;
     }
 
+    if (command === "archive-memory") {
+      const id = stringOption(options, "id");
+      if (!id) throw new Error("--id <memory-id> is required");
+      const archived = await store.archiveMemory(id);
+      return json
+        ? `${JSON.stringify({ archived, id }, null, 2)}\n`
+        : (archived ? `Memory archived: ${id}\n` : `Memory not found or already inactive: ${id}\n`);
+    }
+
     if (command === "log-correction") {
       const eventId = stringOption(options, "event-id");
       const field = stringOption(options, "field");
@@ -436,6 +445,7 @@ function usage(): string {
     "  bun run src/memory/cli.ts update-fact --id <id> [--kind <curated_fact|routing_memory|procedure>] [--title <text>] [--body <text>] [--confidence 0-1] [--importance 0-1] [--add-source-ids a,b] [--add-tags x,y] [--add-entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts merge-lessons --ids <id1,id2,...> --title <title> [--json]",
     "  bun run src/memory/cli.ts merge-facts --ids <id1,id2,...> --title <title> [--json]",
+    "  bun run src/memory/cli.ts archive-memory --id <memory-id> [--json]",
     "  bun run src/memory/cli.ts log-correction --event-id <id> --field <field> --correct <value> [--incorrect <value>] [--by <who>] [--json]",
     "  bun run src/memory/cli.ts propose-rule --id <id> --domain <domain> --rule <text> [--positive-examples a,b] [--negative-examples a,b] [--precision 0-1] [--recall 0-1] [--json]",
     "  bun run src/memory/cli.ts rebuild-fts [--json]",

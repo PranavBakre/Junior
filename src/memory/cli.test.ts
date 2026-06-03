@@ -198,4 +198,28 @@ describe("memory CLI", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("archives a memory from the configured db", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    const store = new SqliteMemoryStore(dbPath);
+    try {
+      const now = Date.now();
+      await store.upsertLesson({
+        id: "lesson-archive",
+        title: "Bad lesson",
+        body: "This should leave active recall",
+        importance: 0.5,
+        createdAt: now,
+      });
+
+      const output = await runMemoryCli(["archive-memory", "--db", dbPath, "--id", "lesson-archive", "--json"]);
+
+      expect(JSON.parse(output)).toEqual({ archived: true, id: "lesson-archive" });
+      expect(await store.recall({ query: "active recall", limit: 5 })).toEqual([]);
+    } finally {
+      store.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

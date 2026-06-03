@@ -330,7 +330,7 @@ describe("SqliteMemoryStore", () => {
     expect(correction?.correct_value).toBe("frontend");
   });
 
-  it("consolidates by archiving cold events, promoting routing memories, proposing draft rules, semantic lessons, and pruning edges", async () => {
+  it("consolidates by archiving cold events, promoting routing memories, proposing draft rules, and pruning edges", async () => {
     const now = Date.now();
     const old = now - 60 * 24 * 60 * 60 * 1000;
     await store.appendSourceRecord({ id: "source-old", kind: "slack_message", body: "ok", createdAt: old });
@@ -343,7 +343,7 @@ describe("SqliteMemoryStore", () => {
       createdAt: old,
     });
 
-    // Semantic repeated tags can promote; operational/import tags should not.
+    // Repeated tags are retrieval metadata, not enough evidence for a lesson.
     const recent = now - 1000;
     await store.appendSourceRecord({ id: "src-a", kind: "slack_message", body: "auth middleware broken", createdAt: recent });
     await store.upsertEvent({
@@ -428,12 +428,8 @@ describe("SqliteMemoryStore", () => {
     expect(result.proposedRuleIds).toContain("rule_tag_frontend");
     expect(result.decisions.map((decision) => decision.action)).toContain("propose_rule");
 
-    // Semantic tag promotion remains, but bad input tags are ignored.
-    expect(result.decisions.map((decision) => decision.action)).toContain("promote_lesson");
-    expect(result.promotedMemoryIds).toContain(`lesson_tag:auth_${now}`);
-    expect(result.promotedMemoryIds).not.toContain(`lesson_tag:agent:default_${now}`);
-    expect(result.promotedMemoryIds).not.toContain(`lesson_tag:runner_tool_error_${now}`);
-    expect(result.promotedMemoryIds).not.toContain(`lesson_tag:gx_learnings_${now}`);
+    expect(result.decisions.map((decision) => decision.action)).not.toContain("promote_lesson");
+    expect(result.promotedMemoryIds).not.toContain(`lesson_tag:auth_${now}`);
 
     // Edge pruning (weak old edge removed)
     expect(result.decisions.map((decision) => decision.action)).toContain("prune_edges");
@@ -441,6 +437,86 @@ describe("SqliteMemoryStore", () => {
     // Routing memory recall
     const recalled = await store.recall({ query: "dashboard gx-admin-client", kinds: ["routing_memory"], limit: 5 });
     expect(recalled.map((memory) => memory.id)).toContain("routing_memory_dashboard_means_gx-admin-client");
+  });
+
+  it("keeps draft rules pending manual acceptance after consolidation", async () => {
+    const now = Date.now();
+    await store.logCorrection({
+      eventId: "event-c",
+      field: "tag",
+      correctValue: "frontend",
+      correctedBy: "user",
+      createdAt: now - 1,
+    });
+    await store.logCorrection({
+      eventId: "event-d",
+      field: "tag",
+      correctValue: "frontend",
+      correctedBy: "user",
+      createdAt: now,
+    });
+
+    await store.consolidate({ now, repeatedCorrectionThreshold: 2 });
+
+    expect(await store.getAcceptedRules()).toEqual([]);
+  });
+
+  it("ranks actionable derived memories above raw event matches", async () => {
+    const now = Date.now();
+    await store.appendSourceRecord({ id: "source-merge", kind: "slack_message", body: "can we merge now", createdAt: now });
+    await store.upsertEvent({
+      id: "event-merge",
+      sourceRecordId: "source-merge",
+      threadId: "T1",
+      body: "can we merge now",
+      importance: 0.9,
+      createdAt: now,
+    });
+    await store.upsertFact({
+      id: "procedure-merge",
+      kind: "procedure",
+      title: "Merge safely",
+      body: "Before merge, verify approval, checks, target branch, and merge identity.",
+      importance: 0.9,
+      createdAt: now,
+    });
+
+    const results = await store.recall({ query: "merge", limit: 2 });
+
+    expect(results[0].id).toBe("procedure-merge");
+    expect(results.map((result) => result.id)).toContain("event-merge");
+  });
+
+  it("deduplicates identical imported lessons in recall", async () => {
+    const now = Date.now();
+    for (const id of ["lesson-dup-a", "lesson-dup-b"]) {
+      await store.upsertLesson({
+        id,
+        title: "Parallel worktree builds",
+        body: "Merge each worktree branch sequentially and resolve conflicts one branch at a time.",
+        importance: 0.8,
+        createdAt: now,
+      });
+    }
+
+    const results = await store.recall({ query: "merge worktree conflicts", limit: 5 });
+
+    expect(results.filter((result) => result.title === "Parallel worktree builds")).toHaveLength(1);
+  });
+
+  it("archives active memories through the store API", async () => {
+    const now = Date.now();
+    await store.upsertLesson({
+      id: "lesson-trash",
+      title: "Repeated pattern: tag:backend",
+      body: "8 high-importance events share the tag \"tag:backend\".",
+      importance: 0.9,
+      createdAt: now,
+    });
+
+    expect(await store.archiveMemory("lesson-trash")).toBe(true);
+    expect(await store.recall({ query: "backend", limit: 5 })).toEqual([]);
+    expect((await store.recall({ query: "backend", includeInactive: true, limit: 5 })).map((result) => result.id)).toContain("lesson-trash");
   });
 
   it("accepts and rejects proposed rules, listing accepted rules", async () => {
