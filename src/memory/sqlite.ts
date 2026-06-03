@@ -418,6 +418,16 @@ export class SqliteMemoryStore implements MemoryStore {
     return { mergedId, kind: "fact", sourceIds: sources.map((s) => s.id), supersededIds: sources.map((s) => s.id) };
   }
 
+  async archiveMemory(id: string): Promise<boolean> {
+    const txn = this.db.transaction(() => {
+      const eventResult = this.db.query("UPDATE memory_event SET active = 0 WHERE id = ? AND active = 1").run(id);
+      const lessonResult = this.db.query("UPDATE lesson SET active = 0 WHERE id = ? AND active = 1").run(id);
+      const factResult = this.db.query("UPDATE memory_fact SET active = 0 WHERE id = ? AND active = 1").run(id);
+      return eventResult.changes + lessonResult.changes + factResult.changes;
+    });
+    return txn() > 0;
+  }
+
   async addEdge(edge: MemoryEdgeInput): Promise<void> {
     this.addEdgeSync(edge);
   }
@@ -565,6 +575,7 @@ export class SqliteMemoryStore implements MemoryStore {
       .filter((row) => this.recallFilter(row, options))
       .map((row) => this.toResult(row))
       .sort((a, b) => b.score - a.score)
+      .filter(uniqueRecallResult())
       .slice(0, limit);
     this.recordRecallUsage(results.map((result) => result.id));
     return results;
@@ -664,9 +675,6 @@ export class SqliteMemoryStore implements MemoryStore {
       });
       decisions.push(decision);
       proposedRuleIds.push(ruleId);
-
-      // Auto-accept: corrections were human-confirmed, no manual review needed.
-      await this.setRuleStatus(ruleId, "accepted");
     }
 
     // --- Mark stale facts: unused facts older than 30 days ---
@@ -691,52 +699,8 @@ export class SqliteMemoryStore implements MemoryStore {
       archivedEventIds.push(row.id);
     }
 
-    // --- Lesson promotion: promote repeated high-importance semantic event patterns ---
-    const lessonRows = this.db
-      .query<{ tag: string; count: number; event_ids: string }, [number, number, number]>(
-        `SELECT mt.tag_id AS tag, COUNT(*) AS count,
-                group_concat(DISTINCT e.id) AS event_ids
-         FROM memory_tag mt
-         JOIN memory_event e ON e.id = mt.memory_id AND mt.memory_kind = 'event'
-         WHERE e.importance >= ? AND e.active = 1 AND e.created_at > ?
-         GROUP BY mt.tag_id
-         HAVING count >= ?`,
-      )
-      .all(0.7, now - 14 * 24 * 60 * 60 * 1000, repeatedThreshold);
-
-    for (const row of lessonRows) {
-      if (!isPromotableLessonTag(row.tag)) continue;
-
-      const eventIds = row.event_ids.split(",");
-      const lessonId = `lesson_${slug(row.tag)}_${now}`;
-      await this.upsertLesson({
-        id: lessonId,
-        title: `Repeated pattern: ${row.tag}`,
-        body: `${eventIds.length} high-importance events share the tag "${row.tag}".`,
-        appliesWhen: `Events tagged with "${row.tag}"`,
-        importance: Math.min(0.9, 0.5 + row.count * 0.1),
-        createdAt: now,
-        sourceIds: eventIds,
-      });
-      for (const eventId of eventIds.slice(0, 5)) {
-        this.addEdgeSync({
-          srcId: eventId,
-          dstId: lessonId,
-          type: "lesson_from",
-          weight: 0.8,
-          createdAt: now,
-        });
-      }
-      const decision = this.recordDecision({
-        action: "promote_lesson",
-        eventId: eventIds[0],
-        reason: `Promoted repeated high-importance pattern (${row.count} events, tag "${row.tag}") into a lesson.`,
-        sourceIds: eventIds,
-        now,
-      });
-      decisions.push(decision);
-      promotedMemoryIds.push(lessonId);
-    }
+    // Do not promote tag-count clusters into lessons. A useful lesson must say
+    // what to do differently and why; tag frequency alone is retrieval metadata.
 
     // --- Edge pruning: remove weak edges with no recent activity ---
     const edgePruneResult = this.db
@@ -1145,7 +1109,7 @@ export class SqliteMemoryStore implements MemoryStore {
       title: row.title,
       body: row.body,
       outcome: row.outcome,
-      score: row.activation + importance + frequency + recency,
+      score: row.activation + kindBoost(row.kind) + importance + frequency + recency,
       reasons: unique(row.reasons),
       sourceIds: row.source_ids ? row.source_ids.split(",").filter(Boolean) : [],
     };
@@ -1254,24 +1218,31 @@ function slug(value: string): string {
   return normalizeName(value).replace(/[^a-z0-9_:-]/g, "_").slice(0, 80) || "unknown";
 }
 
-function isPromotableLessonTag(tagId: string): boolean {
-  const tag = tagId.startsWith("tag:") ? tagId.slice(4) : tagId;
-  if (tag.startsWith("agent:") || tag.startsWith("command:")) return false;
-  if (tag.includes("worktree") || tag.includes("worktrees")) return false;
-  if (tag.includes("import")) return false;
-
-  return !NON_LESSON_TAGS.has(tag);
+function kindBoost(kind: SearchableMemoryKind): number {
+  switch (kind) {
+    case "procedure":
+    case "routing_memory":
+      return 2;
+    case "fact":
+      return 1.5;
+    case "lesson":
+      return 1;
+    case "summary":
+      return 0.2;
+    case "event":
+      return -0.8;
+  }
 }
 
-const NON_LESSON_TAGS = new Set([
-  "error",
-  "growthx",
-  "gx_learnings",
-  "learnings",
-  "runner_output",
-  "runner_tool_error",
-  "slack_message",
-]);
+function uniqueRecallResult(): (result: MemorySearchResult) => boolean {
+  const seen = new Set<string>();
+  return (result) => {
+    const key = normalizeName(`${result.kind}:${result.title ?? ""}:${result.body}`);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  };
+}
 
 function unique<T>(values: T[]): T[] {
   return [...new Set(values.filter(Boolean))];

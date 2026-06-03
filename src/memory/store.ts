@@ -32,6 +32,7 @@ export interface MemoryStore {
   upsertFact(fact: MemoryFactInput): Promise<void>;
   updateFact(id: string, update: MemoryFactUpdate): Promise<void>;
   mergeFacts(ids: string[], title: string): Promise<MemoryMergeResult>;
+  archiveMemory(id: string): Promise<boolean>;
   addEdge(edge: MemoryEdgeInput): Promise<void>;
   logClassification(classification: IngestionClassificationInput): Promise<void>;
   logCorrection(correction: IngestionCorrectionInput): Promise<void>;
