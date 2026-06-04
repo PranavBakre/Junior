@@ -161,6 +161,7 @@ describe("TmuxDriver with stubbed exec", () => {
     const session = makeSession({
       worktreePath: cwd,
       activeAgentName: "lead",
+      agentPermissions: { intent: "normal", mcp: ["slack-bot"], tools: [] },
     });
 
     const handle = driver.send({

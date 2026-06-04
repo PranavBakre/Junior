@@ -7,7 +7,9 @@ describe("buildOpenCodeMcpConfig", () => {
   it("only includes Mixpanel MCP for the feature-metrics agent", () => {
     const mainSession = createSession("thread-1", "C01");
     const featureMetricsSession = createSession("thread-1", "C01");
+    mainSession.agentPermissions = { intent: "normal", mcp: ["mixpanel"], tools: [] };
     featureMetricsSession.agentType = "feature-metrics";
+    featureMetricsSession.agentPermissions = { intent: "normal", mcp: ["mixpanel"], tools: [] };
 
     const mainMcp = buildOpenCodeMcpConfig(testConfig(), mainSession);
     const featureMetricsMcp = buildOpenCodeMcpConfig(
@@ -18,7 +20,14 @@ describe("buildOpenCodeMcpConfig", () => {
     expect(mainMcp?.mixpanel).toBeUndefined();
     expect(featureMetricsMcp?.mixpanel).toEqual({
       type: "local",
-      command: ["npx", "-y", "mcp-remote", "https://mcp.mixpanel.com/mcp"],
+      command: [
+        expect.stringContaining("junior-mcp-stdio-wrapper.js"),
+        "--",
+        "npx",
+        "-y",
+        "mcp-remote",
+        "https://mcp.mixpanel.com/mcp",
+      ],
       enabled: true,
     });
   });
@@ -26,6 +35,7 @@ describe("buildOpenCodeMcpConfig", () => {
   it("respects the Mixpanel MCP feature flag", () => {
     const session = createSession("thread-1", "C01");
     session.agentType = "feature-metrics";
+    session.agentPermissions = { intent: "normal", mcp: ["mixpanel"], tools: [] };
 
     const mcp = buildOpenCodeMcpConfig(
       testConfig({ mixpanelMcpEnabled: false }),
@@ -35,10 +45,12 @@ describe("buildOpenCodeMcpConfig", () => {
     expect(mcp?.mixpanel).toBeUndefined();
   });
 
-  it("only includes MongoDB MCP for the db-executioner agent", () => {
+  it("includes MongoDB MCP for agents with explicit MongoDB permission", () => {
     const mainSession = createSession("thread-1", "C01");
     const dbExecutionerSession = createSession("thread-1", "C01");
+    mainSession.agentPermissions = { intent: "normal", mcp: ["mongodb"], tools: [] };
     dbExecutionerSession.agentType = "db-executioner";
+    dbExecutionerSession.agentPermissions = { intent: "normal", mcp: ["mongodb"], tools: [] };
 
     const mainMcp = buildOpenCodeMcpConfig(testConfig(), mainSession);
     const dbExecutionerMcp = buildOpenCodeMcpConfig(
@@ -46,10 +58,14 @@ describe("buildOpenCodeMcpConfig", () => {
       dbExecutionerSession,
     );
 
-    expect(mainMcp?.mongodb).toBeUndefined();
+    expect(mainMcp?.mongodb).toEqual({
+      type: "remote",
+      url: expect.stringContaining("http://localhost:3456/mcp/mongodb?agent=default&channel=C01&thread=thread-1"),
+      enabled: true,
+    });
     expect(dbExecutionerMcp?.mongodb).toEqual({
-      type: "local",
-      command: ["npx", "-y", "mongodb-mcp-server@latest", "--readOnly"],
+      type: "remote",
+      url: expect.stringContaining("http://localhost:3456/mcp/mongodb?agent=default&channel=C01&thread=thread-1"),
       enabled: true,
     });
   });
@@ -57,6 +73,7 @@ describe("buildOpenCodeMcpConfig", () => {
   it("respects the MongoDB MCP feature flag", () => {
     const session = createSession("thread-1", "C01");
     session.agentType = "db-executioner";
+    session.agentPermissions = { intent: "normal", mcp: ["mongodb"], tools: [] };
 
     const mcp = buildOpenCodeMcpConfig(
       testConfig({ mongodbMcpEnabled: false }),

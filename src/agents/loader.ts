@@ -124,12 +124,14 @@ function readContextProfile(
 }
 
 function readAgentPermissions(fm: Record<string, string>): AgentPermissions {
+  const tools = parseCsv(fm.tools);
+  const explicitMcp = parseCsv(fm["permissions.mcp"] ?? fm["permission.mcp"]);
   return {
     intent: parsePermissionIntent(
       fm["permissions.intent"] ?? fm["permission.intent"] ?? fm.permission,
     ),
-    mcp: parseCsv(fm["permissions.mcp"] ?? fm["permission.mcp"]),
-    tools: parseCsv(fm.tools),
+    mcp: unique([...explicitMcp, ...mcpServersFromTools(tools)]),
+    tools,
   };
 }
 
@@ -154,6 +156,16 @@ function parseCsv(value: string | undefined): string[] {
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function mcpServersFromTools(tools: string[]): string[] {
+  return tools
+    .map((tool) => tool.match(/^mcp__([^_]+(?:-[^_]+)*)__/)?.[1])
+    .filter((name): name is string => !!name);
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function parseBool(value: string | undefined): boolean | undefined {

@@ -6,7 +6,13 @@ import { spawnOpenCodeSdk } from "../opencode/sdk-provider.ts";
 import { spawnCodexAppServer } from "../codex-app-server/spawner.ts";
 import type { OpenCodeMcpConfig } from "../opencode/config.ts";
 import type { SpawnHandle } from "./types.ts";
-import { buildSlackMcpUrl } from "../mcp/context.ts";
+import {
+  mixpanelMcpCommand,
+  mongoMcpUrl,
+  playwrightMcpCommand,
+  slackMcpUrl,
+  wantsMcp,
+} from "./mcp-config.ts";
 
 export function sessionProvider(
   session: ThreadSession,
@@ -106,31 +112,33 @@ export function buildOpenCodeMcpConfig(
   if (!config.opencode.mcpEnabled) return null;
 
   const mcp: OpenCodeMcpConfig = {};
-  if (config.opencode.slackMcpEnabled) {
+  if (config.opencode.slackMcpEnabled && wantsMcp(session, "slack-bot")) {
     mcp["slack-bot"] = {
       type: "remote",
-      url: buildSlackMcpUrl(session),
+      url: slackMcpUrl(session),
       enabled: true,
     };
   }
-  if (config.opencode.playwrightMcpEnabled) {
+  if (config.opencode.playwrightMcpEnabled && wantsMcp(session, "playwright")) {
+    const command = playwrightMcpCommand();
     mcp.playwright = {
       type: "local",
-      command: ["npx", "@playwright/mcp", "--headless"],
+      command: [command.command, ...command.args],
       enabled: true,
     };
   }
-  if (config.opencode.mixpanelMcpEnabled && isFeatureMetricsSession(session)) {
+  if (config.opencode.mixpanelMcpEnabled && wantsMcp(session, "mixpanel") && isFeatureMetricsSession(session)) {
+    const command = mixpanelMcpCommand();
     mcp.mixpanel = {
       type: "local",
-      command: ["npx", "-y", "mcp-remote", "https://mcp.mixpanel.com/mcp"],
+      command: [command.command, ...command.args],
       enabled: true,
     };
   }
-  if (config.opencode.mongodbMcpEnabled && isDbExecutionerSession(session)) {
+  if (config.opencode.mongodbMcpEnabled && wantsMcp(session, "mongodb")) {
     mcp.mongodb = {
-      type: "local",
-      command: ["npx", "-y", "mongodb-mcp-server@latest", "--readOnly"],
+      type: "remote",
+      url: mongoMcpUrl(session),
       enabled: true,
     };
   }
@@ -142,12 +150,5 @@ function isFeatureMetricsSession(session: ThreadSession): boolean {
   return (
     session.agentType === "feature-metrics" ||
     session.activeAgentName === "feature-metrics"
-  );
-}
-
-function isDbExecutionerSession(session: ThreadSession): boolean {
-  return (
-    session.agentType === "db-executioner" ||
-    session.activeAgentName === "db-executioner"
   );
 }

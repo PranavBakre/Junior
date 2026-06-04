@@ -1,20 +1,8 @@
 {
   "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp", "--headless"]
-    },
     "slack-bot": {
       "type": "http",
       "url": "http://localhost:3456/mcp"
-    },
-    "mongodb": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "mongodb-mcp-server@latest", "--readOnly"],
-      "env": {
-        "MDB_MCP_CONNECTION_STRING": "${MDB_MCP_CONNECTION_STRING}"
-      }
     }
   }
 }
