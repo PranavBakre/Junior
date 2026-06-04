@@ -10,6 +10,8 @@ Shared HTTP MCP server running inside Junior's process. All spawned Claude insta
 |---|---|---|
 | `startMcpServer(botToken, store?, worktreeManager?)` | `slack-server.ts` | Starts HTTP server on `MCP_PORT` (default 3456). Called once from `index.ts`. |
 | `registerTools(server)` (internal) | `slack-server.ts` | Registers Slack, worktree, and agent-registry tools on a fresh `McpServer` per request. |
+| `handleMongoMcpRequest(req, res)` | `mongodb-proxy.ts` | Serves `/mcp/mongodb` as a stateless HTTP MCP proxy to one shared read-only MongoDB stdio backend. |
+| `closeMongoMcpBackend()` | `mongodb-proxy.ts` | Closes the shared backend immediately; also used by the idle TTL. |
 | `searchAgentDefinitions(options)` | `slack-server.ts` | Reads public/private agent markdown files and returns matching definitions plus dispatch registration state. |
 
 ### Tools
@@ -30,7 +32,7 @@ Shared HTTP MCP server running inside Junior's process. All spawned Claude insta
 
 | File | What |
 |---|---|
-| `.mcp.json` | `{ "type": "http", "url": "http://localhost:3456/mcp" }` |
+| `.mcp.json` | Root Claude config contains only Junior's `slack-bot` HTTP MCP. Per-agent generated configs add Playwright/MongoDB as needed. |
 | `.claude/settings.json` | `permissions.allow: ["mcp__slack-bot__*"]` |
 | `src/claude/spawner.ts` | Passes `--mcp-config` for worktree spawns |
 
@@ -38,7 +40,7 @@ Shared HTTP MCP server running inside Junior's process. All spawned Claude insta
 
 ### Stateless per request
 
-Each HTTP request creates a fresh `McpServer` + `StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`). No sessions, no state between requests. All instances share the same `WebClient` (module-level singleton).
+Each HTTP request creates a fresh `McpServer` + `StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`). No sessions, no state between HTTP requests. Slack requests share the same `WebClient` (module-level singleton). MongoDB proxy requests share one lazily started wrapped stdio backend and close it after an idle TTL.
 
 ### Identity model
 

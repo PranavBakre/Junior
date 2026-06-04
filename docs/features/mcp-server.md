@@ -85,9 +85,12 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   `OPENCODE_MIXPANEL_MCP_ENABLED=false`.
 - MongoDB MCP uses `MDB_MCP_CONNECTION_STRING` from the process environment.
   `.env.example` includes a placeholder; real values belong only in local
-  `.env` or secret managers. OpenCode injects MongoDB only for the
-  `db-executioner` worker and runs `mongodb-mcp-server@latest --readOnly`.
-  Disable with `OPENCODE_MONGODB_MCP_ENABLED=false`.
+  `.env` or secret managers. Junior exposes a shared read-only HTTP proxy at
+  `/mcp/mongodb`, backed by one wrapped `mongodb-mcp-server@latest --readOnly`
+  stdio child. Runner adapters inject that proxy only when the active agent
+  declares `permissions.mcp: mongodb` or lists `mcp__mongodb__*` tools.
+  Disable with `OPENCODE_MONGODB_MCP_ENABLED=false` /
+  `CODEX_MONGODB_MCP_ENABLED=false`.
 
 ### Agent registry tools
 

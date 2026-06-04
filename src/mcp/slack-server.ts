@@ -28,6 +28,7 @@ import {
 } from "../support/agents.ts";
 import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
+import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -819,6 +820,12 @@ export function startMcpServer(
   sessionManager = manager;
 
   const httpServer = createServer(async (req, res) => {
+    const pathname = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`).pathname;
+    if (pathname === "/mcp/mongodb") {
+      await handleMongoMcpRequest(req, res);
+      return;
+    }
+
     // Each request gets its own transport (stateless mode).
     // Tools are registered fresh but share the same WebClient.
     const mcpServer = new McpServer({ name: "slack-bot", version: "0.1.0" });
