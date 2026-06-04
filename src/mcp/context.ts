@@ -2,6 +2,7 @@ import type { ThreadSession } from "../session/types.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const DEFAULT_SLACK_MCP_URL = `http://localhost:${MCP_PORT}/mcp`;
+const DEFAULT_MONGODB_MCP_URL = `http://localhost:${MCP_PORT}/mcp/mongodb`;
 
 export interface SlackMcpRunContext {
   agent: string;
@@ -15,6 +16,14 @@ export function slackMcpAgentForSession(session: ThreadSession): string {
 
 export function buildSlackMcpUrl(session: ThreadSession): string {
   const url = new URL(process.env.SLACK_MCP_URL ?? DEFAULT_SLACK_MCP_URL);
+  url.searchParams.set("agent", slackMcpAgentForSession(session));
+  url.searchParams.set("channel", session.channel);
+  url.searchParams.set("thread", session.threadId);
+  return url.toString();
+}
+
+export function buildMongoMcpUrl(session: ThreadSession): string {
+  const url = new URL(process.env.MONGODB_MCP_URL ?? DEFAULT_MONGODB_MCP_URL);
   url.searchParams.set("agent", slackMcpAgentForSession(session));
   url.searchParams.set("channel", session.channel);
   url.searchParams.set("thread", session.threadId);

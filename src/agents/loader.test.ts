@@ -41,6 +41,14 @@ describe("loadAgentDefinition", () => {
     });
   });
 
+  it("default agent explicitly keeps MongoDB MCP through Junior's proxy", async () => {
+    const def = await loadAgentDefinition(path.join(agentsDir, "default.md"));
+
+    expect(def).not.toBeNull();
+    expect(def!.permissions.mcp).toContain("slack-bot");
+    expect(def!.permissions.mcp).toContain("mongodb");
+  });
+
   it("parses typed permission frontmatter", async () => {
     const tmpPath = path.join(import.meta.dir, "__test_permissions_fm.md");
     const content = `---
@@ -61,6 +69,27 @@ body`;
         mcp: ["slack-bot", "playwright"],
         tools: [],
       });
+    } finally {
+      await fs.unlink(tmpPath).catch(() => {});
+    }
+  });
+
+  it("infers MCP permissions from Claude-style tool names", async () => {
+    const tmpPath = path.join(import.meta.dir, "__test_permissions_tools_fm.md");
+    const content = `---
+name: mcp-tools
+description: Test
+tools: Read, mcp__slack-bot__slack_send_message, mcp__mongodb__find, mcp__slack-bot__slack_read_thread
+---
+
+body`;
+    await Bun.write(tmpPath, content);
+
+    try {
+      const def = await loadAgentDefinition(tmpPath);
+      expect(def).not.toBeNull();
+      expect(def!.permissions.mcp).toEqual(["slack-bot", "mongodb"]);
+      expect(def!.permissions.tools).toContain("mcp__mongodb__find");
     } finally {
       await fs.unlink(tmpPath).catch(() => {});
     }

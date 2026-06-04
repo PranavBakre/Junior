@@ -4,8 +4,9 @@ import { buildCodexConfigToml, buildCodexMcpConfig } from "./config.ts";
 import type { Config } from "../config.ts";
 
 describe("buildCodexMcpConfig", () => {
-  it("builds Junior-approved MCP servers and honors utility carve-out", () => {
+  it("builds only agent-declared MCP servers and honors utility carve-out", () => {
     const session = createSession("t", "c");
+    session.agentPermissions = { intent: "normal", mcp: ["slack-bot", "playwright"], tools: [] };
     const mcp = buildCodexMcpConfig(makeConfig(), session, true);
 
     expect(mcp).toMatchObject({
@@ -14,11 +15,17 @@ describe("buildCodexMcpConfig", () => {
         url: expect.stringContaining("http://localhost:3456/mcp?agent=default&channel=c&thread=t"),
       },
       playwright: {
-        command: "npx",
-        args: ["@playwright/mcp", "--headless"],
+        command: expect.stringContaining("junior-mcp-stdio-wrapper.js"),
+        args: ["--", "npx", "@playwright/mcp", "--headless"],
       },
     });
     expect(buildCodexMcpConfig(makeConfig(), session, false)).toBeNull();
+  });
+
+  it("does not start local MCP servers when the agent declares none", () => {
+    const session = createSession("t", "c");
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toBeNull();
   });
 
   it("limits MCP servers to explicitly declared agent permissions", () => {
@@ -27,8 +34,20 @@ describe("buildCodexMcpConfig", () => {
 
     expect(buildCodexMcpConfig(makeConfig(), session, true)).toEqual({
       playwright: {
-        command: "npx",
-        args: ["@playwright/mcp", "--headless"],
+        command: expect.stringContaining("junior-mcp-stdio-wrapper.js"),
+        args: ["--", "npx", "@playwright/mcp", "--headless"],
+      },
+    });
+  });
+
+  it("uses Junior's MongoDB HTTP proxy instead of spawning local MongoDB MCP", () => {
+    const session = createSession("t", "c");
+    session.agentPermissions = { intent: "normal", mcp: ["mongodb"], tools: [] };
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toEqual({
+      mongodb: {
+        transport: "http",
+        url: expect.stringContaining("http://localhost:3456/mcp/mongodb?agent=default&channel=c&thread=t"),
       },
     });
   });
