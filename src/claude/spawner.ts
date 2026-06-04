@@ -7,8 +7,14 @@ import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts"
 import { buildRunnerRuntime } from "../runners/runtime.ts";
 import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
-import { buildSlackMcpUrl } from "../mcp/context.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
+import {
+  allowedMcpServers,
+  mongoMcpUrl,
+  playwrightMcpCommand,
+  slackMcpUrl,
+  wantsMcp,
+} from "../runners/mcp-config.ts";
 
 const MCP_CONFIG_DIR = resolve(import.meta.dirname ?? ".", "../../data/mcp-configs");
 
@@ -26,7 +32,7 @@ export function spawnClaude(
     botToken,
     agentIdentity,
   });
-  const mcpConfigPath = runtime.needsProjectMcp
+  const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp)
     ? writeClaudeMcpConfig(session)
     : undefined;
   const args = buildClaudeArgs(session, prompt, config, mcpConfigPath);
@@ -133,30 +139,35 @@ export function spawnClaude(
   };
 }
 
+export function shouldUseClaudeMcpConfig(
+  session: ThreadSession,
+  needsProjectMcp: boolean,
+): boolean {
+  if (session.cwd) return false;
+  return needsProjectMcp || allowedMcpServers(session).size > 0;
+}
+
 export function writeClaudeMcpConfig(session: ThreadSession): string {
   mkdirSync(MCP_CONFIG_DIR, { recursive: true });
   const agent = session.activeAgentName ?? "default";
   const path = join(MCP_CONFIG_DIR, `${session.threadId}-${agent}.json`);
-  const config = {
-    mcpServers: {
-      playwright: {
-        command: "npx",
-        args: ["@playwright/mcp", "--headless"],
-      },
-      "slack-bot": {
-        type: "http",
-        url: buildSlackMcpUrl(session),
-      },
-      mongodb: {
-        type: "stdio",
-        command: "npx",
-        args: ["-y", "mongodb-mcp-server@latest", "--readOnly"],
-        env: {
-          MDB_MCP_CONNECTION_STRING: "${MDB_MCP_CONNECTION_STRING}",
-        },
-      },
-    },
-  };
+  const mcpServers: Record<string, unknown> = {};
+  if (wantsMcp(session, "slack-bot")) {
+    mcpServers["slack-bot"] = {
+      type: "http",
+      url: slackMcpUrl(session),
+    };
+  }
+  if (wantsMcp(session, "playwright")) {
+    mcpServers.playwright = playwrightMcpCommand();
+  }
+  if (wantsMcp(session, "mongodb")) {
+    mcpServers.mongodb = {
+      type: "http",
+      url: mongoMcpUrl(session),
+    };
+  }
+  const config = { mcpServers };
   writeFileSync(path, JSON.stringify(config, null, 2));
   return path;
 }
