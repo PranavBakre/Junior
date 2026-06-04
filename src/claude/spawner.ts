@@ -32,7 +32,7 @@ export function spawnClaude(
     botToken,
     agentIdentity,
   });
-  const mcpConfigPath = runtime.needsProjectMcp || allowedMcpServers(session).size > 0
+  const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp)
     ? writeClaudeMcpConfig(session)
     : undefined;
   const args = buildClaudeArgs(session, prompt, config, mcpConfigPath);
@@ -137,6 +137,14 @@ export function spawnClaude(
     },
     pid: proc.pid,
   };
+}
+
+export function shouldUseClaudeMcpConfig(
+  session: ThreadSession,
+  needsProjectMcp: boolean,
+): boolean {
+  if (session.cwd) return false;
+  return needsProjectMcp || allowedMcpServers(session).size > 0;
 }
 
 export function writeClaudeMcpConfig(session: ThreadSession): string {
