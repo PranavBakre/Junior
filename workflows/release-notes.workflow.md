@@ -1,7 +1,7 @@
 ---
 name: release-notes
 enabled: true
-description: Create weekly draft GitHub Releases across all configured repos/apps from merged PRs.
+description: Create weekly published GitHub Releases across all configured repos/apps from merged PRs.
 ownerSlackUserIds: []
 triggers:
   - type: schedule
@@ -26,7 +26,7 @@ runner:
 concurrency: skip
 ---
 
-Create weekly draft GitHub Releases across all configured Junior repos/apps.
+Create weekly published GitHub Releases across all configured Junior repos/apps.
 
 Use the runtime context as the source of truth for configured repositories, the same way the `worklog` workflow does. Iterate every configured repo/app with a local path. Do not hard-code `gx-backend` or any other single repository.
 
@@ -56,10 +56,10 @@ Expected work for each configured repo/app:
    - Combine related PRs into one bullet when they belong to the same feature.
    - Skip routine CI/tooling/doc-only changes unless they materially affect the team.
    - Do not include commit hashes. Include PR numbers only when they help reviewers trace the change.
-7. Create a draft GitHub Release for each repo with meaningful changes, never publish it automatically:
+7. Create and publish a GitHub Release for each repo with meaningful changes:
    - Tag format: `YYYY-MM-DD` in Asia/Kolkata for the workflow run date.
    - If that tag or release already exists in that repo, append `.2`, `.3`, etc.
-   - Use `gh release create <tag> --repo <owner/repo> --title "Release <tag>" --notes-file <notes-file> --draft --target <base-branch>`.
+   - Use `gh release create <tag> --repo <owner/repo> --title "Release <tag>" --notes-file <notes-file> --target <base-branch>`.
 8. Return a compact run summary grouped by repo/app:
    - release tag created, or no-release/skip reason
    - number of PRs included
@@ -69,7 +69,6 @@ Expected work for each configured repo/app:
 Safety rules:
 
 - Do not edit repository files.
-- Do not publish releases.
 - Do not close, merge, or modify PRs.
 - Do not require `ANTHROPIC_API_KEY`; the workflow runner itself writes the notes.
 - Treat collection failures as partial data. Continue with other configured repos/apps instead of failing the whole run when one repo errors.
