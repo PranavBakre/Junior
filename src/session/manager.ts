@@ -1054,7 +1054,11 @@ export class SessionManager {
       if (this.slackApp && latestTs) {
         const isFirstTurn = !runSession.sessionId;
         const needsThreadCatchup = !!session.needsThreadCatchup;
-        const readablePrompt = await resolveSlackMentions(this.slackApp, prompt);
+        const readablePrompt = await resolveSlackMentions(
+          this.slackApp,
+          prompt,
+          this.botUserId,
+        );
         if (isFirstTurn || needsThreadCatchup) {
           const preambleProfile: AgentContextProfile = needsThreadCatchup
             ? {
