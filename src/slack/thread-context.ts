@@ -71,6 +71,7 @@ export async function resolveUserName(
 export async function resolveSlackMentions(
   clientOrApp: App | WebClient,
   text: string,
+  selfUserId?: string,
 ): Promise<string> {
   const mentionPattern = /<@([A-Z0-9]+)>/g;
   const matches = [...text.matchAll(mentionPattern)];
@@ -88,7 +89,10 @@ export async function resolveSlackMentions(
 
   return text.replace(mentionPattern, (_, userId: string) => {
     const name = nameMap.get(userId) ?? userId;
-    return `@${name} (<@${userId}>)`;
+    if (selfUserId && userId === selfUserId) {
+      return `Junior (you <@${userId}>)`;
+    }
+    return `User(${name} <@${userId}>)`;
   });
 }
 
@@ -287,7 +291,7 @@ async function fetchThreadHistory(
         return {
           user,
           userName: user === "unknown" ? user : await resolveUserName(app, user),
-          text: (await resolveSlackMentions(app, m.text ?? "")).trim(),
+          text: (await resolveSlackMentions(app, m.text ?? "", botUserId)).trim(),
           ts: m.ts!,
           isBot: !!(botUserId && m.user === botUserId),
           fileNames,

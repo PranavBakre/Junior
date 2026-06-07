@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import {
   buildPromptPreamble,
   buildWorkspaceBlock,
+  resolveSlackMentions,
   type WorkspaceContext,
 } from "./thread-context.ts";
 import type { App } from "@slack/bolt";
@@ -95,6 +96,28 @@ describe("buildWorkspaceBlock", () => {
 });
 
 describe("buildPromptPreamble", () => {
+  it("labels self mentions distinctly when other users are tagged too", async () => {
+    const app = {
+      client: {
+        users: {
+          info: async ({ user }: { user: string }) => ({
+            user: { profile: { display_name: user === "UBOT" ? "junior" : "alex" } },
+          }),
+        },
+      },
+    } as unknown as App;
+
+    const text = await resolveSlackMentions(
+      app,
+      "<@UBOT> <@UALEX> can you check this?",
+      "UBOT",
+    );
+
+    expect(text).toBe(
+      "Junior (you <@UBOT>) User(alex <@UALEX>) can you check this?",
+    );
+  });
+
   it("uses the per-agent thread history limit", async () => {
     let observedLimit: number | undefined;
     const app = {
