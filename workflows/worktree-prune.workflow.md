@@ -6,7 +6,7 @@ ownerSlackUserIds:
   - U03PNSJ33S5
 triggers:
   - type: schedule
-    cron: "20 7 * * *"
+    cron: "53 4 * * *"
     timezone: Asia/Kolkata
   - type: command
     command: worktree-prune
