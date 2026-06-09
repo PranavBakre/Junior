@@ -4,6 +4,7 @@ import {
   formatRunnerToolStatuses,
   formatToolStatuses,
   isDuplicateSlackToolResponse,
+  prepareSlackResponseWithActions,
   sanitizeErrorForSlack,
   splitResponse,
 } from "./formatting.ts";
@@ -171,6 +172,59 @@ describe("extractRunnerMessageText", () => {
 
   it("returns null for non-message events", () => {
     expect(extractRunnerMessageText(makeToolEvent({ name: "Bash" }))).toBeNull();
+  });
+});
+
+describe("prepareSlackResponseWithActions", () => {
+  it("strips junior action specs and returns validated actions", () => {
+    const result = prepareSlackResponseWithActions(`review: changes-requested
+by review
+
+<junior-actions>
+[
+  {
+    "id": "review:rereview",
+    "label": "Re-review",
+    "style": "primary",
+    "type": "dispatch_agent",
+    "agent": "review",
+    "prompt": "read history and re-review"
+  },
+  {
+    "id": "thread:cleanup-worktree",
+    "label": "Cleanup worktree",
+    "type": "cleanup_worktree"
+  }
+]
+</junior-actions>`);
+
+    expect(result).toEqual({
+      text: "review: changes-requested\nby review",
+      actions: [
+        {
+          id: "review:rereview",
+          label: "Re-review",
+          style: "primary",
+          type: "dispatch_agent",
+          agent: "review",
+          prompt: "read history and re-review",
+        },
+        {
+          id: "thread:cleanup-worktree",
+          label: "Cleanup worktree",
+          type: "cleanup_worktree",
+        },
+      ],
+    });
+  });
+
+  it("drops malformed action specs without dropping visible text", () => {
+    const result = prepareSlackResponseWithActions(`ok
+<junior-actions>
+not json
+</junior-actions>`);
+
+    expect(result).toEqual({ text: "ok", actions: [] });
   });
 });
 

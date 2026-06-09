@@ -7,9 +7,16 @@ import {
   extractRunnerMessageText,
   formatRunnerToolStatuses,
   prepareSlackResponse,
+  prepareSlackResponseWithActions,
   sanitizeErrorForSlack,
 } from "./slack/formatting.ts";
 import { SlackResponder } from "./slack/responder.ts";
+import { SlackActionStore } from "./slack/action-store.ts";
+import {
+  cleanupThreadWorktrees,
+  disableAgentActionMessages,
+  registerAgentActionButtons,
+} from "./slack/action-buttons.ts";
 import { SessionManager } from "./session/manager.ts";
 import { createSessionStore } from "./session/store/factory.ts";
 import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
@@ -44,6 +51,7 @@ const app = createSlackApp(config);
 
 const store = createSessionStore(config);
 log.info("boot", `Session store: ${config.session.store}`);
+const actionStore = new SlackActionStore(resolve(config.session.sqlitePath));
 const memoryStore = createMemoryStore(config.memory.sqlitePath);
 const memoryIngestor = new MemoryIngestor(memoryStore);
 const sessionManager = new SessionManager(store, config);
@@ -102,21 +110,54 @@ const workflowController = new WorkflowController({
   isAdmin: (userId) => sessionManager.isAdmin(userId),
 });
 
-sessionManager.onResponse = (session, response) => {
-  const prepared = prepareSlackResponse(response);
+function isApprovedReviewResponse(response: string): boolean {
+  return /^review:\s*approved\b/i.test(response.trim());
+}
+
+sessionManager.onResponse = async (session, response) => {
+  const prepared = prepareSlackResponseWithActions(response);
   const agentName = session.activeAgentName ?? "lead";
   log.info(
     "response",
-    `thread=${session.threadId} agent=${agentName} len=${response.length} willPost=${prepared !== null}`,
+    `thread=${session.threadId} agent=${agentName} len=${response.length} willPost=${prepared !== null} actions=${prepared?.actions.length ?? 0}`,
   );
   responder.deleteStatus(session.channel, session.threadId, agentName);
   if (prepared !== null) {
-    responder.postResponse(
+    await disableAgentActionMessages(
+      actionStore,
+      app.client,
+      session.threadId,
+      agentName,
+    );
+    const buttonTokens = prepared.actions.map((action) => ({
+      action,
+      token: crypto.randomUUID(),
+    }));
+    const posted = await responder.postResponse(
       session.channel,
       session.threadId,
-      prepared,
+      prepared.text,
       session.slackIdentity,
+      buttonTokens.map(({ action, token }) => ({
+        token,
+        label: action.label,
+        style: action.style,
+      })),
     );
+    const first = posted[0];
+    if (first && buttonTokens.length > 0) {
+      await actionStore.createMany(
+        buttonTokens.map(({ action, token }) => ({
+          token,
+          channelId: session.channel,
+          threadTs: session.threadId,
+          messageTs: first.ts,
+          messageText: first.text,
+          action,
+          sourceAgent: agentName,
+        })),
+      );
+    }
   } else {
     log.info(
       "response",
@@ -189,12 +230,47 @@ sessionManager.onError = (session, error) => {
   );
 };
 
+sessionManager.onAgentDispatched = async (session, agentName) => {
+  await disableAgentActionMessages(
+    actionStore,
+    app.client,
+    session.threadId,
+    agentName,
+  );
+};
+
+sessionManager.onAgentSettled = async (session, agentName, response) => {
+  if (agentName !== "review" || !response || !isApprovedReviewResponse(response)) {
+    return;
+  }
+  const result = await cleanupThreadWorktrees(
+    session.threadId,
+    sessionManager,
+    worktreeManager,
+  );
+  await app.client.chat.postMessage({
+    channel: session.channel,
+    thread_ts: session.threadId,
+    text: result,
+  });
+  if (result.startsWith("Cleaned up worktree")) {
+    await disableAgentActionMessages(
+      actionStore,
+      app.client,
+      session.threadId,
+      "review",
+    );
+  }
+};
+
 registerHomeTab(app, store, config.session.homeWindowMs, workflowStore);
+registerAgentActionButtons(app, actionStore, sessionManager, worktreeManager);
 
 setupGracefulShutdown(sessionManager, devServerManager, async () => {
   await workflowScheduler.shutdown();
   workflowRegistry.stopWatching();
   workflowStore.close?.();
+  actionStore.close();
   memoryStore.close();
 });
 
