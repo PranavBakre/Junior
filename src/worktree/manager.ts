@@ -1,5 +1,10 @@
 import type { RepoConfig } from "../config.ts";
 
+export interface WorktreeStatus {
+  tracked: string[];
+  untracked: string[];
+}
+
 export class WorktreeManager {
   private repos: RepoConfig[];
 
@@ -131,6 +136,22 @@ export class WorktreeManager {
   async isWorktreeDirty(worktreePath: string): Promise<boolean> {
     const output = await this.runGit(["status", "--porcelain"], worktreePath);
     return output.trim().length > 0;
+  }
+
+  async getWorktreeStatus(worktreePath: string): Promise<WorktreeStatus> {
+    const output = await this.runGit(["status", "--porcelain"], worktreePath);
+    const status: WorktreeStatus = { tracked: [], untracked: [] };
+    for (const line of output.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const path = line.slice(3).trim();
+      if (!path) continue;
+      if (line.startsWith("?? ")) {
+        status.untracked.push(path);
+      } else {
+        status.tracked.push(path);
+      }
+    }
+    return status;
   }
 
   /**

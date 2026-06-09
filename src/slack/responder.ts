@@ -3,6 +3,17 @@ import type { AgentIdentity } from "../session/types.ts";
 import { splitResponse } from "./formatting.ts";
 import { log } from "../logger.ts";
 
+export interface SlackMessageButton {
+  token: string;
+  label: string;
+  style?: "primary" | "danger";
+}
+
+export interface PostedSlackMessage {
+  ts: string;
+  text: string;
+}
+
 interface StatusEntry {
   messageTs: string;
   lastUpdateTime: number;
@@ -11,6 +22,29 @@ interface StatusEntry {
 function preview(text: string, n = 80): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > n ? `${flat.slice(0, n)}…` : flat;
+}
+
+function buildActionBlocks(text: string, buttons: SlackMessageButton[]): Array<Record<string, unknown>> {
+  return [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text },
+    },
+    {
+      type: "actions",
+      elements: buttons.slice(0, 5).map((button) => ({
+        type: "button",
+        text: {
+          type: "plain_text",
+          text: button.label.slice(0, 30),
+          emoji: true,
+        },
+        action_id: "junior_agent_action",
+        value: button.token,
+        ...(button.style ? { style: button.style } : {}),
+      })),
+    },
+  ];
 }
 
 export class SlackResponder {
@@ -40,8 +74,10 @@ export class SlackResponder {
     threadTs: string,
     text: string,
     identity?: AgentIdentity,
-  ): Promise<void> {
+    buttons: SlackMessageButton[] = [],
+  ): Promise<PostedSlackMessage[]> {
     const chunks = splitResponse(text);
+    const posted: PostedSlackMessage[] = [];
     log.info(
       "responder",
       `post.start thread=${threadTs} channel=${channel} chunks=${chunks.length} len=${text.length}`,
@@ -49,10 +85,14 @@ export class SlackResponder {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       try {
+        const blocks = i === 0 && buttons.length > 0
+          ? buildActionBlocks(chunk, buttons)
+          : undefined;
         const message = {
           channel,
           thread_ts: threadTs,
           text: chunk,
+          ...(blocks ? { blocks } : {}),
           ...(identity
             ? {
                 username: identity.username,
@@ -70,12 +110,32 @@ export class SlackResponder {
           "responder",
           `post.ok thread=${threadTs} chunk=${i + 1}/${chunks.length} ts=${result.ts ?? "?"} preview="${preview(chunk)}"`,
         );
+        if (result.ts) {
+          posted.push({ ts: result.ts, text: chunk });
+        }
       } catch (err) {
         log.error(
           "responder",
           `post.fail thread=${threadTs} chunk=${i + 1}/${chunks.length} err=${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    }
+    return posted;
+  }
+
+  async removeMessageActions(channel: string, ts: string, text: string): Promise<void> {
+    try {
+      await this.app.client.chat.update({
+        channel,
+        ts,
+        text,
+        blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
+      });
+    } catch (err) {
+      log.error(
+        "responder",
+        `actions.disable.fail channel=${channel} ts=${ts} err=${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

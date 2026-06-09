@@ -53,6 +53,31 @@ export function extractRunnerMessageText(event: RunnerEvent): string | null {
 }
 
 export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
+export const ACTIONS_START = "<junior-actions>";
+export const ACTIONS_END = "</junior-actions>";
+
+export type SlackActionButtonStyle = "primary" | "danger";
+
+export type SlackActionButtonSpec =
+  | {
+      id: string;
+      label: string;
+      style?: SlackActionButtonStyle;
+      type: "dispatch_agent";
+      agent: string;
+      prompt: string;
+    }
+  | {
+      id: string;
+      label: string;
+      style?: SlackActionButtonStyle;
+      type: "cleanup_worktree";
+    };
+
+export interface SlackResponseWithActions {
+  text: string;
+  actions: SlackActionButtonSpec[];
+}
 
 const MAX_SLACK_ERROR_LENGTH = 500;
 const PROMPT_LEAK_MARKERS = [
@@ -116,6 +141,107 @@ export function prepareSlackResponse(text: string): string | null {
     if (!normalized) return null;
   }
   return normalized;
+}
+
+export function prepareSlackResponseWithActions(
+  text: string,
+): SlackResponseWithActions | null {
+  const prepared = prepareSlackResponse(text);
+  if (prepared === null) return null;
+
+  const extracted = extractJuniorActions(prepared);
+  if (!extracted) return { text: prepared, actions: [] };
+
+  const visibleText = extracted.text.trim();
+  if (!visibleText) return null;
+
+  return {
+    text: visibleText,
+    actions: parseActionButtonSpecs(extracted.jsonText),
+  };
+}
+
+function extractJuniorActions(
+  text: string,
+): { text: string; jsonText: string } | null {
+  const start = text.indexOf(ACTIONS_START);
+  if (start === -1) return null;
+  const end = text.indexOf(ACTIONS_END, start + ACTIONS_START.length);
+  if (end === -1) {
+    return {
+      text: text.slice(0, start).trimEnd(),
+      jsonText: "",
+    };
+  }
+
+  return {
+    text: `${text.slice(0, start)}${text.slice(end + ACTIONS_END.length)}`.trim(),
+    jsonText: text.slice(start + ACTIONS_START.length, end).trim(),
+  };
+}
+
+export function parseActionButtonSpecs(jsonText: string): SlackActionButtonSpec[] {
+  if (!jsonText) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const actions: SlackActionButtonSpec[] = [];
+  for (const candidate of parsed) {
+    const action = normalizeActionButtonSpec(candidate);
+    if (action) actions.push(action);
+    if (actions.length >= 5) break;
+  }
+  return actions;
+}
+
+function normalizeActionButtonSpec(value: unknown): SlackActionButtonSpec | null {
+  if (!isRecord(value)) return null;
+  const id = normalizeActionString(value.id, 80);
+  const label = normalizeActionString(value.label, 30);
+  const style = normalizeActionStyle(value.style);
+  const type = value.type;
+  if (!id || !label) return null;
+
+  if (type === "dispatch_agent") {
+    const agent = normalizeActionString(value.agent, 80);
+    const prompt = normalizeActionString(value.prompt, 2_000);
+    if (!agent || !prompt) return null;
+    return {
+      id,
+      label,
+      ...(style ? { style } : {}),
+      type,
+      agent,
+      prompt,
+    };
+  }
+
+  if (type === "cleanup_worktree") {
+    return {
+      id,
+      label,
+      ...(style ? { style } : {}),
+      type,
+    };
+  }
+
+  return null;
+}
+
+function normalizeActionString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLength) return null;
+  return trimmed;
+}
+
+function normalizeActionStyle(value: unknown): SlackActionButtonStyle | null {
+  return value === "primary" || value === "danger" ? value : null;
 }
 
 /**
