@@ -130,7 +130,10 @@ export async function cleanupThreadWorktrees(
 
   const unsafe: string[] = [];
   for (const worktree of worktrees) {
-    const status = await worktreeManager.getWorktreeStatus(worktree.path);
+    const status = await worktreeManager.getWorktreeStatus(
+      worktree.path,
+      worktree.repo,
+    );
     const reason = unsafeCleanupReason(status);
     if (reason) unsafe.push(`${worktree.repo}: ${reason}`);
   }
@@ -169,6 +172,9 @@ function registeredWorktrees(session: ThreadSession): Array<{ repo: string; path
 }
 
 function unsafeCleanupReason(status: WorktreeStatus): string | null {
+  if (status.unpushedCommits > 0) {
+    return `branch has ${status.unpushedCommits} commit${status.unpushedCommits === 1 ? "" : "s"} not in ${status.unpushedBase ?? "upstream"}`;
+  }
   if (status.tracked.length > 0) {
     return `tracked changes present (${status.tracked.join(", ")})`;
   }
