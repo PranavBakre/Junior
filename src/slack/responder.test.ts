@@ -25,6 +25,7 @@ function mockApp(stubs?: {
       username?: string;
       icon_emoji?: string;
       icon_url?: string;
+      blocks?: Array<Record<string, unknown>>;
     }>;
     delete: Array<{ channel: string; ts: string }>;
     update: Array<{ channel: string; ts: string; text: string }>;
@@ -479,6 +480,80 @@ describe("SlackResponder", () => {
       expect(calls.postMessage[0].username).toBe("GitHub Access");
       expect(calls.postMessage[0].icon_url).toBe("https://example.com/icon.png");
       expect(calls.postMessage[0].icon_emoji).toBeUndefined();
+    });
+
+    it("renders action buttons on the first response chunk", async () => {
+      const { app, calls } = mockApp({
+        postMessageResults: [{ ts: "response-ts-1" }],
+      });
+      const responder = new SlackResponder(app);
+
+      const posted = await responder.postResponse(
+        "C123",
+        "1234567890.123456",
+        "review: changes-requested",
+        { username: "Reviewer", iconEmoji: ":eyes:" },
+        [
+          { token: "tok-1", label: "Re-review", style: "primary" },
+          { token: "tok-2", label: "Cleanup worktree" },
+        ],
+      );
+
+      expect(posted).toEqual([
+        { ts: "response-ts-1", text: "review: changes-requested" },
+      ]);
+      expect(calls.postMessage[0].blocks).toEqual([
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: "review: changes-requested" },
+        },
+        {
+          type: "actions",
+          elements: [
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Re-review", emoji: true },
+              action_id: "junior_agent_action",
+              value: "tok-1",
+              style: "primary",
+            },
+            {
+              type: "button",
+              text: { type: "plain_text", text: "Cleanup worktree", emoji: true },
+              action_id: "junior_agent_action",
+              value: "tok-2",
+            },
+          ],
+        },
+      ]);
+    });
+
+    it("caps the block-bearing chunk at Slack's 3000 char section limit", async () => {
+      const { app, calls } = mockApp({
+        postMessageResults: [{ ts: "response-ts-1" }, { ts: "response-ts-2" }],
+      });
+      const responder = new SlackResponder(app);
+      const longText = "a".repeat(3_500);
+
+      const posted = await responder.postResponse(
+        "C123",
+        "1234567890.123456",
+        longText,
+        undefined,
+        [{ token: "tok-1", label: "Re-review" }],
+      );
+
+      expect(posted).toEqual([
+        { ts: "response-ts-1", text: "a".repeat(3_000) },
+        { ts: "response-ts-2", text: "a".repeat(500) },
+      ]);
+      expect(calls.postMessage).toHaveLength(2);
+      expect(calls.postMessage[0].text).toHaveLength(3_000);
+      expect(calls.postMessage[0].blocks?.[0]).toEqual({
+        type: "section",
+        text: { type: "mrkdwn", text: "a".repeat(3_000) },
+      });
+      expect(calls.postMessage[1].blocks).toBeUndefined();
     });
   });
 });
