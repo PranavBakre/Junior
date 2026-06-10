@@ -82,7 +82,7 @@ export class SessionManager {
   ) {
     this.store = store;
     this.config = config;
-    this.spawnRunner = spawnRunner ?? defaultSpawnRunner;
+    this.spawnRunner = spawnRunner ?? defaultSpawnRunnerForRuntime;
     this.drivers = drivers ?? createDrivers({
       spawnFn: (session, prompt, _claudeConfig, targetRepoCwd, botToken, agentIdentity) =>
         this.spawnRunner(
@@ -1924,3 +1924,12 @@ export class SessionManager {
     return `${threadId}:${agentName}`;
   }
 }
+
+const defaultSpawnRunnerForRuntime: SpawnRunnerFn =
+  process.env.NODE_ENV === "test" && process.env.JUNIOR_ALLOW_REAL_RUNNER_IN_TESTS !== "1"
+    ? () => {
+        throw new Error(
+          "SessionManager tests must inject a mock spawnRunner; refusing to launch a real runner.",
+        );
+      }
+    : defaultSpawnRunner;
