@@ -14,6 +14,8 @@ export interface PostedSlackMessage {
   text: string;
 }
 
+const SLACK_SECTION_TEXT_LIMIT = 3_000;
+
 interface StatusEntry {
   messageTs: string;
   lastUpdateTime: number;
@@ -76,7 +78,12 @@ export class SlackResponder {
     identity?: AgentIdentity,
     buttons: SlackMessageButton[] = [],
   ): Promise<PostedSlackMessage[]> {
-    const chunks = splitResponse(text);
+    const chunks =
+      buttons.length > 0
+        ? splitResponse(text, SLACK_SECTION_TEXT_LIMIT).flatMap((chunk) =>
+            splitHard(chunk, SLACK_SECTION_TEXT_LIMIT),
+          )
+        : splitResponse(text);
     const posted: PostedSlackMessage[] = [];
     log.info(
       "responder",
@@ -367,4 +374,13 @@ export class SlackResponder {
     }
     log.info("responder", `status.clear.thread thread=${threadTs}`);
   }
+}
+
+function splitHard(text: string, maxLength: number): string[] {
+  if (text.length <= maxLength) return [text];
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += maxLength) {
+    chunks.push(text.slice(i, i + maxLength));
+  }
+  return chunks;
 }
