@@ -1,5 +1,12 @@
 import type { RepoConfig } from "../config.ts";
 
+export interface WorktreeStatus {
+  tracked: string[];
+  untracked: string[];
+  unpushedCommits: number;
+  unpushedBase: string | null;
+}
+
 export class WorktreeManager {
   private repos: RepoConfig[];
 
@@ -133,6 +140,53 @@ export class WorktreeManager {
     return output.trim().length > 0;
   }
 
+  async getWorktreeStatus(
+    worktreePath: string,
+    repoName?: string,
+  ): Promise<WorktreeStatus> {
+    const output = await this.runGit(["status", "--porcelain"], worktreePath);
+    const status: WorktreeStatus = {
+      tracked: [],
+      untracked: [],
+      ...(await this.getUnpushedStatus(worktreePath, repoName)),
+    };
+    for (const line of output.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const path = line.slice(3).trim();
+      if (!path) continue;
+      if (line.startsWith("?? ")) {
+        status.untracked.push(path);
+      } else {
+        status.tracked.push(path);
+      }
+    }
+    return status;
+  }
+
+  private async getUnpushedStatus(
+    worktreePath: string,
+    repoName?: string,
+  ): Promise<Pick<WorktreeStatus, "unpushedCommits" | "unpushedBase">> {
+    const upstream = await this.tryRunGit(
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+      worktreePath,
+    );
+    const repo = repoName ? this.getRepo(repoName) : undefined;
+    const base = upstream.trim() || repo?.defaultBase || null;
+    if (!base) {
+      return { unpushedCommits: 0, unpushedBase: null };
+    }
+
+    const count = await this.tryRunGit(
+      ["rev-list", "--count", `${base}..HEAD`],
+      worktreePath,
+    );
+    return {
+      unpushedCommits: Number.parseInt(count.trim() || "0", 10) || 0,
+      unpushedBase: base,
+    };
+  }
+
   /**
    * Get the worktree path for a thread (without creating it).
    *
@@ -181,6 +235,14 @@ export class WorktreeManager {
       throw new Error(`git ${args[0]} failed: ${stderr.trim()}`);
     }
     return await new Response(proc.stdout).text();
+  }
+
+  private async tryRunGit(args: string[], cwd: string): Promise<string> {
+    try {
+      return await this.runGit(args, cwd);
+    } catch {
+      return "";
+    }
   }
 
   /**

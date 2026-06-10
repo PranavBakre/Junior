@@ -441,4 +441,45 @@ describe("WorktreeManager.createWorktree", () => {
       `${repoRoot}.junior-worktrees/slack-t1`,
     );
   });
+
+  it("reports zero unpushed commits for a fresh worktree", async () => {
+    const repos: RepoConfig[] = [
+      { name: "clean-status", path: repoRoot, defaultBase: "origin/main" },
+    ];
+    const wm = new WorktreeManager(repos);
+
+    const wtPath = await wm.createWorktree("clean-status", "clean-status-thread");
+    const status = await wm.getWorktreeStatus(wtPath, "clean-status");
+
+    expect(status.tracked).toEqual([]);
+    expect(status.untracked).toEqual([]);
+    expect(status.unpushedCommits).toBe(0);
+    expect(status.unpushedBase).toBe("origin/main");
+
+    await wm.removeWorktree("clean-status", "clean-status-thread");
+  });
+
+  it("detects committed local-only work when no upstream branch is configured", async () => {
+    const repos: RepoConfig[] = [
+      { name: "unpushed-status", path: repoRoot, defaultBase: "origin/main" },
+    ];
+    const wm = new WorktreeManager(repos);
+
+    const wtPath = await wm.createWorktree(
+      "unpushed-status",
+      "unpushed-status-thread",
+    );
+    writeFileSync(join(wtPath, "LOCAL.md"), "local only\n");
+    await runIn(wtPath, ["git", "add", "LOCAL.md"]);
+    await runIn(wtPath, ["git", "commit", "-q", "-m", "local only"]);
+
+    const status = await wm.getWorktreeStatus(wtPath, "unpushed-status");
+
+    expect(status.tracked).toEqual([]);
+    expect(status.untracked).toEqual([]);
+    expect(status.unpushedCommits).toBe(1);
+    expect(status.unpushedBase).toBe("origin/main");
+
+    await wm.removeWorktree("unpushed-status", "unpushed-status-thread");
+  });
 });

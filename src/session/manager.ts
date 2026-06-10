@@ -65,7 +65,16 @@ export class SessionManager {
   selfBotId?: string;
   agentRouter?: AgentRouter;
   worktreeManager?: WorktreeManager;
-  onResponse?: (session: ThreadSession, response: string) => void;
+  onResponse?: (session: ThreadSession, response: string) => unknown;
+  onAgentSettled?: (
+    session: ThreadSession,
+    agentName: string,
+    response: string | null,
+  ) => void | Promise<void>;
+  onAgentDispatched?: (
+    session: ThreadSession,
+    agentName: string,
+  ) => void | Promise<void>;
   onEvent?: (session: ThreadSession, event: RunnerEvent) => void;
   onMessageBuffered?: (event: SlackMessageEvent) => void;
   onError?: (session: ThreadSession, error: string | null) => void;
@@ -253,6 +262,7 @@ export class SessionManager {
     if (session.muted) return;
 
     const agentSession = this.getOrCreateAgentSession(session, agentName);
+    await this.onAgentDispatched?.(session, agentName);
 
     if (agentSession.status === "busy") {
       agentSession.pendingMessages.push(this.toPendingMessage(event));
@@ -294,6 +304,8 @@ export class SessionManager {
 
     if (session.muted) return;
 
+    await this.onAgentDispatched?.(session, agentName);
+
     if (session.status === "busy") {
       session.pendingMessages.push({
         ...this.toPendingMessage(event),
@@ -314,6 +326,10 @@ export class SessionManager {
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
     return this.store.get(threadId);
+  }
+
+  async updateSession(threadId: string, session: ThreadSession): Promise<void> {
+    await this.store.set(threadId, session);
   }
 
   async resetSession(threadId: string): Promise<void> {
@@ -1597,7 +1613,7 @@ export class SessionManager {
           `thread=${fresh.threadId} agent=${agentName} suppressed reason=duplicate-slack-tool-post`,
         );
       } else {
-        this.onResponse?.(
+        await this.onResponse?.(
           this.buildRunSession(fresh, agentName, agentIdentity),
           result.response,
         );
@@ -1651,6 +1667,7 @@ export class SessionManager {
         agentSession.lastActivity = Date.now();
       }
       await this.store.set(fresh.threadId, fresh);
+      await this.onAgentSettled?.(fresh, agentName, result.response ?? null);
     }
 
     if (internalDispatchDirectives.length > 0) {
