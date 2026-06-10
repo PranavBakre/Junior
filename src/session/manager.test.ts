@@ -84,6 +84,19 @@ import { InMemorySessionStore } from "./store/memory.ts";
 import type { DriverMap } from "../claude/factory.ts";
 import type { ClaudeDriver } from "../claude/driver.ts";
 
+function createTestManager(
+  sessionStore: InMemorySessionStore,
+  config: Config = testConfig,
+  drivers?: DriverMap,
+): InstanceType<typeof SessionManager> {
+  return new SessionManager(
+    sessionStore,
+    config,
+    ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
+    drivers,
+  );
+}
+
 /**
  * Minimal fake driver map for tmux teardown tests — records close() calls so
  * the test can assert on (threadId, agentName) without booting a real tmux.
@@ -298,11 +311,7 @@ describe("SessionManager", () => {
 
     currentHandle = createMockHandle();
     mockSpawnFn = mock(() => currentHandle);
-    manager = new SessionManager(
-      store,
-      testConfig,
-      ((...args: Parameters<SpawnRunnerFn>) => mockSpawnFn(...args)) as SpawnRunnerFn,
-    );
+    manager = createTestManager(store);
   });
 
   // --- Session creation and basic flow ---
@@ -988,7 +997,7 @@ describe("SessionManager", () => {
       const adminConfig: Config = { ...testConfig, adminSlackUserId: "U-ADMIN" };
 
       it("non-admin gets ❌ reaction and command is ignored", async () => {
-        const adminManager = new SessionManager(store, adminConfig);
+        const adminManager = createTestManager(store, adminConfig);
         const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
         const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
         adminManager.onReaction = onReaction;
@@ -1007,7 +1016,7 @@ describe("SessionManager", () => {
       });
 
       it("non-admin bare !reset is silently ❌'d (no usage leak)", async () => {
-        const adminManager = new SessionManager(store, adminConfig);
+        const adminManager = createTestManager(store, adminConfig);
         const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
         const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
         adminManager.onReaction = onReaction;
@@ -1026,7 +1035,7 @@ describe("SessionManager", () => {
       });
 
       it("admin can run !reset all", async () => {
-        const adminManager = new SessionManager(store, adminConfig);
+        const adminManager = createTestManager(store, adminConfig);
         const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
         adminManager.onCommandResponse = onCmd;
         await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
@@ -1040,7 +1049,7 @@ describe("SessionManager", () => {
       });
 
       it("non-admin !mute is ignored with ❌", async () => {
-        const adminManager = new SessionManager(store, adminConfig);
+        const adminManager = createTestManager(store, adminConfig);
         const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
         adminManager.onReaction = onReaction;
         await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
@@ -1070,7 +1079,7 @@ describe("SessionManager", () => {
 
       it("admin listed in store.extraAdmins() is admitted", async () => {
         store.extraAdmins = async () => new Set(["U-DB-ADMIN"]);
-        const adminManager = new SessionManager(store, adminConfig);
+        const adminManager = createTestManager(store, adminConfig);
         const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
         adminManager.onReaction = onReaction;
         await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
@@ -1089,7 +1098,7 @@ describe("SessionManager", () => {
         // only kicks in when neither tier is configured.
         store.extraAdmins = async () => new Set(["U-DB-ADMIN"]);
         const openConfig: Config = { ...testConfig, adminSlackUserId: null };
-        const adminManager = new SessionManager(store, openConfig);
+        const adminManager = createTestManager(store, openConfig);
         const onReaction = mock((_e: SlackMessageEvent, _emoji: string) => {});
         adminManager.onReaction = onReaction;
         await adminManager.handleMessage(makeEvent({ user: "U-DB-ADMIN", text: "go" }));
@@ -1147,7 +1156,7 @@ describe("SessionManager", () => {
         ...adminConfig,
         threadArchives: { dir: archiveDir },
       };
-      const adminManager = new SessionManager(store, clearConfig);
+      const adminManager = createTestManager(store, clearConfig);
       adminManager.slackApp = makeSlackApp(deleted);
       adminManager.selfBotId = "B_SELF";
       adminManager.botUserId = "U_BOT";
@@ -1175,7 +1184,7 @@ describe("SessionManager", () => {
         ...adminConfig,
         threadArchives: { dir: archiveDir },
       };
-      const adminManager = new SessionManager(store, clearConfig);
+      const adminManager = createTestManager(store, clearConfig);
       adminManager.slackApp = makeSlackApp(deleted, new Set(["101.0"]));
       adminManager.selfBotId = "B_SELF";
       adminManager.botUserId = "U_BOT";
@@ -1200,7 +1209,7 @@ describe("SessionManager", () => {
         ...adminConfig,
         threadArchives: { dir: archiveDir },
       };
-      const adminManager = new SessionManager(store, clearConfig);
+      const adminManager = createTestManager(store, clearConfig);
       adminManager.slackApp = makeSlackApp(deleted);
       adminManager.selfBotId = "B_SELF";
 
@@ -1226,7 +1235,7 @@ describe("SessionManager", () => {
         ...adminConfig,
         threadArchives: { dir: archiveDir },
       };
-      const adminManager = new SessionManager(store, clearConfig);
+      const adminManager = createTestManager(store, clearConfig);
       adminManager.slackApp = makeSlackApp(deleted);
       adminManager.selfBotId = "B_SELF";
 
@@ -1650,7 +1659,7 @@ describe("SessionManager", () => {
 
     it("!reset all closes tmux using row's topLevelTmuxAgent (not literal 'lead')", async () => {
       const { drivers, closeCalls } = makeFakeDrivers();
-      manager = new SessionManager(store, testConfig, undefined, drivers);
+      manager = createTestManager(store, testConfig, drivers);
       await seedTmuxSession({ topAgent: "default" });
 
       await manager.handleMessage(makeEvent({ command: "reset", text: "all", ts: "ts-reset" }));
@@ -1662,7 +1671,7 @@ describe("SessionManager", () => {
 
     it("!driver headless closes the persisted tmux session before clearing tmuxSessionName", async () => {
       const { drivers, closeCalls } = makeFakeDrivers();
-      manager = new SessionManager(store, testConfig, undefined, drivers);
+      manager = createTestManager(store, testConfig, drivers);
       await seedTmuxSession({ topAgent: "default" });
 
       await manager.handleMessage(makeEvent({ command: "driver", text: "headless", ts: "ts-drv" }));
@@ -1677,7 +1686,7 @@ describe("SessionManager", () => {
 
     it("!reset <lead|default> tears down tmux for the top-level agent", async () => {
       const { drivers, closeCalls } = makeFakeDrivers();
-      manager = new SessionManager(store, testConfig, undefined, drivers);
+      manager = createTestManager(store, testConfig, drivers);
       await seedTmuxSession({ topAgent: "default" });
 
       await manager.handleMessage(makeEvent({ command: "reset", text: "default", ts: "ts-reset" }));
@@ -1695,7 +1704,7 @@ describe("SessionManager", () => {
       // the !driver handler, the row sticks at "busy" forever — every
       // subsequent message buffers with no drain ever firing.
       const { drivers } = makeFakeDrivers();
-      manager = new SessionManager(store, testConfig, undefined, drivers);
+      manager = createTestManager(store, testConfig, drivers);
       await seedTmuxSession({ topAgent: "default" });
 
       // Simulate mid-turn: flip status to busy + add an agent session also busy.
@@ -1985,7 +1994,7 @@ describe("SessionManager", () => {
           "C-BUGS": { agentType: "lead" },
         },
       };
-      const autoManager = new SessionManager(autoStore, autoConfig);
+      const autoManager = createTestManager(autoStore, autoConfig);
 
       // Seed a session with one human already, in the auto-trigger channel
       await autoManager.handleMessage(
