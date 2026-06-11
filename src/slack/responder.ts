@@ -2,6 +2,7 @@ import type { App } from "@slack/bolt";
 import type { AgentIdentity } from "../session/types.ts";
 import { splitResponse } from "./formatting.ts";
 import { log } from "../logger.ts";
+import { ACTION_BUTTON_ID } from "./action-buttons.ts";
 
 export interface SlackMessageButton {
   token: string;
@@ -26,7 +27,7 @@ function preview(text: string, n = 80): string {
   return flat.length > n ? `${flat.slice(0, n)}…` : flat;
 }
 
-function buildActionBlocks(text: string, buttons: SlackMessageButton[]): Array<Record<string, unknown>> {
+export function buildActionBlocks(text: string, buttons: SlackMessageButton[]): Array<Record<string, unknown>> {
   return [
     {
       type: "section",
@@ -34,19 +35,25 @@ function buildActionBlocks(text: string, buttons: SlackMessageButton[]): Array<R
     },
     {
       type: "actions",
-      elements: buttons.slice(0, 5).map((button) => ({
+      elements: buttons.slice(0, 5).map((button, index) => ({
         type: "button",
         text: {
           type: "plain_text",
           text: button.label.slice(0, 30),
           emoji: true,
         },
-        action_id: "junior_agent_action",
+        action_id: `${ACTION_BUTTON_ID}:${index}`,
         value: button.token,
         ...(button.style ? { style: button.style } : {}),
       })),
     },
   ];
+}
+
+export function splitActionMessageText(text: string): string[] {
+  return splitResponse(text, SLACK_SECTION_TEXT_LIMIT).flatMap((chunk) =>
+    splitHard(chunk, SLACK_SECTION_TEXT_LIMIT),
+  );
 }
 
 export class SlackResponder {
@@ -78,12 +85,9 @@ export class SlackResponder {
     identity?: AgentIdentity,
     buttons: SlackMessageButton[] = [],
   ): Promise<PostedSlackMessage[]> {
-    const chunks =
-      buttons.length > 0
-        ? splitResponse(text, SLACK_SECTION_TEXT_LIMIT).flatMap((chunk) =>
-            splitHard(chunk, SLACK_SECTION_TEXT_LIMIT),
-          )
-        : splitResponse(text);
+    const chunks = buttons.length > 0
+      ? splitActionMessageText(text)
+      : splitResponse(text);
     const posted: PostedSlackMessage[] = [];
     log.info(
       "responder",
