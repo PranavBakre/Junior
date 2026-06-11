@@ -8,6 +8,10 @@ import { log } from "../logger.ts";
 import type { SlackActionRecord, SlackActionStore } from "./action-store.ts";
 
 export const ACTION_BUTTON_ID = "junior_agent_action";
+export const ACTION_BUTTON_ID_PATTERN = new RegExp(`^${ACTION_BUTTON_ID}(?::\\d+)?$`);
+export interface RegisterAgentActionButtonsOptions {
+  supportChannels?: ReadonlySet<string>;
+}
 
 const ALLOWED_UNTRACKED_EXACT = new Set(["learnings.md", ".DS_Store"]);
 const ALLOWED_UNTRACKED_PREFIXES = [".codex/", ".claude/"];
@@ -17,8 +21,9 @@ export function registerAgentActionButtons(
   actionStore: SlackActionStore,
   sessionManager: SessionManager,
   worktreeManager: WorktreeManager,
+  options: RegisterAgentActionButtonsOptions = {},
 ): void {
-  app.action(ACTION_BUTTON_ID, async ({ ack, body, client }) => {
+  app.action(ACTION_BUTTON_ID_PATTERN, async ({ ack, body, client }) => {
     await ack();
 
     const token = actionTokenFromBody(body);
@@ -36,7 +41,7 @@ export function registerAgentActionButtons(
 
     try {
       if (record.action.type === "dispatch_agent") {
-        await handleDispatch(record, userId, sessionManager);
+        await handleDispatch(record, userId, sessionManager, options.supportChannels);
       } else if (record.action.type === "cleanup_worktree") {
         await handleCleanup(record, sessionManager, worktreeManager, client);
       }
@@ -76,11 +81,13 @@ async function handleDispatch(
   record: SlackActionRecord,
   userId: string,
   sessionManager: SessionManager,
+  supportChannels: ReadonlySet<string> | undefined,
 ): Promise<void> {
   const action = record.action;
   if (action.type !== "dispatch_agent") return;
-  if (!isPersistentAgent(action.agent) && action.agent !== "lead" && action.agent !== "default") {
-    throw new Error(`unknown agent: ${action.agent}`);
+  const targetAgent = resolveDispatchAgent(record, supportChannels);
+  if (!isPersistentAgent(targetAgent) && targetAgent !== "lead" && targetAgent !== "default") {
+    throw new Error(`unknown agent: ${targetAgent}`);
   }
 
   await sessionManager.handleAgentMessage(
@@ -93,8 +100,20 @@ async function handleDispatch(
       command: null,
       dedupeKey: `button:${record.token}`,
     },
-    action.agent,
+    targetAgent,
   );
+}
+
+export function resolveDispatchAgent(
+  record: Pick<SlackActionRecord, "action" | "channelId">,
+  supportChannels: ReadonlySet<string> | undefined,
+): string {
+  const action = record.action;
+  if (action.type !== "dispatch_agent") return "";
+  if (action.id === "review:make-fix") {
+    return supportChannels?.has(record.channelId) ? "thinker" : "default";
+  }
+  return action.agent;
 }
 
 async function handleCleanup(

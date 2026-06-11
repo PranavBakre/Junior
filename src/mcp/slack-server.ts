@@ -29,6 +29,10 @@ import {
 import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
+import { prepareSlackResponseWithActions } from "../slack/formatting.ts";
+import { buildActionBlocks, splitActionMessageText } from "../slack/responder.ts";
+import type { SlackActionStore } from "../slack/action-store.ts";
+import { disableAgentActionMessages } from "../slack/action-buttons.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -39,6 +43,7 @@ let slack: WebClient;
 let sessionStore: SessionStore | undefined;
 let worktreeManager: WorktreeManager | undefined;
 let sessionManager: SessionManager | undefined;
+let slackActionStore: SlackActionStore | undefined;
 
 function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
   server.registerTool(
@@ -69,20 +74,78 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         };
       }
 
+      const prepared = prepareSlackResponseWithActions(text);
+      if (prepared === null) {
+        return {
+          content: [{ type: "text" as const, text: "Message suppressed" }],
+        };
+      }
+
       const resolvedIconUrl = icon_url ?? image_url;
       const identity = {
         ...(username ? { username } : {}),
         ...(icon_emoji ? { icon_emoji } : {}),
         ...(resolvedIconUrl && !icon_emoji ? { icon_url: resolvedIconUrl } : {}),
       };
-      const message = reply_broadcast && thread_ts
-        ? { channel: channel_id, text, thread_ts, reply_broadcast: true, ...identity }
-        : thread_ts
-          ? { channel: channel_id, text, thread_ts, ...identity }
-          : { channel: channel_id, text, ...identity };
-      const result = await slack.chat.postMessage(message as Parameters<typeof slack.chat.postMessage>[0]);
+      const sourceAgent = runContext?.agent ?? "mcp";
+      if (slackActionStore && thread_ts && prepared.actions.length > 0) {
+        await disableAgentActionMessages(
+          slackActionStore,
+          slack,
+          thread_ts,
+          sourceAgent,
+        );
+      }
+      const buttonTokens = slackActionStore
+        ? prepared.actions.map((action) => ({
+            action,
+            token: crypto.randomUUID(),
+          }))
+        : [];
+      const chunks = buttonTokens.length > 0
+        ? splitActionMessageText(prepared.text)
+        : [prepared.text];
+      const blocks = buttonTokens.length > 0
+        ? buildActionBlocks(
+            chunks[0] ?? prepared.text,
+            buttonTokens.map(({ action, token }) => ({
+              token,
+              label: action.label,
+              style: action.style,
+            })),
+          )
+        : undefined;
+      let firstResult: Awaited<ReturnType<typeof slack.chat.postMessage>> | null = null;
+      let firstText = chunks[0] ?? prepared.text;
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i]!;
+        const chunkBlocks = i === 0 ? blocks : undefined;
+        const message = reply_broadcast && thread_ts
+          ? { channel: channel_id, text: chunk, thread_ts, reply_broadcast: true, ...(chunkBlocks ? { blocks: chunkBlocks } : {}), ...identity }
+          : thread_ts
+            ? { channel: channel_id, text: chunk, thread_ts, ...(chunkBlocks ? { blocks: chunkBlocks } : {}), ...identity }
+            : { channel: channel_id, text: chunk, ...(chunkBlocks ? { blocks: chunkBlocks } : {}), ...identity };
+        const result = await slack.chat.postMessage(message as Parameters<typeof slack.chat.postMessage>[0]);
+        if (!firstResult) {
+          firstResult = result;
+          firstText = chunk;
+        }
+      }
+      if (slackActionStore && firstResult?.ts && buttonTokens.length > 0) {
+        await slackActionStore.createMany(
+          buttonTokens.map(({ action, token }) => ({
+            token,
+            channelId: channel_id,
+            threadTs: thread_ts ?? firstResult.ts!,
+            messageTs: firstResult.ts!,
+            messageText: firstText,
+            action,
+            sourceAgent,
+          })),
+        );
+      }
       return {
-        content: [{ type: "text" as const, text: `Message sent (ts: ${result.ts})` }],
+        content: [{ type: "text" as const, text: `Message sent (ts: ${firstResult?.ts})` }],
       };
     },
   );
@@ -813,11 +876,13 @@ export function startMcpServer(
   store?: SessionStore,
   wtManager?: WorktreeManager,
   manager?: SessionManager,
+  actionStore?: SlackActionStore,
 ): void {
   slack = new WebClient(botToken);
   sessionStore = store;
   worktreeManager = wtManager;
   sessionManager = manager;
+  slackActionStore = actionStore;
 
   const httpServer = createServer(async (req, res) => {
     const pathname = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`).pathname;
