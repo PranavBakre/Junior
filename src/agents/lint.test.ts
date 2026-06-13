@@ -117,6 +117,8 @@ describe("prompt lint", () => {
 
       expect(content).not.toContain("<reproduced | partial | mismatch | not-reproduced>");
       expect(content).not.toContain("Honest about what was seen: `reproduced`, `partial`, `mismatch`, or `not-reproduced`");
+      expect(content).toContain("read whichever observability files exist");
+      expect(content).toContain("Missing observability files are expected");
     });
 
     it("thinker and review prompts honor requested depth", async () => {
@@ -126,6 +128,9 @@ describe("prompt lint", () => {
       for (const marker of ["triage", "focused", "full", "data-repair", "known-fix"]) {
         expect(thinker).toContain(marker);
       }
+
+      expect(thinker).toContain("do not assume write-path");
+      expect(thinker).toContain("only the observability files that exist");
 
       for (const marker of ["micro", "standard", "deep", "Escalate to `deep`"]) {
         expect(review).toContain(marker);

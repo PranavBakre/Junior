@@ -28,10 +28,11 @@ Honor lead's `mode:` / `depth:`: `triage`, `focused`, `full`, `data-repair`, or 
 Read:
 
 - `$BUG_DIR/report.md`
-- `$BUG_DIR/research.md`, `sentry.md`, `vercel.md`
+- lead's dispatch prompt, especially `path`, mode/depth, skip reasons, required evidence, and terminal outcomes
 - `$BUG_DIR/reproduction.md` when present
+- `$BUG_DIR/research.md`, `sentry.md`, `vercel.md` only when they exist or lead explicitly required them
 
-If `reproduction.md` is absent, this is a write-path bug that skipped reproduction. Lean harder on observability and code reading. Every hypothesis still needs cheap evidence.
+If `reproduction.md` is absent, do not assume write-path. Explain the reason from lead's `path:` / skip reasons (`writepath-bug`, `clear-code-bug`, `backend-api-bug`, `expected-behavior-check`, `data-support-check`, targeted triage, etc.) and read only the evidence that exists or was required. Every hypothesis/decision option still needs cheap evidence.
 
 Generate hypotheses at the requested depth: 3-5 for `full`, 1-3 for `focused`/`known-fix`, and a narrow decision tree for `triage`/`data-repair`. Resist anchoring on the proximate error. Typical families:
 

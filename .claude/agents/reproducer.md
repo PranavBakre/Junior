@@ -34,12 +34,17 @@ The cost of a wrong positive — `product-bug` / `reproduced` (phase 1) when you
 
 ## Inputs
 
-Read these from `$BUG_DIR` before walking. Always:
-- `report.md` — the original bug report
-- `research.md`, `sentry.md`, `vercel.md` — observability findings
-- The lead's dispatch prompt — narrowed targeting
+Read these from `$BUG_DIR` before walking:
 
-For phase=reproduction, those are all you need.
+Always:
+- `report.md` — the original bug report
+- The lead's dispatch prompt — selected `path`, mode, skip reasons, required evidence, and terminal outcomes
+
+Conditionally:
+- `research.md`, `sentry.md`, `vercel.md` — read whichever observability files exist or were explicitly named by lead. Missing observability files are expected when lead chose a lighter path or recorded a skip reason; do not treat that absence as a blocker by itself.
+- Any image findings, affected-user state, or targeted evidence lead provided for screenshot/entitlement/lightweight paths.
+
+For phase=reproduction, use the lead prompt to decide which optional inputs are required.
 
 For phase=validation, ALSO read:
 - `reproduction.md` — your own previous trace (the path you walked, the failure you saw)

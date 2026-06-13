@@ -32,10 +32,11 @@ If no mode is supplied, default to `full` for ambiguous/high-risk bugs and `focu
 
 Read the inputs:
 - `$BUG_DIR/report.md` — the bug report
-- `$BUG_DIR/research.md`, `sentry.md`, `vercel.md` — observability findings
-- `$BUG_DIR/reproduction.md` — what the reproducer actually saw *(may be absent for write-path bugs — see below)*
+- Lead's dispatch prompt — selected `path`, mode/depth, skip reasons, required evidence, and terminal outcomes
+- `$BUG_DIR/reproduction.md` — what the reproducer actually saw, when present
+- `$BUG_DIR/research.md`, `sentry.md`, `vercel.md` — only the observability files that exist or were explicitly required by lead
 
-**If `reproduction.md` is absent:** this is a write-path bug that skipped Phase 1 reproduction (prod side-effects would have been triggered). You don't have a live trace. Lean harder on observability data (`research.md`, `sentry.md`, `vercel.md`) and direct code reading to build the hypothesis space. Treat "verify with cheap evidence" as non-optional — every hypothesis needs a code-read or DB query check, not just observability inference. Note in Message 1 that you're working without a reproduction trace.
+**If `reproduction.md` is absent:** do not assume write-path. Explain the reason from lead's `path:` / skip reasons: `writepath-bug`, `clear-code-bug`, `backend-api-bug`, `expected-behavior-check`, `data-support-check`, targeted triage, or another lighter path. Read only the evidence that exists or was required. Treat "verify with cheap evidence" as non-optional — every hypothesis/decision option still needs a code-read, DB query, safe curl, or other targeted check. Note in Message 1 that you're working without a reproduction trace and why.
 
 Generate hypotheses according to mode: **3-5 candidates** for `full`, **1-3 targeted candidates** for `focused` / `known-fix`, and the narrow decision tree for `triage` / `data-repair`. Force yourself past the proximate cause — the thing the reproducer's TypeError or 500 fires from is rarely the whole story. Typical hypothesis families:
 - **Renderer / surface bug** — the proximate cause is the actual cause (rare).

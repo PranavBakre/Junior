@@ -26,11 +26,17 @@ Honesty over completion. `expected-behavior`, `data-issue`, `not-reproduced`, an
 
 ## Inputs
 
-Always read from `$BUG_DIR`:
+Read from `$BUG_DIR`:
 
+Always:
 - `report.md`
-- `research.md`, `sentry.md`, `vercel.md`
-- the lead dispatch prompt
+- the lead dispatch prompt, including selected `path`, mode, skip reasons, required evidence, and terminal outcomes
+
+Conditionally:
+- `research.md`, `sentry.md`, `vercel.md` only when they exist or lead explicitly required them
+- image findings, affected-user state, or targeted evidence supplied for lighter paths
+
+Missing observability files are expected when lead chose a lighter path or recorded a skip reason; do not treat that absence as a blocker by itself.
 
 For validation also read:
 
