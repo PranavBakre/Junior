@@ -64,7 +64,7 @@ const agentRouter = new AgentRouter(
 const worktreeManager = new WorktreeManager(config.repos);
 const devServerManager = new DevServerManager(config.repos, worktreeManager);
 const devServerQueue = new DevServerQueue(devServerManager, config.repos);
-startMcpServer(config.slack.botToken, store, worktreeManager, sessionManager);
+startMcpServer(config.slack.botToken, store, worktreeManager, sessionManager, actionStore);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
 sessionManager.slackApp = app;
@@ -264,7 +264,9 @@ sessionManager.onAgentSettled = async (session, agentName, response) => {
 };
 
 registerHomeTab(app, store, config.session.homeWindowMs, workflowStore);
-registerAgentActionButtons(app, actionStore, sessionManager, worktreeManager);
+registerAgentActionButtons(app, actionStore, sessionManager, worktreeManager, {
+  supportChannels,
+});
 
 setupGracefulShutdown(sessionManager, devServerManager, async () => {
   await workflowScheduler.shutdown();

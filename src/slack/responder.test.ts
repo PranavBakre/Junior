@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "bun:test";
-import { SlackResponder } from "./responder.ts";
+import { SlackResponder, splitActionMessageText } from "./responder.ts";
 
 /**
  * Minimal mock for Slack Bolt App with chat API stubs.
@@ -513,14 +513,14 @@ describe("SlackResponder", () => {
             {
               type: "button",
               text: { type: "plain_text", text: "Re-review", emoji: true },
-              action_id: "junior_agent_action",
+              action_id: "junior_agent_action:0",
               value: "tok-1",
               style: "primary",
             },
             {
               type: "button",
               text: { type: "plain_text", text: "Cleanup worktree", emoji: true },
-              action_id: "junior_agent_action",
+              action_id: "junior_agent_action:1",
               value: "tok-2",
             },
           ],
@@ -554,6 +554,12 @@ describe("SlackResponder", () => {
         text: { type: "mrkdwn", text: "a".repeat(3_000) },
       });
       expect(calls.postMessage[1].blocks).toBeUndefined();
+    });
+
+    it("exports the same Slack-safe chunks for MCP action posts", () => {
+      const chunks = splitActionMessageText("a".repeat(3_500));
+
+      expect(chunks).toEqual(["a".repeat(3_000), "a".repeat(500)]);
     });
   });
 });
