@@ -334,11 +334,11 @@ The first real persistent agent on top of the substrate. Single-concern UI walke
 - `support/agents/reproducer/prompt.md` rewritten from the restored baseline
 - Reads the context lead provides for the selected path. For full-observability paths this includes `$BUG_DIR/research.md`, `sentry.md`, and `vercel.md`; for lighter paths it may include image findings, affected-user state, or a note that observability was skipped.
 - Tool access: playwright/claude-in-chrome, screenshot, members lookup, admin-credentials.yaml fallbacks
-- Outcomes: `reproduced | partial | mismatch | not-reproduced` (mismatch + honesty-over-completion baked in from the start)
+- Outcomes: `expected-behavior | data-issue | product-bug | mismatch | not-reproduced | needs-human` (mapped to the adaptive pipeline canonical outcomes; mismatch + honesty-over-completion baked in from the start)
 - Posts trace + outcome to Slack with `Reproducer` identity, suffixed `by reproducer`
 - Manually orchestrated for now: operator types `!reproducer ...` after choosing the evidence path.
 
-**Test:** Real bug thread with either observability files or an explicit lighter-mode prompt. Post `!reproducer reproduce: <user story>`. Verify Reproducer session created, reads the provided context, walks UI only when requested, posts trace under `Reproducer` identity. Resume by posting `!reproducer what about the cache header?` — verify same session resumed (preamble-skip after first turn). Test all 4 outcomes including `mismatch`.
+**Test:** Real bug thread with either observability files or an explicit lighter-mode prompt. Post `!reproducer reproduce: <user story>`. Verify Reproducer session created, reads the provided context, walks UI only when requested, posts trace under `Reproducer` identity. Resume by posting `!reproducer what about the cache header?` — verify same session resumed (preamble-skip after first turn). Test all 6 reproducer outcomes: `expected-behavior`, `data-issue`, `product-bug`, `mismatch`, `not-reproduced`, and `needs-human`.
 
 **Defers:** Lead-driven orchestration (still manual), thinker/review/email-drafter, reproducer phase=validation.
 
