@@ -9,6 +9,61 @@ Junior's memory is structurally right but retrieval needs to get smarter without
 **Painful part:** Better memory recall is needed for repeated user preferences, routing mistakes, operational lessons, and prior project context, but adding vector search or graph expansion naively can make the hot path slower.
 **"Finally" moment:** Junior recalls a small, sourced, high-relevance set of memories with a clear trace, while p95 recall latency remains bounded and broad searches cannot explode.
 
+## What We Measured (Synthetic Baseline)
+
+The original draft of this doc asserted the problem ("FTS is too literal") without a number. It now has an instrument. `src/memory/eval/` is a deterministic synthetic eval harness (`bun run memory:eval`, plus `recall-eval.test.ts` as a regression gate) that seeds a 336-memory corpus across labelled categories and runs each query through the **real `SqliteMemoryStore.recall`**.
+
+Baseline on the current pipeline (336 memories, 42 edges, 320 rows on one tag):
+
+| Category | hit@5 | gap type | reading |
+|---|---|---|---|
+| lexical | 100% | — | verbatim content words always hit |
+| tag / entity | 100% | — | structured lookup works |
+| edge | 100% | — | same_topic payoff reachable |
+| stale / archived | 100% / clean | — | current beats superseded; archived never leaks |
+| precision | 100% | — | strict-AND keeps common-word filler out |
+| correction | 100% | — | tag channel compensates for a missing lexical term |
+| **paraphrase** | **0%** | **retrieval gap (3/3)** | **disjoint-vocabulary queries miss entirely** |
+
+**Overall: hit@5 = 75%, MRR = 0.75. The decomposition is the finding: 9 hits, 0 ranking gaps, 3 retrieval gaps.** Every miss is paraphrase, and every paraphrase miss is a *retrieval* gap (the relevant memory is unreachable even with a 40× wider candidate net), not a *ranking* gap (reachable but mis-scored). Root cause: current FTS (`toFtsQuery`) ANDs every term with no stemming, so a query that shares no surface words with the memory body returns nothing.
+
+This reshapes the priorities:
+
+- **Scoring is not the bottleneck here** — 0 ranking gaps. The additive-boost bug in `sqlite.ts:1111` is real and worth fixing for robustness, but on this corpus RRF alone would not move recall. Do not lead with it expecting a quality jump.
+- **The one systematic failure is semantic** — paraphrase recall. That is exactly what Phase 1 (stopword/looser FTS) partially and Phase 4 (vectors) fully address. The measured gap is what justifies the vector spend; nothing else here does.
+- **Latency is a non-issue at this scale** — broad-tag recall over 320 rows is ~2ms. The doc's scaling concern is real but only bites at 10k+; the harness exists to catch the shape before it does.
+
+**Honesty bound:** this is a *synthetic* corpus with hand-authored disjoint-vocabulary queries standing in for LLM paraphrases. It proves the methodology and the failure *shape*, not the production miss *rate*. That is what the real-DB run below measures.
+
+## What We Measured (Real DB)
+
+`src/memory/eval/real.ts` (`bun run memory:eval:real`) runs the same metrics against a **`VACUUM INTO` snapshot of the live `data/memory.db`** — never the original, because `recall()` writes `use_count`. Snapshot: **8,241 searchable memories** (6.7k events, 726 lessons, 641 routing memories, 20 procedures, 4 facts), 25k edges, **0 corrections**. The empty correction table means correction-mining is not yet possible and known-item retrieval is the only feasible quality probe today.
+
+Three findings, all on real data:
+
+1. **Known-item paraphrase recall: hit@5 = 0% (0/16), all 16 misses are retrieval gaps.** 16 real lessons/procedures/facts, each queried with a low-overlap paraphrase whose answer is that memory. The current pipeline reached *none* of them — not even in the 40× wide candidate net. This is the synthetic paraphrase finding confirmed on production memory, and harder: strict-AND FTS plus no semantic channel means a vocabulary gap is fatal. **This is the concrete, real-data justification for vectors (Phase 4).**
+   - *Caveat:* these paraphrases were authored to be adversarially disjoint, so 0% is the *worst-case* (pure-paraphrase) number, not the average real query. How often real agent queries are that disjoint is the next thing to measure — from real recall logs, once they exist.
+2. **Index self-retrieval: self-hit@1 = 71% (n=49).** Querying a memory with its *own* content words fails to rank it #1 ~29% of the time. Much of that is near-duplicate routing-decision rows ("Selected default via single-session" recurs hundreds of times) collapsing under body-dedup to a different id — i.e. partly a memory-quality/dedup signal, not pure ranking. Worth a look; not the headline.
+3. **Broad-tag stress, confirmed at real scale:** the single tag `runner_tool_error` is attached to **5,424 of 8,241 memories (66%)**, and recalling it with depth-2 edges takes **~48ms p95**. The doc's predicted hot-path weak spot is real: one near-useless mega-tag dominates the index and is exactly the kind of broad seed that Phase 1's tag/entity cap and Phase 3's bounded expansion must protect against. (Normal recall latency is a healthy ~18ms p95.)
+
+**Net for sequencing:** the real DB confirms the synthetic shape — the systematic failure is semantic retrieval, not scoring (0 ranking gaps in both runs). Phase 1 + Phase 4 are the value; Phase 2 RRF is robustness, not a recall win. And broad-tag protection (Phase 1 cap) has a concrete 5,424-row target.
+
+### Routing-Log Cleanup (shipped in this PR)
+
+The real-DB run surfaced a concrete pre-Phase-1 win, independent of the retrieval work. `captureRoutingDecision()` in `src/memory/ingestion.ts` was **double-writing every dispatch**: once correctly as a raw `memory_source_record` (kind `routing_decision`), and again — wrongly — as a searchable `routing_memory` fact (id `routing_memory_decision_<sourceId>`). The result:
+
+- **640 of 641 `routing_memory` nodes** were these generic decision logs, whose entire information content is **17 distinct strings** ("Selected default via single-session." ×380, "Selected review via persistent-agent." ×168, …). Exactly **one** routing memory was real knowledge (the "Outcomes" repo-alias fact).
+- That is ~8% of the whole search index, all noise: it consumes candidate budget, and the hundreds of identical bodies dedup-collide, which is a large part of the measured **71% self-retrieval** rate.
+
+This violates the doc's own source-vs-derived model and Phase 2.5's rule ("raw routing decisions are not promoted to the high-trust channel without accepted correction/rule evidence"). Raw per-dispatch decisions are *evidence*, not recallable memory. The raw evidence already lives correctly as `routing_decision` source records (668 of them) and is untouched.
+
+The fix, in this PR:
+
+1. **Stop the double-write** — `captureRoutingDecision()` now writes only the source record. The legitimate learned-routing path (consolidation at `sqlite.ts:626`, `routing_memory_<slug>` tagged `learned_correction`) is separate and unchanged.
+2. **Prune the existing 640 nodes** — `src/memory/migrations/2026-06-13-prune-routing-decision-logs.ts` removes the derived rows for `routing_memory_decision_%` ids from the index (`memory_fact`/`memory_node`/`memory_search_doc`/`memory_fts`/`memory_tag`/`mention`/`memory_provenance`/`edge`) while **preserving the `routing_decision` source records** for provenance. It is idempotent, dry-run by default (`--apply` to execute), and per project policy is committed but **not run against prod ahead of deploy** — the operator runs `bun run migrate:prune-routing-logs --apply` at deploy time.
+
+Follow-up (not in this PR): let consolidation mine the `routing_decision` source records into a small number of trust-weighted routing facts, so the *aggregate* signal ("single-session/default dominates") is captured as derived knowledge rather than lost.
+
 ## Decision
 
 Keep Junior's memory database as the authoritative source of truth. Do not replace it with Engram. Mine Engram for retrieval mechanics:
@@ -89,6 +144,11 @@ Start the semantic phase with OpenAI API embeddings because they are simpler to 
 - Do not call an LLM on every recall by default.
 - Do not let broad tag/entity recall seed unbounded edge traversal.
 - Do not expose memory graph/debug views beyond localhost without auth.
+- Do not ship memory bodies to the OpenAI embeddings API without an explicit decision (see below) — memory holds operator corrections, routing facts, and user preferences, so this is a data-governance call, not an implementation detail.
+
+### Open Decision: Sending Memory To OpenAI
+
+Phase 4's OpenAI-first plan sends `memory_search_doc` text to a third-party API. Junior's memory contains internal operator/routing/preference content, and the project's posture is otherwise privacy-conservative (history-scrubbed public repo, never-inline-credentials). Before enabling the `openai` provider on real data, decide one of: (a) accept it for non-sensitive kinds only, with a redaction/allowlist on which kinds get embedded; (b) start with the deterministic `hashing` provider to validate the *pipeline* offline, then jump straight to local embeddings for the first *semantic* run; or (c) accept it wholesale with sign-off. The harness and cache design are provider-agnostic, so this decision blocks only the provider choice, not the surrounding work.
 
 ## Current Junior Baseline
 
@@ -183,16 +243,27 @@ RRF formula:
 score(memory) += channelWeight / (rrfK + rankInChannel)
 ```
 
-Then apply gentle multipliers:
+`rrfK` and `channelWeight` are not "no tuning" — RRF removes score-normalization, but `channelWeight` reintroduces cross-channel tuning, so name the starting values and let eval move them:
 
 ```text
-score *= kindMultiplier
-score *= importanceMultiplier
-score *= confidenceMultiplier
-score *= recencyMultiplier
+rrfK = 60                  # standard RRF constant
+channelWeight.lexical    = 1.0
+channelWeight.tagEntity  = 1.0
+channelWeight.vector     = 1.0   # raise only if known-item eval shows vector recovering real misses
+channelWeight.routingFact= 1.0   # stays 0 until the Phase 2.5 trust channel lands
+channelWeight.activation = 0.5   # graph signal is supporting, not primary
 ```
 
-The multipliers must stay gentle. A stale high-importance memory should not beat a clearly relevant current memory.
+Then apply **gentle** multipliers — and "gentle" needs numbers, because this is the same boost-mixing problem the additive scorer (`sqlite.ts:1111`) gets wrong, just moved one step later:
+
+```text
+kindMultiplier        in [0.9 .. 1.20]   # routing/procedure high, raw event low
+importanceMultiplier  in [0.9 .. 1.10]
+confidenceMultiplier  in [0.9 .. 1.10]
+recencyMultiplier     in [0.85 .. 1.10]  # current slightly favoured; stale penalised
+```
+
+The bound that makes "gentle" real: the product of all multipliers must not exceed the RRF gap between adjacent ranks, so no multiplier stack can lift a memory more than ~one rank. A stale high-importance memory must not beat a clearly relevant current memory — encode that as a hard eval case (`stale` category already exists in the harness and asserts zero forbidden violations), not as a hope.
 
 ### Spreading Activation
 
@@ -761,7 +832,32 @@ If similarity edges are needed:
 
 ## Evaluation And Latency Gates
 
-Every recall change must be measured on quality and speed.
+Every recall change must be measured on quality and speed. The synthetic harness in `src/memory/eval/` is the implementation of this section; the methodology below is what makes its numbers trustworthy.
+
+### Where Labels Come From (the hard part)
+
+Metrics are easy; labels are the work. A hand-written fixture only tests queries you already thought of, which biases it toward misses you already know about. Four label sources, ranked by signal, all available in Junior:
+
+1. **Known-item retrieval (synthetic queries, zero human labels).** For a sample of stored memories, LLM-paraphrase each `memory_search_doc` into a natural-language query with deliberately low lexical overlap, then measure whether recall returns the source memory. This directly measures the paraphrase-miss rate — the number this whole overhaul rests on — and scales to the full DB with no human labelling. The synthetic harness approximates this deterministically with hand-authored disjoint-vocabulary pairs (the `paraphrase` category); production eval should use real LLM paraphrasing against `MEMORY_DB_PATH`.
+2. **Correction mining (the gold labels, Junior-specific).** Junior already stores `ingestion_correction` / `consolidation_decision`. Each correction is a labelled failure *with proven harm*. For each, reconstruct the query context and ask: did a memory that encodes the corrected fact already exist, and did recall surface it? This cleanly separates three failure modes people conflate — missing memory (coverage), mis-ranked memory (recall, what this doc fixes), and ignored memory (prompt/context). Only the middle bucket justifies this work.
+3. **Edge leave-one-out.** For memories linked by `same_topic`/`applies_to`, query with one and assert the linked memory surfaces via expansion. Free labels for Phase 3; a small or already-lexically-redundant set is itself evidence Phase 3 is low-value.
+4. **Hand-curated fixture.** Keep it as a regression guard, seeded *from* the correction-mined true-misses (source 2), not from imagined queries.
+
+### Candidate vs Ranking Decomposition (tells you which phase to build)
+
+Flat recall@5 conflates two failures with different fixes. Run recall twice — once at the production limit (ranked top-k) and once at a large limit that widens every channel's candidate budget — and bucket each miss:
+
+```text
+relevant in ranked top-k                  -> hit
+relevant in wide candidate set, not top-k -> RANKING gap   -> Phase 2 scoring / multipliers
+relevant absent even from wide set        -> RETRIEVAL gap -> Phase 1 tokenization / Phase 4 vector
+```
+
+This is implemented in `harness.ts` (`classifyGap`) and is *why* the baseline above can say "scoring is not the bottleneck" with evidence rather than assertion. Run this decomposition once on the real DB before committing to a phase order.
+
+### The Metric That Actually Matters (behavior-level)
+
+Retrieval metrics are a proxy. The north-star number is from source 2: **corrections-per-week that a recallable memory should have prevented.** Put it at the top of every eval report — it is the only metric that tells a non-IR reader whether the overhaul is worth funding.
 
 ### Eval Set
 
@@ -876,6 +972,19 @@ API namespace:
 - Prefer `/api/associative-memory/recall`, `/api/associative-memory/trace`, and `/api/associative-memory/graph` for the new debug surfaces, or explicitly update the dashboard route contract.
 
 ## Implementation Plan
+
+**Build phases by measured expected value, not in order.** The phases below are a menu, not a checklist. The synthetic baseline already ranks them, and the real-DB Phase 0 run should re-rank before committing:
+
+| Phase | Expected value | Gate to build |
+|---|---|---|
+| 1 — smarter FTS + bounded seeds | **High, low-risk.** Fixes the verified `tagEntityRows`/edge-seed scaling weak spot and recovers some paraphrase recall via looser modes. Build first regardless. | always |
+| 0 — baseline + eval + `recordUsage` safety | **Prerequisite.** Without it every later claim is unmeasured. | always |
+| 4 — vectors | **High *iff* the real-DB known-item miss rate is large.** The synthetic baseline's only systematic failure (paraphrase, 3/3 retrieval gaps) points here — but confirm the rate on real data first; vectors are the most expensive phase. | known-item miss rate high after Phase 1 |
+| 2 — RRF + multipliers | **Medium.** Correct and worth doing for robustness, but the baseline shows **0 ranking gaps**, so expect little recall lift on its own. Justified by trace/debuggability and by vector fusion needing it. | before Phase 4 fusion |
+| 2.5 — trust-gated routing channel | **Medium, correctness-sensitive.** Affects dispatch; gate behind its own tests. | corrections show routing misses |
+| 3 — edge activation | **Low-to-medium.** Synthetic edge recall already passes; build only if edge leave-one-out on real data shows payoff memories that lexical recall misses. | edge LOO shows unique value |
+
+Treat 2.5/3/4 as hypotheses to confirm or drop, not deliverables to complete.
 
 ### Phase 0: Baseline And Safety
 
@@ -1032,6 +1141,8 @@ Mitigation:
 - Should vector recall be available to agents by default once cache exists, or only for consolidation/debug workflows?
 - Do we need separate budgets for routing recall vs general memory recall?
 - Should usage writeback happen synchronously for `agent_context`, or be batched after recall?
+- Is it acceptable to send memory bodies to OpenAI for embeddings, or do we redact-by-kind / go local-first? (See "Open Decision: Sending Memory To OpenAI".)
+- What is the real-DB known-item paraphrase-miss rate? The synthetic baseline shows the failure *shape* (paraphrase = retrieval gap); only the real number decides whether Phase 4 is worth its cost.
 
 ## Final Shape
 
