@@ -1,6 +1,8 @@
 # Persistent Agents
 
-> Same backbone as the wiped `support-lead-persistent-agents.md` (persistent Claude Code session per agent role, one thread holds many agent sessions, each agent posts to Slack with its own identity). Refined design after a session of pruning: lead-only dispatch (workers can't tag each other), `NO_SLACK_MESSAGE` for silence, observability-before-UI as a hard invariant, no internal-dispatch-plus-audit-log split. First product use is the bug pipeline; substrate is reusable.
+> Same backbone as the wiped `support-lead-persistent-agents.md` (persistent Claude Code session per agent role, one thread holds many agent sessions, each agent posts to Slack with its own identity). Refined design after a session of pruning: orchestrator-owned dispatch, `NO_SLACK_MESSAGE` for silence, no internal-dispatch-plus-audit-log split. First product use is the bug pipeline; substrate is reusable.
+>
+> Bug-step selection has since moved to [Adaptive Bug Pipeline](adaptive-bug-pipeline.md). This document owns the persistent-agent substrate and audit/message-bus mechanics. The adaptive doc owns when lead should run, skip, or narrow observability/reproduction/thinking.
 
 ## Problem
 
@@ -52,15 +54,15 @@ Every orchestration decision is visible. Humans can see exactly what the lead as
 - Lead orchestrates by emitting `!<agent> <prompt>` lines in normal Slack messages. Router parses those lines and dispatches to persistent agents only. Sub-agents are never invoked via `!<agent>` — only via Task tool, and only by persistent agents.
 - **Orchestrators** (lead, default Junior) can emit `!<agent>` directives — both share the same full dispatch power; they differ only in slack identity and which channels route to them. Workers can use the Task tool for stateless data fetches but cannot trigger more persistent work, with the narrow exceptions in `WORKER_DISPATCH_ALLOW` (e.g. thinker → review / reproducer for happy-path chains).
 - Lead is awoken on every event in the thread (human messages and worker responses) and can choose silence (via `NO_SLACK_MESSAGE` or by posting commentary with no directives) — silence breaks the cycle.
-- Observability fan-out: lead issues parallel Task calls to nr-research / sentry-fetch / vercel-status in **one turn**. All three run concurrently. Once all return, lead reads their files, synthesizes findings into a single Slack message, then dispatches `!reproducer` with that context (read-only bugs only — write-path bugs go straight to thinker).
-- Reproducer runs _after_ observability completes and only for read-only bugs — it needs failing endpoints, exception classes, deploy state as context. Write-path bugs skip reproducer (both phases) to avoid prod side-effects.
+- Observability fan-out: when lead chooses full observability, it issues parallel Task calls to nr-research / sentry-fetch / vercel-status in **one turn**. All three run concurrently. Once all return, lead reads their files, synthesizes findings into a single Slack message, then dispatches the next selected worker.
+- Reproducer runs when lead selects a reproduction path. It should receive the narrowest useful context: image findings, targeted observability, full observability, affected-user state, or explicit instructions that observability was skipped because it cannot change the next decision.
 - Re-queries go through lead. Round caps (research max 3, review max 2) live in the lead's prompt as semantic guardrails, not in the router.
 - Live progress is signaled via a **status pill** that streams `tool_use` events (one pill per active agent session). Humans see "calling nr-research, sentry-fetch, vercel-status (3 in progress)" → "1 done, 2 in progress" → cleared. `tool_result` content stays internal.
 
 ## Invariants (architectural commitments)
 
-1. **Observability ALWAYS precedes UI verification.** When reproducer runs (read-only bugs only), it always has observability context, never cold. Write-path bugs skip both phases of reproducer — observability still runs first, it just feeds thinker directly.
-2. **Only orchestrators (lead, default Junior) emit `!<agent>` directives.** Workers can post any commentary, but they cannot trigger more work — except for the narrow happy-path chains declared in `WORKER_DISPATCH_ALLOW` (e.g. thinker → review).
+1. **Lead chooses the evidence path.** Full observability before reproduction is one available path, not a substrate invariant. See [Adaptive Bug Pipeline](adaptive-bug-pipeline.md) for skip rules and targeted/full observability modes.
+2. **Orchestrator-owned dispatch with allow-listed worker chains.** Orchestrators (lead, default Junior) own routing. Workers can post commentary but cannot trigger more persistent work except for narrow chains declared in `WORKER_DISPATCH_ALLOW` (e.g. thinker → review / reproducer).
 3. **The Slack thread IS the message bus.** No internal-dispatch-plus-audit-log split. Every cross-agent call goes through Slack events. One source of truth, full audit trail by construction.
 4. **Silence is a first-class action.** Cycle-break by composition, not enforcement. No router-level retry counters.
 
@@ -262,7 +264,7 @@ The lead's `.claude/agents/lead.md` (replaces the old `support-lead.md`) teaches
 - The dispatch syntax: write `!<agent> <prompt>` on its own line to dispatch.
 - State-checking: read `agentSessions[name].status` before emitting. Don't dispatch a `busy` agent (will buffer); don't dispatch a `done` one without good reason.
 - Round caps: `rounds.research ≤ 3`, `rounds.review ≤ 2`, `rounds.reproducer ≤ 2`. Track in `state.json` per bug. At cap → escalate to human, not re-spawn.
-- The observability-before-reproduction invariant.
+- The adaptive evidence-path policy from [Adaptive Bug Pipeline](adaptive-bug-pipeline.md).
 - When to use `NO_SLACK_MESSAGE` vs commentary-with-no-directives.
 - The mismatch outcome and how to handle it (don't proceed to research with the wrong issue).
 
@@ -323,20 +325,20 @@ Prove parallel Task-tool fan-out.
 
 ### Iteration 3: First persistent agent — `reproducer` (~4h)
 
-The first real persistent agent on top of the substrate. Single-concern UI walker. Runs after observability completes.
+The first real persistent agent on top of the substrate. Single-concern UI walker. Runs when lead selects a reproduction path.
 
 **What it adds:**
 
 - `.claude/agents/reproducer.md` (Claude Code persistent agent definition, addressable via `!reproducer`)
 - `AGENT_IDENTITIES` entry for `reproducer`
 - `support/agents/reproducer/prompt.md` rewritten from the restored baseline
-- Reads `$BUG_DIR/research.md`, `sentry.md`, `vercel.md` as input context — failing endpoints, exception classes, deploy state are hand-fed by the lead
+- Reads the context lead provides for the selected path. For full-observability paths this includes `$BUG_DIR/research.md`, `sentry.md`, and `vercel.md`; for lighter paths it may include image findings, affected-user state, or a note that observability was skipped.
 - Tool access: playwright/claude-in-chrome, screenshot, members lookup, admin-credentials.yaml fallbacks
 - Outcomes: `reproduced | partial | mismatch | not-reproduced` (mismatch + honesty-over-completion baked in from the start)
 - Posts trace + outcome to Slack with `Reproducer` identity, suffixed `by reproducer`
-- Manually orchestrated for now: operator types `!reproducer ...` after observability has been run via iters 1+2
+- Manually orchestrated for now: operator types `!reproducer ...` after choosing the evidence path.
 
-**Test:** Real bug thread with observability files already in the bug folder. Post `!reproducer reproduce: <user story>`. Verify Reproducer session created, reads observability files, walks UI, posts trace under `Reproducer` identity. Resume by posting `!reproducer what about the cache header?` — verify same session resumed (preamble-skip after first turn). Test all 4 outcomes including `mismatch`.
+**Test:** Real bug thread with either observability files or an explicit lighter-mode prompt. Post `!reproducer reproduce: <user story>`. Verify Reproducer session created, reads the provided context, walks UI only when requested, posts trace under `Reproducer` identity. Resume by posting `!reproducer what about the cache header?` — verify same session resumed (preamble-skip after first turn). Test all 4 outcomes including `mismatch`.
 
 **Defers:** Lead-driven orchestration (still manual), thinker/review/email-drafter, reproducer phase=validation.
 
@@ -350,9 +352,10 @@ Lead actually orchestrates the pipeline instead of being manually invoked.
 - Auto-assign `#bugs-backlog` threads to `lead` agent type (already wired via `channelDefaults`)
 - Lead's prompt teaches:
   - Bug folder lifecycle: create `support/bugs/<product>/<bug-id>/` on intake (template restored)
-  - Observability fan-out: parallel Task calls to nr-research / sentry-fetch / vercel-status in **one assistant message**
+  - Adaptive evidence selection: skip, targeted, or full observability per [Adaptive Bug Pipeline](adaptive-bug-pipeline.md)
+  - Full observability fan-out: parallel Task calls to nr-research / sentry-fetch / vercel-status in **one assistant message**
   - Synthesis: read the three files after Tasks return, post a rollup to Slack with key findings + file path references
-  - `!reproducer` dispatch with synthesized observability context
+  - `!reproducer` or `!thinker` dispatch with mode-specific context
   - State-checking: read `agentSessions[name].status` before emitting any `!<agent>`
   - Round caps as semantic guardrails (`rounds.research ≤ 3`, `rounds.review ≤ 2`, `rounds.reproducer ≤ 2`); at cap → escalate, not retry
   - When to use `NO_SLACK_MESSAGE` vs commentary-only (silence rules)
@@ -362,9 +365,10 @@ Lead actually orchestrates the pipeline instead of being manually invoked.
 **Test:** End-to-end. Post a real bug in `#bugs-backlog`. Verify:
 
 - Lead creates the bug folder
-- Lead's first turn does parallel Task calls; status pill shows `Calling nr-research, sentry-fetch, vercel-status (3 in progress)` and updates as each completes
-- Lead posts a single synthesis message after all three return, referencing the three files
-- Lead emits `!reproducer ...` with observability-aware context
+- Lead chooses and records an evidence path
+- For full observability paths, lead's first turn does parallel Task calls; status pill shows `Calling nr-research, sentry-fetch, vercel-status (3 in progress)` and updates as each completes
+- For full observability paths, lead posts a single synthesis message after all three return, referencing the three files
+- Lead emits `!reproducer ...` or `!thinker ...` with mode-specific context
 - On mismatch outcome, lead doesn't dispatch the next stage on the wrong failure
 - On `not-reproduced`, lead escalates to human (no auto-retry)
 
