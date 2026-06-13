@@ -57,6 +57,9 @@ export async function handleMemoryRecall(
     depth: numberParam(params.get("depth")),
     includeInactive: params.get("includeInactive") === "true",
     includeInvalid: params.get("includeInvalid") === "true",
+    // Operator browsing the dashboard is inspection, not real recall traffic:
+    // don't bump use_count or pollute the replay log.
+    recordUsage: false,
   });
   return Response.json({ results });
 }

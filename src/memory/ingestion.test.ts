@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,8 +32,20 @@ describe("MemoryIngestor", () => {
 
       const recalled = await store.recall({ query: "dashboard CSS", limit: 5 });
       expect(recalled.some((memory) => memory.body.includes("dashboard CSS"))).toBe(true);
+
+      // Routing decisions are persisted as raw source records only — NOT as searchable routing_memory nodes.
       const routing = await store.recall({ kinds: ["routing_memory"], tags: ["routing_decision"], limit: 5 });
-      expect(routing.some((memory) => memory.body.includes("Selected frontend"))).toBe(true);
+      expect(routing.some((memory) => memory.body.includes("Selected frontend"))).toBe(false);
+
+      // Verify the raw source record WAS written.
+      const db = (store as unknown as { db: Database }).db;
+      const sourceRows = db
+        .query<{ kind: string; body: string }, []>(
+          "SELECT kind, body FROM memory_source_record WHERE kind = 'routing_decision'",
+        )
+        .all();
+      expect(sourceRows.length).toBeGreaterThan(0);
+      expect(sourceRows.some((row) => row.body.includes("Selected frontend"))).toBe(true);
     } finally {
       store.close();
       rmSync(tmpDir, { recursive: true, force: true });
