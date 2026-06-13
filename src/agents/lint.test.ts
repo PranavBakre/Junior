@@ -88,6 +88,51 @@ describe("prompt lint", () => {
     });
   });
 
+  describe("bug-pipeline agents implement adaptive evidence routing", () => {
+    it("lead prompt uses adaptive path selection instead of universal observability", async () => {
+      const content = await readAgent("lead");
+
+      expect(content).toContain("adaptive step selection");
+      expect(content).toContain("Evidence paths");
+      expect(content).toContain("targeted/full/no observability");
+      expect(content).toContain("Skipping <agent/check> because <reason>");
+      expect(content).not.toContain("EVERY bug, no exceptions");
+      expect(content).not.toContain("Observability always precedes reproduction and validation");
+    });
+
+    it("reproducer prompt allows adaptive terminal outcomes and modes", async () => {
+      const content = await readAgent("reproducer");
+
+      for (const marker of [
+        "image-interpretation",
+        "entitlement-check",
+        "read-only-walk",
+        "expected-behavior",
+        "data-issue",
+        "product-bug",
+        "needs-human",
+      ]) {
+        expect(content).toContain(marker);
+      }
+
+      expect(content).not.toContain("<reproduced | partial | mismatch | not-reproduced>");
+      expect(content).not.toContain("Honest about what was seen: `reproduced`, `partial`, `mismatch`, or `not-reproduced`");
+    });
+
+    it("thinker and review prompts honor requested depth", async () => {
+      const thinker = await readAgent("thinker");
+      const review = await readAgent("review");
+
+      for (const marker of ["triage", "focused", "full", "data-repair", "known-fix"]) {
+        expect(thinker).toContain(marker);
+      }
+
+      for (const marker of ["micro", "standard", "deep", "Escalate to `deep`"]) {
+        expect(review).toContain(marker);
+      }
+    });
+  });
+
   describe("action classifier present in core.md", () => {
     it("core.md contains the action classifier heading", async () => {
       const corePath = path.join(commonDir, "core.md");

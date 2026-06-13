@@ -26,12 +26,13 @@ State transitions:
 | Current state | Trigger | Next action |
 |---|---|---|
 | NEW BUG | Report received | Intake: read images, write report.md + state.json, register worktrees |
-| INTAKE DONE | report.md written | Fan-out observability (parallel Task: nr-research, sentry-fetch, vercel-status) |
-| OBSERVABILITY DONE | All 3 files written + read | Classify read-only vs write-path |
-| READ-ONLY | Classification done | Dispatch `!reproducer` with observability context |
-| WRITE-PATH | Classification done | Skip reproducer, dispatch `!thinker` directly |
-| REPRODUCER REPRODUCED | `reproduced` | Dispatch `!thinker` with reproduction context |
-| REPRODUCER PARTIAL | `partial` | Dispatch `!thinker` with reproduction conditions; flag uncertainty in prompt |
+| INTAKE DONE | report.md written | Choose evidence path; record skip reasons and next decision |
+| TARGETED/FULL OBSERVABILITY NEEDED | Selected path requires runtime/deploy/error evidence | Run only checks that can change the decision |
+| TERMINAL SUPPORT | Expected behavior/data/support issue is clear | Explain or name handoff |
+| REPRODUCER NEEDED | Read-only UI evidence needed | Dispatch `!reproducer` with mode + outcomes |
+| THINKER NEEDED | Code/rule/API fix or triage needed | Dispatch `!thinker` with mode/depth + evidence |
+| REPRODUCER PRODUCT-BUG | `product-bug` / `reproduced` | Dispatch `!thinker` with reproduction context |
+| REPRODUCER EXPECTED-BEHAVIOR/DATA-ISSUE | `expected-behavior` / `data-issue` | Explain or route support/data repair |
 | REPRODUCER MISMATCH | `mismatch` | Escalate to human. Do NOT scope the mismatched failure. |
 | REPRODUCER NOT-REPRODUCED | `not-reproduced` | Escalate to human. Do NOT retry blindly. |
 | THINKER PHASE 1 DONE | Message 1 posted | Stay silent. Wait for human reply. |
@@ -46,27 +47,39 @@ State transitions:
 
 **Default action at every state: silence.** If no valid transition exists, return `NO_SLACK_MESSAGE`.
 
-## Categorical Rule -- Every Bug Routes Through The Pipeline
+## Strict Role Boundaries + Adaptive Step Selection
 
-**Every bug, no exceptions, regardless of how small/obvious/trivial the fix looks, goes through `!thinker`.** The pipeline gates exist for consistency and audit, not just for hard bugs.
+Every bug goes through the pipeline, but the pipeline is adaptive. Choose the lightest evidence path that can change the next decision. Adaptive routing never means lead does worker jobs inline.
 
-**`!reproducer` is gated on read-only bugs.** Reproducer walks the UI by clicking through the actual product. If the failure path requires submitting a form, clicking Generate/Save/Create, or triggering any write operation (`POST`/`PUT`/`PATCH`/`DELETE`), skip reproducer and dispatch `!thinker` directly with observability context.
+Evidence paths: `clarify`, `screenshot-triage`, `expected-behavior-check`, `data-support-check`, `clear-code-bug`, `backend-api-bug`, `unclear-readonly-ui-bug`, `writepath-bug`, `high-risk-systemic`.
 
-Classify before dispatching reproducer:
+Record skip reasons in this shape:
 
-- Read-only: page fails to load, spinner stuck, data doesn't display, GET endpoint errors, 4xx/5xx on a read-only page.
-- Write-path: form submissions, profile updates, generating AI content, creating records, onboarding flows, anything where clicking the failing step mutates state.
+```text
+Skipping <agent/check> because <reason>. Its result would not change <next decision>.
+```
+
+Worker prompts should include `path`, `mode`/`depth`, `objective`, `required evidence`, `skip`, and `terminal outcomes`.
+
+Modes/depths:
+- reproducer: `image-interpretation`, `entitlement-check`, `read-only-walk`, `validation-lite`, `validation-full`
+- thinker: `triage`, `focused`, `full`, `data-repair`, `known-fix`
+- review: `micro`, `standard`, `deep`
+
+Canonical outcomes: `expected-behavior`, `support-data-issue`, `product-bug`, `mismatch`, `not-reproduced`, `needs-human`, `fixed-pending-validation`, `resolved`. Map worker `data-issue` to `support-data-issue`.
 
 ## Do Not Do Worker Jobs
 
 If you are tempted to do any of the following, stop and dispatch instead:
 
-- Open browser tools to verify something -> `!reproducer` for read-only bugs.
-- Read product code in a bare repo -> `!thinker`.
-- Restart dev servers -> `!reproducer` owns the dev environment.
-- Edit any file in a target repo -> `!thinker proceed`.
-- Run checkout/create-branch/open-PR in target repos -> `!thinker proceed`.
-- Verify the fix with a browser -> `!reproducer validate the fix on branch <name>` for read-only bugs.
+- Open browser tools -> `!reproducer` with the selected safe mode.
+- Read product code broadly -> `!thinker` with `triage`/`focused`/`full`.
+- Restart dev servers -> `!reproducer` owns dev environment.
+- Edit target repo files -> `!thinker proceed`.
+- Checkout/create branch/open PR -> `!thinker proceed`.
+- Verify with a browser -> `!reproducer validate` only when safe; otherwise route to review/human.
+
+Use targeted observability by default; full parallel fan-out only when ambiguity or risk makes all three checks decision-changing.
 
 ## Persistent Agent Dispatch
 
@@ -87,9 +100,9 @@ Use the Task tool only for stateless observability/drafting work. Never use `Tas
 1. Triage every attached image. Extract URL, page title, visible errors/toasts, console/network output, and browser tabs.
 2. Create the bug folder and write `report.md` + `state.json`.
 3. Register a worktree per routed repo before dispatching workers.
-4. Fan out observability first with parallel Task calls when available.
-5. Classify read-only vs write-path before dispatching reproducer.
-6. Dispatch reproducer for read-only bugs; dispatch thinker directly for write-path bugs.
+4. Choose the evidence path and gather only observability that can change the decision.
+5. Record skip reasons and terminal outcomes.
+6. Dispatch the next worker with `path`, `mode`/`depth`, objective, required evidence, and skip instructions.
 
 ## Identity Rule For Reproducer
 
