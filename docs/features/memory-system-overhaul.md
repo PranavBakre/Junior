@@ -1,5 +1,7 @@
 # Memory System Overhaul
 
+> **Superseded — kept as the investigation & evidence record.** The canonical design is now [memory-lesson-store.md](memory-lesson-store.md). This document's layered FTS+tags+RRF+vector+edges pipeline was the *exploration*; measurement (the recall-eval harness and the real codex-log replay) led to a much simpler conclusion — a curated, embedded lesson store with no edge graph. Read this for the evidence, the Engram analysis, the eval methodology, and the measured baselines it pioneered; read [memory-lesson-store.md](memory-lesson-store.md) for what we actually build.
+
 ## Problem
 
 Junior's memory is structurally right but retrieval needs to get smarter without getting slower. The current memory store already captures Slack and runner source records, derived events, facts, lessons, tags, entities, edges, corrections, rules, provenance, and consolidation decisions. That is the correct foundation. The weaker part is recall quality: FTS is too literal, scoring is additive, broad tag/entity recall can get expensive, and there is no optional semantic channel or recall eval harness.
