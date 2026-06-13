@@ -130,7 +130,7 @@ async function runReport(perKind: number): Promise<void> {
       const q = selfQuery(m.body);
       if (!q) continue;
       const start = performance.now();
-      const results = await store.recall({ query: q, limit: 5 });
+      const results = await store.recall({ query: q, limit: 5, recordUsage: false });
       latencies.push(performance.now() - start);
       selfRanks.push(firstRelevantRank(results.map((r) => r.id), new Set([m.id])));
     }
@@ -148,7 +148,7 @@ async function runReport(perKind: number): Promise<void> {
       let count = 0;
       for (let i = 0; i < 5; i++) {
         const start = performance.now();
-        const results = await store.recall({ tags: [tag.tag], depth: 2, limit: 5 });
+        const results = await store.recall({ tags: [tag.tag], depth: 2, limit: 5, recordUsage: false });
         tagLat.push(performance.now() - start);
         count = results.length;
       }

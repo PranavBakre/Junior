@@ -110,7 +110,7 @@ describe("recall eval baseline", () => {
 
 // --- eval hazards the doc calls out ------------------------------------------
 describe("recall eval hazards", () => {
-  it("recall mutates use_count (writeback ON) — why eval must run recordUsage=false", async () => {
+  it("recall writeback + recall_log default ON; recordUsage:false disables both", async () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-recall-hazard-"));
     const store = new SqliteMemoryStore(join(dir, "memory.db"));
     try {
@@ -119,12 +119,21 @@ describe("recall eval hazards", () => {
       await store.upsertFact({ id: "fact-h", kind: "curated_fact", body: "Worktrees live in target repos.", createdAt: now, sourceIds: ["src-h"] });
 
       const db = (store as unknown as { db: Database }).db;
-      const before = db.query<{ use_count: number }, [string]>("SELECT use_count FROM memory_fact WHERE id = ?").get("fact-h");
-      await store.recall({ query: "worktrees target repos" });
-      const after = db.query<{ use_count: number }, [string]>("SELECT use_count FROM memory_fact WHERE id = ?").get("fact-h");
+      const readCount = () =>
+        db.query<{ use_count: number }, [string]>("SELECT use_count FROM memory_fact WHERE id = ?").get("fact-h")?.use_count;
+      const readLogRows = () =>
+        db.query<{ c: number }, []>("SELECT COUNT(*) AS c FROM recall_log").get()?.c ?? 0;
 
-      expect(before?.use_count).toBe(0);
-      expect(after?.use_count).toBe(1); // a benchmark that calls recall would mutate ranking signals
+      // Default (recordUsage omitted) — production behaviour: bumps use_count AND logs.
+      expect(readCount()).toBe(0);
+      await store.recall({ query: "worktrees target repos" });
+      expect(readCount()).toBe(1); // a benchmark that calls recall would mutate ranking signals
+      expect(readLogRows()).toBe(1);
+
+      // recordUsage:false — the eval/measurement guard: no writeback, no log row.
+      await store.recall({ query: "worktrees target repos", recordUsage: false });
+      expect(readCount()).toBe(1); // unchanged
+      expect(readLogRows()).toBe(1); // unchanged
     } finally {
       store.close();
       rmSync(dir, { recursive: true, force: true });

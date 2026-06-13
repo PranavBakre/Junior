@@ -576,7 +576,10 @@ export class SqliteMemoryStore implements MemoryStore {
       .sort((a, b) => b.score - a.score)
       .filter(uniqueRecallResult())
       .slice(0, limit);
-    this.recordRecallUsage(results.map((result) => result.id));
+    if (options.recordUsage !== false) {
+      this.recordRecallUsage(results.map((result) => result.id));
+      this.logRecall(options, results);
+    }
     return results;
   }
 
@@ -1114,6 +1117,32 @@ export class SqliteMemoryStore implements MemoryStore {
     };
   }
 
+  /**
+   * Append one row per production recall: the query/tags/entities/kinds that
+   * came in, the caller's intent, and the ids we returned. This is the real
+   * query log the design depends on — replaying these against future retrieval
+   * changes is the only honest way to measure whether a change helps. Gated by
+   * recordUsage so eval/replay reads never write here.
+   */
+  private logRecall(options: MemoryRecallOptions, results: MemorySearchResult[]): void {
+    this.db
+      .query(
+        `INSERT INTO recall_log
+           (query, tags_json, entities_json, kinds_json, caller_intent, returned_ids_json, result_count, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        options.query?.trim() || null,
+        options.tags && options.tags.length ? JSON.stringify(options.tags) : null,
+        options.entities && options.entities.length ? JSON.stringify(options.entities) : null,
+        options.kinds && options.kinds.length ? JSON.stringify(options.kinds) : null,
+        options.callerIntent ?? null,
+        JSON.stringify(results.map((result) => result.id)),
+        results.length,
+        Date.now(),
+      );
+  }
+
   private recordRecallUsage(ids: string[]): void {
     const uniqueIds = unique(ids);
     if (uniqueIds.length === 0) return;
@@ -1185,11 +1214,13 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run(`CREATE TABLE IF NOT EXISTS ingestion_correction (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, field TEXT NOT NULL, incorrect_value TEXT, correct_value TEXT, corrected_by TEXT NOT NULL, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS consolidation_decision (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, source_ids_json TEXT NOT NULL, extractor TEXT NOT NULL, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS candidate_rule (id TEXT PRIMARY KEY, status TEXT NOT NULL, domain TEXT NOT NULL, rule_text TEXT NOT NULL, positive_example_ids_json TEXT NOT NULL, negative_example_ids_json TEXT NOT NULL, precision REAL, recall REAL, created_at INTEGER NOT NULL)`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS recall_log (id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT, tags_json TEXT, entities_json TEXT, kinds_json TEXT, caller_intent TEXT, returned_ids_json TEXT NOT NULL, result_count INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
     this.db.run("CREATE INDEX IF NOT EXISTS edge_src_idx ON edge(src_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_dst_idx ON edge(dst_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_type_src_idx ON edge(type, src_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS memory_tag_tag_idx ON memory_tag(tag_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS mention_entity_idx ON mention(entity_id)");
+    this.db.run("CREATE INDEX IF NOT EXISTS recall_log_created_idx ON recall_log(created_at)");
   }
 }
 

@@ -131,6 +131,19 @@ export interface MemoryRecallOptions {
   depth?: number;
   includeInactive?: boolean;
   includeInvalid?: boolean;
+  /**
+   * When false, skip the use_count/last_used_at writeback AND the recall_log
+   * insert. Eval, replay, and any measurement read MUST pass false so it does
+   * not mutate ranking signals or pollute the query log. Defaults to true so
+   * production recalls keep recording usage.
+   */
+  recordUsage?: boolean;
+  /**
+   * Coarse label for why this recall ran (e.g. "mcp_tool", "http_dashboard").
+   * Persisted to recall_log so replay can separate agent-driven recall (the
+   * real signal) from dashboard browsing (noise).
+   */
+  callerIntent?: string;
 }
 
 export interface MemorySearchResult {

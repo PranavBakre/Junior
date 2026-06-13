@@ -89,6 +89,7 @@ function recallOptionsFor(c: EvalCase, limit: number) {
     entities: c.entities,
     depth: c.depth,
     limit,
+    recordUsage: false, // measurement read: never mutate use_count or the recall log
   };
 }
 
@@ -222,7 +223,7 @@ export async function measureBroadTagStress(
   let resultCount = 0;
   for (let i = 0; i < samples; i++) {
     const start = performance.now();
-    const results = await store.recall({ tags: [tag], depth, limit: 5 });
+    const results = await store.recall({ tags: [tag], depth, limit: 5, recordUsage: false });
     latencies.push(performance.now() - start);
     resultCount = results.length;
   }
