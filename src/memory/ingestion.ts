@@ -146,18 +146,6 @@ export class MemoryIngestor {
       metadata: { text: input.text },
       createdAt: now,
     });
-    await this.store.upsertFact({
-      id: `routing_memory_decision_${sourceId}`,
-      kind: "routing_memory",
-      title: `Routing decision: ${input.selectedAgent}`,
-      body: input.reason,
-      confidence: 0.7,
-      importance: 0.4,
-      createdAt: now,
-      sourceIds: [sourceId],
-      tags: ["routing_decision", `agent:${input.selectedAgent}`],
-      entities: [{ kind: "agent", name: input.selectedAgent }],
-    });
   }
 
   async captureRunnerEvents(

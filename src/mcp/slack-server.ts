@@ -624,6 +624,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           depth,
           includeInactive: include_inactive,
           includeInvalid: include_invalid,
+          callerIntent: "mcp_tool",
         });
         return { content: [{ type: "text" as const, text: JSON.stringify({ results }, null, 2) }] };
       });
