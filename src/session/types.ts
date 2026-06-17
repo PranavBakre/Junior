@@ -135,6 +135,12 @@ export interface ThreadSession {
    */
   humanParticipants: string[];
   model: string | null;
+  /**
+   * Explicit Claude-runner model override, sourced from the active agent's
+   * `model.claude` frontmatter. Wins over the GPT→Claude fallback map in
+   * `resolveClaudeModel`. Null when the agent declares no Claude override.
+   */
+  modelClaude?: string | null;
   cwd: string | null;
   pid: number | null;
   lastActivity: number;

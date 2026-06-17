@@ -53,6 +53,11 @@ export interface AgentDefinition {
   description: string;
   tools: string | null;
   model: string | null;
+  /**
+   * Explicit Claude-runner model override, from `model.claude` frontmatter.
+   * Wins over the GPT→Claude map.
+   */
+  modelClaude: string | null;
   common: string[];
   prompt: string;
   context: AgentContextProfile;
@@ -84,6 +89,7 @@ export async function loadAgentDefinition(
     description: frontmatter["description"] ?? "",
     tools: frontmatter["tools"] ?? null,
     model: frontmatter["model"] ?? null,
+    modelClaude: frontmatter["model.claude"] ?? null,
     common: readCommonProfile(frontmatter),
     prompt: body.trim(),
     context: readContextProfile(frontmatter),

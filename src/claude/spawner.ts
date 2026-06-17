@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { AgentIdentity, ThreadSession } from "../session/types.ts";
-import type { ContentBlockToolUse, StreamEvent } from "./types.ts";
+import type { ContentBlockToolUse, StreamEvent, StreamEventResult } from "./types.ts";
 import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
 import { buildRunnerRuntime } from "../runners/runtime.ts";
 import { buildClaudeArgs } from "./args.ts";
@@ -10,6 +10,7 @@ import { createStreamParser } from "./parser.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
 import {
   allowedMcpServers,
+  mixpanelMcpCommand,
   mongoMcpUrl,
   playwrightMcpCommand,
   slackMcpUrl,
@@ -32,10 +33,14 @@ export function spawnClaude(
     botToken,
     agentIdentity,
   });
-  const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp)
-    ? writeClaudeMcpConfig(session)
+  // Human-gated agents route approvals through the slack-bot MCP permission
+  // tool, so that server must be present even if the agent declared no MCP.
+  const intent = session.agentPermissions?.intent ?? null;
+  const forceSlackMcp = config.approvalEnabled !== false && intent === "human-gated";
+  const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp, forceSlackMcp)
+    ? writeClaudeMcpConfig(session, forceSlackMcp)
     : undefined;
-  const args = buildClaudeArgs(session, prompt, config, mcpConfigPath);
+  const args = buildClaudeArgs(session, prompt, config, runtime.cwd, mcpConfigPath);
 
   const proc = Bun.spawn(["claude", ...args], {
     cwd: runtime.cwd,
@@ -142,17 +147,21 @@ export function spawnClaude(
 export function shouldUseClaudeMcpConfig(
   session: ThreadSession,
   needsProjectMcp: boolean,
+  forceSlackMcp = false,
 ): boolean {
   if (session.cwd) return false;
-  return needsProjectMcp || allowedMcpServers(session).size > 0;
+  return forceSlackMcp || needsProjectMcp || allowedMcpServers(session).size > 0;
 }
 
-export function writeClaudeMcpConfig(session: ThreadSession): string {
+export function writeClaudeMcpConfig(
+  session: ThreadSession,
+  forceSlackMcp = false,
+): string {
   mkdirSync(MCP_CONFIG_DIR, { recursive: true });
   const agent = session.activeAgentName ?? "default";
   const path = join(MCP_CONFIG_DIR, `${session.threadId}-${agent}.json`);
   const mcpServers: Record<string, unknown> = {};
-  if (wantsMcp(session, "slack-bot")) {
+  if (forceSlackMcp || wantsMcp(session, "slack-bot")) {
     mcpServers["slack-bot"] = {
       type: "http",
       url: slackMcpUrl(session),
@@ -160,6 +169,9 @@ export function writeClaudeMcpConfig(session: ThreadSession): string {
   }
   if (wantsMcp(session, "playwright")) {
     mcpServers.playwright = playwrightMcpCommand();
+  }
+  if (wantsMcp(session, "mixpanel") && isFeatureMetricsSession(session)) {
+    mcpServers.mixpanel = mixpanelMcpCommand();
   }
   if (wantsMcp(session, "mongodb")) {
     mcpServers.mongodb = {
@@ -170,6 +182,13 @@ export function writeClaudeMcpConfig(session: ThreadSession): string {
   const config = { mcpServers };
   writeFileSync(path, JSON.stringify(config, null, 2));
   return path;
+}
+
+function isFeatureMetricsSession(session: ThreadSession): boolean {
+  return (
+    session.agentType === "feature-metrics" ||
+    session.activeAgentName === "feature-metrics"
+  );
 }
 
 export function mapClaudeEvent(event: StreamEvent): RunnerEvent[] {
@@ -198,11 +217,23 @@ export function mapClaudeEvent(event: StreamEvent): RunnerEvent[] {
       }
       return events;
     }
-    case "result":
-      return [{ type: "done", provider: "claude" }];
+    case "result": {
+      const usage = claudeDoneUsage(event);
+      return [{ type: "done", provider: "claude", ...(usage ? { usage } : {}) }];
+    }
     default:
       return [];
   }
+}
+
+function claudeDoneUsage(
+  event: StreamEventResult,
+): Record<string, unknown> | undefined {
+  const usage: Record<string, unknown> = {};
+  if (event.total_cost_usd != null) usage.total_cost_usd = event.total_cost_usd;
+  if (event.usage) usage.usage = event.usage;
+  if (event.num_turns != null) usage.num_turns = event.num_turns;
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 function mapClaudeToolUse(block: ContentBlockToolUse): RunnerEvent {
