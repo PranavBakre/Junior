@@ -196,9 +196,9 @@ describe("buildClaudeArgs", () => {
     expect(args).toContain("project");
   });
 
-  it("wires the Slack approval round-trip for human-gated when approval enabled", () => {
+  it("wires the Slack approval round-trip for human-gated when approval enabled and slack-bot MCP present", () => {
     const session = makeSession({ agentPermissions: perms({ intent: "human-gated" }) });
-    const args = buildClaudeArgs(session, "gate", makeConfig({ approvalEnabled: true }), CWD);
+    const args = buildClaudeArgs(session, "gate", makeConfig({ approvalEnabled: true }), CWD, "/tmp/mcp.json");
     expect(args).toContain("--permission-prompt-tool");
     expect(args).toContain(APPROVAL_PERMISSION_TOOL);
     // Approval needs `default` mode so un-allowed tools consult the prompt tool.
@@ -206,9 +206,18 @@ describe("buildClaudeArgs", () => {
     expect(args[modeIdx + 1]).toBe("default");
   });
 
+  it("falls back to plan mode for human-gated when no MCP config is present (approval can't be wired)", () => {
+    const session = makeSession({ agentPermissions: perms({ intent: "human-gated" }) });
+    // No mcpConfigPath → slack-bot tool won't exist → don't advertise it.
+    const args = buildClaudeArgs(session, "gate", makeConfig({ approvalEnabled: true }), CWD);
+    expect(args).not.toContain("--permission-prompt-tool");
+    const modeIdx = args.indexOf("--permission-mode");
+    expect(args[modeIdx + 1]).toBe("plan");
+  });
+
   it("keeps human-gated on plan mode when approval disabled", () => {
     const session = makeSession({ agentPermissions: perms({ intent: "human-gated" }) });
-    const args = buildClaudeArgs(session, "gate", makeConfig({ approvalEnabled: false }), CWD);
+    const args = buildClaudeArgs(session, "gate", makeConfig({ approvalEnabled: false }), CWD, "/tmp/mcp.json");
     expect(args).not.toContain("--permission-prompt-tool");
     const modeIdx = args.indexOf("--permission-mode");
     expect(args[modeIdx + 1]).toBe("plan");

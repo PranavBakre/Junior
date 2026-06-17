@@ -28,7 +28,13 @@ export function buildClaudeArgs(
 ): string[] {
   const policy = mapClaudeRunPolicy({ config, session, cwd });
   const intent = session.agentPermissions?.intent ?? null;
-  const approvalActive = config.approvalEnabled !== false && intent === "human-gated";
+  // Approval is only wired when the slack-bot MCP is actually configured for
+  // this run (mcpConfigPath present — the spawner forces slack-bot for
+  // human-gated runs). When it isn't (e.g. a session.cwd utility run that skips
+  // project MCP), we must NOT advertise --permission-prompt-tool for a tool that
+  // won't exist; fall back to the policy's safe `plan` base instead.
+  const approvalActive =
+    config.approvalEnabled !== false && intent === "human-gated" && mcpConfigPath != null;
 
   const args: string[] = [
     "-p",
