@@ -33,6 +33,12 @@ const pending = new Map<string, PendingEntry>();
  * override `CLAUDE_APPROVAL_TIMEOUT_MS` before calling. Default 240000ms —
  * deliberately under Junior's 5-min idle/turn timeout so the wait resolves
  * cleanly (default-deny) before the turn is killed.
+ *
+ * INVARIANT: this must stay below `config.session.idleTimeoutMs` (default
+ * 300000). The `request_permission` tool_use event resets the idle timer right
+ * before the block, giving the human `approvalTimeoutMs` to respond; if
+ * `SESSION_IDLE_TIMEOUT_MS` is ever set at/below `CLAUDE_APPROVAL_TIMEOUT_MS`,
+ * the turn gets SIGINT'd mid-approval. Keep the approval timeout the smaller.
  */
 export function approvalTimeoutMs(): number {
   const raw = Number(process.env.CLAUDE_APPROVAL_TIMEOUT_MS);

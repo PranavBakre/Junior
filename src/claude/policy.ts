@@ -48,7 +48,10 @@ export function mapClaudeRunPolicy(options: {
 
   if (intent === "read-only") {
     // Critical safety case: review / reproducer-validation agents must not
-    // be able to mutate the worktree. Propose-only mode + explicit deny list.
+    // be able to mutate the worktree. `plan` mode is the ACTUAL gate — it
+    // blocks edits and write-Bash wholesale; the deny list below is
+    // defense-in-depth for specific high-blast-radius commands, not the
+    // primary enforcer. Don't loosen plan mode assuming the deny list confines.
     return {
       permissionMode: "plan",
       allowedTools: declaredTools,
