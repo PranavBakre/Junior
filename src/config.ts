@@ -52,8 +52,34 @@ export interface Config {
   claude: {
     maxTurns: number;
     timeoutMs: number;
+    /**
+     * Fallback permission mode, used only for the `utility` intent and as the
+     * baseline when an agent declares no intent path that overrides it. Per-agent
+     * intent (read-only/normal/human-gated/…) is resolved by `mapClaudeRunPolicy`,
+     * which is the authoritative permission surface — this is no longer a blanket
+     * setting.
+     */
     permissionMode: string;
     defaultModel: string | null;
+    /**
+     * Pass `--strict-mcp-config` so Claude only loads MCP servers from Junior's
+     * generated `--mcp-config` (no developer-global `.mcp.json` / user MCP leak).
+     * Optional so existing test fixtures stay valid; production loader always
+     * sets it and read sites default to true.
+     */
+    strictMcp?: boolean;
+    /**
+     * Value for `--setting-sources` (e.g. "project"). Empty string omits the flag.
+     * "project" isolates the spawn from the developer's user-global `~/.claude`
+     * settings/hooks.
+     */
+    settingSources?: string;
+    /** Enable the Slack permission approval round-trip for human-gated agents. */
+    approvalEnabled?: boolean;
+    /** Per-turn spend cap via `--max-budget-usd`. null omits the flag. */
+    maxBudgetUsd?: number | null;
+    /** Inject the Junior provider-baseline system prompt via `--append-system-prompt`. */
+    baselineEnabled?: boolean;
     /**
      * Default driver for new threads. Override per-thread via `!driver`.
      * Set via `DEFAULT_CLAUDE_DRIVER` env (headless|tmux). Defaults to
@@ -157,6 +183,13 @@ export function loadConfig(): Config {
       timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "300000")),
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
       defaultModel: process.env.CLAUDE_MODEL ?? null,
+      strictMcp: parseBooleanEnv("CLAUDE_STRICT_MCP", true),
+      settingSources: optional("CLAUDE_SETTING_SOURCES", "project"),
+      approvalEnabled: parseBooleanEnv("CLAUDE_APPROVAL_ENABLED", true),
+      maxBudgetUsd: process.env.CLAUDE_MAX_BUDGET_USD
+        ? Number(process.env.CLAUDE_MAX_BUDGET_USD)
+        : null,
+      baselineEnabled: parseBooleanEnv("CLAUDE_BASELINE_PROMPT_ENABLED", true),
       defaultDriver: parseDriverMode(optional("DEFAULT_CLAUDE_DRIVER", "headless")),
       tmuxIdleTtlMs: Number(optional("TMUX_IDLE_TTL_MS", "14400000")), // 4h
       tmuxSweepIntervalMs: Number(optional("TMUX_SWEEP_INTERVAL_MS", "900000")), // 15min

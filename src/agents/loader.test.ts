@@ -278,6 +278,50 @@ body`;
     }
   });
 
+  describe("modelClaude frontmatter field", () => {
+    it("parses model.claude frontmatter into modelClaude", async () => {
+      const tmpPath = path.join(import.meta.dir, "__test_model_claude.md");
+      const content = `---
+name: claude-override
+description: Test
+model: gpt-5.5
+model.claude: sonnet
+---
+
+body`;
+      await Bun.write(tmpPath, content);
+
+      try {
+        const def = await loadAgentDefinition(tmpPath);
+        expect(def).not.toBeNull();
+        expect(def!.model).toBe("gpt-5.5");
+        expect(def!.modelClaude).toBe("sonnet");
+      } finally {
+        await fs.unlink(tmpPath).catch(() => {});
+      }
+    });
+
+    it("modelClaude is null when model.claude is not declared", async () => {
+      const tmpPath = path.join(import.meta.dir, "__test_model_claude_absent.md");
+      const content = `---
+name: no-claude-override
+description: Test
+model: gpt-5.5
+---
+
+body`;
+      await Bun.write(tmpPath, content);
+
+      try {
+        const def = await loadAgentDefinition(tmpPath);
+        expect(def).not.toBeNull();
+        expect(def!.modelClaude).toBeNull();
+      } finally {
+        await fs.unlink(tmpPath).catch(() => {});
+      }
+    });
+  });
+
   it("handles incomplete frontmatter (missing closing ---)", async () => {
     const tmpPath = path.join(import.meta.dir, "__test_incomplete.md");
     const content = `---

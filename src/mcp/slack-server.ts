@@ -29,7 +29,8 @@ import {
 import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
-import { prepareSlackResponseWithActions } from "../slack/formatting.ts";
+import { registerPendingApproval } from "./approval.ts";
+import { prepareSlackResponseWithActions, type SlackActionButtonSpec } from "../slack/formatting.ts";
 import { buildActionBlocks, splitActionMessageText } from "../slack/responder.ts";
 import type { SlackActionStore } from "../slack/action-store.ts";
 import { disableAgentActionMessages } from "../slack/action-buttons.ts";
@@ -147,6 +148,104 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
       return {
         content: [{ type: "text" as const, text: `Message sent (ts: ${firstResult?.ts})` }],
       };
+    },
+  );
+
+  server.registerTool(
+    "request_permission",
+    {
+      description:
+        "Ask a human in the Slack thread to approve or deny a pending tool call, and BLOCK until they respond. " +
+        "Wired to Claude's --permission-prompt-tool: Claude passes the pending tool's name and input; " +
+        "this posts Allow/Deny buttons and returns the human's decision.",
+      // Claude's permission-prompt-tool passes the pending tool name plus its
+      // input. Accept a permissive shape (loosest pattern in this codebase,
+      // matching the mongodb proxy) so we never reject Claude's payload.
+      inputSchema: z.object({ tool_name: z.string() }).passthrough(),
+    },
+    async (args) => {
+      const toolName = typeof args.tool_name === "string" ? args.tool_name : "(unknown tool)";
+      // The original tool input Claude wants approved. Claude may send it under
+      // `input` or `tool_input`; fall back to the remaining args.
+      const { tool_name: _toolName, input, tool_input, ...rest } = args as Record<string, unknown>;
+      const toolInput = input ?? tool_input ?? (Object.keys(rest).length > 0 ? rest : undefined);
+
+      if (!runContext || !slackActionStore) {
+        // Fail closed: without a thread to ask or a store to persist the
+        // buttons, we cannot get a human decision. Deny.
+        return permissionResult("deny", undefined, "Denied: Slack approval context unavailable.");
+      }
+
+      const channelId = runContext.channel;
+      const threadTs = runContext.threadId;
+      const approvalToken = crypto.randomUUID();
+
+      const inputPreview = renderPermissionInput(toolInput);
+      const text =
+        `:lock: *Permission requested* by \`${runContext.agent}\`\n\`${toolName}\`` +
+        (inputPreview ? `\n${inputPreview}` : "");
+
+      const buttons: Array<{ action: SlackActionButtonSpec; token: string }> = [
+        {
+          action: {
+            id: "permission-allow",
+            label: "Allow",
+            style: "primary",
+            type: "request_permission",
+            approvalToken,
+            decision: "allow",
+          },
+          token: crypto.randomUUID(),
+        },
+        {
+          action: {
+            id: "permission-deny",
+            label: "Deny",
+            style: "danger",
+            type: "request_permission",
+            approvalToken,
+            decision: "deny",
+          },
+          token: crypto.randomUUID(),
+        },
+      ];
+
+      const blocks = buildActionBlocks(
+        text,
+        buttons.map(({ action, token }) => ({
+          token,
+          label: action.label,
+          style: action.style,
+        })),
+      );
+
+      const posted = await slack.chat.postMessage({
+        channel: channelId,
+        thread_ts: threadTs,
+        text,
+        blocks,
+      } as Parameters<typeof slack.chat.postMessage>[0]);
+
+      if (!posted.ts) {
+        return permissionResult("deny", toolInput, "Denied: failed to post approval prompt to Slack.");
+      }
+
+      await slackActionStore.createMany(
+        buttons.map(({ action, token }) => ({
+          token,
+          channelId,
+          threadTs,
+          messageTs: posted.ts!,
+          messageText: text,
+          action,
+          sourceAgent: runContext.agent,
+        })),
+      );
+
+      const decision = await registerPendingApproval(approvalToken);
+      return decision === "allow"
+        ? permissionResult("allow", toolInput)
+        : permissionResult("deny", toolInput, "Denied by human in Slack");
     },
   );
 
@@ -686,6 +785,41 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
       });
     },
   );
+}
+
+/**
+ * Build the MCP tool result Claude's `--permission-prompt-tool` contract
+ * expects: a single text content block whose text is a JSON-stringified
+ * `{ behavior, updatedInput }` (allow) or `{ behavior, message }` (deny).
+ *
+ * On allow we echo the original tool input as `updatedInput` (the documented
+ * safe form — Claude requires the updated input it should run with).
+ */
+function permissionResult(
+  behavior: "allow" | "deny",
+  input: unknown,
+  message?: string,
+): { content: Array<{ type: "text"; text: string }> } {
+  const payload =
+    behavior === "allow"
+      ? { behavior, updatedInput: (input ?? {}) as Record<string, unknown> }
+      : { behavior, message: message ?? "Denied by human in Slack" };
+  return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
+}
+
+/** Compact, Slack-safe rendering of the pending tool's input for the prompt. */
+function renderPermissionInput(input: unknown): string {
+  if (input === undefined || input === null) return "";
+  let serialized: string;
+  try {
+    serialized = typeof input === "string" ? input : JSON.stringify(input, null, 2);
+  } catch {
+    serialized = String(input);
+  }
+  if (!serialized.trim()) return "";
+  const MAX = 1_500;
+  const clipped = serialized.length > MAX ? `${serialized.slice(0, MAX)}\n… (truncated)` : serialized;
+  return "```\n" + clipped + "\n```";
 }
 
 interface SlackDirectMessageClient {

@@ -42,6 +42,9 @@ export interface StreamEventResult {
   subtype: string; // "success", "error_max_turns", etc.
   result?: string;
   text?: string;
+  total_cost_usd?: number;
+  usage?: Record<string, unknown>;
+  num_turns?: number;
 }
 
 export interface StreamEventUser {
