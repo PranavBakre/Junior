@@ -580,10 +580,13 @@ function encodeCwd(cwd: string): string {
 function buildInteractiveClaudeArgs(input: DriverSendInput, needsProjectMcp: boolean): string[] {
   // Lean on the existing arg builder but strip the `-p <prompt>` and
   // `--output-format` flags — those are headless-only.
+  const cwd =
+    input.session.cwd ?? input.session.worktreePath ?? process.cwd();
   const all = buildClaudeArgs(
     input.session,
     /*prompt*/ "",
     input.config,
+    cwd,
     needsProjectMcp ? writeClaudeMcpConfig(input.session) : undefined,
   );
   const out: string[] = [];
@@ -595,6 +598,11 @@ function buildInteractiveClaudeArgs(input: DriverSendInput, needsProjectMcp: boo
     }
     if (arg === "--output-format" || arg === "--verbose") {
       if (arg === "--output-format") i++;
+      continue;
+    }
+    // Headless-only: interactive tmux has a human at the TUI to approve tools.
+    if (arg === "--permission-prompt-tool") {
+      i++; // skip the tool-name value
       continue;
     }
     out.push(arg);

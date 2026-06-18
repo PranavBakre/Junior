@@ -72,6 +72,15 @@ export type SlackActionButtonSpec =
       label: string;
       style?: SlackActionButtonStyle;
       type: "cleanup_worktree";
+    }
+  | {
+      id: string;
+      label: string;
+      style?: SlackActionButtonStyle;
+      type: "request_permission";
+      // The in-process pending-approval token both Allow/Deny buttons resolve.
+      approvalToken: string;
+      decision: "allow" | "deny";
     };
 
 export interface SlackResponseWithActions {

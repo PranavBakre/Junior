@@ -5,6 +5,7 @@ import type { ThreadSession } from "../session/types.ts";
 import { isPersistentAgent } from "../support/agents.ts";
 import type { WorktreeManager, WorktreeStatus } from "../worktree/manager.ts";
 import { log } from "../logger.ts";
+import { resolvePendingApproval } from "../mcp/approval.ts";
 import type { SlackActionRecord, SlackActionStore } from "./action-store.ts";
 
 export const ACTION_BUTTON_ID = "junior_agent_action";
@@ -44,6 +45,8 @@ export function registerAgentActionButtons(
         await handleDispatch(record, userId, sessionManager, options.supportChannels);
       } else if (record.action.type === "cleanup_worktree") {
         await handleCleanup(record, sessionManager, worktreeManager, client);
+      } else if (record.action.type === "request_permission") {
+        await handlePermission(record, userId, client);
       }
     } catch (err) {
       await actionStore.markFailed(record.token);
@@ -114,6 +117,22 @@ export function resolveDispatchAgent(
     return supportChannels?.has(record.channelId) ? "thinker" : "default";
   }
   return action.agent;
+}
+
+async function handlePermission(
+  record: SlackActionRecord,
+  userId: string,
+  client: WebClient,
+): Promise<void> {
+  const action = record.action;
+  if (action.type !== "request_permission") return;
+
+  const resolved = resolvePendingApproval(action.approvalToken, action.decision);
+  const verb = action.decision === "allow" ? "Allowed" : "Denied";
+  const text = resolved
+    ? `${verb} by <@${userId}>.`
+    : `${verb} by <@${userId}> — but the request had already resolved or expired.`;
+  await postThread(client, record, text);
 }
 
 async function handleCleanup(

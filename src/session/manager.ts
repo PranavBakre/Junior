@@ -1060,6 +1060,13 @@ export class SessionManager {
           await this.store.set(session.threadId, session);
         }
       }
+      // Per-agent Claude-runner model override (`model.claude` frontmatter).
+      // Resolved by resolveClaudeModel at spawn; carried the same way as `model`.
+      runSession.modelClaude = agentDefinition?.modelClaude ?? null;
+      if (isTopLevel && agentDefinition?.modelClaude) {
+        session.modelClaude = agentDefinition.modelClaude;
+        await this.store.set(session.threadId, session);
+      }
       runSession.agentPermissions = agentDefinition?.permissions;
 
       // Build the prompt. On the first turn (no sessionId yet), inject the
