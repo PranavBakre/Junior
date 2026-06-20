@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { ThreadSession } from "../session/types.ts";
 import { buildMongoMcpUrl, buildSlackMcpUrl } from "../mcp/context.ts";
 
-export type McpServerName = "slack-bot" | "playwright" | "mixpanel" | "mongodb";
+export type McpServerName = "slack-bot" | "playwright" | "mixpanel" | "mongodb" | "figma";
 
 export interface StdioMcpCommand {
   command: string;
@@ -16,7 +16,8 @@ export function allowedMcpServers(session: ThreadSession): Set<McpServerName> {
       name === "slack-bot" ||
       name === "playwright" ||
       name === "mixpanel" ||
-      name === "mongodb"
+      name === "mongodb" ||
+      name === "figma"
     ),
   );
 }
@@ -44,6 +45,12 @@ export function mixpanelMcpCommand(): StdioMcpCommand {
     "mcp-remote",
     "https://mcp.mixpanel.com/mcp",
   ]);
+}
+
+export function needsUserSettings(): boolean {
+  // Figma MCP is unconditionally included and requires OAuth tokens stored
+  // at the user level (~/.claude/). Always widen setting sources.
+  return true;
 }
 
 function wrappedStdioMcpCommand(command: string[]): StdioMcpCommand {
