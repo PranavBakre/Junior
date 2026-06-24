@@ -218,6 +218,48 @@ by review
     });
   });
 
+  it("accepts HTML-escaped junior action delimiters from tool payloads", () => {
+    const result = prepareSlackResponseWithActions(`review: approved
+by review
+
+&lt;junior-actions&gt;
+[
+  {
+    "id": "review:merge-gxt-admin",
+    "label": "Merge via gxt-admin",
+    "style": "primary",
+    "type": "dispatch_agent",
+    "agent": "lead",
+    "prompt": "merge with the admin token"
+  },
+  {
+    "id": "thread:cleanup-worktree",
+    "label": "Cleanup worktree",
+    "type": "cleanup_worktree"
+  }
+]
+&lt;/junior-actions&gt;`);
+
+    expect(result).toEqual({
+      text: "review: approved\nby review",
+      actions: [
+        {
+          id: "review:merge-gxt-admin",
+          label: "Merge via gxt-admin",
+          style: "primary",
+          type: "dispatch_agent",
+          agent: "lead",
+          prompt: "merge with the admin token",
+        },
+        {
+          id: "thread:cleanup-worktree",
+          label: "Cleanup worktree",
+          type: "cleanup_worktree",
+        },
+      ],
+    });
+  });
+
   it("drops malformed action specs without dropping visible text", () => {
     const result = prepareSlackResponseWithActions(`ok
 <junior-actions>

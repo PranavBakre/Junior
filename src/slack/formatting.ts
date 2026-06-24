@@ -55,6 +55,8 @@ export function extractRunnerMessageText(event: RunnerEvent): string | null {
 export const NO_SLACK_MESSAGE = "NO_SLACK_MESSAGE";
 export const ACTIONS_START = "<junior-actions>";
 export const ACTIONS_END = "</junior-actions>";
+const ACTIONS_START_ESCAPED = "&lt;junior-actions&gt;";
+const ACTIONS_END_ESCAPED = "&lt;/junior-actions&gt;";
 
 export type SlackActionButtonStyle = "primary" | "danger";
 
@@ -173,9 +175,10 @@ export function prepareSlackResponseWithActions(
 function extractJuniorActions(
   text: string,
 ): { text: string; jsonText: string } | null {
-  const start = text.indexOf(ACTIONS_START);
-  if (start === -1) return null;
-  const end = text.indexOf(ACTIONS_END, start + ACTIONS_START.length);
+  const markers = findActionMarkers(text);
+  if (!markers) return null;
+  const { start, startMarker, endMarker } = markers;
+  const end = text.indexOf(endMarker, start + startMarker.length);
   if (end === -1) {
     return {
       text: text.slice(0, start).trimEnd(),
@@ -184,8 +187,30 @@ function extractJuniorActions(
   }
 
   return {
-    text: `${text.slice(0, start)}${text.slice(end + ACTIONS_END.length)}`.trim(),
-    jsonText: text.slice(start + ACTIONS_START.length, end).trim(),
+    text: `${text.slice(0, start)}${text.slice(end + endMarker.length)}`.trim(),
+    jsonText: text.slice(start + startMarker.length, end).trim(),
+  };
+}
+
+function findActionMarkers(
+  text: string,
+): { start: number; startMarker: string; endMarker: string } | null {
+  const literalStart = text.indexOf(ACTIONS_START);
+  const escapedStart = text.indexOf(ACTIONS_START_ESCAPED);
+  if (literalStart === -1 && escapedStart === -1) return null;
+
+  if (escapedStart !== -1 && (literalStart === -1 || escapedStart < literalStart)) {
+    return {
+      start: escapedStart,
+      startMarker: ACTIONS_START_ESCAPED,
+      endMarker: ACTIONS_END_ESCAPED,
+    };
+  }
+
+  return {
+    start: literalStart,
+    startMarker: ACTIONS_START,
+    endMarker: ACTIONS_END,
   };
 }
 
