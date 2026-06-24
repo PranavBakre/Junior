@@ -18,3 +18,4 @@ support/admin-credentials.yaml
 # Bug pipeline runtime artifacts — contain real user data (emails, member IDs)
 support/bugs/
 .playwright-mcp/
+tmp/
