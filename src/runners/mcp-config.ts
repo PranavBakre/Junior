@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { ThreadSession } from "../session/types.ts";
 import { buildMongoMcpUrl, buildSlackMcpUrl } from "../mcp/context.ts";
 
-export type McpServerName = "slack-bot" | "playwright" | "mixpanel" | "mongodb" | "figma";
+export type McpServerName = "slack-bot" | "playwright" | "mixpanel" | "mongodb" | "figma" | "notion";
 
 export interface StdioMcpCommand {
   command: string;
@@ -17,7 +17,8 @@ export function allowedMcpServers(session: ThreadSession): Set<McpServerName> {
       name === "playwright" ||
       name === "mixpanel" ||
       name === "mongodb" ||
-      name === "figma"
+      name === "figma" ||
+      name === "notion"
     ),
   );
 }
@@ -48,8 +49,8 @@ export function mixpanelMcpCommand(): StdioMcpCommand {
 }
 
 export function needsUserSettings(): boolean {
-  // Figma MCP is unconditionally included and requires OAuth tokens stored
-  // at the user level (~/.claude/). Always widen setting sources.
+  // Figma and Notion MCP are unconditionally included and require OAuth tokens
+  // stored at the user level (~/.claude/). Always widen setting sources.
   return true;
 }
 
