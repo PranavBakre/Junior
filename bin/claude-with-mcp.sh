@@ -2,7 +2,7 @@
 # Launch an interactive Claude session with the same MCP wiring Junior's
 # spawner provides to claude -p processes.
 #
-# Use this to manually test MCP connectivity (Figma, Slack, Playwright,
+# Use this to manually test MCP connectivity (Figma, Notion, Slack, Playwright,
 # MongoDB) from an interactive Claude session outside Junior.
 #
 # MCP servers are toggled via env flags (all default to true):
@@ -10,6 +10,7 @@
 #   CLAUDE_MCP_SLACK=true|false
 #   CLAUDE_MCP_PLAYWRIGHT=true|false
 #   CLAUDE_MCP_FIGMA=true|false
+#   CLAUDE_MCP_NOTION=true|false
 #   CLAUDE_MCP_MONGODB=true|false
 #
 # The generated config is written to a temp file and passed via --mcp-config.
@@ -39,6 +40,7 @@ parse_bool() {
 SLACK=$(parse_bool "CLAUDE_MCP_SLACK" "${CLAUDE_MCP_SLACK:-}" true)
 PLAYWRIGHT=$(parse_bool "CLAUDE_MCP_PLAYWRIGHT" "${CLAUDE_MCP_PLAYWRIGHT:-}" true)
 FIGMA=$(parse_bool "CLAUDE_MCP_FIGMA" "${CLAUDE_MCP_FIGMA:-}" true)
+NOTION=$(parse_bool "CLAUDE_MCP_NOTION" "${CLAUDE_MCP_NOTION:-}" true)
 MONGODB=$(parse_bool "CLAUDE_MCP_MONGODB" "${CLAUDE_MCP_MONGODB:-}" true)
 
 CONFIG='{"mcpServers":{}}'
@@ -59,6 +61,11 @@ if [ "$FIGMA" = "true" ]; then
     '.mcpServers.figma = {type: "http", url: "https://mcp.figma.com/mcp"}')
 fi
 
+if [ "$NOTION" = "true" ]; then
+  CONFIG=$(echo "$CONFIG" | jq \
+    '.mcpServers.notion = {type: "http", url: "https://mcp.notion.com/mcp"}')
+fi
+
 if [ "$MONGODB" = "true" ]; then
   MONGO_URL="${MONGO_MCP_URL:-http://localhost:3456/mcp/mongodb}"
   CONFIG=$(echo "$CONFIG" | jq --arg url "$MONGO_URL" \
@@ -70,7 +77,7 @@ echo "$CONFIG" > "$MCP_CONFIG"
 trap 'rm -f "$MCP_CONFIG"' EXIT
 
 SETTING_SOURCES="project"
-if [ "$FIGMA" = "true" ]; then
+if [ "$FIGMA" = "true" ] || [ "$NOTION" = "true" ]; then
   SETTING_SOURCES="user,project"
 fi
 
