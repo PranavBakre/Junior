@@ -9,9 +9,9 @@ import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
 import {
-  allowedMcpServers,
   mixpanelMcpCommand,
   mongoMcpUrl,
+  needsUserSettings,
   playwrightMcpCommand,
   slackMcpUrl,
   wantsMcp,
@@ -40,7 +40,10 @@ export function spawnClaude(
   const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp, forceSlackMcp)
     ? writeClaudeMcpConfig(session, forceSlackMcp)
     : undefined;
-  const args = buildClaudeArgs(session, prompt, config, runtime.cwd, mcpConfigPath);
+  const effectiveConfig = needsUserSettings()
+    ? widenSettingSources(config)
+    : config;
+  const args = buildClaudeArgs(session, prompt, effectiveConfig, runtime.cwd, mcpConfigPath);
 
   const proc = Bun.spawn(["claude", ...args], {
     cwd: runtime.cwd,
@@ -146,11 +149,11 @@ export function spawnClaude(
 
 export function shouldUseClaudeMcpConfig(
   session: ThreadSession,
-  needsProjectMcp: boolean,
-  forceSlackMcp = false,
+  _needsProjectMcp: boolean,
+  _forceSlackMcp = false,
 ): boolean {
   if (session.cwd) return false;
-  return forceSlackMcp || needsProjectMcp || allowedMcpServers(session).size > 0;
+  return true;
 }
 
 export function writeClaudeMcpConfig(
@@ -179,6 +182,10 @@ export function writeClaudeMcpConfig(
       url: mongoMcpUrl(session),
     };
   }
+  mcpServers.figma = {
+    type: "http",
+    url: "https://mcp.figma.com/mcp",
+  };
   const config = { mcpServers };
   writeFileSync(path, JSON.stringify(config, null, 2));
   return path;
@@ -234,6 +241,12 @@ function claudeDoneUsage(
   if (event.usage) usage.usage = event.usage;
   if (event.num_turns != null) usage.num_turns = event.num_turns;
   return Object.keys(usage).length > 0 ? usage : undefined;
+}
+
+function widenSettingSources(config: Config["claude"]): Config["claude"] {
+  const base = config.settingSources ?? "";
+  if (!base || base.includes("user")) return config;
+  return { ...config, settingSources: `user,${base}` };
 }
 
 function mapClaudeToolUse(block: ContentBlockToolUse): RunnerEvent {

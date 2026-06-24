@@ -3,6 +3,10 @@
     "slack-bot": {
       "type": "http",
       "url": "http://localhost:3456/mcp"
+    },
+    "figma": {
+      "type": "http",
+      "url": "https://mcp.figma.com/mcp"
     }
   }
 }
