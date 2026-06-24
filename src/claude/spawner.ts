@@ -186,6 +186,10 @@ export function writeClaudeMcpConfig(
     type: "http",
     url: "https://mcp.figma.com/mcp",
   };
+  mcpServers.notion = {
+    type: "http",
+    url: "https://mcp.notion.com/mcp",
+  };
   const config = { mcpServers };
   writeFileSync(path, JSON.stringify(config, null, 2));
   return path;
