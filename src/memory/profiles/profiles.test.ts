@@ -265,3 +265,75 @@ describe("ProfileStore list", () => {
     });
   });
 });
+
+describe("ProfileStore last_used_at decay signal (§7.1)", () => {
+  it("does not emit last_used_at until the profile is recalled, and is null on plain fetch", async () => {
+    await withTmp(async (root) => {
+      const store = createProfileStore({ root, now: () => new Date("2026-06-28T00:00:00Z") });
+      await store.upsertProfile({ kind: "person", entity_ref: "p:person", body: "sketch" });
+
+      // No recall yet → no frontmatter line, parsed as null.
+      const raw = readFileSync(join(root, "people", "p.md"), "utf8");
+      expect(raw).not.toContain("last_used_at");
+      const fetched = await store.fetchByEntityRef("p:person");
+      expect(fetched?.last_used_at ?? null).toBeNull();
+    });
+  });
+
+  it("bumps last_used_at on recordUsage:true and round-trips the epoch through frontmatter", async () => {
+    await withTmp(async (root) => {
+      const usedAt = new Date("2026-06-28T12:00:00Z");
+      const store = createProfileStore({ root, now: () => usedAt });
+      await store.upsertProfile({ kind: "person", entity_ref: "q:person", role: "principal" });
+
+      // Genuine keyed recall → bump.
+      const recalled = await store.fetchByEntityRef("q:person", { recordUsage: true });
+      expect(recalled?.last_used_at).toBe(usedAt.getTime());
+
+      // Persisted as a number and round-trips on a later plain (non-bumping) fetch.
+      const raw = readFileSync(join(root, "people", "q.md"), "utf8");
+      expect(raw).toContain(`last_used_at: ${usedAt.getTime()}`);
+      const reread = await store.fetchByEntityRef("q:person");
+      expect(reread?.last_used_at).toBe(usedAt.getTime());
+      // updated_at is the consolidation-write stamp, untouched by the read bump.
+      expect(reread?.updated_at).toBe("2026-06-28");
+    });
+  });
+
+  it("does NOT bump last_used_at on plain inspection (default recordUsage false)", async () => {
+    await withTmp(async (root) => {
+      let t = new Date("2026-06-28T00:00:00Z");
+      const store = createProfileStore({ root, now: () => t });
+      await store.upsertProfile({ kind: "repo", entity_ref: "g:repo", stack: "node" });
+
+      // First, a genuine recall sets the signal.
+      t = new Date("2026-06-28T01:00:00Z");
+      await store.fetchByEntityRef("g:repo", { recordUsage: true });
+      const firstUse = t.getTime();
+
+      // A later inspection read must NOT advance it.
+      t = new Date("2026-06-29T00:00:00Z");
+      const inspected = await store.fetchByEntityRef("g:repo");
+      expect(inspected?.last_used_at).toBe(firstUse);
+    });
+  });
+
+  it("preserves last_used_at across a consolidation upsert (write does not reset the read signal)", async () => {
+    await withTmp(async (root) => {
+      let t = new Date("2026-06-28T00:00:00Z");
+      const store = createProfileStore({ root, now: () => t });
+      await store.upsertProfile({ kind: "person", entity_ref: "r:person", role: "a" });
+
+      t = new Date("2026-06-28T06:00:00Z");
+      await store.fetchByEntityRef("r:person", { recordUsage: true });
+      const usedAt = t.getTime();
+
+      // A later consolidation write should keep the recall signal.
+      t = new Date("2026-06-30T00:00:00Z");
+      const updated = (await store.upsertProfile({ kind: "person", entity_ref: "r:person", role: "b" })) as PersonProfile;
+      expect(updated.role).toBe("b");
+      expect(updated.last_used_at).toBe(usedAt);
+      expect(updated.updated_at).toBe("2026-06-30");
+    });
+  });
+});

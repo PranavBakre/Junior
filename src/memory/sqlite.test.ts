@@ -839,4 +839,142 @@ describe("SqliteMemoryStore", () => {
     const results = await store.recallClaims({ ftsQuery: "worktree", filters: {}, limit: 5 });
     expect(results.map((r) => r.id)).toEqual(["claim-rebuild"]);
   });
+
+  // --- memory v3: last-used & decay (§7.1) ---------------------------------
+
+  const lastUsedOf = (id: string): number | null => {
+    const db = (store as unknown as { db: Database }).db;
+    return (
+      db
+        .query<{ last_used_at: number | null }, [string]>(
+          "SELECT last_used_at FROM claim WHERE id = ?",
+        )
+        .get(id)?.last_used_at ?? null
+    );
+  };
+
+  it("bumps claim.last_used_at on a genuine recall (recordUsage defaults true)", async () => {
+    const created = Date.now() - 100_000;
+    await store.upsertClaim({
+      id: "claim-used",
+      kind: "fact",
+      text: "used claim",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: created,
+    });
+    expect(lastUsedOf("claim-used")).toBeNull();
+
+    const before = Date.now();
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      filters: {},
+      limit: 5,
+    });
+    expect(results.map((r) => r.id)).toEqual(["claim-used"]);
+    // The returned row carries the PRE-bump value (null on first recall).
+    expect(results[0].lastUsedAt).toBeNull();
+    // The DB now records the recall.
+    const bumped = lastUsedOf("claim-used");
+    expect(bumped).not.toBeNull();
+    expect(bumped!).toBeGreaterThanOrEqual(before);
+  });
+
+  it("does NOT bump claim.last_used_at when recordUsage is false (eval/dashboard reads)", async () => {
+    await store.upsertClaim({
+      id: "claim-inspected",
+      kind: "fact",
+      text: "inspected claim",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: Date.now(),
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      filters: {},
+      limit: 5,
+      recordUsage: false,
+    });
+    expect(results.map((r) => r.id)).toEqual(["claim-inspected"]);
+    // Inspection traffic must not pollute the fade signal.
+    expect(lastUsedOf("claim-inspected")).toBeNull();
+  });
+
+  it("markEpisodesUsed bumps episode.last_used_at", async () => {
+    const created = Date.now() - 50_000;
+    await store.appendEpisode({ id: "ep-x", what: "x happened", createdAt: created });
+    await store.appendEpisode({ id: "ep-y", what: "y happened", createdAt: created });
+
+    const db = (store as unknown as { db: Database }).db;
+    const read = (id: string) =>
+      db
+        .query<{ last_used_at: number | null }, [string]>(
+          "SELECT last_used_at FROM episode WHERE id = ?",
+        )
+        .get(id)?.last_used_at ?? null;
+    expect(read("ep-x")).toBeNull();
+
+    await store.markEpisodesUsed(["ep-x"], 1_700_000_000_000);
+    expect(read("ep-x")).toBe(1_700_000_000_000);
+    // Untouched episode stays null.
+    expect(read("ep-y")).toBeNull();
+  });
+
+  it("archiveStaleClaims archives only stale-AND-low-weight claims, keeping the row", async () => {
+    const now = 10_000_000_000_000;
+    const old = now - 200 * 24 * 60 * 60 * 1000; // well past the cutoff
+    const fresh = now - 1000;
+    // stale + low weight  -> archive
+    await store.upsertClaim({ id: "c-stale-low", kind: "fact", text: "a", weight: 0.2, lastUsedAt: old, createdAt: old });
+    // stale + high weight  -> keep (value survives age)
+    await store.upsertClaim({ id: "c-stale-high", kind: "fact", text: "b", weight: 5, lastUsedAt: old, createdAt: old });
+    // fresh + low weight   -> keep (not stale)
+    await store.upsertClaim({ id: "c-fresh-low", kind: "fact", text: "c", weight: 0.2, lastUsedAt: fresh, createdAt: old });
+    // never used + old created_at + low weight -> archive
+    await store.upsertClaim({ id: "c-neverused-low", kind: "fact", text: "d", weight: 0.2, createdAt: old });
+
+    const result = await store.archiveStaleClaims({
+      olderThanMs: 90 * 24 * 60 * 60 * 1000,
+      maxWeight: 0.5,
+      now,
+    });
+    expect(result.archivedIds.sort()).toEqual(["c-neverused-low", "c-stale-low"]);
+
+    const db = (store as unknown as { db: Database }).db;
+    const activeOf = (id: string) =>
+      db.query<{ active: number }, [string]>("SELECT active FROM claim WHERE id = ?").get(id)?.active;
+    // ARCHIVED, not deleted — rows are still present with active = 0.
+    expect(activeOf("c-stale-low")).toBe(0);
+    expect(activeOf("c-neverused-low")).toBe(0);
+    // survivors stay active.
+    expect(activeOf("c-stale-high")).toBe(1);
+    expect(activeOf("c-fresh-low")).toBe(1);
+  });
+
+  it("memoryHealth reports corpus stats and fade candidates per kind", async () => {
+    const now = 10_000_000_000_000;
+    const old = now - 200 * 24 * 60 * 60 * 1000;
+    await store.upsertClaim({ id: "h-used", kind: "lesson", text: "used", weight: 1, lastUsedAt: old, createdAt: old });
+    await store.upsertClaim({ id: "h-never", kind: "lesson", text: "never", weight: 0.1, createdAt: old });
+    await store.upsertClaim({ id: "h-fact", kind: "fact", text: "fact", weight: 1, lastUsedAt: now, createdAt: now });
+    await store.appendEpisode({ id: "h-ep", what: "ep", createdAt: old });
+
+    const health = await store.memoryHealth({ now, olderThanMs: 90 * 24 * 60 * 60 * 1000, maxWeight: 0.5 });
+    expect(health.generatedAt).toBe(now);
+    const byKind = Object.fromEntries(health.kinds.map((k) => [k.kind, k]));
+
+    expect(byKind.lesson.total).toBe(2);
+    expect(byKind.lesson.neverUsed).toBe(1);
+    expect(byKind.lesson.pctNeverUsed).toBeCloseTo(0.5, 5);
+    expect(byKind.lesson.oldestLastUsedAt).toBe(old);
+    // only h-never is both stale (never used, old created_at) AND low-weight.
+    expect(byKind.lesson.fadeCandidates).toBe(1);
+
+    expect(byKind.fact.total).toBe(1);
+    expect(byKind.fact.neverUsed).toBe(0);
+    expect(byKind.fact.fadeCandidates).toBe(0);
+
+    expect(byKind.episode.total).toBe(1);
+    expect(byKind.episode.neverUsed).toBe(1);
+    expect(byKind.episode.fadeCandidates).toBe(0);
+  });
 });

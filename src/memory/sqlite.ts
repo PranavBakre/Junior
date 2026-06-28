@@ -3,6 +3,8 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { MemoryStore, AcceptedRule } from "./store.ts";
 import type {
+  ArchiveStaleClaimsOptions,
+  ArchiveStaleClaimsResult,
   CandidateRuleInput,
   ClaimInput,
   ClaimKind,
@@ -13,6 +15,9 @@ import type {
   ConsolidationOptions,
   ConsolidationResult,
   EpisodeInput,
+  MemoryHealth,
+  MemoryHealthKind,
+  MemoryHealthOptions,
   IngestionClassificationInput,
   IngestionCorrectionInput,
   MemoryEdgeInput,
@@ -967,7 +972,7 @@ export class SqliteMemoryStore implements MemoryStore {
       : scored;
 
     ranked.sort((a, b) => b.score - a.score);
-    return ranked.slice(0, limit).map((entry) => ({
+    const results = ranked.slice(0, limit).map((entry) => ({
       id: entry.row.id,
       kind: entry.row.kind as ClaimKind,
       text: entry.row.text,
@@ -983,6 +988,20 @@ export class SqliteMemoryStore implements MemoryStore {
       createdAt: entry.row.created_at,
       lastUsedAt: entry.row.last_used_at,
     }));
+
+    // Usage bump — the genuine-production-recall signal that drives decay.
+    // Gated by recordUsage (default true); eval/dashboard reads pass false so
+    // inspection traffic never pollutes the fade signal (§7.1).
+    if (options.recordUsage !== false && results.length > 0) {
+      const now = Date.now();
+      const bump = this.db.query("UPDATE claim SET last_used_at = ? WHERE id = ?");
+      const txn = this.db.transaction(() => {
+        for (const result of results) bump.run(now, result.id);
+      });
+      txn();
+    }
+
+    return results;
   }
 
   /**
@@ -1076,6 +1095,123 @@ export class SqliteMemoryStore implements MemoryStore {
         );
     });
     txn();
+  }
+
+  /**
+   * Bump `last_used_at` on the given episodes — the consolidation pass's record
+   * that it read them (their last contribution to a derivation). Not recordUsage-
+   * gated at this layer: only the genuine consolidation reader calls it.
+   */
+  async markEpisodesUsed(ids: string[], now: number): Promise<void> {
+    const uniqueIds = unique(ids);
+    if (uniqueIds.length === 0) return;
+    const bump = this.db.query("UPDATE episode SET last_used_at = ? WHERE id = ?");
+    const txn = this.db.transaction(() => {
+      for (const id of uniqueIds) bump.run(now, id);
+    });
+    txn();
+  }
+
+  // --- memory v3: decay / forgetting (§7.1) ---------------------------------
+
+  /**
+   * ARCHIVE (set `active = 0`, never DELETE — keep provenance) every active claim
+   * that is BOTH stale AND low-value. Stale = `last_used_at` older than the cutoff,
+   * or never used and `created_at` older than the cutoff. Low-value = `weight <=
+   * maxWeight`. Forget by value AND age — age alone never forgets. Batch/offline.
+   */
+  async archiveStaleClaims(options: ArchiveStaleClaimsOptions): Promise<ArchiveStaleClaimsResult> {
+    const now = options.now ?? Date.now();
+    const cutoff = now - options.olderThanMs;
+    const rows = this.db
+      .query<{ id: string }, [number, number, number]>(
+        `SELECT id FROM claim
+         WHERE active = 1
+           AND weight <= ?
+           AND ((last_used_at IS NOT NULL AND last_used_at < ?)
+                OR (last_used_at IS NULL AND created_at < ?))`,
+      )
+      .all(options.maxWeight, cutoff, cutoff);
+    const archivedIds = rows.map((row) => row.id);
+    if (archivedIds.length > 0) {
+      const archive = this.db.query("UPDATE claim SET active = 0 WHERE id = ?");
+      const txn = this.db.transaction(() => {
+        for (const id of archivedIds) archive.run(id);
+      });
+      txn();
+    }
+    return { archivedIds };
+  }
+
+  /**
+   * Read-only decay summary — per claim kind plus the episode log: corpus size,
+   * how many have never been used, the oldest `last_used_at`, and the current
+   * fade-candidate count under the supplied (or default) cutoff/ceiling. Never
+   * writes; safe for dashboards.
+   */
+  async memoryHealth(options: MemoryHealthOptions = {}): Promise<MemoryHealth> {
+    const now = options.now ?? Date.now();
+    const olderThanMs = options.olderThanMs ?? 90 * 24 * 60 * 60 * 1000;
+    const maxWeight = options.maxWeight ?? 0.5;
+    const cutoff = now - olderThanMs;
+
+    const kinds: MemoryHealthKind[] = [];
+
+    const claimKinds: ClaimKind[] = ["lesson", "fact", "situation-claim"];
+    for (const kind of claimKinds) {
+      const summary = this.db
+        .query<
+          { total: number; never_used: number; oldest: number | null },
+          [string]
+        >(
+          `SELECT COUNT(*) AS total,
+                  SUM(CASE WHEN last_used_at IS NULL THEN 1 ELSE 0 END) AS never_used,
+                  MIN(last_used_at) AS oldest
+           FROM claim WHERE active = 1 AND kind = ?`,
+        )
+        .get(kind);
+      const fade = this.db
+        .query<{ n: number }, [string, number, number, number]>(
+          `SELECT COUNT(*) AS n FROM claim
+           WHERE active = 1
+             AND kind = ?
+             AND weight <= ?
+             AND ((last_used_at IS NOT NULL AND last_used_at < ?)
+                  OR (last_used_at IS NULL AND created_at < ?))`,
+        )
+        .get(kind, maxWeight, cutoff, cutoff);
+      const total = summary?.total ?? 0;
+      const neverUsed = summary?.never_used ?? 0;
+      kinds.push({
+        kind,
+        total,
+        neverUsed,
+        pctNeverUsed: total > 0 ? neverUsed / total : 0,
+        oldestLastUsedAt: summary?.oldest ?? null,
+        fadeCandidates: fade?.n ?? 0,
+      });
+    }
+
+    const episodeSummary = this.db
+      .query<{ total: number; never_used: number; oldest: number | null }, []>(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN last_used_at IS NULL THEN 1 ELSE 0 END) AS never_used,
+                MIN(last_used_at) AS oldest
+         FROM episode`,
+      )
+      .get();
+    const episodeTotal = episodeSummary?.total ?? 0;
+    const episodeNeverUsed = episodeSummary?.never_used ?? 0;
+    kinds.push({
+      kind: "episode",
+      total: episodeTotal,
+      neverUsed: episodeNeverUsed,
+      pctNeverUsed: episodeTotal > 0 ? episodeNeverUsed / episodeTotal : 0,
+      oldestLastUsedAt: episodeSummary?.oldest ?? null,
+      fadeCandidates: 0, // episodes are never value-archived.
+    });
+
+    return { generatedAt: now, olderThanMs, maxWeight, kinds };
   }
 
   private syncClaimFts(id: string, text: string): void {
@@ -1488,6 +1624,17 @@ export class SqliteMemoryStore implements MemoryStore {
     return decision;
   }
 
+  /** Idempotently add a column to an existing table (no-op if already present). */
+  private ensureColumn(table: string, column: string, decl: string): void {
+    const cols = this.db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((row) => row.name);
+    if (!cols.includes(column)) {
+      this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+    }
+  }
+
   private migrate(): void {
     this.db.run(`CREATE TABLE IF NOT EXISTS memory_source_record (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('slack_message', 'runner_output', 'routing_decision', 'routing_correction', 'ingestion_correction', 'curated_fact', 'manual_correction')), channel_id TEXT, thread_id TEXT, slack_ts TEXT, source_url TEXT, actor_id TEXT, actor_kind TEXT CHECK (actor_kind IN ('human', 'junior', 'agent', 'bot', 'system')), agent_name TEXT, repo_name TEXT, body TEXT NOT NULL, metadata_json TEXT, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS memory_node (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory', 'entity', 'tag', 'claim')), created_at INTEGER NOT NULL, valid_at INTEGER, invalid_at INTEGER, superseded_by TEXT)`);
@@ -1510,7 +1657,8 @@ export class SqliteMemoryStore implements MemoryStore {
     // memory v3: semantic claim store (text + embedding co-located) — mirrors the lesson/memory_node relationship.
     this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'situation-claim')), text TEXT NOT NULL, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
     // memory v3: raw episodic log (affect sidecar over memory_source_record).
-    this.db.run(`CREATE TABLE IF NOT EXISTS episode (id TEXT PRIMARY KEY, actor TEXT, subjects_json TEXT, what TEXT, emotion TEXT, intensity REAL, valence REAL, trigger TEXT, response TEXT, salience REAL, consolidated_into_json TEXT, created_at INTEGER NOT NULL, FOREIGN KEY (id) REFERENCES memory_source_record(id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS episode (id TEXT PRIMARY KEY, actor TEXT, subjects_json TEXT, what TEXT, emotion TEXT, intensity REAL, valence REAL, trigger TEXT, response TEXT, salience REAL, consolidated_into_json TEXT, created_at INTEGER NOT NULL, last_used_at INTEGER, FOREIGN KEY (id) REFERENCES memory_source_record(id))`);
+    this.ensureColumn("episode", "last_used_at", "INTEGER");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_src_idx ON edge(src_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_dst_idx ON edge(dst_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_type_src_idx ON edge(type, src_id)");

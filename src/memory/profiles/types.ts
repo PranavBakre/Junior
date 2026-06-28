@@ -18,6 +18,14 @@ export interface ProfileBase {
   evidence: string[];
   /** ISO date (YYYY-MM-DD) of the last consolidation write. */
   updated_at: string;
+  /**
+   * Epoch-ms of the last GENUINE keyed recall (decay signal, §7.1). Null/absent
+   * until first used. Bumped ONLY on `fetchByEntityRef(ref, { recordUsage: true })`
+   * — plain inspection and the internal upsert read must NOT bump it, or the fade
+   * signal self-pollutes. Distinct from `updated_at`, which tracks consolidation
+   * writes, not reads.
+   */
+  last_used_at?: number | null;
   /** Free prose sketch (the body below the frontmatter). */
   body: string;
 }
@@ -71,6 +79,16 @@ export type ProfileInput =
 export interface ProfileStoreOptions {
   /** Root directory for profile files. Defaults to `memory/profiles`. */
   root?: string;
-  /** Injectable clock, used to stamp `updated_at`. Defaults to `() => new Date()`. */
+  /** Injectable clock, used to stamp `updated_at` and `last_used_at`. Defaults to `() => new Date()`. */
   now?: () => Date;
+}
+
+export interface ProfileFetchOptions {
+  /**
+   * When true, bump `last_used_at = now` on the fetched profile — the genuine
+   * keyed-recall signal that lets profiles fade (§7.1). DEFAULTS TO FALSE so plain
+   * inspection and the store's own internal read never pollute the fade signal;
+   * production keyed recall passes true explicitly.
+   */
+  recordUsage?: boolean;
 }

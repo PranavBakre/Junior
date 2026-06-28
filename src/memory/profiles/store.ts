@@ -18,6 +18,7 @@ import { parseDocument, serializeDocument, type Frontmatter } from "./frontmatte
 import type {
   Profile,
   ProfileBase,
+  ProfileFetchOptions,
   ProfileInput,
   ProfileKind,
   ProfileStoreOptions,
@@ -86,12 +87,27 @@ export class ProfileStore {
     return merged;
   }
 
-  /** Keyed read of one file by convention path. Returns null if absent. No scan. */
-  async fetchByEntityRef(entityRef: string): Promise<Profile | null> {
+  /**
+   * Keyed read of one file by convention path. Returns null if absent. No scan.
+   *
+   * `recordUsage` (default FALSE) gates the decay bump: only a genuine production
+   * keyed recall passes true, which rewrites the file with `last_used_at = now`
+   * (preserving `updated_at` and everything else). Plain inspection and the
+   * internal upsert read leave the fade signal untouched (§7.1).
+   */
+  async fetchByEntityRef(
+    entityRef: string,
+    opts: ProfileFetchOptions = {},
+  ): Promise<Profile | null> {
     const path = this.pathFor(entityRef);
     if (!existsSync(path)) return null;
     const text = readFileSync(path, "utf8");
-    return profileFromDocument(text);
+    const profile = profileFromDocument(text);
+    if (opts.recordUsage) {
+      profile.last_used_at = this.now().getTime();
+      writeFileSync(path, serializeProfile(profile), "utf8");
+    }
+    return profile;
   }
 
   /** Glob the folder(s) and parse every profile — for operator inspection. */
@@ -143,6 +159,10 @@ function serializeProfile(profile: Profile): string {
   }
   frontmatter.evidence = profile.evidence;
   frontmatter.updated_at = profile.updated_at;
+  // Decay signal: only emitted once the profile has actually been recalled.
+  if (typeof profile.last_used_at === "number") {
+    frontmatter.last_used_at = profile.last_used_at;
+  }
   return serializeDocument(frontmatter, profile.body);
 }
 
@@ -155,11 +175,13 @@ function profileFromDocument(text: string): Profile {
     throw new Error(`Unknown or missing profile kind: '${rawKind}'`);
   }
 
+  const rawLastUsed = frontmatter.last_used_at;
   const base: Record<string, unknown> = {
     kind,
     entity_ref: String(frontmatter.entity_ref ?? ""),
     evidence: toStringArray(frontmatter.evidence),
     updated_at: String(frontmatter.updated_at ?? ""),
+    last_used_at: typeof rawLastUsed === "number" ? rawLastUsed : null,
     body,
   };
 

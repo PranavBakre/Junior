@@ -1,4 +1,6 @@
 import type {
+  ArchiveStaleClaimsOptions,
+  ArchiveStaleClaimsResult,
   CandidateRuleInput,
   ClaimInput,
   ClaimRecallOptions,
@@ -7,6 +9,8 @@ import type {
   ConsolidationOptions,
   ConsolidationResult,
   EpisodeInput,
+  MemoryHealth,
+  MemoryHealthOptions,
   IngestionClassificationInput,
   IngestionCorrectionInput,
   MemoryEdgeInput,
@@ -53,4 +57,17 @@ export interface MemoryStore {
   recallClaims(options: ClaimRecallOptions): Promise<ClaimRecallResult[]>;
   /** Active claims with embeddings, deserialized to Float32Array (read-only). */
   exportClaimVectors(): Promise<ClaimVectorExport[]>;
+  /**
+   * Bump `last_used_at` on the given episodes — the consolidation pass calls this
+   * when it reads episodes (their last contribution to a derivation). Not gated
+   * here: only the genuine consolidation reader should invoke it.
+   */
+  markEpisodesUsed(ids: string[], now: number): Promise<void>;
+  /**
+   * Decay: ARCHIVE (set `active = 0`, never delete — keep provenance) claims that
+   * are BOTH stale AND low-value. Batch/offline only, never a hot-path TTL.
+   */
+  archiveStaleClaims(options: ArchiveStaleClaimsOptions): Promise<ArchiveStaleClaimsResult>;
+  /** Read-only decay summary per kind (corpus size, % never used, oldest use, fade candidates). */
+  memoryHealth(options?: MemoryHealthOptions): Promise<MemoryHealth>;
 }
