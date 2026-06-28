@@ -599,4 +599,244 @@ describe("SqliteMemoryStore", () => {
     // Reassign so afterEach cleans up the reopened instance.
     store = reopened;
   });
+
+  it("creates the v3 claim and episode tables", () => {
+    const db = (store as unknown as { db: Database }).db;
+    const names = new Set(
+      db
+        .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all()
+        .map((row) => row.name),
+    );
+    expect(names.has("claim")).toBe(true);
+    expect(names.has("episode")).toBe(true);
+  });
+
+  it("upserts a claim and round-trips its Float32 embedding through the BLOB", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "claim-embed",
+      kind: "lesson",
+      text: "Prefer brute-force cosine before a vector database.",
+      embedding: new Float32Array([0.25, -0.5, 0.75, 1]),
+      embedModel: "harrier-270",
+      repo: "junior",
+      tags: ["memory", "vectors"],
+      createdAt: now,
+    });
+
+    const db = (store as unknown as { db: Database }).db;
+    const row = db
+      .query<{ embedding: Uint8Array; dim: number; embed_model: string; tags: string }, [string]>(
+        "SELECT embedding, dim, embed_model, tags FROM claim WHERE id = ?",
+      )
+      .get("claim-embed");
+    expect(row?.dim).toBe(4);
+    expect(row?.embed_model).toBe("harrier-270");
+    expect(JSON.parse(row!.tags)).toEqual(["memory", "vectors"]);
+    // Decode the little-endian BLOB back to floats.
+    const buf = Buffer.from(row!.embedding);
+    const decoded = Array.from({ length: buf.byteLength / 4 }, (_, i) => buf.readFloatLE(i * 4));
+    expect(decoded[0]).toBeCloseTo(0.25, 5);
+    expect(decoded[1]).toBeCloseTo(-0.5, 5);
+    expect(decoded[2]).toBeCloseTo(0.75, 5);
+    expect(decoded[3]).toBeCloseTo(1, 5);
+  });
+
+  it("ranks claims by cosine against a pre-computed query vector", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "claim-aligned",
+      kind: "fact",
+      text: "aligned claim",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: now,
+    });
+    await store.upsertClaim({
+      id: "claim-orthogonal",
+      kind: "fact",
+      text: "orthogonal claim",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: now,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      filters: {},
+      limit: 5,
+    });
+
+    expect(results.map((r) => r.id)).toEqual(["claim-aligned", "claim-orthogonal"]);
+    expect(results[0].cosine).toBeCloseTo(1, 5);
+    expect(results[1].cosine).toBeCloseTo(0, 5);
+  });
+
+  it("weights cosine by the claim weight", async () => {
+    const now = Date.now();
+    // Slightly lower cosine but much higher weight should win.
+    await store.upsertClaim({
+      id: "claim-light",
+      kind: "fact",
+      text: "light",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      weight: 1,
+      createdAt: now,
+    });
+    await store.upsertClaim({
+      id: "claim-heavy",
+      kind: "fact",
+      text: "heavy",
+      embedding: new Float32Array([0.9, 0.1, 0, 0]),
+      weight: 3,
+      createdAt: now,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      filters: {},
+      limit: 5,
+    });
+    expect(results[0].id).toBe("claim-heavy");
+  });
+
+  it("applies WHERE filters BEFORE cosine, narrowing candidates", async () => {
+    const now = Date.now();
+    // repoA candidate is orthogonal (low cosine); repoB candidate is aligned.
+    await store.upsertClaim({
+      id: "claim-repoA",
+      kind: "fact",
+      text: "repo a claim",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      repo: "gx-backend",
+      createdAt: now,
+    });
+    await store.upsertClaim({
+      id: "claim-repoB",
+      kind: "fact",
+      text: "repo b claim",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      repo: "gx-client-next",
+      createdAt: now,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      filters: { repo: "gx-backend" },
+      limit: 5,
+    });
+
+    // Even though repoB is more aligned, the repo filter removes it from candidates.
+    expect(results.map((r) => r.id)).toEqual(["claim-repoA"]);
+  });
+
+  it("filters claims by kind, tags, and sinceMs before ranking", async () => {
+    const now = Date.now();
+    await store.upsertClaim({ id: "c-old", kind: "fact", text: "old", repo: "r", tags: ["x"], createdAt: now - 10_000 });
+    await store.upsertClaim({ id: "c-new-x", kind: "fact", text: "new x", repo: "r", tags: ["x"], createdAt: now });
+    await store.upsertClaim({ id: "c-new-y", kind: "lesson", text: "new y", repo: "r", tags: ["y"], createdAt: now });
+
+    const byKindTagRecency = await store.recallClaims({
+      filters: { kind: "fact", tags: ["x"], sinceMs: now - 5_000 },
+      limit: 5,
+    });
+    expect(byKindTagRecency.map((r) => r.id)).toEqual(["c-new-x"]);
+  });
+
+  it("falls back to FTS-only when no query vector is supplied", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "claim-pr",
+      kind: "fact",
+      text: "Bug fixed in PR-4242 touching the auth middleware.",
+      createdAt: now,
+    });
+    await store.upsertClaim({
+      id: "claim-noise",
+      kind: "fact",
+      text: "Unrelated note about styling tokens.",
+      createdAt: now,
+    });
+
+    const results = await store.recallClaims({ ftsQuery: "PR-4242", filters: {}, limit: 5 });
+
+    expect(results.map((r) => r.id)).toEqual(["claim-pr"]);
+    expect(results[0].ftsMatched).toBe(true);
+    expect(results[0].cosine).toBeNull();
+  });
+
+  it("keeps claim FTS out of the general recall() path", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "claim-isolated",
+      kind: "fact",
+      text: "Isolated claim mentioning gx-admin-client dashboard.",
+      createdAt: now,
+    });
+
+    // The general recall() joins memory_search_doc, which claims never enter.
+    const general = await store.recall({ query: "gx-admin-client dashboard", limit: 5 });
+    expect(general.map((r) => r.id)).not.toContain("claim-isolated");
+
+    // But claim-scoped FTS still finds it.
+    const claims = await store.recallClaims({ ftsQuery: "gx-admin-client", filters: {}, limit: 5 });
+    expect(claims.map((r) => r.id)).toContain("claim-isolated");
+  });
+
+  it("appends an episode plus its backing source record", async () => {
+    const now = Date.now();
+    await store.appendEpisode({
+      id: "ep_20260628_a1",
+      actor: "pranav:person",
+      subjects: ["pranav:person", "junior:self"],
+      what: "Pranav called me an idiot for bypassing the merge rules.",
+      emotion: "frustration",
+      intensity: 0.7,
+      valence: -0.6,
+      trigger: "auto-merged to main, skipping dev-first",
+      response: "apologized, fixed flow",
+      salience: 0.85,
+      threadId: "T-merge",
+      actorKind: "human",
+      createdAt: now,
+    });
+
+    const db = (store as unknown as { db: Database }).db;
+    const episode = db
+      .query<{ actor: string; subjects_json: string; emotion: string; salience: number; what: string }, [string]>(
+        "SELECT actor, subjects_json, emotion, salience, what FROM episode WHERE id = ?",
+      )
+      .get("ep_20260628_a1");
+    const source = db
+      .query<{ body: string; thread_id: string; kind: string }, [string]>(
+        "SELECT body, thread_id, kind FROM memory_source_record WHERE id = ?",
+      )
+      .get("ep_20260628_a1");
+
+    expect(episode?.actor).toBe("pranav:person");
+    expect(JSON.parse(episode!.subjects_json)).toEqual(["pranav:person", "junior:self"]);
+    expect(episode?.emotion).toBe("frustration");
+    expect(episode?.salience).toBeCloseTo(0.85, 5);
+    expect(source?.body).toContain("called me an idiot");
+    expect(source?.thread_id).toBe("T-merge");
+    expect(source?.kind).toBe("slack_message");
+  });
+
+  it("rebuilds claim FTS entries from the claim table", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "claim-rebuild",
+      kind: "fact",
+      text: "Rebuildable claim about worktree isolation.",
+      createdAt: now,
+    });
+
+    const db = (store as unknown as { db: Database }).db;
+    db.run("DELETE FROM memory_fts");
+    expect(await store.recallClaims({ ftsQuery: "worktree", filters: {}, limit: 5 })).toEqual([]);
+
+    await store.rebuildSearchIndex();
+
+    const results = await store.recallClaims({ ftsQuery: "worktree", filters: {}, limit: 5 });
+    expect(results.map((r) => r.id)).toEqual(["claim-rebuild"]);
+  });
 });

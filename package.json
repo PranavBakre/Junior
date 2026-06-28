@@ -14,6 +14,7 @@
     "migrate:prune-routing-logs": "bun run src/memory/migrations/2026-06-13-prune-routing-decision-logs.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@playwright/mcp": "^0.0.70",
     "@slack/bolt": "^4.3.0",
@@ -25,5 +26,8 @@
     "@types/bun": "^1.2.0",
     "@types/proper-lockfile": "^4.1.4",
     "typescript": "^5.8.0"
-  }
+  },
+  "trustedDependencies": [
+    "onnxruntime-node"
+  ]
 }
