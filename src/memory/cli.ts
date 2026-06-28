@@ -14,12 +14,31 @@ import {
   sourceIdFor,
   tagsForMessage,
 } from "./ingestion.ts";
+import { consolidateSession } from "./consolidation/consolidate.ts";
+import { createRunnerInvoke } from "./consolidation/runner.ts";
+import type { ConsolidationInvoke, ConsolidationReport } from "./consolidation/types.ts";
+import { createEmbeddingProvider } from "./embedding/factory.ts";
+import type { EmbeddingProvider } from "./embedding/types.ts";
+import { createProfileStore } from "./profiles/factory.ts";
+import type { ProfileStore } from "./profiles/store.ts";
+
+/**
+ * Injectable dependencies for the offline consolidation engine (`consolidate-v3`).
+ * Production callers pass nothing — the real local embedder + `claude -p` runner
+ * are built lazily. Tests inject a hashing embedder + fake invoke + temp profile
+ * store so they never load model weights or spawn a real CLI.
+ */
+export interface MemoryCliDeps {
+  invoke?: ConsolidationInvoke;
+  embedder?: EmbeddingProvider;
+  profileStore?: ProfileStore;
+}
 
 const VALID_CORRECTION_FIELDS = new Set(["tag", "event_type", "edge", "promotion", "archive", "routing_fact", "validity"]);
 const VALID_CORRECTION_ACTORS = new Set(["user", "agent", "reviewer"]);
 const VALID_RULE_DOMAINS = new Set(["tag", "event_type", "edge", "promotion", "archive", "routing_fact"]);
 
-export async function runMemoryCli(argv: string[]): Promise<string> {
+export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Promise<string> {
   const { command, options } = parseArgs(argv);
   const dbPath = stringOption(options, "db") ?? process.env.MEMORY_DB_PATH ?? "data/memory.db";
   const json = booleanOption(options, "json");
@@ -47,6 +66,43 @@ export async function runMemoryCli(argv: string[]): Promise<string> {
         repeatedCorrectionThreshold: numberOption(options, "repeated-correction-threshold"),
       });
       return json ? `${JSON.stringify(result, null, 2)}\n` : formatConsolidation(result);
+    }
+
+    if (command === "consolidate-v3") {
+      // Offline write path (memory v3 §7): read unconsolidated source records, ask
+      // the runner LLM for derivations, persist through the gates. Manual trigger
+      // only — no cron, and this does NOT touch the v2 `consolidate` path above.
+      const profileStore = deps.profileStore ?? createProfileStore();
+      const embedder = deps.embedder ?? createEmbeddingProvider("local");
+      const invoke = deps.invoke ?? createRunnerInvoke({ timeoutMs: numberOption(options, "timeout-ms") });
+      const limit = numberOption(options, "limit");
+      const explicitThread = stringOption(options, "thread");
+
+      const reports: Array<{ threadId: string | null; report: ConsolidationReport }> = [];
+
+      if (explicitThread) {
+        const report = await consolidateSession({ store, profileStore, embedder, invoke, threadId: explicitThread, limit });
+        reports.push({ threadId: explicitThread, report });
+      } else {
+        // Consolidation is session-scoped: derive per distinct thread on its own
+        // evidence rather than mixing threads into one prompt, then a final
+        // unscoped sweep mops up any records that carry no thread id.
+        const pending = await store.listUnconsolidatedSourceRecords({ limit });
+        const threadIds = [...new Set(pending.map((r) => r.threadId).filter((t): t is string => Boolean(t)))];
+        for (const threadId of threadIds) {
+          const report = await consolidateSession({ store, profileStore, embedder, invoke, threadId, limit });
+          reports.push({ threadId, report });
+        }
+        const sweep = await consolidateSession({ store, profileStore, embedder, invoke, limit });
+        // Only surface the sweep when it did work, or when nothing else ran at all.
+        if (!sweep.skipped || reports.length === 0) {
+          reports.push({ threadId: null, report: sweep });
+        }
+      }
+
+      return json
+        ? `${JSON.stringify({ reports }, null, 2)}\n`
+        : formatConsolidateV3(reports);
     }
 
     if (command === "accept-rule" || command === "reject-rule") {
@@ -503,11 +559,31 @@ function formatConsolidation(result: Awaited<ReturnType<ReturnType<typeof create
   ].join("\n") + "\n";
 }
 
+function formatConsolidateV3(
+  reports: Array<{ threadId: string | null; report: ConsolidationReport }>,
+): string {
+  if (reports.length === 0) return "No unconsolidated source records.\n";
+  return reports
+    .map(({ threadId, report }) => {
+      const scope = threadId ?? "(all unthreaded)";
+      if (report.skipped) return `${scope}: skipped (nothing to consolidate)`;
+      return [
+        `${scope}:`,
+        `  records processed: ${report.recordsProcessed}`,
+        `  episodes: ${report.episodes}`,
+        `  profiles: ${report.profiles}`,
+        `  claims written: ${report.claimsWritten} (deduped ${report.claimsDeduped})`,
+      ].join("\n");
+    })
+    .join("\n") + "\n";
+}
+
 function usage(): string {
   return [
     "Usage:",
     "  bun run src/memory/cli.ts recall --query <text> [--tags a,b] [--entities x,y] [--kinds a,b] [--limit n] [--json]",
     "  bun run src/memory/cli.ts consolidate [--json]",
+    "  bun run src/memory/cli.ts consolidate-v3 [--thread <id>] [--limit n] [--timeout-ms n] [--json]",
     "  bun run src/memory/cli.ts accept-rule --id <rule-id> [--json]",
     "  bun run src/memory/cli.ts reject-rule --id <rule-id> [--json]",
     "  bun run src/memory/cli.ts accepted-rules [--json]",
