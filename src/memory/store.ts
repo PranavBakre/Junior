@@ -23,6 +23,7 @@ import type {
   MemoryRecallOptions,
   MemorySearchResult,
   MemorySourceRecord,
+  UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
 
 export interface AcceptedRule {
@@ -54,6 +55,21 @@ export interface MemoryStore {
   // memory v3: semantic claim store + raw episode log
   upsertClaim(claim: ClaimInput): Promise<void>;
   appendEpisode(episode: EpisodeInput): Promise<void>;
+  /**
+   * Raw source records the consolidation engine has not yet processed
+   * (`consolidated_at IS NULL`), oldest first, optionally scoped to one thread.
+   * The offline consolidation pass reads these to build derivations.
+   */
+  listUnconsolidatedSourceRecords(
+    options?: UnconsolidatedSourceRecordOptions,
+  ): Promise<MemorySourceRecord[]>;
+  /**
+   * Stamp `consolidated_at = now` on the given source records so a later
+   * consolidation pass does not reprocess them (even when they yielded no
+   * derivation — the high bar means most turns add nothing, but they are still
+   * consumed exactly once).
+   */
+  markSourceRecordsConsolidated(ids: string[], now: number): Promise<void>;
   recallClaims(options: ClaimRecallOptions): Promise<ClaimRecallResult[]>;
   /** Active claims with embeddings, deserialized to Float32Array (read-only). */
   exportClaimVectors(): Promise<ClaimVectorExport[]>;

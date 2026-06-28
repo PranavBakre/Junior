@@ -218,6 +218,19 @@ export interface ConsolidationResult {
 
 export type ClaimKind = "lesson" | "fact" | "situation-claim";
 
+/**
+ * Options for the consolidation engine's read of raw source records that have
+ * not yet been folded into a derivation (`consolidated_at IS NULL`). Oldest
+ * first; optionally scoped to a single thread so a per-session consolidation
+ * pass only sees its own turns.
+ */
+export interface UnconsolidatedSourceRecordOptions {
+  /** Only return records for this thread. */
+  threadId?: string;
+  /** Cap the number of records returned (the oldest N). */
+  limit?: number;
+}
+
 export interface ClaimInput {
   id: string;
   kind: ClaimKind;
