@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMemoryCli } from "./cli.ts";
 import { SqliteMemoryStore } from "./sqlite.ts";
+import { HashingEmbeddingProvider } from "./embedding/hashing.ts";
+import { ProfileStore } from "./profiles/store.ts";
+import type { ConsolidationInvoke, ConsolidationOutput } from "./consolidation/types.ts";
 
 describe("memory CLI", () => {
   it("recalls memories from the configured db", async () => {
@@ -233,6 +236,81 @@ describe("memory CLI", () => {
       const output = await runMemoryCli(["recall-claims", "--db", dbPath, "--query-vector", "1,0,0,0", "--json"]);
       const parsed = JSON.parse(output) as { results: Array<{ id: string }> };
       expect(parsed.results.map((r) => r.id)).toEqual(["claim-aligned", "claim-ortho"]);
+    } finally {
+      store.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs v3 consolidation per-thread with an injected invoke + hashing embedder", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    const store = new SqliteMemoryStore(dbPath);
+    try {
+      const now = Date.now();
+      await store.appendSourceRecord({
+        id: "src-v3-1",
+        kind: "slack_message",
+        threadId: "T-v3",
+        actorId: "U_PRANAV",
+        actorKind: "human",
+        body: "Pranav: always go dev-first, never auto-merge to main",
+        createdAt: now,
+      });
+
+      const output: ConsolidationOutput = {
+        episodes: [],
+        profiles: [],
+        claims: [{ kind: "lesson", text: "Go dev-first; never auto-merge straight to main." }],
+      };
+      const invoke: ConsolidationInvoke = async () => output;
+      const embedder = new HashingEmbeddingProvider(640);
+      const profileStore = new ProfileStore({ root: join(tmpDir, "profiles") });
+
+      const out = await runMemoryCli(
+        ["consolidate-v3", "--db", dbPath, "--json"],
+        { invoke, embedder, profileStore },
+      );
+      const parsed = JSON.parse(out) as {
+        reports: Array<{ threadId: string | null; report: { skipped: boolean; recordsProcessed?: number; claimsWritten?: number } }>;
+      };
+
+      const threaded = parsed.reports.find((r) => r.threadId === "T-v3");
+      expect(threaded).toBeDefined();
+      expect(threaded!.report.skipped).toBe(false);
+      expect(threaded!.report.recordsProcessed).toBe(1);
+      expect(threaded!.report.claimsWritten).toBe(1);
+
+      // The claim was actually persisted.
+      const vectors = await store.exportClaimVectors();
+      expect(vectors).toHaveLength(1);
+
+      // A second pass has nothing left to consolidate.
+      const second = await runMemoryCli(
+        ["consolidate-v3", "--db", dbPath, "--json"],
+        { invoke, embedder, profileStore },
+      );
+      const secondParsed = JSON.parse(second) as { reports: Array<{ report: { skipped: boolean } }> };
+      expect(secondParsed.reports.every((r) => r.report.skipped)).toBe(true);
+    } finally {
+      store.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports skipped when there are no unconsolidated records for v3", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    const store = new SqliteMemoryStore(dbPath);
+    try {
+      const invoke: ConsolidationInvoke = async () => ({ episodes: [], profiles: [], claims: [] });
+      const out = await runMemoryCli(
+        ["consolidate-v3", "--db", dbPath, "--json"],
+        { invoke, embedder: new HashingEmbeddingProvider(640), profileStore: new ProfileStore({ root: join(tmpDir, "profiles") }) },
+      );
+      const parsed = JSON.parse(out) as { reports: Array<{ report: { skipped: boolean } }> };
+      expect(parsed.reports).toHaveLength(1);
+      expect(parsed.reports[0].report.skipped).toBe(true);
     } finally {
       store.close();
       rmSync(tmpDir, { recursive: true, force: true });
