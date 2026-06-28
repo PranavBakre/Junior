@@ -222,6 +222,15 @@ Offline / post-turn, applying the v2 hook discipline:
 
 A **rare high-salience episode** (a major conflict/praise) may be individually promoted to recallable, but that is **salience-gated, never the default.**
 
+### 7.1 Last-used & decay (the forgetting driver)
+
+Every unit carries a `last_used_at` so the system can identify memory that should **fade**. The semantics differ by kind, but the discipline is shared:
+
+- **What "used" means:** a **claim/lesson** is "used" when it is **surfaced by a genuine production recall**; an **episode** is "used" when a **consolidation pass reads it** (its last contribution to a derivation); a **profile** when keyed-fetched during a real recall. Add `last_used_at` to `episode` (claims/lessons already have it; profiles carry it in frontmatter).
+- **The bump rule — only real recall writes it.** Bumping `last_used_at` is gated by a `recordUsage` flag (as the legacy `recall()` already does). **Eval/replay, the dashboard, and the graph-cloud projection MUST NOT bump it** — they pass `recordUsage=false` or use read-only paths (`exportClaimVectors` is read-only by design). Otherwise inspection traffic makes everything look "fresh" and the fade signal self-pollutes — the exact Phase-0 bug already fixed for legacy recall. *Gap to close: `recallClaims` currently selects `last_used_at` but never bumps it.*
+- **Decay = forget by value, not age alone.** A fade candidate is **stale** (old or never `last_used_at`) **AND** low-value (decayed/unhelpful `weight`). Age alone never forgets — a rarely-needed but high-value lesson must survive. The offline consolidation / memory-health job archives candidates (`active = 0`); **never hard-delete** — keep provenance. This is a batch decision, never a hot-path TTL.
+- **memory-health surfaces it:** `% never used`, oldest `last_used_at`, and the current fade-candidate set, per kind.
+
 ## 8. Read path — recall
 
 Recall runs **two channels** and merges:
