@@ -88,33 +88,36 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
 
     const { tokenizer, model } = await this.load();
 
-    const prepared =
-      mode === "query" ? texts.map((t) => QUERY_PREFIX + t) : texts;
+    // Embed ONE text per forward pass — never a padded batch. harrier is
+    // decoder-only with LAST-TOKEN pooling; in a padded multi-text batch the
+    // shorter texts get pooled from a PAD position and silently produce a
+    // wrong vector (verified: a batch-padded short text scores ~0.22 cosine
+    // against its own size-1 embedding — i.e. garbage). transformers.js did
+    // NOT honor a left-padding override here, so we sidestep padding entirely.
+    // Cost is throughput on bulk/offline embedding (e.g. the P3 corpus
+    // backfill); correctness is non-negotiable. Regression-guarded by the
+    // batch-vs-single test in embedding.test.ts.
+    const result: Float32Array[] = new Array(texts.length);
+    for (let i = 0; i < texts.length; i++) {
+      const prepared = mode === "query" ? QUERY_PREFIX + texts[i] : texts[i];
+      const inputs = tokenizer([prepared], { truncation: true });
+      const out = await model(inputs);
 
-    const inputs = tokenizer(prepared, { padding: true, truncation: true });
-    const out = await model(inputs);
-
-    const tensor = out.sentence_embedding;
-    if (!tensor) {
-      throw new Error(
-        `LocalEmbeddingProvider: model did not return a 'sentence_embedding' output (got keys: ${Object.keys(out).join(", ")})`,
-      );
-    }
-
-    const [batch, dim] = tensor.dims as [number, number];
-    if (dim !== this.dim) {
-      throw new Error(
-        `LocalEmbeddingProvider: expected dim ${this.dim}, got ${dim}`,
-      );
-    }
-
-    // tensor.data is a flat Float32Array of length batch*dim, already
-    // last-token-pooled and L2-normalized by the ONNX graph. Slice per row
-    // (Float32Array.slice copies, so rows are independent).
-    const flat = tensor.data as Float32Array;
-    const result: Float32Array[] = new Array(batch);
-    for (let i = 0; i < batch; i++) {
-      result[i] = flat.slice(i * dim, (i + 1) * dim);
+      const tensor = out.sentence_embedding;
+      if (!tensor) {
+        throw new Error(
+          `LocalEmbeddingProvider: model did not return a 'sentence_embedding' output (got keys: ${Object.keys(out).join(", ")})`,
+        );
+      }
+      const [, dim] = tensor.dims as [number, number];
+      if (dim !== this.dim) {
+        throw new Error(
+          `LocalEmbeddingProvider: expected dim ${this.dim}, got ${dim}`,
+        );
+      }
+      // tensor.data is the flat Float32Array for this single row, already
+      // last-token-pooled and L2-normalized by the ONNX graph. slice() copies.
+      result[i] = (tensor.data as Float32Array).slice(0, dim);
     }
     return result;
   }

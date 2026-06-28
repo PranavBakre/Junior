@@ -1299,7 +1299,7 @@ export class SqliteMemoryStore implements MemoryStore {
         `WITH hits AS (
            SELECT id, bm25(memory_fts) AS rank
            FROM memory_fts
-           WHERE memory_fts MATCH ?
+           WHERE memory_fts MATCH ? AND kind <> 'claim'
            ORDER BY rank
            LIMIT ?
          )

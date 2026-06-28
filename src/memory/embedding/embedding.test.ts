@@ -117,4 +117,22 @@ describe.skipIf(!RUN_LOCAL)("LocalEmbeddingProvider (model download required)", 
     // Comfortable separation, not a coin-flip.
     expect(related - unrelated).toBeGreaterThan(0.15);
   }, 120_000);
+
+  // Regression guard for the batch padding-side trap: with LEFT padding, a
+  // text embedded inside a mixed-length batch must match the same text
+  // embedded alone. Right padding would pool a short text from a PAD position
+  // and silently diverge here. This is the trap that would poison the P3
+  // corpus backfill (batched), where production today only ever embeds size-1.
+  it("batch embedding matches single embedding (padding-side correctness)", async () => {
+    const provider: EmbeddingProvider = new LocalEmbeddingProvider();
+    const short = "merge PRs with a 3-way merge";
+    const long =
+      "When the bug pipeline reaches review-approved, open a parallel PR to dev, merge it with the admin account, validate on the dev environment, and only then is the main PR ready for a human to merge.";
+
+    const [solo] = await provider.embed([short], "document");
+    const batch = await provider.embed([long, short], "document");
+    // batch[1] is the short text, padded alongside the longer one.
+    const agree = cosine(solo, batch[1]);
+    expect(agree).toBeGreaterThan(0.999);
+  }, 120_000);
 });
