@@ -217,6 +217,33 @@ describe("migrateV3", () => {
     }
   });
 
+  it("apply=true with dropCondemned=false: writes claims but keeps legacy tables", async () => {
+    const provider = createEmbeddingProvider("hashing");
+    const report = await migrateV3({
+      dbPath,
+      provider,
+      apply: true,
+      dropCondemned: false,
+      dedupeThreshold: 0.5,
+    });
+
+    expect(report.applied).toBe(true);
+    expect(report.claimsWritten).toBe(4); // claims still written
+    expect(report.tablesDropped).toEqual([]); // but nothing dropped
+
+    const db = new Database(dbPath);
+    try {
+      // Claims landed...
+      expect((db.query("SELECT COUNT(*) AS n FROM claim").get() as { n: number }).n).toBe(4);
+      // ...and every condemned table is still present.
+      for (const t of CONDEMNED) {
+        expect(tableExists(db, t)).toBe(true);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
   it("dry run (default apply=false): drops nothing and writes nothing", async () => {
     const provider = createEmbeddingProvider("hashing");
     const report = await migrateV3({ dbPath, provider, dedupeThreshold: 0.5 });

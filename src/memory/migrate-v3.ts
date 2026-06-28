@@ -41,6 +41,13 @@ export interface MigrateV3Options {
   apply?: boolean;
   /** Cosine threshold for proximity dedup; pairs >= this collapse. Default 0.95. */
   dedupeThreshold?: number;
+  /**
+   * Whether `apply` also DROPS the condemned legacy tables. Default `true`.
+   * Set `false` for a first cutover that writes claims but leaves the legacy
+   * tables in place — so readers still on them (dashboard recall, eval harness)
+   * keep working until they are repointed. The drop becomes a later cleanup.
+   */
+  dropCondemned?: boolean;
 }
 
 export interface MigrateV3Report {
@@ -101,6 +108,7 @@ type LegacyFactRow = {
 export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report> {
   const { dbPath, provider } = opts;
   const apply = opts.apply === true;
+  const dropCondemned = opts.dropCondemned !== false; // default true
   const dedupeThreshold = opts.dedupeThreshold ?? 0.95;
 
   if (!dbPath) throw new Error("migrateV3: dbPath is required");
@@ -212,9 +220,10 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
       store = null;
     }
 
-    // 6. Drop the condemned tables — APPLY-GATED, never in a dry run.
+    // 6. Drop the condemned tables — APPLY-GATED, never in a dry run, and
+    //    skipped entirely when dropCondemned is false (deferred cleanup).
     const tablesDropped: string[] = [];
-    if (apply) {
+    if (apply && dropCondemned) {
       for (const table of CONDEMNED_TABLES) {
         if (tableExists(db, table)) {
           db.run(`DROP TABLE IF EXISTS ${table}`);
@@ -353,6 +362,7 @@ async function runCli(): Promise<void> {
   }
 
   const apply = args.includes("--apply");
+  const keepCondemned = args.includes("--keep-condemned");
   const thresholdRaw = readFlagValue(args, "--threshold");
   const dedupeThreshold = thresholdRaw != null ? Number(thresholdRaw) : undefined;
   if (dedupeThreshold != null && !Number.isFinite(dedupeThreshold)) {
@@ -372,13 +382,21 @@ async function runCli(): Promise<void> {
 
   console.error(
     `migrate-v3: db=${dbPath} provider=${providerKind} apply=${apply} ` +
-      `threshold=${dedupeThreshold ?? 0.95}`,
+      `threshold=${dedupeThreshold ?? 0.95} keepCondemned=${keepCondemned}`,
   );
   if (!apply) {
     console.error("DRY RUN — nothing will be written or dropped. Pass --apply to commit.");
+  } else if (keepCondemned) {
+    console.error("--keep-condemned: writing claims but NOT dropping legacy tables.");
   }
 
-  const report = await migrateV3({ dbPath, provider, apply, dedupeThreshold });
+  const report = await migrateV3({
+    dbPath,
+    provider,
+    apply,
+    dedupeThreshold,
+    dropCondemned: !keepCondemned,
+  });
   console.log(JSON.stringify(report, null, 2));
 }
 
@@ -393,12 +411,16 @@ function readFlagValue(args: string[], flag: string): string | undefined {
 function printUsage(): void {
   console.error(
     [
-      "Usage: bun src/memory/migrate-v3.ts --db <path> [--apply] [--threshold <n>] [--provider local|hashing]",
+      "Usage: bun src/memory/migrate-v3.ts --db <path> [--apply] [--keep-condemned] [--threshold <n>] [--provider local|hashing]",
       "",
       "  --db <path>            Path to the memory SQLite DB (run against a COPY). Required.",
       "  --apply                Commit: write claims AND drop condemned tables. Omit for a dry run.",
+      "  --keep-condemned       With --apply: write claims but DON'T drop legacy tables",
+      "                         (first cutover — leaves dashboard/eval readers working).",
       "  --threshold <n>        Proximity-dedup cosine threshold (default 0.95).",
       "  --provider local|hashing   Embedding provider (default local / harrier).",
+      "",
+      "  NB: stop the live bot before --apply on data/memory.db (it holds a WAL writer).",
     ].join("\n"),
   );
 }
