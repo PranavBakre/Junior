@@ -256,6 +256,15 @@ export interface ClaimRecallOptions {
   /** Lexical/identifier escape hatch (slugs, file paths, PR numbers). */
   ftsQuery?: string;
   limit?: number;
+  /**
+   * When true (the DEFAULT), bump `last_used_at = now` on the returned claims —
+   * the genuine-production-recall signal that drives decay. Eval/replay, the
+   * dashboard, and any visualization/admin read MUST pass false, or inspection
+   * traffic makes everything look "fresh" and the fade signal self-pollutes
+   * (the same Phase-0 footgun already fixed for legacy `recall()`). Mirrors
+   * `MemoryRecallOptions.recordUsage`.
+   */
+  recordUsage?: boolean;
 }
 
 export interface ClaimRecallResult {
@@ -288,6 +297,63 @@ export interface ClaimVectorExport {
   repo: string | null;
   tags: string[];
   vector: Float32Array;
+}
+
+// --- memory v3: decay / forgetting (§7.1) ---------------------------------
+
+export interface ArchiveStaleClaimsOptions {
+  /**
+   * Age cutoff in ms. A claim is STALE when its `last_used_at` is older than
+   * `now - olderThanMs`, OR it was never used and its `created_at` is older than
+   * that cutoff.
+   */
+  olderThanMs: number;
+  /**
+   * Value ceiling. Only claims with `weight <= maxWeight` are eligible — a fade
+   * candidate must be stale AND low-value. Age alone never forgets: a rarely
+   * needed but high-weight claim survives.
+   */
+  maxWeight: number;
+  /** Clock; defaults to `Date.now()` at the call site. */
+  now?: number;
+}
+
+export interface ArchiveStaleClaimsResult {
+  /** Ids of the claims flipped to `active = 0` (ARCHIVED, never deleted). */
+  archivedIds: string[];
+}
+
+export interface MemoryHealthOptions {
+  now?: number;
+  /** Age cutoff used to compute the fade-candidate count. Defaults to 90 days. */
+  olderThanMs?: number;
+  /** Value ceiling used to compute the fade-candidate count. Defaults to 0.5. */
+  maxWeight?: number;
+}
+
+export interface MemoryHealthKind {
+  /** A claim kind, or `"episode"` for the raw affect log. */
+  kind: ClaimKind | "episode";
+  /** Total rows for this kind (active claims; all episodes). */
+  total: number;
+  /** Rows that have never been used (`last_used_at IS NULL`). */
+  neverUsed: number;
+  /** `neverUsed / total`, 0 when empty. */
+  pctNeverUsed: number;
+  /** Oldest `last_used_at` across used rows, or null when none are used. */
+  oldestLastUsedAt: number | null;
+  /**
+   * Current fade-candidate count under the supplied (or default) cutoff/ceiling.
+   * Episodes are never value-archived, so this is always 0 for `"episode"`.
+   */
+  fadeCandidates: number;
+}
+
+export interface MemoryHealth {
+  generatedAt: number;
+  olderThanMs: number;
+  maxWeight: number;
+  kinds: MemoryHealthKind[];
 }
 
 export interface EpisodeInput {
