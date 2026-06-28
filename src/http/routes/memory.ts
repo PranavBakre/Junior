@@ -6,6 +6,7 @@
  */
 import path from "node:path";
 import type { MemoryStore } from "../../memory/store.ts";
+import { projectClaims } from "../projection.ts";
 
 const DOCS_DIR = path.resolve(import.meta.dir, "../../../docs");
 
@@ -62,6 +63,19 @@ export async function handleMemoryRecall(
     recordUsage: false,
   });
   return Response.json({ results });
+}
+
+/**
+ * 2D projection of the claim embedding space for the "memory cloud" debug view.
+ * PCA (top-2 components) + KNN edges (k=5, cosine) computed at render time from
+ * the raw vectors — nothing here is stored. The projection distorts: local
+ * neighbourhoods are meaningful, global distances are not. The 0–1 claim guard
+ * lives in projectClaims().
+ */
+export async function handleMemoryProjection(store: MemoryStore): Promise<Response> {
+  const claims = await store.exportClaimVectors();
+  const { points, edges } = projectClaims(claims, 5);
+  return Response.json({ points, edges });
 }
 
 export async function handleMemoryConsolidate(store: MemoryStore): Promise<Response> {
