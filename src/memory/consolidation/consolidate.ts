@@ -234,12 +234,19 @@ export function cosine(a: Float32Array, b: Float32Array): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-/** 32-bit FNV-1a hex — stable claim id from text, so identical text upserts. */
+/**
+ * 64-bit FNV-1a hex — stable claim id from text, so identical text upserts in
+ * place. 64-bit (not 32-bit) keeps the id space far above the expected corpus
+ * so two distinct claim texts don't birthday-collide onto one id and silently
+ * overwrite each other via upsert (review finding).
+ */
 function fnv1a(str: string): string {
-  let h = 0x811c9dc5;
+  const PRIME = 0x100000001b3n;
+  const MASK = (1n << 64n) - 1n;
+  let h = 0xcbf29ce484222325n;
   for (let i = 0; i < str.length; i += 1) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
+    h ^= BigInt(str.charCodeAt(i));
+    h = (h * PRIME) & MASK;
   }
-  return (h >>> 0).toString(16).padStart(8, "0");
+  return h.toString(16).padStart(16, "0");
 }

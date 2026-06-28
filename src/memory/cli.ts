@@ -78,26 +78,36 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       const limit = numberOption(options, "limit");
       const explicitThread = stringOption(options, "thread");
 
-      const reports: Array<{ threadId: string | null; report: ConsolidationReport }> = [];
+      const reports: ConsolidateV3Entry[] = [];
+
+      // Each session is isolated: a failed consolidation (malformed LLM JSON,
+      // timeout, non-zero claude exit) is recorded and the run continues to the
+      // next thread rather than aborting the whole sweep. The failed thread's
+      // records stay unconsolidated and retry on the next run.
+      const runOne = async (threadId: string | undefined, passLimit?: number) => {
+        try {
+          const report = await consolidateSession({ store, profileStore, embedder, invoke, threadId, limit: passLimit });
+          reports.push({ threadId: threadId ?? null, report });
+        } catch (err) {
+          reports.push({ threadId: threadId ?? null, error: err instanceof Error ? err.message : String(err) });
+        }
+      };
 
       if (explicitThread) {
-        const report = await consolidateSession({ store, profileStore, embedder, invoke, threadId: explicitThread, limit });
-        reports.push({ threadId: explicitThread, report });
+        await runOne(explicitThread, limit);
       } else {
         // Consolidation is session-scoped: derive per distinct thread on its own
         // evidence rather than mixing threads into one prompt, then a final
-        // unscoped sweep mops up any records that carry no thread id.
-        const pending = await store.listUnconsolidatedSourceRecords({ limit });
+        // unscoped sweep mops up records that carry no thread id. Threads are
+        // discovered WITHOUT --limit and drained fully, so the sweep only ever
+        // sees unthreaded records — threading --limit into the per-thread or
+        // discovery path would leak a thread's overflow into the unscoped sweep
+        // and mix sessions. --limit therefore applies only to --thread mode.
+        const pending = await store.listUnconsolidatedSourceRecords({});
         const threadIds = [...new Set(pending.map((r) => r.threadId).filter((t): t is string => Boolean(t)))];
-        for (const threadId of threadIds) {
-          const report = await consolidateSession({ store, profileStore, embedder, invoke, threadId, limit });
-          reports.push({ threadId, report });
-        }
-        const sweep = await consolidateSession({ store, profileStore, embedder, invoke, limit });
-        // Only surface the sweep when it did work, or when nothing else ran at all.
-        if (!sweep.skipped || reports.length === 0) {
-          reports.push({ threadId: null, report: sweep });
-        }
+        for (const threadId of threadIds) await runOne(threadId, undefined);
+        const hasUnthreaded = pending.some((r) => !r.threadId);
+        if (hasUnthreaded || reports.length === 0) await runOne(undefined, undefined);
       }
 
       return json
@@ -427,6 +437,9 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         },
         ftsQuery: stringOption(options, "fts"),
         limit: numberOption(options, "limit"),
+        // Inspection command — must NOT bump last_used_at or it self-pollutes
+        // the fade signal (§7.1), same as the dashboard/eval read paths.
+        recordUsage: false,
       });
       return json ? `${JSON.stringify({ results }, null, 2)}\n` : formatClaimRecall(results);
     }
@@ -559,14 +572,19 @@ function formatConsolidation(result: Awaited<ReturnType<ReturnType<typeof create
   ].join("\n") + "\n";
 }
 
-function formatConsolidateV3(
-  reports: Array<{ threadId: string | null; report: ConsolidationReport }>,
-): string {
+type ConsolidateV3Entry = {
+  threadId: string | null;
+  report?: ConsolidationReport;
+  error?: string;
+};
+
+function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
   if (reports.length === 0) return "No unconsolidated source records.\n";
   return reports
-    .map(({ threadId, report }) => {
+    .map(({ threadId, report, error }) => {
       const scope = threadId ?? "(all unthreaded)";
-      if (report.skipped) return `${scope}: skipped (nothing to consolidate)`;
+      if (error) return `${scope}: FAILED — ${error}`;
+      if (!report || report.skipped) return `${scope}: skipped (nothing to consolidate)`;
       return [
         `${scope}:`,
         `  records processed: ${report.recordsProcessed}`,
