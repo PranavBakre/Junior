@@ -31,6 +31,7 @@ import type {
   MemorySearchResult,
   MemorySourceRecord,
   SearchableMemoryKind,
+  UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
 
 type CandidateRow = {
@@ -65,6 +66,22 @@ type ClaimRow = {
   created_at: number;
   last_used_at: number | null;
   active: number | null;
+};
+
+type SourceRecordRow = {
+  id: string;
+  kind: string;
+  channel_id: string | null;
+  thread_id: string | null;
+  slack_ts: string | null;
+  source_url: string | null;
+  actor_id: string | null;
+  actor_kind: string | null;
+  agent_name: string | null;
+  repo_name: string | null;
+  body: string;
+  metadata_json: string | null;
+  created_at: number;
 };
 
 export class SqliteMemoryStore implements MemoryStore {
@@ -1112,6 +1129,50 @@ export class SqliteMemoryStore implements MemoryStore {
     txn();
   }
 
+  // --- memory v3: consolidation source-record bookkeeping -------------------
+
+  /**
+   * Raw source records the consolidation engine has not yet processed
+   * (`consolidated_at IS NULL`), oldest first. Scoped to one thread when
+   * `threadId` is given; capped by `limit`. The offline consolidation pass
+   * reads these as its input evidence.
+   */
+  async listUnconsolidatedSourceRecords(
+    options: UnconsolidatedSourceRecordOptions = {},
+  ): Promise<MemorySourceRecord[]> {
+    const where: string[] = ["consolidated_at IS NULL"];
+    const params: (string | number)[] = [];
+    if (options.threadId) {
+      where.push("thread_id = ?");
+      params.push(options.threadId);
+    }
+    let sql = `SELECT id, kind, channel_id, thread_id, slack_ts, source_url, actor_id,
+                      actor_kind, agent_name, repo_name, body, metadata_json, created_at
+               FROM memory_source_record WHERE ${where.join(" AND ")}
+               ORDER BY created_at ASC, id ASC`;
+    if (options.limit != null) {
+      sql += " LIMIT ?";
+      params.push(options.limit);
+    }
+    const rows = this.db.query<SourceRecordRow, (string | number)[]>(sql).all(...params);
+    return rows.map(rowToSourceRecord);
+  }
+
+  /**
+   * Stamp `consolidated_at = now` on the given source records so a later pass
+   * does not reprocess them (even when they yielded no derivation — they are
+   * still consumed exactly once).
+   */
+  async markSourceRecordsConsolidated(ids: string[], now: number): Promise<void> {
+    const uniqueIds = unique(ids);
+    if (uniqueIds.length === 0) return;
+    const mark = this.db.query("UPDATE memory_source_record SET consolidated_at = ? WHERE id = ?");
+    const txn = this.db.transaction(() => {
+      for (const id of uniqueIds) mark.run(now, id);
+    });
+    txn();
+  }
+
   // --- memory v3: decay / forgetting (§7.1) ---------------------------------
 
   /**
@@ -1659,6 +1720,9 @@ export class SqliteMemoryStore implements MemoryStore {
     // memory v3: raw episodic log (affect sidecar over memory_source_record).
     this.db.run(`CREATE TABLE IF NOT EXISTS episode (id TEXT PRIMARY KEY, actor TEXT, subjects_json TEXT, what TEXT, emotion TEXT, intensity REAL, valence REAL, trigger TEXT, response TEXT, salience REAL, consolidated_into_json TEXT, created_at INTEGER NOT NULL, last_used_at INTEGER, FOREIGN KEY (id) REFERENCES memory_source_record(id))`);
     this.ensureColumn("episode", "last_used_at", "INTEGER");
+    // memory v3: consolidation bookkeeping — which raw source records have been
+    // folded into a derivation (idempotent ALTER for DBs created before this).
+    this.ensureColumn("memory_source_record", "consolidated_at", "INTEGER");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_src_idx ON edge(src_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_dst_idx ON edge(dst_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_type_src_idx ON edge(type, src_id)");
@@ -1669,7 +1733,27 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run("CREATE INDEX IF NOT EXISTS claim_kind_idx ON claim(kind)");
     this.db.run("CREATE INDEX IF NOT EXISTS claim_active_created_idx ON claim(active, created_at)");
     this.db.run("CREATE INDEX IF NOT EXISTS episode_created_idx ON episode(created_at)");
+    this.db.run("CREATE INDEX IF NOT EXISTS source_record_unconsolidated_idx ON memory_source_record(consolidated_at, created_at)");
   }
+}
+
+/** Map a raw `memory_source_record` row to the public `MemorySourceRecord`. */
+function rowToSourceRecord(row: SourceRecordRow): MemorySourceRecord {
+  return {
+    id: row.id,
+    kind: row.kind as MemorySourceRecord["kind"],
+    channelId: row.channel_id,
+    threadId: row.thread_id,
+    slackTs: row.slack_ts,
+    sourceUrl: row.source_url,
+    actorId: row.actor_id,
+    actorKind: row.actor_kind as MemorySourceRecord["actorKind"],
+    agentName: row.agent_name,
+    repoName: row.repo_name,
+    body: row.body,
+    metadata: row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : null,
+    createdAt: row.created_at,
+  };
 }
 
 /** Serialize a Float32Array to a little-endian BLOB (Buffer) for SQLite. */
