@@ -103,11 +103,11 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
 
   if (!dbPath) throw new Error("migrateV3: dbPath is required");
 
-  // Opening through the store ensures the v3 `claim` schema exists (and reuses
-  // the store's node/FTS/BLOB wiring on write). Our own raw handle is for the
-  // legacy reads + the apply-gated drops.
-  const store = createMemoryStore(dbPath);
+  // Raw handle for the legacy reads and the apply-gated DROPs. The store —
+  // which creates the v3 claim/episode schema on open — is constructed LAZILY,
+  // only when applying, so a dry run mutates NOTHING at all (not even schema).
   const db = new Database(dbPath);
+  let store: ReturnType<typeof createMemoryStore> | null = null;
 
   try {
     // 1. Read the legacy rows (raw SQL on our own handle).
@@ -174,6 +174,9 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
     // 5. Write surviving claims — APPLY-GATED. A dry run mutates nothing.
     let claimsWritten = 0;
     if (apply) {
+      // Construct the store only now: opening it creates the v3 schema, which a
+      // dry run must not do.
+      store = createMemoryStore(dbPath);
       for (const s of survivors) {
         await store.upsertClaim({
           id: s.id,
@@ -189,11 +192,11 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
         });
         claimsWritten++;
       }
+      // Release the store handle before any DROP so the two connections don't
+      // contend for the write lock.
+      store.close();
+      store = null;
     }
-
-    // Release the store handle before any DROP so the two connections don't
-    // contend for the write lock.
-    store.close();
 
     // 6. Drop the condemned tables — APPLY-GATED, never in a dry run.
     const tablesDropped: string[] = [];
@@ -221,7 +224,7 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
   } catch (err) {
     // Best-effort cleanup; a half-open store handle must not leak.
     try {
-      store.close();
+      store?.close();
     } catch {
       /* already closed */
     }
