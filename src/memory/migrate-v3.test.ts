@@ -119,6 +119,7 @@ describe("migrateV3", () => {
     const expected: MigrateV3Report = {
       lessons: 3,
       facts: 2,
+      skippedTelemetry: 0,
       embedded: 5,
       claimsWritten: 4, // L1+L2 merge → 1, plus L3, F1, F2
       duplicatesMerged: 1,
@@ -160,6 +161,41 @@ describe("migrateV3", () => {
       expect(byId.get("L3")!.text).toBe("sync before reading\nfetch logs upstream conclusions verify");
     } finally {
       db.close();
+    }
+  });
+
+  it("excludes routing-decision telemetry from the claim corpus", async () => {
+    // Inject the two telemetry shapes that leaked into the legacy tables.
+    const db = new Database(dbPath);
+    const now = Date.now();
+    db.query(
+      `INSERT INTO memory_fact (id, kind, title, body, confidence, importance, created_at, last_used_at, use_count, active)
+       VALUES (?, ?, ?, ?, 0.5, ?, ?, NULL, 0, 1)`,
+    ).run("T1", "routing_memory", "Routing decision: default", "Selected default via single-session.", 1.0, now);
+    db.query(
+      `INSERT INTO memory_fact (id, kind, title, body, confidence, importance, created_at, last_used_at, use_count, active)
+       VALUES (?, ?, NULL, ?, 0.5, ?, ?, NULL, 0, 1)`,
+    ).run("T2", "routing_memory", "Selected review via persistent-agent.", 1.0, now);
+    db.close();
+
+    const report = await migrateV3({
+      dbPath,
+      provider: createEmbeddingProvider("hashing"),
+      apply: true,
+      dedupeThreshold: 0.99,
+    });
+
+    expect(report.skippedTelemetry).toBe(2);
+    expect(report.facts).toBe(2); // F1, F2 — telemetry T1/T2 excluded
+    expect(report.embedded).toBe(5); // 3 lessons + 2 real facts, no telemetry
+
+    const verify = new Database(dbPath);
+    try {
+      const claims = verify.query("SELECT id, text FROM claim").all() as { id: string; text: string }[];
+      expect(claims.find((c) => c.id === "T1" || c.id === "T2")).toBeUndefined();
+      expect(claims.some((c) => /Routing decision:|Selected .* via/.test(c.text))).toBe(false);
+    } finally {
+      verify.close();
     }
   });
 

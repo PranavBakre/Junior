@@ -44,11 +44,13 @@ export interface MigrateV3Options {
 }
 
 export interface MigrateV3Report {
-  /** Number of `lesson` rows read. */
+  /** Number of `lesson` rows kept (real lessons; telemetry excluded). */
   lessons: number;
-  /** Number of `memory_fact` rows read. */
+  /** Number of `memory_fact` rows kept (real facts; routing telemetry excluded). */
   facts: number;
-  /** Number of claim texts embedded (== lessons + facts). */
+  /** Rows skipped as routing-decision telemetry (never become claims). */
+  skippedTelemetry: number;
+  /** Number of claim texts embedded (== kept lessons + kept facts). */
   embedded: number;
   /** Surviving claims actually persisted to the store (0 on a dry run). */
   claimsWritten: number;
@@ -122,6 +124,18 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
       )
       .all() as LegacyFactRow[];
 
+    // Routing-decision telemetry leaked into memory_fact (title "Routing
+    // decision: X", body "Selected X via Y") — operational log noise, never a
+    // real fact/lesson. Migrating it as semantic claims would recreate the §2
+    // event flood the v3 store exists to kill (verified: 646 such rows, dedup
+    // collapses to a handful of identical-text claims, all unrecallable). Drop
+    // it here so the claim corpus is real signal only. Applied to both tables
+    // defensively, though in practice only memory_fact carries it.
+    const keptLessons = lessonRows.filter((r) => !isRoutingTelemetry(r.title, r.body));
+    const keptFacts = factRows.filter((r) => !isRoutingTelemetry(r.title, r.body));
+    const skippedTelemetry =
+      (lessonRows.length - keptLessons.length) + (factRows.length - keptFacts.length);
+
     // Tags live in memory_tag ⋈ tag (not on the lesson/fact row itself).
     const tagStmt = db.query(
       "SELECT t.name AS name FROM memory_tag mt JOIN tag t ON t.id = mt.tag_id WHERE mt.memory_id = ?",
@@ -136,7 +150,7 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
     //        keeping calls size-1 mirrors that and stays deterministic).
     const raw: RawClaim[] = [];
 
-    for (const row of lessonRows) {
+    for (const row of keptLessons) {
       const text = `${row.title}\n${row.body}`;
       const [vector] = await provider.embed([text], "document");
       raw.push({
@@ -151,7 +165,7 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
       });
     }
 
-    for (const row of factRows) {
+    for (const row of keptFacts) {
       const text = row.title ? `${row.title}\n${row.body}` : row.body;
       const [vector] = await provider.embed([text], "document");
       raw.push({
@@ -213,8 +227,9 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
 
     // 7. Report.
     return {
-      lessons: lessonRows.length,
-      facts: factRows.length,
+      lessons: keptLessons.length,
+      facts: keptFacts.length,
+      skippedTelemetry,
       embedded: raw.length,
       claimsWritten,
       duplicatesMerged,
@@ -235,6 +250,18 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
     }
     throw err;
   }
+}
+
+/**
+ * Routing-decision telemetry that leaked into the legacy memory tables: title
+ * "Routing decision: <agent>", body "Selected <agent> via <method>". It is
+ * operational logging, not a lesson/fact, so it must never become a semantic
+ * claim. Match on either marker (title prefix or the "Selected … via …" body).
+ */
+function isRoutingTelemetry(title: string | null, body: string): boolean {
+  const t = (title ?? "").trim();
+  const b = (body ?? "").trim();
+  return /^Routing decision:/i.test(t) || /^Selected\b.+\bvia\b/i.test(b);
 }
 
 /** importance (REAL, may be null) → claim weight. Identity, with a 1.0 floor default. */
