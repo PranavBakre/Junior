@@ -1,5 +1,12 @@
 import { createMemoryStore } from "./factory.ts";
-import type { MemoryFactInput, MemoryMergeResult, MemoryRecallOptions, SearchableMemoryKind } from "./types.ts";
+import type {
+  ClaimKind,
+  ClaimRecallResult,
+  MemoryFactInput,
+  MemoryMergeResult,
+  MemoryRecallOptions,
+  SearchableMemoryKind,
+} from "./types.ts";
 import {
   entitiesForMessage,
   importanceForText,
@@ -324,6 +331,50 @@ export async function runMemoryCli(argv: string[]): Promise<string> {
         : `Rule proposed: ${id} (domain=${domain}, status=draft)\n`;
     }
 
+    if (command === "add-claim") {
+      const id = stringOption(options, "id");
+      const kind = stringOption(options, "kind") as ClaimKind | undefined;
+      const text = stringOption(options, "text");
+      if (!id) throw new Error("--id <claim-id> is required");
+      if (!kind) throw new Error("--kind <lesson|fact|situation-claim> is required");
+      if (!["lesson", "fact", "situation-claim"].includes(kind)) {
+        throw new Error(`--kind must be one of: lesson, fact, situation-claim. Got: ${kind}`);
+      }
+      if (!text) throw new Error("--text <text> is required");
+      const embedding = floatListOption(options, "embedding");
+      await store.upsertClaim({
+        id,
+        kind,
+        text,
+        embedding: embedding ? new Float32Array(embedding) : null,
+        embedModel: stringOption(options, "embed-model"),
+        repo: stringOption(options, "repo"),
+        tags: listOption(options, "tags"),
+        sourceEpisode: stringOption(options, "source-episode"),
+        weight: numberOption(options, "weight"),
+        createdAt: numberOption(options, "created-at") ?? Date.now(),
+      });
+      return json
+        ? `${JSON.stringify({ upserted: id, kind: "claim", claimKind: kind }, null, 2)}\n`
+        : `Claim upserted: ${id} (${kind})\n`;
+    }
+
+    if (command === "recall-claims") {
+      const vector = floatListOption(options, "query-vector");
+      const results = await store.recallClaims({
+        queryVector: vector ? new Float32Array(vector) : undefined,
+        filters: {
+          repo: stringOption(options, "repo"),
+          kind: stringOption(options, "kind") as ClaimKind | undefined,
+          tags: listOption(options, "tags"),
+          sinceMs: numberOption(options, "since-ms"),
+        },
+        ftsQuery: stringOption(options, "fts"),
+        limit: numberOption(options, "limit"),
+      });
+      return json ? `${JSON.stringify({ results }, null, 2)}\n` : formatClaimRecall(results);
+    }
+
     if (command === "rebuild-fts") {
       await store.rebuildSearchIndex();
       return json
@@ -399,6 +450,14 @@ function isValidRuleDomain(domain: string): domain is "tag" | "event_type" | "ed
   return VALID_RULE_DOMAINS.has(domain);
 }
 
+function floatListOption(options: Map<string, string | true>, key: string): number[] | undefined {
+  const value = stringOption(options, key);
+  if (!value) return undefined;
+  const nums = value.split(",").map((item) => Number(item.trim()));
+  if (nums.some((n) => !Number.isFinite(n))) throw new Error(`Invalid --${key}: ${value}`);
+  return nums;
+}
+
 function entityListOption(options: Map<string, string | true>, key: string): Array<{ name: string; kind: string }> | undefined {
   const value = stringOption(options, key);
   if (!value) return undefined;
@@ -417,6 +476,21 @@ function formatRecall(results: Awaited<ReturnType<ReturnType<typeof createMemory
       `Reasons: ${result.reasons.join("; ")}`,
       `Sources: ${result.sourceIds.join(", ") || "none"}`,
     ].join("\n"))
+    .join("\n\n") + "\n";
+}
+
+function formatClaimRecall(results: ClaimRecallResult[]): string {
+  if (results.length === 0) return "No claims found.\n";
+  return results
+    .map((result, index) => {
+      const cos = result.cosine != null ? `, cos ${result.cosine.toFixed(3)}` : "";
+      const fts = result.ftsMatched ? ", fts" : "";
+      return [
+        `${index + 1}. ${result.id} (${result.kind}, score ${result.score.toFixed(3)}${cos}${fts})`,
+        result.text,
+        `repo: ${result.repo ?? "none"} | tags: ${result.tags.join(", ") || "none"} | weight: ${result.weight}`,
+      ].join("\n");
+    })
     .join("\n\n") + "\n";
 }
 
@@ -448,6 +522,8 @@ function usage(): string {
     "  bun run src/memory/cli.ts archive-memory --id <memory-id> [--json]",
     "  bun run src/memory/cli.ts log-correction --event-id <id> --field <field> --correct <value> [--incorrect <value>] [--by <who>] [--json]",
     "  bun run src/memory/cli.ts propose-rule --id <id> --domain <domain> --rule <text> [--positive-examples a,b] [--negative-examples a,b] [--precision 0-1] [--recall 0-1] [--json]",
+    "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--json]",
+    "  bun run src/memory/cli.ts recall-claims [--query-vector 0.1,0.2,...] [--fts <text>] [--repo <name>] [--kind <lesson|fact|situation-claim>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
     "  bun run src/memory/cli.ts rebuild-fts [--json]",
   ].join("\n") + "\n";
 }

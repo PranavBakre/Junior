@@ -199,6 +199,46 @@ describe("memory CLI", () => {
     }
   });
 
+  it("adds a claim and recalls it FTS-only from the configured db", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    const store = new SqliteMemoryStore(dbPath);
+    try {
+      await runMemoryCli([
+        "add-claim", "--db", dbPath,
+        "--id", "claim-cli", "--kind", "fact",
+        "--text", "Worktrees isolate target repos per thread.",
+        "--repo", "junior", "--tags", "worktrees,isolation", "--json",
+      ]);
+
+      const output = await runMemoryCli(["recall-claims", "--db", dbPath, "--fts", "worktrees", "--json"]);
+      const parsed = JSON.parse(output) as { results: Array<{ id: string; ftsMatched: boolean; cosine: number | null }> };
+      expect(parsed.results.map((r) => r.id)).toContain("claim-cli");
+      expect(parsed.results[0].ftsMatched).toBe(true);
+      expect(parsed.results[0].cosine).toBeNull();
+    } finally {
+      store.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("ranks claims by a pre-computed query vector from the configured db", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    const store = new SqliteMemoryStore(dbPath);
+    try {
+      await runMemoryCli(["add-claim", "--db", dbPath, "--id", "claim-aligned", "--kind", "fact", "--text", "aligned", "--embedding", "1,0,0,0", "--json"]);
+      await runMemoryCli(["add-claim", "--db", dbPath, "--id", "claim-ortho", "--kind", "fact", "--text", "ortho", "--embedding", "0,1,0,0", "--json"]);
+
+      const output = await runMemoryCli(["recall-claims", "--db", dbPath, "--query-vector", "1,0,0,0", "--json"]);
+      const parsed = JSON.parse(output) as { results: Array<{ id: string }> };
+      expect(parsed.results.map((r) => r.id)).toEqual(["claim-aligned", "claim-ortho"]);
+    } finally {
+      store.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("archives a memory from the configured db", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
     const dbPath = join(tmpDir, "memory.db");

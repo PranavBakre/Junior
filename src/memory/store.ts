@@ -1,7 +1,11 @@
 import type {
   CandidateRuleInput,
+  ClaimInput,
+  ClaimRecallOptions,
+  ClaimRecallResult,
   ConsolidationOptions,
   ConsolidationResult,
+  EpisodeInput,
   IngestionClassificationInput,
   IngestionCorrectionInput,
   MemoryEdgeInput,
@@ -42,4 +46,8 @@ export interface MemoryStore {
   recall(options: MemoryRecallOptions): Promise<MemorySearchResult[]>;
   consolidate(options?: ConsolidationOptions): Promise<ConsolidationResult>;
   rebuildSearchIndex(): Promise<void>;
+  // memory v3: semantic claim store + raw episode log
+  upsertClaim(claim: ClaimInput): Promise<void>;
+  appendEpisode(episode: EpisodeInput): Promise<void>;
+  recallClaims(options: ClaimRecallOptions): Promise<ClaimRecallResult[]>;
 }

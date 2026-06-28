@@ -213,3 +213,95 @@ export interface ConsolidationResult {
   archivedEventIds: string[];
   proposedRuleIds: string[];
 }
+
+// --- memory v3: claims (semantic, embedded) + episodes (raw affect log) ---
+
+export type ClaimKind = "lesson" | "fact" | "situation-claim";
+
+export interface ClaimInput {
+  id: string;
+  kind: ClaimKind;
+  /** ONE atomic claim — authoritative. The embedding is derived/rebuildable from it. */
+  text: string;
+  /** Pre-computed embedding. Stored as a Float32 LE BLOB. */
+  embedding?: Float32Array | null;
+  embedModel?: string | null;
+  dim?: number | null;
+  repo?: string | null;
+  tags?: string[];
+  sourceEpisode?: string | null;
+  helpfulCount?: number;
+  unhelpfulCount?: number;
+  weight?: number;
+  createdAt: number;
+  lastUsedAt?: number | null;
+  active?: boolean;
+}
+
+export interface ClaimRecallFilters {
+  repo?: string;
+  kind?: ClaimKind;
+  tags?: string[];
+  /** Absolute epoch-ms lower bound: only claims with created_at >= sinceMs. */
+  sinceMs?: number;
+}
+
+export interface ClaimRecallOptions {
+  /**
+   * PRE-COMPUTED query embedding. recallClaims NEVER embeds — embedding happens
+   * at the boundary (the caller). When absent, recall falls back to FTS-only.
+   */
+  queryVector?: Float32Array;
+  filters?: ClaimRecallFilters;
+  /** Lexical/identifier escape hatch (slugs, file paths, PR numbers). */
+  ftsQuery?: string;
+  limit?: number;
+}
+
+export interface ClaimRecallResult {
+  id: string;
+  kind: ClaimKind;
+  text: string;
+  repo: string | null;
+  tags: string[];
+  weight: number;
+  score: number;
+  /** Cosine against queryVector, or null when no queryVector / no embedding. */
+  cosine: number | null;
+  ftsMatched: boolean;
+  sourceEpisode: string | null;
+  helpfulCount: number;
+  unhelpfulCount: number;
+  createdAt: number;
+  lastUsedAt: number | null;
+}
+
+export interface EpisodeInput {
+  id: string;
+  /** Who said/did it (entity ref, e.g. pranav:person). */
+  actor?: string | null;
+  /** Entities this episode is ABOUT (multi-subject). */
+  subjects?: string[];
+  /** The utterance / event, verbatim-ish. Also the backing source-record body. */
+  what: string;
+  emotion?: string | null;
+  intensity?: number | null;
+  valence?: number | null;
+  trigger?: string | null;
+  response?: string | null;
+  salience?: number | null;
+  /** Which derivation ids this fed (provenance). */
+  consolidatedInto?: string[];
+  createdAt: number;
+  // Backing source-record fields (an episode extends memory_source_record).
+  sourceKind?: MemorySourceKind;
+  channelId?: string | null;
+  threadId?: string | null;
+  slackTs?: string | null;
+  sourceUrl?: string | null;
+  actorId?: string | null;
+  actorKind?: "human" | "junior" | "agent" | "bot" | "system" | null;
+  agentName?: string | null;
+  repoName?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
