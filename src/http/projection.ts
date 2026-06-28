@@ -49,7 +49,17 @@ export interface ProjectionResult {
  * Guards the 0–1 claim case gracefully: points collapse to the origin and there
  * are no edges (the store may be near-empty pre-migration).
  */
-export function projectClaims(claims: ClaimVec[], k = 5): ProjectionResult {
+export function projectClaims(input: ClaimVec[], k = 5): ProjectionResult {
+  // Guard a mixed-dim corpus (e.g. mid model-change rebuild, before re-embed):
+  // PCA/KNN require a uniform dimension. Project the dominant (modal) dim only;
+  // off-dim vectors are dropped from the cloud rather than producing NaN coords.
+  const dimCounts = new Map<number, number>();
+  for (const c of input) dimCounts.set(c.vector.length, (dimCounts.get(c.vector.length) ?? 0) + 1);
+  let modalDim = 0;
+  let best = -1;
+  for (const [d, count] of dimCounts) if (count > best) { best = count; modalDim = d; }
+  const claims = input.filter((c) => c.vector.length === modalDim);
+
   const n = claims.length;
   if (n <= 1) {
     return {
@@ -58,7 +68,7 @@ export function projectClaims(claims: ClaimVec[], k = 5): ProjectionResult {
     };
   }
 
-  const dim = claims[0].vector.length;
+  const dim = modalDim;
 
   // Mean-center: PCA requires the data be centred on the origin.
   const mean = new Float64Array(dim);

@@ -121,7 +121,7 @@ export class ProfileStore {
     if (!(suffix in KIND_FOLDER)) {
       throw new Error(`Unknown entity kind '${suffix}' in entity_ref: ${entityRef}`);
     }
-    if (slug.includes("/") || slug.includes("..")) {
+    if (slug.includes("/") || slug.includes("\\") || slug.includes("..")) {
       throw new Error(`Unsafe slug in entity_ref: ${entityRef}`);
     }
     return join(this.root, KIND_FOLDER[suffix], `${slug}.md`);
