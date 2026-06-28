@@ -5,6 +5,7 @@ import {
   type DriverMode,
   type SessionVerbosity,
 } from "./session/types.ts";
+import type { EmbeddingProviderKind } from "./memory/embedding/factory.ts";
 
 export interface RepoConfig {
   name: string;
@@ -141,6 +142,15 @@ export interface Config {
   };
   memory: {
     sqlitePath: string;
+    /**
+     * Embedding provider for the v3 semantic claim store (memory_recall /
+     * memory_add). "local" is harrier-270-ONNX (in-process, lazy-loads the
+     * model on first embed); "hashing" is the deterministic test stand-in.
+     * Set via `MEMORY_EMBED_PROVIDER`. Defaults to "local"; tests use "hashing".
+     * Optional so existing Config test fixtures stay valid; `loadConfig` always
+     * populates it and read sites default to "local".
+     */
+    embedProvider?: EmbeddingProviderKind;
   };
   threadArchives: {
     dir: string;
@@ -258,6 +268,7 @@ export function loadConfig(): Config {
     },
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
+      embedProvider: parseEmbedProvider(optional("MEMORY_EMBED_PROVIDER", "local")),
     },
     threadArchives: {
       dir: optional("THREAD_ARCHIVE_DIR", "data/thread-archives"),
@@ -294,6 +305,13 @@ function parseHttpDashboard(raw: string | undefined): { enabled: boolean; port: 
     );
   }
   return { enabled: true, port };
+}
+
+function parseEmbedProvider(value: string): EmbeddingProviderKind {
+  if (value === "local" || value === "hashing") return value;
+  throw new Error(
+    `Invalid MEMORY_EMBED_PROVIDER: ${value} (expected local|hashing)`,
+  );
 }
 
 function parseStoreKind(value: string): SessionStoreKind {

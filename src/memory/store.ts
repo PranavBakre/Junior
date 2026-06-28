@@ -3,6 +3,7 @@ import type {
   ClaimInput,
   ClaimRecallOptions,
   ClaimRecallResult,
+  ClaimVectorExport,
   ConsolidationOptions,
   ConsolidationResult,
   EpisodeInput,
@@ -50,4 +51,6 @@ export interface MemoryStore {
   upsertClaim(claim: ClaimInput): Promise<void>;
   appendEpisode(episode: EpisodeInput): Promise<void>;
   recallClaims(options: ClaimRecallOptions): Promise<ClaimRecallResult[]>;
+  /** Active claims with embeddings, deserialized to Float32Array (read-only). */
+  exportClaimVectors(): Promise<ClaimVectorExport[]>;
 }

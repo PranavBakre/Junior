@@ -17,6 +17,19 @@ import { readdir, readFile } from "fs/promises";
 import { loadAgentDefinition } from "../agents/loader.ts";
 import { log } from "../logger.ts";
 import { createMemoryStore } from "../memory/factory.ts";
+import { createProfileStore } from "../memory/profiles/index.ts";
+import type { ProfileStore, Profile } from "../memory/profiles/index.ts";
+import type { MemoryStore } from "../memory/store.ts";
+import type {
+  ClaimKind,
+  ClaimRecallFilters,
+  ClaimRecallResult,
+} from "../memory/types.ts";
+import type { EmbeddingProvider } from "../memory/embedding/types.ts";
+// `import type` keeps the heavy harrier/transformers graph (pulled in by the
+// embedding factory's local provider) out of the module graph; the factory is
+// dynamically imported only when a real provider is first constructed.
+import type { EmbeddingProviderKind } from "../memory/embedding/factory.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { SessionManager } from "../session/manager.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
@@ -39,8 +52,39 @@ const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
 const ORG_AGENTS_DIR = "agents-org";
 const MEMORY_DB_PATH = process.env.MEMORY_DB_PATH ?? "data/memory.db";
+const MEMORY_EMBED_PROVIDER = parseEmbedProviderKind(process.env.MEMORY_EMBED_PROVIDER);
 
 let slack: WebClient;
+
+// Lazily-constructed singletons for the v3 memory read/write path. The local
+// embedding provider lazy-loads a ~500MB ONNX model on its first embed (~20s),
+// so it must NEVER be built at server startup — only on the first memory_recall
+// / memory_add call. The factory is dynamically imported for the same reason
+// (its static graph pulls @huggingface/transformers). One instance is shared
+// across every tool call so the model loads at most once per process.
+let embeddingProvider: EmbeddingProvider | undefined;
+let profileStoreSingleton: ProfileStore | undefined;
+
+async function getEmbeddingProvider(): Promise<EmbeddingProvider> {
+  if (!embeddingProvider) {
+    const { createEmbeddingProvider } = await import("../memory/embedding/factory.ts");
+    embeddingProvider = createEmbeddingProvider(MEMORY_EMBED_PROVIDER);
+  }
+  return embeddingProvider;
+}
+
+function getProfileStore(): ProfileStore {
+  if (!profileStoreSingleton) profileStoreSingleton = createProfileStore();
+  return profileStoreSingleton;
+}
+
+function parseEmbedProviderKind(value: string | undefined): EmbeddingProviderKind {
+  const v = (value ?? "local").trim();
+  if (v === "local" || v === "hashing") return v;
+  throw new Error(
+    `Invalid MEMORY_EMBED_PROVIDER: ${value} (expected local|hashing)`,
+  );
+}
 let sessionStore: SessionStore | undefined;
 let worktreeManager: WorktreeManager | undefined;
 let sessionManager: SessionManager | undefined;
@@ -700,32 +744,65 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     "memory_recall",
     {
       description:
-        "Recall sourced associative-memory snippets from Junior's memory database using FTS, tags/entities, and bounded edge traversal.",
+        "Recall Junior's v3 memory over two channels and merge them. (1) KEYED profiles: " +
+        "when you pass `entity_refs` (the people/repos in front of you, e.g. 'pranav:person', " +
+        "'gx-backend:repo'), their markdown profiles are fetched VERBATIM by key — no embedding, " +
+        "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
+        "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
+        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`kinds`) with FTS for exact " +
+        "identifiers. Returns the keyed profiles plus the top-k claims (text, score, repo, tags).",
       inputSchema: {
-        query: z.string().optional().describe("Optional full-text query"),
-        tags: z.array(z.string()).optional().describe("Optional normalized or natural tag names"),
-        entities: z.array(z.string()).optional().describe("Optional entity names"),
-        kinds: z.array(z.enum(["event", "lesson", "summary", "fact", "procedure", "routing_memory"])).optional().describe("Optional memory kinds to include"),
-        limit: z.number().optional().describe("Maximum results (default 5)"),
-        depth: z.number().optional().describe("Edge traversal depth 0-3 (default 2)"),
-        include_inactive: z.boolean().optional().describe("Include archived/inactive memories"),
-        include_invalid: z.boolean().optional().describe("Include superseded/stale memories"),
+        query: z.string().describe("Natural-language query, embedded for semantic claim retrieval"),
+        repo: z.string().optional().describe("Scope claims to a repo (e.g. 'gx-backend')"),
+        kinds: z
+          .array(z.enum(["lesson", "fact", "situation-claim"]))
+          .optional()
+          .describe("Restrict claims to these kinds (default: all)"),
+        entity_refs: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Keyed profile lookups, each shaped '<slug>:<kind>' (e.g. 'pranav:person', 'gx-backend:repo'). Fetched verbatim by key, not embedded.",
+          ),
+        limit: z.number().optional().describe("Max semantic claims to return (default 5, max 50)"),
       },
     },
-    async ({ query, tags, entities, kinds, limit, depth, include_inactive, include_invalid }) => {
+    async ({ query, repo, kinds, entity_refs, limit }) => {
       return withMemoryStore(async (memory) => {
-        const results = await memory.recall({
-          query,
-          tags,
-          entities,
-          kinds,
-          limit,
-          depth,
-          includeInactive: include_inactive,
-          includeInvalid: include_invalid,
-          callerIntent: "mcp_tool",
-        });
-        return { content: [{ type: "text" as const, text: JSON.stringify({ results }, null, 2) }] };
+        const result = await recallMemory(
+          { query, repo, kinds, entityRefs: entity_refs, limit },
+          { store: memory, provider: await getEmbeddingProvider(), profileStore: getProfileStore() },
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "memory_add",
+    {
+      description:
+        "Add a single atomic claim to Junior's v3 semantic memory and embed it in one step. " +
+        "The text is embedded locally (document mode) and stored as a lesson/fact/situation-claim row " +
+        "with its embedding co-located, so it is immediately retrievable by `memory_recall`. Write ONE " +
+        "atomic claim per call (the unit of semantic recall), not a paragraph. Returns the stored claim id.",
+      inputSchema: {
+        text: z.string().describe("One atomic claim — the authoritative text that gets embedded"),
+        kind: z
+          .enum(["lesson", "fact", "situation-claim"])
+          .optional()
+          .describe("Claim kind (default 'lesson')"),
+        repo: z.string().optional().describe("Associate the claim with a repo (filter column)"),
+        tags: z.array(z.string()).optional().describe("Optional filter tags"),
+      },
+    },
+    async ({ text, kind, repo, tags }) => {
+      return withMemoryStore(async (memory) => {
+        const result = await addMemory(
+          { text, kind, repo, tags },
+          { store: memory, provider: await getEmbeddingProvider(), profileStore: getProfileStore() },
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
       });
     },
   );
@@ -925,6 +1002,172 @@ async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemorySto
   } finally {
     memory.close();
   }
+}
+
+// ---------------------------------------------------------------------------
+// memory v3 read/write path (memory-system-v3.md §6, §8, §10)
+//
+// Two retrieval modes drive the read path: KEYED profile fetch (no vector) and
+// SEMANTIC claim recall (cosine + FTS over an embedded corpus). The MCP tool
+// handlers above are thin wrappers; the logic lives in these exported functions
+// so tests can drive them with an in-memory store + the hashing provider, mocking
+// only at the system boundary (CLAUDE.md rule 15).
+// ---------------------------------------------------------------------------
+
+/** Injected dependencies — the store, the embedding provider, and the keyed profile store. */
+export interface MemoryToolDeps {
+  store: MemoryStore;
+  provider: EmbeddingProvider;
+  profileStore: ProfileStore;
+}
+
+export interface RecallMemoryArgs {
+  query: string;
+  repo?: string;
+  kinds?: ClaimKind[];
+  entityRefs?: string[];
+  limit?: number;
+}
+
+export interface RecallMemoryResult {
+  /** Keyed profiles, returned verbatim (Junior-internal — never surfaced in a thread). */
+  profiles: Profile[];
+  /** Top-k semantic claims, ranked by cosine+FTS and weighted. */
+  claims: Array<{
+    id: string;
+    kind: ClaimKind;
+    text: string;
+    score: number;
+    repo: string | null;
+    tags: string[];
+  }>;
+}
+
+/**
+ * Recall over two channels and merge (§8):
+ *  1. KEYED — `entityRefs` are fetched by path from the profile store, verbatim,
+ *     with no embedding. The interlocutor/workspace is ground truth.
+ *  2. SEMANTIC — `query` is embedded in QUERY mode, then `recallClaims` filters
+ *     by repo/kind (the WHERE) and ranks by cosine (the ORDER BY) with FTS as the
+ *     identifier escape hatch. The store never embeds — we embed at this boundary.
+ */
+export async function recallMemory(
+  args: RecallMemoryArgs,
+  deps: MemoryToolDeps,
+): Promise<RecallMemoryResult> {
+  const limit = Math.min(Math.max(Math.trunc(args.limit ?? 5), 1), 50);
+
+  // 1. Keyed profile fetch — no vector. Skip refs that don't resolve to a file.
+  const profiles: Profile[] = [];
+  for (const ref of args.entityRefs ?? []) {
+    let profile: Profile | null = null;
+    try {
+      profile = await deps.profileStore.fetchByEntityRef(ref);
+    } catch {
+      // Malformed entity_ref (bad shape / unknown kind) — skip, don't fail recall.
+      profile = null;
+    }
+    if (profile) profiles.push(profile);
+  }
+
+  // 2. Semantic claim recall — embed the query once, run one filtered recall per
+  //    kind (ClaimRecallFilters carries a single kind), then merge + re-rank.
+  const [queryVector] = await deps.provider.embed([args.query], "query");
+  const kindScopes: Array<ClaimKind | undefined> =
+    args.kinds && args.kinds.length > 0 ? args.kinds : [undefined];
+
+  const seen = new Set<string>();
+  const merged: ClaimRecallResult[] = [];
+  for (const kind of kindScopes) {
+    const filters: ClaimRecallFilters = {};
+    if (args.repo) filters.repo = args.repo;
+    if (kind) filters.kind = kind;
+    const results = await deps.store.recallClaims({
+      queryVector,
+      filters,
+      ftsQuery: args.query,
+      limit,
+    });
+    for (const r of results) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      merged.push(r);
+    }
+  }
+  merged.sort((a, b) => b.score - a.score);
+
+  return {
+    profiles,
+    claims: merged.slice(0, limit).map((c) => ({
+      id: c.id,
+      kind: c.kind,
+      text: c.text,
+      score: c.score,
+      repo: c.repo,
+      tags: c.tags,
+    })),
+  };
+}
+
+export interface AddMemoryArgs {
+  text: string;
+  kind?: ClaimKind;
+  repo?: string;
+  tags?: string[];
+}
+
+/**
+ * Add + embed a single atomic claim (§6.1). The text is embedded in DOCUMENT
+ * mode and stored with its embedding co-located; the id is a deterministic slug
+ * of the text, so re-adding the same claim upserts in place rather than
+ * duplicating. Returns the stored id.
+ */
+export async function addMemory(
+  args: AddMemoryArgs,
+  deps: MemoryToolDeps,
+): Promise<{ id: string }> {
+  const text = args.text.trim();
+  if (!text) throw new Error("memory_add: `text` must be a non-empty claim");
+
+  const kind: ClaimKind = args.kind ?? "lesson";
+  const [embedding] = await deps.provider.embed([text], "document");
+  const id = claimIdFromText(text);
+
+  await deps.store.upsertClaim({
+    id,
+    kind,
+    text,
+    embedding,
+    embedModel: deps.provider.model,
+    dim: deps.provider.dim,
+    repo: args.repo ?? null,
+    tags: args.tags ?? [],
+    createdAt: Date.now(),
+  });
+
+  return { id };
+}
+
+/** Deterministic claim id: a readable slug of the text + a short content hash. */
+function claimIdFromText(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+    .replace(/-+$/g, "");
+  const hash = fnv1aHex(text);
+  return slug ? `claim_${slug}_${hash}` : `claim_${hash}`;
+}
+
+/** 32-bit FNV-1a as 8-hex-char string — deterministic, dependency-free. */
+function fnv1aHex(str: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
 }
 
 interface SearchAgentDefinitionsOptions {

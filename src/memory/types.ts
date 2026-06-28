@@ -276,6 +276,20 @@ export interface ClaimRecallResult {
   lastUsedAt: number | null;
 }
 
+/**
+ * One active claim with its embedding deserialized into a Float32Array. Used by
+ * read-only consumers (e.g. the dashboard's 2D projection view) that need the
+ * raw vectors rather than a cosine-ranked recall result.
+ */
+export interface ClaimVectorExport {
+  id: string;
+  kind: ClaimKind;
+  text: string;
+  repo: string | null;
+  tags: string[];
+  vector: Float32Array;
+}
+
 export interface EpisodeInput {
   id: string;
   /** Who said/did it (entity ref, e.g. pranav:person). */

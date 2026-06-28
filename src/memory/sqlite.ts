@@ -8,6 +8,7 @@ import type {
   ClaimKind,
   ClaimRecallOptions,
   ClaimRecallResult,
+  ClaimVectorExport,
   ConsolidationDecisionRecord,
   ConsolidationOptions,
   ConsolidationResult,
@@ -982,6 +983,36 @@ export class SqliteMemoryStore implements MemoryStore {
       createdAt: entry.row.created_at,
       lastUsedAt: entry.row.last_used_at,
     }));
+  }
+
+  /**
+   * Export every ACTIVE claim that carries an embedding, with the Float32 LE
+   * BLOB deserialized to a Float32Array (reusing the same `deserializeEmbedding`
+   * helper the cosine recall path uses). Read-only; claims with no embedding are
+   * skipped. Intended for the dashboard's 2D projection view, not the hot path.
+   */
+  async exportClaimVectors(): Promise<ClaimVectorExport[]> {
+    const rows = this.db
+      .query<ClaimRow, []>(
+        `SELECT id, kind, text, embedding, embed_model, dim, repo, tags, source_episode,
+                helpful_count, unhelpful_count, weight, created_at, last_used_at, active
+         FROM claim WHERE active = 1`,
+      )
+      .all();
+    const out: ClaimVectorExport[] = [];
+    for (const row of rows) {
+      const vector = deserializeEmbedding(row.embedding);
+      if (!vector) continue;
+      out.push({
+        id: row.id,
+        kind: row.kind as ClaimKind,
+        text: row.text,
+        repo: row.repo,
+        tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
+        vector,
+      });
+    }
+    return out;
   }
 
   // --- memory v3: episodes (raw affect log) ---------------------------------
