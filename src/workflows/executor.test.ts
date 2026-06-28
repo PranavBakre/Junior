@@ -9,6 +9,10 @@ import type { ThreadSession } from "../session/types.ts";
 import { WorkflowExecutor, WORKFLOW_UTILITY_CWD } from "./executor.ts";
 import { InMemoryWorkflowStore } from "./store.ts";
 import type { WorkflowDefinition } from "./types.ts";
+import { SqliteMemoryStore } from "../memory/sqlite.ts";
+import { ProfileStore } from "../memory/profiles/store.ts";
+import { HashingEmbeddingProvider } from "../memory/embedding/hashing.ts";
+import type { ConsolidationInvoke, ConsolidationOutput } from "../memory/consolidation/types.ts";
 
 describe("WorkflowExecutor", () => {
   it("runs workflow definitions through the configured runner from utility cwd", async () => {
@@ -84,7 +88,7 @@ describe("WorkflowExecutor", () => {
     }
   });
 
-  it("runs memory consolidation workflows through the memory store", async () => {
+  it("runs the v3 consolidation sweep for memory-consolidation (native-only path)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-memory-workflow-test-"));
     const definition = workflowDefinition(dir);
     definition.name = "memory-consolidation";
@@ -93,67 +97,92 @@ describe("WorkflowExecutor", () => {
     definition.permissions.tools = ["docs.write", "memory.read", "memory.write", "memory.evaluate"];
     definition.prompt = "Run memory consolidation.";
     definition.sourcePath = "workflows/memory-consolidation.workflow.md";
-    // Remove runner so native-only path is tested (no LLM spawn).
+    // Remove runner so the v3-sweep-only path is tested (no LLM inspection spawn).
     definition.runner = undefined;
     const store = new InMemoryWorkflowStore();
     const spawn = mock(() => {
       throw new Error("runner should not be spawned without runner config");
     });
-    const memoryStore = {
-      consolidate: mock(async () => ({
-        promotedMemoryIds: ["mem-1"],
-        archivedEventIds: ["event-1"],
-        proposedRuleIds: ["rule-1"],
-        decisions: [{ id: "decision-1" }],
-      })),
+    const memoryStore = new SqliteMemoryStore(join(dir, "memory.db"));
+    await memoryStore.appendSourceRecord({
+      id: "src-wf-1",
+      kind: "slack_message",
+      threadId: "T-wf",
+      actorId: "U_PRANAV",
+      actorKind: "human",
+      body: "Pranav: always go dev-first, never auto-merge to main",
+      createdAt: Date.now(),
+    });
+    const output: ConsolidationOutput = {
+      episodes: [],
+      profiles: [],
+      claims: [{ kind: "lesson", text: "Go dev-first; never auto-merge straight to main." }],
     };
+    const invoke: ConsolidationInvoke = mock(async () => output);
     const executor = new WorkflowExecutor({
       config: testConfig(),
       store,
       spawn: spawn as never,
-      memoryStore: memoryStore as never,
+      memoryStore,
+      consolidationDeps: {
+        invoke: invoke as ConsolidationInvoke,
+        embedder: new HashingEmbeddingProvider(640),
+        profileStore: new ProfileStore({ root: join(dir, "profiles") }),
+      },
       now: () => new Date("2026-05-24T10:00:00.000Z"),
     });
 
     try {
       const result = await executor.run({ definition, reason: "manual" });
 
-      expect(memoryStore.consolidate).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledTimes(1);
       expect(spawn).not.toHaveBeenCalled();
-      expect(result.summary).toContain("Memory consolidation complete.");
-      expect(result.summary).toContain("Promoted memories: mem-1");
-      expect(readFileSync(result.run.artifactPath, "utf8")).toContain("Archived events: event-1");
+      expect(result.summary).toContain("Memory consolidation (v3) complete.");
+      expect(result.summary).toContain("1 claims");
+      // The claim was actually persisted by the sweep.
+      expect(await memoryStore.exportClaimVectors()).toHaveLength(1);
+      expect(readFileSync(result.run.artifactPath, "utf8")).toContain("Memory consolidation (v3)");
     } finally {
+      memoryStore.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it("runs native consolidation then LLM analysis for memory-consolidation", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "junior-memory-llm-workflow-test-"));
+  it("does not spawn a second inspection runner for memory-consolidation (sweep-only)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-memory-sweeponly-test-"));
     const definition = workflowDefinition(dir);
     definition.name = "memory-consolidation";
     definition.triggers = [{ type: "command", command: "memory-consolidation" }];
     definition.outputs = [{ type: "docs", path: join(dir, "memory-consolidation") }];
     definition.permissions.tools = ["docs.write", "memory.read", "memory.write", "memory.evaluate"];
-    definition.prompt = "Inspect and validate consolidation results.";
     definition.sourcePath = "workflows/memory-consolidation.workflow.md";
-    // Keep runner config so LLM pass runs after native.
+    // Runner config is PRESENT but must be ignored: the v3 sweep is the only
+    // LLM pass; no second inspection-agent spawn.
     const store = new InMemoryWorkflowStore();
-    const memoryStore = {
-      consolidate: mock(async () => ({
-        promotedMemoryIds: ["mem-1"],
-        archivedEventIds: ["event-1"],
-        proposedRuleIds: ["rule-1"],
-        decisions: [{ id: "decision-1" }],
-      })),
-    };
+    const memoryStore = new SqliteMemoryStore(join(dir, "memory.db"));
+    await memoryStore.appendSourceRecord({
+      id: "src-wf-sweeponly",
+      kind: "slack_message",
+      threadId: "T-wf-sweeponly",
+      actorId: "U_PRANAV",
+      actorKind: "human",
+      body: "Pranav: never squash-merge; always 3-way",
+      createdAt: Date.now(),
+    });
+    const invoke: ConsolidationInvoke = mock(async () => ({
+      episodes: [],
+      profiles: [],
+      claims: [{ kind: "lesson", text: "Never squash-merge; always use a 3-way merge." }],
+    }) as ConsolidationOutput);
+    let spawnCalls = 0;
     const spawn: SpawnRunnerFn = (_session, _prompt): SpawnHandle => {
+      spawnCalls += 1;
       return {
         provider: "opencode",
         result: Promise.resolve({
           provider: "opencode",
           sessionId: "ses-llm",
-          response: "LLM analysis: confirmed 1 promotion, 1 archive, 1 draft rule.",
+          response: "should not be called",
           events: [],
           exitCode: 0,
           error: null,
@@ -167,18 +196,25 @@ describe("WorkflowExecutor", () => {
       config: testConfig(),
       store,
       spawn,
-      memoryStore: memoryStore as never,
+      memoryStore,
+      consolidationDeps: {
+        invoke: invoke as ConsolidationInvoke,
+        embedder: new HashingEmbeddingProvider(640),
+        profileStore: new ProfileStore({ root: join(dir, "profiles") }),
+      },
       now: () => new Date("2026-05-24T10:00:00.000Z"),
     });
 
     try {
       const result = await executor.run({ definition, reason: "schedule" });
 
-      expect(memoryStore.consolidate).toHaveBeenCalledTimes(1);
-      expect(result.summary).toContain("Memory consolidation complete.");
-      expect(result.summary).toContain("## LLM Analysis");
-      expect(result.summary).toContain("LLM analysis: confirmed 1 promotion");
+      // The sweep's injected LLM ran once; the inspection runner did NOT spawn.
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(spawnCalls).toBe(0);
+      expect(result.summary).toContain("Memory consolidation (v3) complete.");
+      expect(result.summary).not.toContain("## LLM Analysis");
     } finally {
+      memoryStore.close();
       rmSync(dir, { recursive: true, force: true });
     }
   });
