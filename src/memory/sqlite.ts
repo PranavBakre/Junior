@@ -1696,6 +1696,32 @@ export class SqliteMemoryStore implements MemoryStore {
     }
   }
 
+  /**
+   * Widen the memory_node.kind CHECK to allow 'claim' on DBs created before v3.
+   * SQLite can't ALTER a CHECK, and CREATE TABLE IF NOT EXISTS won't retrofit
+   * one, so an old node table would reject the memory_node row that upsertClaim
+   * writes. Rebuild the table (it has no extra indexes/triggers; FK enforcement
+   * is off) only when the current CHECK lacks 'claim' — idempotent thereafter.
+   */
+  private ensureMemoryNodeAllowsClaim(): void {
+    const row = this.db
+      .query<{ sql: string }, []>(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_node'",
+      )
+      .get();
+    if (!row || row.sql.includes("'claim'")) return;
+    this.db.transaction(() => {
+      this.db.run(
+        `CREATE TABLE memory_node_new (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory', 'entity', 'tag', 'claim')), created_at INTEGER NOT NULL, valid_at INTEGER, invalid_at INTEGER, superseded_by TEXT)`,
+      );
+      this.db.run(
+        "INSERT INTO memory_node_new (id, kind, created_at, valid_at, invalid_at, superseded_by) SELECT id, kind, created_at, valid_at, invalid_at, superseded_by FROM memory_node",
+      );
+      this.db.run("DROP TABLE memory_node");
+      this.db.run("ALTER TABLE memory_node_new RENAME TO memory_node");
+    })();
+  }
+
   private migrate(): void {
     this.db.run(`CREATE TABLE IF NOT EXISTS memory_source_record (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('slack_message', 'runner_output', 'routing_decision', 'routing_correction', 'ingestion_correction', 'curated_fact', 'manual_correction')), channel_id TEXT, thread_id TEXT, slack_ts TEXT, source_url TEXT, actor_id TEXT, actor_kind TEXT CHECK (actor_kind IN ('human', 'junior', 'agent', 'bot', 'system')), agent_name TEXT, repo_name TEXT, body TEXT NOT NULL, metadata_json TEXT, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS memory_node (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory', 'entity', 'tag', 'claim')), created_at INTEGER NOT NULL, valid_at INTEGER, invalid_at INTEGER, superseded_by TEXT)`);
@@ -1723,6 +1749,8 @@ export class SqliteMemoryStore implements MemoryStore {
     // memory v3: consolidation bookkeeping — which raw source records have been
     // folded into a derivation (idempotent ALTER for DBs created before this).
     this.ensureColumn("memory_source_record", "consolidated_at", "INTEGER");
+    // memory v3: retrofit the memory_node.kind CHECK to allow 'claim' on old DBs.
+    this.ensureMemoryNodeAllowsClaim();
     this.db.run("CREATE INDEX IF NOT EXISTS edge_src_idx ON edge(src_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_dst_idx ON edge(dst_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS edge_type_src_idx ON edge(type, src_id)");
