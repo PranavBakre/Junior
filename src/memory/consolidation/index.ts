@@ -8,6 +8,12 @@ export {
 } from "./consolidate.ts";
 export { buildConsolidationPrompt } from "./prompt.ts";
 export {
+  runConsolidationSweep,
+  summarizeConsolidationSweep,
+  type ConsolidateV3Entry,
+  type RunConsolidationSweepArgs,
+} from "./sweep.ts";
+export {
   consolidationOutputSchema,
   type ClaimContextSample,
   type ClaimDraft,

@@ -19,6 +19,8 @@ import { log } from "../logger.ts";
 import { createMemoryStore } from "../memory/factory.ts";
 import { createProfileStore } from "../memory/profiles/index.ts";
 import type { ProfileStore, Profile } from "../memory/profiles/index.ts";
+import { runConsolidationSweep } from "../memory/consolidation/index.ts";
+import { createRunnerInvoke } from "../memory/consolidation/runner.ts";
 import type { MemoryStore } from "../memory/store.ts";
 import type {
   ClaimKind,
@@ -811,21 +813,22 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     "memory_consolidate",
     {
       description:
-        "Run Junior's deterministic associative-memory consolidation pass: archive cold events, promote repeated routing corrections, and propose draft rules.",
-      inputSchema: {
-        archive_before_ms: z.number().optional().describe("Archive active low-value events older than this age in ms"),
-        low_importance_threshold: z.number().optional().describe("Archive events at or below this importance (default 0.2)"),
-        repeated_correction_threshold: z.number().optional().describe("Corrections required for promotion/rule proposal (default 2)"),
-      },
+        "Run Junior's v3 memory consolidation: read the unconsolidated source records " +
+        "(session-scoped per thread, plus a final unthreaded sweep), ask the runner LLM " +
+        "for derivations, and persist episodes, profiles, and claims through the v3 gates. " +
+        "Processed records are stamped consolidated so they are derived from exactly once. " +
+        "Takes no inputs — it drains all pending source records.",
+      inputSchema: {},
     },
-    async ({ archive_before_ms, low_importance_threshold, repeated_correction_threshold }) => {
+    async () => {
       return withMemoryStore(async (memory) => {
-        const result = await memory.consolidate({
-          archiveBeforeMs: archive_before_ms,
-          lowImportanceThreshold: low_importance_threshold,
-          repeatedCorrectionThreshold: repeated_correction_threshold,
+        const reports = await runConsolidationSweep({
+          store: memory,
+          profileStore: getProfileStore(),
+          embedder: await getEmbeddingProvider(),
+          invoke: createRunnerInvoke({}),
         });
-        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        return { content: [{ type: "text" as const, text: JSON.stringify({ reports }, null, 2) }] };
       });
     },
   );
