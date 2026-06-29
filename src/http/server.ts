@@ -18,7 +18,7 @@ import type { MemoryStore } from "../memory/store.ts";
 import { handleHealth } from "./routes/health.ts";
 import { handleSessions, handleSessionDetail } from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
-import { handleMemoryConsolidate, handleMemoryList, handleMemoryRead, handleMemoryRecall } from "./routes/memory.ts";
+import { handleMemoryList, handleMemoryProjection, handleMemoryRead, handleMemoryRecall } from "./routes/memory.ts";
 import { handleDevServers } from "./routes/dev-server.ts";
 import { handleWorkflows } from "./routes/workflows.ts";
 import { log } from "../logger.ts";
@@ -94,9 +94,9 @@ export function startHttpServer(deps: HttpServerDeps): void {
         } else if (url.pathname === "/api/memory/recall") {
           if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
           return await handleMemoryRecall(memoryStore, url.searchParams);
-        } else if (url.pathname === "/api/memory/consolidate" && req.method === "POST") {
+        } else if (url.pathname === "/api/memory/projection") {
           if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
-          return await handleMemoryConsolidate(memoryStore);
+          return await handleMemoryProjection(memoryStore);
         } else if (url.pathname === "/api/memory") {
           return await handleMemoryList();
         } else if (url.pathname.startsWith("/api/memory/")) {

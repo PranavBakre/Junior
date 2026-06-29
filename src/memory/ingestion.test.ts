@@ -30,22 +30,16 @@ describe("MemoryIngestor", () => {
         text: "dashboard CSS is wrong",
       });
 
-      const recalled = await store.recall({ query: "dashboard CSS", limit: 5 });
-      expect(recalled.some((memory) => memory.body.includes("dashboard CSS"))).toBe(true);
-
-      // Routing decisions are persisted as raw source records only — NOT as searchable routing_memory nodes.
-      const routing = await store.recall({ kinds: ["routing_memory"], tags: ["routing_decision"], limit: 5 });
-      expect(routing.some((memory) => memory.body.includes("Selected frontend"))).toBe(false);
-
-      // Verify the raw source record WAS written.
+      // The live capture path writes raw source records ONLY (v3) — the Slack
+      // message and the routing decision both land in memory_source_record.
       const db = (store as unknown as { db: Database }).db;
-      const sourceRows = db
+      const slackRows = db
         .query<{ kind: string; body: string }, []>(
-          "SELECT kind, body FROM memory_source_record WHERE kind = 'routing_decision'",
+          "SELECT kind, body FROM memory_source_record WHERE kind = 'routing_decision' OR kind = 'slack_message'",
         )
         .all();
-      expect(sourceRows.length).toBeGreaterThan(0);
-      expect(sourceRows.some((row) => row.body.includes("Selected frontend"))).toBe(true);
+      expect(slackRows.some((row) => row.body.includes("dashboard CSS"))).toBe(true);
+      expect(slackRows.some((row) => row.body.includes("Selected frontend"))).toBe(true);
     } finally {
       store.close();
       rmSync(tmpDir, { recursive: true, force: true });
@@ -74,10 +68,15 @@ describe("MemoryIngestor", () => {
         error: "boom",
       });
 
-      const completed = await store.recall({ query: "Implemented endpoint", limit: 5 });
-      expect(completed.map((memory) => memory.outcome)).toContain("runner_completed");
-      const failed = await store.recall({ query: "boom", limit: 5 });
-      expect(failed.map((memory) => memory.outcome)).toContain("runner_error");
+      // Runner results are captured as raw source records (kind 'runner_output').
+      const db = (store as unknown as { db: Database }).db;
+      const runnerRows = db
+        .query<{ body: string }, []>(
+          "SELECT body FROM memory_source_record WHERE kind = 'runner_output'",
+        )
+        .all();
+      expect(runnerRows.some((row) => row.body.includes("Implemented endpoint"))).toBe(true);
+      expect(runnerRows.some((row) => row.body.includes("boom"))).toBe(true);
     } finally {
       store.close();
       rmSync(tmpDir, { recursive: true, force: true });

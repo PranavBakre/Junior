@@ -8,20 +8,7 @@ export interface CaptureSlackMessageOptions {
 }
 
 export class MemoryIngestor {
-  private acceptedRulesCache: Awaited<ReturnType<MemoryStore["getAcceptedRules"]>> | null = null;
-  private acceptedRulesCacheTime = 0;
-
   constructor(private store: MemoryStore) {}
-
-  private async getAcceptedRules(): Promise<Awaited<ReturnType<MemoryStore["getAcceptedRules"]>>> {
-    // Cache for 60 seconds to avoid hitting the DB on every Slack message.
-    if (this.acceptedRulesCache && Date.now() - this.acceptedRulesCacheTime < 60_000) {
-      return this.acceptedRulesCache;
-    }
-    this.acceptedRulesCache = await this.store.getAcceptedRules();
-    this.acceptedRulesCacheTime = Date.now();
-    return this.acceptedRulesCache;
-  }
 
   async captureSlackMessage(
     event: SlackMessageEvent,
@@ -47,40 +34,6 @@ export class MemoryIngestor {
       },
       createdAt: now,
     });
-    const baseTags = tagsForMessage(event.text, event.command, options.agentName);
-    const ruleTags = await this.tagsFromAcceptedRules(event.text);
-    const allTags = [...baseTags, ...ruleTags.filter((tag) => !baseTags.includes(tag))];
-    await this.store.upsertEvent({
-      id: `event_${sourceId}`,
-      sourceRecordId: sourceId,
-      threadId: event.threadId,
-      body: event.text,
-      outcome: event.command ? `command:${event.command}` : null,
-      importance: importanceForText(event.text, event.command),
-      createdAt: now,
-      sourceTs: event.ts,
-      tags: allTags,
-      entities: entitiesForMessage(event.text),
-    });
-  }
-
-  /**
-   * Apply accepted tag rules from the consolidation engine.
-   * Each accepted rule with domain "tag" is checked against the message text.
-   * The tag name is extracted from the rule ID suffix (e.g., rule_tag_frontend → frontend).
-   */
-  private async tagsFromAcceptedRules(text: string): Promise<string[]> {
-    const rules = await this.getAcceptedRules();
-    const tags: string[] = [];
-    for (const rule of rules) {
-      if (rule.domain !== "tag") continue;
-      const tagName = ruleTagName(rule.id);
-      if (!tagName) continue;
-      if (tagMatchesText(tagName, text)) {
-        tags.push(tagName);
-      }
-    }
-    return tags;
   }
 
   async captureRunnerResult(
@@ -108,17 +61,6 @@ export class MemoryIngestor {
         eventTypes: result.events.map((event) => event.type),
       },
       createdAt: now,
-    });
-    await this.store.upsertEvent({
-      id: `event_${sourceId}`,
-      sourceRecordId: sourceId,
-      threadId,
-      body,
-      outcome: result.error ? "runner_error" : "runner_completed",
-      importance: result.error ? 0.8 : 0.4,
-      createdAt: now,
-      tags: ["runner_output", result.error ? "error" : "completed", `agent:${agentName}`],
-      entities: [{ kind: "agent", name: agentName }],
     });
   }
 
@@ -169,16 +111,6 @@ export class MemoryIngestor {
         metadata: { ...event },
         createdAt: now,
       });
-      await this.store.upsertEvent({
-        id: `event_${sourceId}`,
-        sourceRecordId: sourceId,
-        threadId,
-        body: `Runner tool error for ${agentName}: ${event.name}`,
-        outcome: "tool_error",
-        importance: 0.7,
-        createdAt: now,
-        tags: ["runner_tool_error", `agent:${agentName}`],
-      });
     }
   }
 }
@@ -217,31 +149,4 @@ export function entitiesForMessage(text: string): Array<{ kind: string; name: st
     entities.push({ kind: "path", name: match[0] });
   }
   return entities;
-}
-
-/**
- * Extract a tag name from a rule ID like "rule_tag_frontend" → "frontend".
- */
-function ruleTagName(ruleId: string): string | null {
-  const match = ruleId.match(/^rule_tag_(.+)$/);
-  return match ? match[1] : null;
-}
-
-/**
- * Check if an accepted tag rule's tag name matches the message text.
- * Uses the same heuristics as tagsForMessage plus rule-specific matching.
- */
-function tagMatchesText(tagName: string, text: string): boolean {
-  const patterns: Record<string, RegExp> = {
-    frontend: /\b(css|style|ui|frontend|tsx|react|component|jsx)\b/i,
-    backend: /\b(api|backend|server|endpoint|500|route|controller)\b/i,
-    pr_review: /\bPR\s*#?\d+|github\.com\/.*\/pull\/\d+/i,
-    correction: /\bwrong|correct|instead|should use|prefer\b/i,
-    error: /\b(error|failed|crash|timeout|500|503)\b/i,
-    bug: /\b(bug|broken|regression|not working)\b/i,
-  };
-  const pattern = patterns[tagName];
-  if (pattern) return pattern.test(text);
-  // For unknown tag names, check if the tag name itself appears in the text.
-  return new RegExp(`\\b${tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text);
 }

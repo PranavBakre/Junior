@@ -19,6 +19,15 @@ import {
 } from "./types.ts";
 import type { WorkflowStore } from "./store.ts";
 import type { MemoryStore } from "../memory/store.ts";
+import {
+  runConsolidationSweep,
+  summarizeConsolidationSweep,
+} from "../memory/consolidation/index.ts";
+import { createRunnerInvoke } from "../memory/consolidation/runner.ts";
+import { createProfileStore } from "../memory/profiles/factory.ts";
+import type { ProfileStore } from "../memory/profiles/store.ts";
+import type { EmbeddingProvider } from "../memory/embedding/types.ts";
+import type { ConsolidationInvoke } from "../memory/consolidation/types.ts";
 
 export const WORKFLOW_UTILITY_CWD = "/tmp/junior-utility";
 const DEFAULT_MAX_IDLE_INTERRUPTS = 3;
@@ -30,6 +39,17 @@ export interface WorkflowExecutorOptions {
   spawn?: SpawnRunnerFn;
   now?: () => Date;
   memoryStore?: MemoryStore;
+  /**
+   * v3 consolidation dependencies for the memory-consolidation workflow. Tests
+   * inject a fake invoke + hashing embedder + temp profile store; production
+   * leaves these undefined and they are built lazily (the local embedder loads a
+   * ~270MB model, so it must NEVER be constructed unless the workflow actually runs).
+   */
+  consolidationDeps?: {
+    profileStore?: ProfileStore;
+    embedder?: EmbeddingProvider;
+    invoke?: ConsolidationInvoke;
+  };
 }
 
 export interface WorkflowRunRequest {
@@ -50,6 +70,7 @@ export class WorkflowExecutor {
   private spawn: SpawnRunnerFn;
   private now: () => Date;
   private memoryStore?: MemoryStore;
+  private consolidationDeps?: WorkflowExecutorOptions["consolidationDeps"];
   private activeHandles = new Set<SpawnHandle>();
 
   constructor(options: WorkflowExecutorOptions) {
@@ -59,6 +80,7 @@ export class WorkflowExecutor {
     this.spawn = options.spawn ?? spawnRunner;
     this.now = options.now ?? (() => new Date());
     this.memoryStore = options.memoryStore;
+    this.consolidationDeps = options.consolidationDeps;
   }
 
   async run(request: WorkflowRunRequest): Promise<WorkflowRunResult> {
@@ -86,25 +108,12 @@ export class WorkflowExecutor {
     let summary = "";
     try {
       if (request.definition.name === "memory-consolidation" && this.memoryStore) {
-        // Run native consolidation first (deterministic, cheap).
-        const nativeSummary = await this.runMemoryConsolidation();
-        // If a runner is configured, spawn it for LLM-powered inspection
-        // and inject the native results so the LLM can build on them.
-        if (request.definition.runner) {
-          const runnerSummary = await this.runWithRunner(
-            request.definition,
-            run,
-            buildRunnerPromptWithNative({
-              definition: request.definition,
-              run,
-              repos: this.reposFor(request.definition),
-              nativeResult: nativeSummary,
-            }),
-          );
-          summary = `${nativeSummary}\n\n---\n## LLM Analysis\n\n${runnerSummary}`;
-        } else {
-          summary = nativeSummary;
-        }
+        // v3 sweep-only. The consolidation sweep IS the LLM pass — it spawns the
+        // runner per session to derive episodes/profiles/claims (memory v3 §7).
+        // A second inspection-agent pass on top would double the LLM cost and
+        // run a prompt still written for the retired deterministic consolidate().
+        // The sweep's own summary is the workflow artifact.
+        summary = await this.runMemoryConsolidation();
       } else if (request.definition.runner) {
         summary = await this.runWithRunner(
           request.definition,
@@ -359,14 +368,21 @@ export class WorkflowExecutor {
 
   private async runMemoryConsolidation(): Promise<string> {
     if (!this.memoryStore) throw new Error("memory store not configured");
-    const result = await this.memoryStore.consolidate();
-    return [
-      "Memory consolidation complete.",
-      `Promoted memories: ${result.promotedMemoryIds.join(", ") || "none"}`,
-      `Archived events: ${result.archivedEventIds.join(", ") || "none"}`,
-      `Proposed rules: ${result.proposedRuleIds.join(", ") || "none"}`,
-      `Decisions: ${result.decisions.length}`,
-    ].join("\n");
+    // v3 offline write path (memory v3 §7): drain unconsolidated source records,
+    // session-scoped per thread plus a final unthreaded sweep, persisting episodes
+    // / profiles / claims through the gates. The legacy deterministic
+    // `memoryStore.consolidate()` is intentionally no longer called here.
+    const profileStore = this.consolidationDeps?.profileStore ?? createProfileStore();
+    const embedder = this.consolidationDeps?.embedder ?? (await loadLocalEmbedder());
+    const invoke = this.consolidationDeps?.invoke ?? createRunnerInvoke({});
+
+    const reports = await runConsolidationSweep({
+      store: this.memoryStore,
+      profileStore,
+      embedder,
+      invoke,
+    });
+    return summarizeConsolidationSweep(reports);
   }
 
   private async postSlack(
@@ -424,6 +440,16 @@ export class WorkflowExecutor {
   }
 }
 
+/**
+ * Build the production local embedder lazily. The embedding factory's static graph
+ * pulls @huggingface/transformers (~270MB), so it is dynamically imported only when
+ * the memory-consolidation workflow actually runs — never at executor construction.
+ */
+async function loadLocalEmbedder(): Promise<EmbeddingProvider> {
+  const { createEmbeddingProvider } = await import("../memory/embedding/factory.ts");
+  return createEmbeddingProvider("local");
+}
+
 function artifactPathFor(definition: WorkflowDefinition, started: Date, runId: string): string {
   const date = started.toISOString().slice(0, 10);
   const docsOutput = definition.outputs.find((output) => output.type === "docs");
@@ -478,13 +504,15 @@ function buildRunnerPromptWithNative(options: {
 
   if (options.nativeResult) {
     parts.push(
-      "Native consolidation has already run (deterministic pass). Use these results as a starting point:",
+      "The v3 consolidation engine has already run over the unconsolidated source records",
+      "(session-scoped per thread, plus a final unthreaded sweep) and written episodes,",
+      "profiles, and claims through the v3 gates. Here is what it wrote:",
       "",
-      "```json",
+      "```",
       options.nativeResult,
       "```",
       "",
-      "Your job: inspect the current memory state via memory tools, identify patterns the deterministic pass may have missed, validate the promoted memories and proposed rules, and produce a final human-readable summary. Do not re-run consolidation — it's already done. Focus on inspection, validation, and explanation.",
+      "Your job: inspect the current memory state via the memory tools, sanity-check the newly written episodes/profiles/claims, surface anything that looks wrong or duplicated, and produce a final human-readable summary. Do not re-run consolidation — it's already done. Focus on inspection, validation, and explanation.",
       "",
     );
   }
