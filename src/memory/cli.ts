@@ -34,6 +34,46 @@ export interface MemoryCliDeps {
   profileStore?: ProfileStore;
 }
 
+/** CLI default embedding provider: honor MEMORY_EMBED_PROVIDER, else local/harrier. */
+function defaultEmbedProviderKind(): "local" | "hashing" {
+  return process.env.MEMORY_EMBED_PROVIDER === "hashing" ? "hashing" : "local";
+}
+
+/**
+ * Mirror a freshly-added lesson/fact into the semantic claim store so it is
+ * recallable via memory_recall (v3) — the legacy lesson/fact tables are not
+ * read by v3 recall or consolidation. Uses the same id as the legacy row (the
+ * migration convention; memory_node.kind ends 'claim'). Best-effort: a lesson
+ * is still captured in the legacy table even if embedding is unavailable.
+ */
+async function mirrorClaim(
+  store: ReturnType<typeof createMemoryStore>,
+  embedder: EmbeddingProvider,
+  claim: { id: string; kind: "lesson" | "fact"; text: string; tags?: string[]; weight?: number; createdAt: number },
+): Promise<boolean> {
+  try {
+    const [embedding] = await embedder.embed([claim.text], "document");
+    await store.upsertClaim({
+      id: claim.id,
+      kind: claim.kind,
+      text: claim.text,
+      embedding,
+      embedModel: embedder.model,
+      dim: embedder.dim,
+      tags: claim.tags,
+      weight: claim.weight ?? 1.0,
+      createdAt: claim.createdAt,
+      active: true,
+    });
+    return true;
+  } catch (err) {
+    console.error(
+      `[add] claim mirror skipped (embed failed): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+}
+
 const VALID_CORRECTION_FIELDS = new Set(["tag", "event_type", "edge", "promotion", "archive", "routing_fact", "validity"]);
 const VALID_CORRECTION_ACTORS = new Set(["user", "agent", "reviewer"]);
 const VALID_RULE_DOMAINS = new Set(["tag", "event_type", "edge", "promotion", "archive", "routing_fact"]);
@@ -75,7 +115,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       // The per-thread + unthreaded-sweep + isolation loop lives in the shared
       // `runConsolidationSweep` helper so the workflow and MCP tool run the same path.
       const profileStore = deps.profileStore ?? createProfileStore();
-      const embedder = deps.embedder ?? createEmbeddingProvider("local");
+      const embedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
       const invoke = deps.invoke ?? createRunnerInvoke({ timeoutMs: numberOption(options, "timeout-ms") });
 
       const reports = await runConsolidationSweep({
@@ -117,15 +157,17 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       if (!title) throw new Error("--title <title> is required");
       if (!body) throw new Error("--body <body> is required");
       const sourceIds = listOption(options, "source-ids");
+      const lessonCreatedAt = numberOption(options, "created-at") ?? Date.now();
+      const lessonTags = listOption(options, "tags");
       await store.upsertLesson({
         id,
         title,
         body,
         appliesWhen: stringOption(options, "applies-when"),
         importance: numberOption(options, "importance"),
-        createdAt: numberOption(options, "created-at") ?? Date.now(),
+        createdAt: lessonCreatedAt,
         sourceIds,
-        tags: listOption(options, "tags"),
+        tags: lessonTags,
         entities: entityListOption(options, "entities"),
       });
       // Auto-create edges to source events for graph traversal
@@ -136,9 +178,19 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
           createdEdges.push(srcId);
         }
       }
+      // Mirror into the semantic claim store so v3 memory_recall can find it.
+      const lessonEmbedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
+      const lessonClaimed = await mirrorClaim(store, lessonEmbedder, {
+        id,
+        kind: "lesson",
+        text: `${title}\n${body}`,
+        tags: lessonTags,
+        weight: numberOption(options, "importance"),
+        createdAt: lessonCreatedAt,
+      });
       return json
-        ? `${JSON.stringify({ upserted: id, kind: "lesson", edges: createdEdges }, null, 2)}\n`
-        : `Lesson upserted: ${id}${createdEdges.length ? ` (${createdEdges.length} edge(s))` : ""}\n`;
+        ? `${JSON.stringify({ upserted: id, kind: "lesson", edges: createdEdges, claim: lessonClaimed }, null, 2)}\n`
+        : `Lesson upserted: ${id}${createdEdges.length ? ` (${createdEdges.length} edge(s))` : ""}${lessonClaimed ? " [claim]" : ""}\n`;
     }
 
     if (command === "add-fact") {
@@ -152,16 +204,19 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       }
       if (!body) throw new Error("--body <body> is required");
       const sourceIds = listOption(options, "source-ids");
+      const factCreatedAt = numberOption(options, "created-at") ?? Date.now();
+      const factTitle = stringOption(options, "title");
+      const factTags = listOption(options, "tags");
       await store.upsertFact({
         id,
         kind,
-        title: stringOption(options, "title"),
+        title: factTitle,
         body,
         confidence: numberOption(options, "confidence"),
         importance: numberOption(options, "importance"),
-        createdAt: numberOption(options, "created-at") ?? Date.now(),
+        createdAt: factCreatedAt,
         sourceIds,
-        tags: listOption(options, "tags"),
+        tags: factTags,
         entities: entityListOption(options, "entities"),
       });
       // Auto-create edges to source events for graph traversal
@@ -172,9 +227,19 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
           createdEdges.push(srcId);
         }
       }
+      // Mirror into the semantic claim store so v3 memory_recall can find it.
+      const factEmbedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
+      const factClaimed = await mirrorClaim(store, factEmbedder, {
+        id,
+        kind: "fact",
+        text: factTitle ? `${factTitle}\n${body}` : body,
+        tags: factTags,
+        weight: numberOption(options, "importance"),
+        createdAt: factCreatedAt,
+      });
       return json
-        ? `${JSON.stringify({ upserted: id, kind, edges: createdEdges }, null, 2)}\n`
-        : `Fact upserted: ${id} (${kind})${createdEdges.length ? ` (${createdEdges.length} edge(s))` : ""}\n`;
+        ? `${JSON.stringify({ upserted: id, kind, edges: createdEdges, claim: factClaimed }, null, 2)}\n`
+        : `Fact upserted: ${id} (${kind})${createdEdges.length ? ` (${createdEdges.length} edge(s))` : ""}${factClaimed ? " [claim]" : ""}\n`;
     }
 
     if (command === "add-event") {

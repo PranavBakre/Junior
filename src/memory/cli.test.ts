@@ -8,6 +8,10 @@ import { HashingEmbeddingProvider } from "./embedding/hashing.ts";
 import { ProfileStore } from "./profiles/store.ts";
 import type { ConsolidationInvoke, ConsolidationOutput } from "./consolidation/types.ts";
 
+// Never load real model weights in CLI tests: add-lesson/add-fact mirror a
+// claim using the default embedder, so force the hashing provider here.
+process.env.MEMORY_EMBED_PROVIDER = "hashing";
+
 describe("memory CLI", () => {
   it("recalls memories from the configured db", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
@@ -107,6 +111,42 @@ describe("memory CLI", () => {
       expect(tagResults.map((r) => r.id)).toContain("lesson-upd");
     } finally {
       store.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("add-lesson mirrors the lesson into the semantic claim store", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    try {
+      const out = await runMemoryCli([
+        "add-lesson", "--db", dbPath, "--json",
+        "--id", "lesson-claimed",
+        "--title", "Always branch from main",
+        "--body", "Feature branches must be created from main, not dev.",
+        "--importance", "0.8",
+        "--tags", "git,workflow",
+      ]);
+      expect(JSON.parse(out).claim).toBe(true);
+
+      // The claim landed in the claim store with an embedding and is FTS-recallable.
+      const store = new SqliteMemoryStore(dbPath);
+      try {
+        const db = (store as unknown as { db: import("bun:sqlite").Database }).db;
+        const row = db
+          .query("SELECT kind, embedding, dim FROM claim WHERE id = 'lesson-claimed'")
+          .get() as { kind: string; embedding: Uint8Array | null; dim: number } | null;
+        expect(row).not.toBeNull();
+        expect(row!.kind).toBe("lesson");
+        expect(row!.dim).toBe(640);
+        expect(row!.embedding).not.toBeNull();
+      } finally {
+        store.close();
+      }
+
+      const recall = await runMemoryCli(["recall-claims", "--db", dbPath, "--fts", "branch from main", "--json"]);
+      expect(JSON.parse(recall).results.map((r: { id: string }) => r.id)).toContain("lesson-claimed");
+    } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
