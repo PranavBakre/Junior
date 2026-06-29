@@ -151,6 +151,26 @@ describe("memory CLI", () => {
     }
   });
 
+  it("recall-claims --query embeds the text in-process and recalls semantically", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    try {
+      await runMemoryCli([
+        "add-lesson", "--db", dbPath, "--json",
+        "--id", "lesson-q",
+        "--title", "Always branch from main",
+        "--body", "Feature branches must be created from main, not dev.",
+      ]);
+      // No --query-vector; --query is embedded by the CLI (hashing provider here).
+      const out = await runMemoryCli([
+        "recall-claims", "--db", dbPath, "--query", "branch from main not dev", "--json",
+      ]);
+      expect(JSON.parse(out).results.map((r: { id: string }) => r.id)).toContain("lesson-q");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("updates a fact confidence", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
     const dbPath = join(tmpDir, "memory.db");

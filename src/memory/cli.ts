@@ -469,8 +469,16 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
 
     if (command === "recall-claims") {
       const vector = floatListOption(options, "query-vector");
+      const queryText = stringOption(options, "query");
+      let queryVector: Float32Array | undefined = vector ? new Float32Array(vector) : undefined;
+      // --query <text> embeds in-process (query mode) so callers (e.g. the
+      // learnings hook dedup) get semantic recall without precomputing a vector.
+      if (!queryVector && queryText) {
+        const embedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
+        [queryVector] = await embedder.embed([queryText], "query");
+      }
       const results = await store.recallClaims({
-        queryVector: vector ? new Float32Array(vector) : undefined,
+        queryVector,
         filters: {
           repo: stringOption(options, "repo"),
           kind: stringOption(options, "kind") as ClaimKind | undefined,
@@ -653,7 +661,7 @@ function usage(): string {
     "  bun run src/memory/cli.ts log-correction --event-id <id> --field <field> --correct <value> [--incorrect <value>] [--by <who>] [--json]",
     "  bun run src/memory/cli.ts propose-rule --id <id> --domain <domain> --rule <text> [--positive-examples a,b] [--negative-examples a,b] [--precision 0-1] [--recall 0-1] [--json]",
     "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--json]",
-    "  bun run src/memory/cli.ts recall-claims [--query-vector 0.1,0.2,...] [--fts <text>] [--repo <name>] [--kind <lesson|fact|situation-claim>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
+    "  bun run src/memory/cli.ts recall-claims [--query <text> | --query-vector 0.1,0.2,...] [--fts <text>] [--repo <name>] [--kind <lesson|fact|situation-claim>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
     "  bun run src/memory/cli.ts rebuild-fts [--json]",
   ].join("\n") + "\n";
 }
