@@ -29,6 +29,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
 | How are spawned child process trees cleaned up on shutdown? | [docs/features/process-tree-cleanup.md](docs/features/process-tree-cleanup.md) |
 | How does the bot Slack MCP server work? | [docs/features/mcp-server.md](docs/features/mcp-server.md) |
+| How does Junior's long-term memory work (claims, episodes, profiles, embeddings, recall, consolidation)? | [docs/features/memory-system-v3.md](docs/features/memory-system-v3.md) |
 | Headless vs tmux driver, why two paths exist, how tmux runs the TUI? | [docs/features/interactive-driver.md](docs/features/interactive-driver.md) |
 | How do persistent agents (lead, reproducer, thinker, …) work? | [docs/features/persistent-agents.md](docs/features/persistent-agents.md) |
 | How are bug-pipeline worktrees laid out? | [docs/features/bug-pipeline-worktrees.md](docs/features/bug-pipeline-worktrees.md) |
@@ -135,6 +136,16 @@ junior/
     agents/
       router.ts           -- load agent definitions, pick agent type
       loader.ts           -- read .md files, parse frontmatter
+    memory/               -- v3 long-term memory (see docs/features/memory-system-v3.md)
+      sqlite.ts           -- SqliteMemoryStore: source records, claims, episodes, decay
+      store.ts            -- MemoryStore interface
+      types.ts            -- claim / episode / decay / source-record types
+      ingestion.ts        -- MemoryIngestor: hot-path appendSourceRecord capture
+      cli.ts              -- consolidate-v3 / recall-claims / add-claim / add-lesson / add-fact
+      migrate-v3.ts       -- one-shot: legacy lesson+fact -> claim, then drop condemned tables
+      embedding/          -- local harrier-270 ONNX provider + hashing stub (factory)
+      profiles/           -- keyed markdown entity profiles (person/repo/situation), ProfileStore
+      consolidation/      -- offline LLM write path: consolidateSession + sweep + claude -p runner
     lifecycle/
       timeout.ts          -- process timeout guard
       health.ts           -- orphan detection
@@ -208,5 +219,5 @@ bin/slack-upload.sh <file-path> [comment]  # Uses SLACK_BOT_TOKEN, SLACK_CHANNEL
 After building or modifying a module:
 
 1. **Create/update code index** — `docs/code_index/<module>.md` with file paths, key functions, data flow.
-2. **Update feature doc if design changed** — `docs/features/main.md` or create a new feature doc for additions.
+2. **Update feature doc if design changed** — update the relevant `docs/features/<name>.md`, or create a new feature doc for additions.
 3. **Update this file if needed** — only if the change adds a new module, changes critical rules, or alters project structure.

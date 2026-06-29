@@ -1,6 +1,6 @@
 # Building Workflow
 
-How to build a feature iteration. Follows conventions from [development-phases.md](../development-phases.md#conventions).
+How to build a feature iteration. Follows conventions from [CLAUDE.md](../../CLAUDE.md#critical-rules).
 
 ## Pre-Check
 
@@ -9,7 +9,7 @@ Before writing any code, verify:
 1. Is there a feature plan in `docs/features/<name>.md`?
 2. Which iteration are we on?
 3. What's the scope for this iteration?
-4. Do the conventions in [development-phases.md](../development-phases.md#conventions) apply?
+4. Do the conventions in [CLAUDE.md](../../CLAUDE.md#critical-rules) apply?
 
 If the answer to #1-3 is unclear — go back to [ideation](ideation.md).
 
@@ -32,7 +32,7 @@ Get confirmation before proceeding.
 
 ### 2. Follow Conventions
 
-New code follows the patterns established across 7+ domains. See [development-phases.md](../development-phases.md#conventions) for the full list.
+New code follows the patterns established across 7+ domains. See [CLAUDE.md](../../CLAUDE.md#critical-rules) for the full list.
 
 **Backend checklist:**
 - [ ] Fastify plugin in `domains/<name>/plugin.ts`
@@ -91,7 +91,7 @@ After completing an iteration:
 - [ ] Feature works end-to-end (manual test)
 - [ ] Feature doc updated with actual state
 - [ ] Commit with descriptive message
-- [ ] Any discoveries recorded in [learnings.md](../../learnings.md)
+- [ ] Any discoveries recorded in `learnings.md`
 
 ## Forbidden
 

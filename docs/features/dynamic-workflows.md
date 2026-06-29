@@ -124,9 +124,9 @@ Permission tools:
 - `gh` — read GitHub PR metadata with the GitHub CLI
 - `docs.write` — write run artifacts under `data/workflow-runs/`
 - `slack.post` — post Slack summaries
-- `memory.read` — read associative memory through the memory CLI/tool surface
-- `memory.write` — run approved memory writes/consolidation through memory code
-- `memory.evaluate` — inspect consolidation results and rule proposals
+- `memory.read` — recall v3 memory (claims/profiles) through the memory CLI/tool surface
+- `memory.write` — add claims / run the v3 consolidation sweep through memory code
+- `memory.evaluate` — inspect consolidation sweep reports (episodes/profiles/claims)
 
 `permissions.tools` is not a general runner sandbox. It is validated and injected into the runner prompt as the declared capability contract. Workflow definition files are trusted operational config; private overlays should be reviewed like code.
 
@@ -211,16 +211,16 @@ posts it to configured Slack outputs.
 
 ## Memory Consolidation Workflow
 
-The V2 associative-memory consolidation/"dreaming" engine should use this workflow system rather than a bespoke scheduler. A memory workflow can run on a cron schedule and by owner/admin command, skip overlapping runs with `concurrency: skip`, write artifacts under `data/workflow-runs/memory-consolidation`, and optionally post a compact Slack summary.
+The v3 memory consolidation ("dreaming") engine uses this workflow system rather than a bespoke scheduler. The `memory-consolidation` workflow runs the shared `runConsolidationSweep` helper (the same path the `consolidate-v3` CLI and the `memory_consolidate` MCP tool use); it can run on a cron schedule and by owner/admin command, skip overlapping runs with `concurrency: skip`, write artifacts under `data/workflow-runs/memory-consolidation`, and optionally post a compact Slack summary. See [memory-system-v3.md](memory-system-v3.md) §7.
 
-The workflow definition orchestrates memory-specific code/tools; it does not place all classification, promotion, archive, and stale-fact logic in prompt prose. Workflow utility runs skip Junior's project MCP wiring because they run from `/tmp/junior-utility`, so memory workflows access the store through the CLI surface:
+The sweep itself is the LLM pass — it spawns the runner (`claude -p`) per session to derive episodes/profiles/claims; the workflow definition does not place that logic in prompt prose. Workflow utility runs skip Junior's project MCP wiring because they run from `/tmp/junior-utility`, so a manual sweep can also go through the CLI surface:
 
 ```bash
-bun run <runtime context junior.memoryCli> recall --query "dashboard routing" --json
-bun run <runtime context junior.memoryCli> consolidate --json
+bun run <runtime context junior.memoryCli> consolidate-v3 --json
+bun run <runtime context junior.memoryCli> recall-claims --query "dashboard routing" --json
 ```
 
-The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Because workflow runners execute from `/tmp/junior-utility`, the runtime context includes `junior.projectRoot` and `junior.memoryCli` absolute paths. Normal Junior runner sessions with MCP wiring can use `memory_recall` and `memory_consolidate` instead.
+The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Because workflow runners execute from `/tmp/junior-utility`, the runtime context includes `junior.projectRoot` and `junior.memoryCli` absolute paths. Normal Junior runner sessions with MCP wiring can use `memory_recall`, `memory_add`, and `memory_consolidate` instead.
 
 ### Runner idle interrupt fallback
 

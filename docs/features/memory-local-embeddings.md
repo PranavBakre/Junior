@@ -1,5 +1,7 @@
 # Memory Local Embeddings
 
+> **Status: SHIPPED — and promoted to first-rung.** This doc framed local embeddings as a later, optional rung behind an OpenAI-API start. v3 reversed that: affective memory must not leave for a remote API, so the local provider is the **only** embedder. Shipped as `LocalEmbeddingProvider` (`src/memory/embedding/local.ts`) using `onnx-community/harrier-oss-v1-270m-ONNX` (640-dim, last-token pooling, q8), in-process via `@huggingface/transformers`. A `hashing` stub provider exists for tests. See [memory-system-v3.md](memory-system-v3.md) §10 for the current design.
+
 ## Problem
 
 The memory overhaul starts with OpenAI API embeddings because that is the fastest path to a working semantic recall channel. Long term, Junior may still need local embeddings for privacy, offline operation, cost control, or independence from API availability.

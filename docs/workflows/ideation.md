@@ -41,7 +41,7 @@ DEPENDENCIES:
 
 ## Step 3: Check Existing Patterns
 
-Before designing the implementation, check what's already built. Most new features should follow established conventions (see [development-phases.md](../development-phases.md#conventions)).
+Before designing the implementation, check what's already built. Most new features should follow established conventions (see [CLAUDE.md](../../CLAUDE.md#critical-rules)).
 
 | Question | Where to look |
 |---|---|

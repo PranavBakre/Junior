@@ -1,6 +1,8 @@
 # Junior Memory System — Lesson Store (v2)
 
-> **Status:** Canonical design. Supersedes [memory-system-overhaul.md](memory-system-overhaul.md) (kept as the investigation/evidence record) and retires the "mine Engram for retrieval mechanics" frame. Every decision here traces to a measurement from the recall-eval harness (`src/memory/eval/`), the real codex-log replay, and the [Engram audit](../audits/2026-06-03-engram-memory-review.md).
+> **Status: SUPERSEDED by [memory-system-v3.md](memory-system-v3.md) (shipped).** v3 keeps this doc's curated/embedded core but generalizes it (episodes, keyed profiles, atomic claims) and, critically, **dropped the parallel FTS+vector recall** described here — production recall is now cosine-only. The `src/memory/eval/` harness referenced below has also been removed (it gated the v3 migration, then was retired). Read this for the v2 lineage and the measurement that justified an embedded store; read v3 for current behavior.
+>
+> *(Original v2 status:)* Canonical design. Supersedes [memory-system-overhaul.md](memory-system-overhaul.md) (kept as the investigation/evidence record) and retires the "mine Engram for retrieval mechanics" frame. Every decision here traces to a measurement from the recall-eval harness (`src/memory/eval/`), the real codex-log replay, and the [Engram audit](../audits/2026-06-03-engram-memory-review.md).
 
 ## TL;DR
 
