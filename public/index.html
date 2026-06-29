@@ -161,6 +161,60 @@
       .truncate { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .run-list { margin-top: 6px; }
       .run-row { display: block; padding: 2px 0; color: var(--fg-dim); }
+
+      /* Memory cloud (2D projection of the claim embedding space) */
+      .cloud-head {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      .cloud-head .caveat {
+        color: var(--fg-faint);
+        font-size: 11px;
+        font-style: italic;
+        flex: 1;
+      }
+      .cloud-legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0 0; }
+      .cloud-legend .lg { display: inline-flex; align-items: center; gap: 5px; color: var(--fg-dim); font-size: 11px; }
+      .cloud-legend .sw { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+      .cloud-wrap { position: relative; }
+      #memory-canvas {
+        display: block;
+        width: 100%;
+        height: 460px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: crosshair;
+      }
+      .cloud-tip {
+        position: absolute;
+        pointer-events: none;
+        max-width: 320px;
+        padding: 7px 9px;
+        background: var(--bg-elev-2);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        font-size: 12px;
+        color: var(--fg);
+        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        z-index: 20;
+        display: none;
+      }
+      .cloud-tip .tip-kind { color: var(--fg-faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+      .cloud-tip .tip-tags { color: var(--fg-dim); margin-top: 3px; }
+      .cloud-btn {
+        background: var(--bg-elev-2);
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 3px 9px;
+        font-family: inherit;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .cloud-btn:hover { color: var(--fg); border-color: var(--accent); }
     </style>
   </head>
   <body>
@@ -185,6 +239,19 @@
       <section>
         <h2>Threads</h2>
         <div class="panel" id="threads"><div class="empty">loading…</div></div>
+      </section>
+      <section>
+        <div class="cloud-head">
+          <h2 style="margin:0">Memory Cloud</h2>
+          <span class="caveat">PCA projection of claim embeddings — distorts. Local neighbourhoods (and the KNN lines) are meaningful; global distances are not. Exploration, not a map.</span>
+          <button class="cloud-btn" id="cloud-refresh" type="button">refresh</button>
+        </div>
+        <div class="cloud-legend" id="cloud-legend"></div>
+        <div class="cloud-wrap">
+          <canvas id="memory-canvas"></canvas>
+          <div class="cloud-tip" id="cloud-tip"></div>
+          <div class="empty" id="cloud-status" style="position:absolute;top:0;left:0;right:0;text-align:center;padding-top:200px;pointer-events:none">loading…</div>
+        </div>
       </section>
     </main>
 
@@ -491,6 +558,157 @@
 
       refresh();
       setInterval(refresh, POLL_MS);
+
+      // --- Memory cloud: 2D projection of the claim embedding space ----------
+      // Fetched on demand (not on the 2s poll) — PCA + KNN is render-time work.
+      const KIND_COLORS = {
+        lesson: "#9ece6a",
+        fact: "#7aa2f7",
+        "situation-claim": "#bb9af7",
+      };
+      const KIND_FALLBACK = "#9aa0aa";
+      const cloud = {
+        canvas: document.getElementById("memory-canvas"),
+        tip: document.getElementById("cloud-tip"),
+        status: document.getElementById("cloud-status"),
+        screen: [], // {sx, sy, point} in CSS pixels for hover hit-testing
+      };
+
+      function kindColor(kind) {
+        return KIND_COLORS[kind] || KIND_FALLBACK;
+      }
+
+      function renderCloudLegend() {
+        const el = document.getElementById("cloud-legend");
+        const kinds = [["lesson", "lesson"], ["fact", "fact"], ["situation-claim", "situation-claim"]];
+        el.innerHTML = kinds
+          .map(
+            ([k, label]) =>
+              '<span class="lg"><span class="sw" style="background:' +
+              kindColor(k) + '"></span>' + escapeHtml(label) + "</span>",
+          )
+          .join("");
+      }
+
+      function setCloudStatus(text) {
+        if (text) {
+          cloud.status.textContent = text;
+          cloud.status.style.display = "";
+        } else {
+          cloud.status.style.display = "none";
+        }
+      }
+
+      function drawCloud(data) {
+        const points = data.points || [];
+        const edges = data.edges || [];
+        const canvas = cloud.canvas;
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = canvas.clientWidth || 800;
+        const cssH = canvas.clientHeight || 460;
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssW, cssH);
+        cloud.screen = [];
+
+        if (points.length === 0) {
+          setCloudStatus("No claims with embeddings yet.");
+          return;
+        }
+        setCloudStatus(null);
+
+        // Map projected coords → canvas with padding. A single point (or all-zero
+        // coords from the guard) centres instead of dividing by a zero range.
+        const pad = 28;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const p of points) {
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+        }
+        const spanX = maxX - minX || 1;
+        const spanY = maxY - minY || 1;
+        const toScreen = (p) => ({
+          sx: points.length === 1 ? cssW / 2 : pad + ((p.x - minX) / spanX) * (cssW - 2 * pad),
+          sy: points.length === 1 ? cssH / 2 : pad + ((p.y - minY) / spanY) * (cssH - 2 * pad),
+        });
+
+        const pos = new Map();
+        for (const p of points) pos.set(p.id, toScreen(p));
+
+        // Faint KNN edges first, under the points. Stronger cosine = more opaque.
+        ctx.lineWidth = 1;
+        for (const e of edges) {
+          const a = pos.get(e.a);
+          const b = pos.get(e.b);
+          if (!a || !b) continue;
+          const alpha = Math.max(0.04, Math.min(0.28, (e.sim || 0) * 0.3));
+          ctx.strokeStyle = "rgba(122,162,247," + alpha.toFixed(3) + ")";
+          ctx.beginPath();
+          ctx.moveTo(a.sx, a.sy);
+          ctx.lineTo(b.sx, b.sy);
+          ctx.stroke();
+        }
+
+        // Points on top.
+        for (const p of points) {
+          const s = pos.get(p.id);
+          ctx.fillStyle = kindColor(p.kind);
+          ctx.beginPath();
+          ctx.arc(s.sx, s.sy, 3.5, 0, Math.PI * 2);
+          ctx.fill();
+          cloud.screen.push({ sx: s.sx, sy: s.sy, point: p });
+        }
+      }
+
+      function cloudHover(evt) {
+        const rect = cloud.canvas.getBoundingClientRect();
+        const mx = evt.clientX - rect.left;
+        const my = evt.clientY - rect.top;
+        let best = null;
+        let bestD = 100; // px² threshold (10px radius)
+        for (const item of cloud.screen) {
+          const dx = item.sx - mx;
+          const dy = item.sy - my;
+          const d = dx * dx + dy * dy;
+          if (d < bestD) { bestD = d; best = item; }
+        }
+        if (!best) { cloud.tip.style.display = "none"; return; }
+        const p = best.point;
+        const tags = (p.tags || []).length
+          ? '<div class="tip-tags">' + p.tags.map(escapeHtml).join(", ") + "</div>"
+          : "";
+        cloud.tip.innerHTML =
+          '<div class="tip-kind">' + escapeHtml(p.kind) + "</div>" +
+          "<div>" + escapeHtml(p.text) + "</div>" + tags;
+        cloud.tip.style.display = "block";
+        const wrap = cloud.canvas.parentElement.getBoundingClientRect();
+        let tx = best.sx + 12;
+        let ty = best.sy + 12;
+        if (tx + 330 > wrap.width) tx = best.sx - cloud.tip.offsetWidth - 12;
+        cloud.tip.style.left = Math.max(0, tx) + "px";
+        cloud.tip.style.top = Math.max(0, ty) + "px";
+      }
+
+      async function loadCloud() {
+        setCloudStatus("loading…");
+        try {
+          const data = await fetchJson("/api/memory/projection");
+          drawCloud(data);
+        } catch (err) {
+          console.error("memory cloud failed", err);
+          setCloudStatus("Failed to load projection.");
+        }
+      }
+
+      renderCloudLegend();
+      cloud.canvas.addEventListener("mousemove", cloudHover);
+      cloud.canvas.addEventListener("mouseleave", () => { cloud.tip.style.display = "none"; });
+      document.getElementById("cloud-refresh").addEventListener("click", loadCloud);
+      loadCloud();
     </script>
   </body>
 </html>
