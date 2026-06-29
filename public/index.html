@@ -6,75 +6,99 @@
     <title>Junior — Dashboard</title>
     <style>
       :root {
-        --bg: #0e0f12;
-        --bg-elev: #16181d;
-        --bg-elev-2: #1c1f26;
-        --border: #262a32;
-        --fg: #e6e8ec;
-        --fg-dim: #9aa0aa;
-        --fg-faint: #6b7180;
-        --accent: #7aa2f7;
-        --green: #9ece6a;
-        --yellow: #e0af68;
-        --red: #f7768e;
-        --purple: #bb9af7;
+        /* GrowthX dark-first palette */
+        --bg: #060606;
+        --bg-paper: #181818;
+        --bg-secondary: #292929;
+        --bg-hover: #1f1f1f;
+        --surface: rgba(255, 255, 255, 0.05);
+        --surface-strong: rgba(255, 255, 255, 0.08);
+        --border: rgba(113, 116, 121, 0.25);
+        --border-subtle: rgba(255, 255, 255, 0.08);
+        --fg: #ffffff;
+        --fg-dim: #999999;
+        --fg-faint: #666666;
+        --fg-muted: rgba(255, 255, 255, 0.45);
+        --accent: #0064ff;
+        --green: #22c55e;
+        --amber: #f59e0b;
+        --red: #ff3b3b;
+        --purple: #9747ff;
+
+        --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
+          Roboto, Helvetica, Arial, sans-serif;
+        --font-mono: ui-monospace, "DM Mono", SFMono-Regular, "SF Mono", Menlo,
+          Consolas, monospace;
       }
       * { box-sizing: border-box; }
       html, body {
         margin: 0;
         background: var(--bg);
         color: var(--fg);
-        font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-        font-size: 13px;
-        line-height: 1.45;
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
       }
       header {
-        padding: 14px 20px;
-        border-bottom: 1px solid var(--border);
+        padding: 16px 28px;
+        border-bottom: 1px solid var(--border-subtle);
         display: flex;
-        gap: 16px;
+        gap: 18px;
         align-items: baseline;
         position: sticky;
         top: 0;
-        background: var(--bg);
+        background: rgba(6, 6, 6, 0.7);
+        backdrop-filter: blur(20px) saturate(1.4);
+        -webkit-backdrop-filter: blur(20px) saturate(1.4);
         z-index: 10;
       }
       header h1 {
         margin: 0;
-        font-size: 14px;
-        font-weight: 600;
-        letter-spacing: 0.04em;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        color: var(--fg);
       }
-      header .meta { color: var(--fg-dim); font-size: 12px; }
+      header .meta {
+        color: var(--fg-dim);
+        font-size: 12px;
+        font-family: var(--font-mono);
+      }
       header .meta b { color: var(--fg); font-weight: 500; }
       header .pulse {
         margin-left: auto;
-        color: var(--fg-faint);
-        font-size: 11px;
+        color: var(--accent);
+        font-size: 14px;
+        font-family: var(--font-mono);
+        opacity: 0.8;
       }
-      main { padding: 20px; max-width: 1280px; margin: 0 auto; }
-      section { margin-bottom: 32px; }
+      main { padding: 28px; max-width: 1280px; margin: 0 auto; }
+      section { margin-bottom: 36px; }
       h2 {
-        margin: 0 0 10px;
-        font-size: 12px;
+        margin: 0 0 14px;
+        font-size: 11px;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.12em;
         color: var(--fg-dim);
       }
       .panel {
-        background: var(--bg-elev);
+        background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 6px;
+        border-radius: 12px;
         overflow: hidden;
       }
       .row {
         display: grid;
-        gap: 12px;
-        padding: 12px 14px;
-        border-bottom: 1px solid var(--border);
+        gap: 14px;
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--border-subtle);
+        transition: background 0.2s ease;
       }
       .row:last-child { border-bottom: none; }
+      .row:hover { background: rgba(255, 255, 255, 0.02); }
       .row.session {
         grid-template-columns: minmax(200px, 1.2fr) 1fr 1fr;
         align-items: start;
@@ -87,87 +111,109 @@
         align-items: start;
       }
       .row .col-label {
-        font-size: 11px;
+        font-size: 10px;
         color: var(--fg-faint);
         text-transform: uppercase;
-        letter-spacing: 0.06em;
-        margin-bottom: 2px;
+        letter-spacing: 0.1em;
+        margin-bottom: 4px;
+        font-family: var(--font-mono);
       }
       .agent-list {
-        margin-top: 8px;
-        border-left: 2px solid var(--border);
-        padding-left: 10px;
+        margin-top: 10px;
+        border-left: 2px solid var(--border-subtle);
+        padding-left: 12px;
       }
       .agent-row {
         display: grid;
         grid-template-columns: 90px 90px 1fr 1fr;
         gap: 10px;
-        padding: 4px 0;
+        padding: 5px 0;
         font-size: 12px;
         color: var(--fg-dim);
       }
-      .agent-row b { color: var(--fg); font-weight: 500; }
+      .agent-row b { color: var(--fg); font-weight: 600; }
       .pill {
-        display: inline-block;
-        padding: 1px 7px;
-        border-radius: 10px;
-        font-size: 11px;
-        background: var(--bg-elev-2);
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 10px;
+        border-radius: 100px;
+        font-size: 10px;
+        font-family: var(--font-mono);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        background: var(--surface);
         color: var(--fg-dim);
-        border: 1px solid var(--border);
+        border: 1px solid var(--border-subtle);
+        white-space: nowrap;
       }
-      .pill.busy { color: var(--yellow); border-color: rgba(224,175,104,0.3); }
+      .pill.busy { color: var(--amber); border-color: rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.08); }
       .pill.idle { color: var(--fg-dim); }
-      .pill.draining { color: var(--purple); border-color: rgba(187,154,247,0.3); }
-      .pill.done { color: var(--green); border-color: rgba(158,206,106,0.3); }
-      .pill.failed, .pill.error { color: var(--red); border-color: rgba(247,118,142,0.3); }
-      .pill.running { color: var(--green); border-color: rgba(158,206,106,0.3); }
+      .pill.draining { color: var(--purple); border-color: rgba(151, 71, 255, 0.35); background: rgba(151, 71, 255, 0.08); }
+      .pill.done, .pill.active { color: var(--green); border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.08); }
+      .pill.failed, .pill.error { color: var(--red); border-color: rgba(255, 59, 59, 0.35); background: rgba(255, 59, 59, 0.08); }
+      .pill.running { color: var(--green); border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.08); }
       .pill.stopped { color: var(--fg-faint); }
-      .mono { font-family: inherit; }
+      .mono { font-family: var(--font-mono); }
       .dim { color: var(--fg-dim); }
       .faint { color: var(--fg-faint); }
-      .empty { padding: 20px 14px; color: var(--fg-faint); font-style: italic; }
+      .empty { padding: 24px 18px; color: var(--fg-faint); font-style: italic; }
       .stat-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-        gap: 10px;
+        gap: 12px;
       }
       .stat {
-        background: var(--bg-elev);
+        background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 10px 12px;
+        border-radius: 10px;
+        padding: 14px 16px;
+        transition: border-color 0.2s ease, background 0.2s ease;
       }
-      .stat .num { font-size: 20px; font-weight: 600; }
-      .stat .lbl { color: var(--fg-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+      .stat:hover { border-color: rgba(255, 255, 255, 0.18); }
+      .stat .num { font-size: 24px; font-weight: 700; color: var(--fg); line-height: 1.2; }
+      .stat .num.busy { color: var(--amber); }
+      .stat .num.draining { color: var(--purple); }
+      .stat .num.failed { color: var(--red); }
+      .stat .lbl {
+        color: var(--fg-dim);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-top: 4px;
+        font-family: var(--font-mono);
+      }
       .waiters {
-        margin-top: 6px;
-        padding: 6px 8px;
-        background: var(--bg-elev-2);
-        border-radius: 4px;
+        margin-top: 8px;
+        padding: 8px 10px;
+        background: var(--bg-paper);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
         font-size: 12px;
         color: var(--fg-dim);
       }
       .waiters .wt { display: block; padding: 2px 0; }
-      a { color: var(--accent); text-decoration: none; }
+      a { color: var(--accent); text-decoration: none; transition: color 0.2s ease; }
       a:hover { text-decoration: underline; }
       code {
-        background: var(--bg-elev-2);
-        padding: 1px 5px;
-        border-radius: 3px;
+        background: var(--bg-secondary);
+        padding: 1px 6px;
+        border-radius: 6px;
         font-size: 12px;
+        font-family: var(--font-mono);
+        color: var(--fg);
       }
       .threadId, .sessionId { color: var(--accent); word-break: break-all; }
+      .threadId code, .sessionId, code.sessionId { color: var(--accent); background: rgba(0, 100, 255, 0.1); }
       .truncate { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .run-list { margin-top: 6px; }
-      .run-row { display: block; padding: 2px 0; color: var(--fg-dim); }
+      .run-list { margin-top: 8px; }
+      .run-row { display: block; padding: 3px 0; color: var(--fg-dim); font-size: 12px; }
 
       /* Memory cloud (2D projection of the claim embedding space) */
       .cloud-head {
         display: flex;
         align-items: baseline;
-        gap: 12px;
-        margin-bottom: 8px;
+        gap: 14px;
+        margin-bottom: 10px;
       }
       .cloud-head .caveat {
         color: var(--fg-faint);
@@ -175,46 +221,64 @@
         font-style: italic;
         flex: 1;
       }
-      .cloud-legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0 0; }
-      .cloud-legend .lg { display: inline-flex; align-items: center; gap: 5px; color: var(--fg-dim); font-size: 11px; }
+      .cloud-legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0 0; }
+      .cloud-legend .lg {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--fg-dim);
+        font-size: 11px;
+        font-family: var(--font-mono);
+      }
       .cloud-legend .sw { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-      .cloud-wrap { position: relative; }
+      .cloud-wrap { position: relative; margin-top: 12px; }
       #memory-canvas {
         display: block;
         width: 100%;
         height: 460px;
-        background: var(--bg-elev);
+        background: #0a0a0a;
         border: 1px solid var(--border);
-        border-radius: 6px;
+        border-radius: 12px;
         cursor: crosshair;
       }
       .cloud-tip {
         position: absolute;
         pointer-events: none;
         max-width: 320px;
-        padding: 7px 9px;
-        background: var(--bg-elev-2);
+        padding: 10px 12px;
+        background: rgba(15, 15, 15, 0.85);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
         border: 1px solid var(--border);
-        border-radius: 5px;
+        border-radius: 10px;
         font-size: 12px;
         color: var(--fg);
-        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
         z-index: 20;
         display: none;
       }
-      .cloud-tip .tip-kind { color: var(--fg-faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-      .cloud-tip .tip-tags { color: var(--fg-dim); margin-top: 3px; }
-      .cloud-btn {
-        background: var(--bg-elev-2);
-        color: var(--fg-dim);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        padding: 3px 9px;
-        font-family: inherit;
-        font-size: 11px;
-        cursor: pointer;
+      .cloud-tip .tip-kind {
+        color: var(--fg-faint);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        font-family: var(--font-mono);
+        margin-bottom: 4px;
       }
-      .cloud-btn:hover { color: var(--fg); border-color: var(--accent); }
+      .cloud-tip .tip-tags { color: var(--fg-dim); margin-top: 4px; }
+      .cloud-btn {
+        background: var(--surface);
+        color: var(--fg-dim);
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        padding: 5px 12px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .cloud-btn:hover { color: var(--fg); border-color: var(--accent); background: rgba(0, 100, 255, 0.08); }
     </style>
   </head>
   <body>
@@ -561,17 +625,21 @@
 
       // --- Memory cloud: 2D projection of the claim embedding space ----------
       // Fetched on demand (not on the 2s poll) — PCA + KNN is render-time work.
+      // Palette follows the GrowthX language: blue accent, white, restrained
+      // purple/green, subtle blue edges on a near-black canvas.
       const KIND_COLORS = {
-        lesson: "#9ece6a",
-        fact: "#7aa2f7",
-        "situation-claim": "#bb9af7",
+        lesson: "#22c55e",
+        fact: "#0064ff",
+        "situation-claim": "#9747ff",
       };
-      const KIND_FALLBACK = "#9aa0aa";
+      const KIND_FALLBACK = "#999999";
       const cloud = {
         canvas: document.getElementById("memory-canvas"),
         tip: document.getElementById("cloud-tip"),
         status: document.getElementById("cloud-status"),
         screen: [], // {sx, sy, point} in CSS pixels for hover hit-testing
+        data: null, // last drawn projection, for hover redraws
+        hoverId: null, // id of currently highlighted node
       };
 
       function kindColor(kind) {
@@ -600,6 +668,13 @@
       }
 
       function drawCloud(data) {
+        cloud.data = data;
+        cloud.hoverId = null;
+        paintCloud();
+      }
+
+      function paintCloud() {
+        const data = cloud.data || {};
         const points = data.points || [];
         const edges = data.edges || [];
         const canvas = cloud.canvas;
@@ -645,8 +720,10 @@
           const a = pos.get(e.a);
           const b = pos.get(e.b);
           if (!a || !b) continue;
-          const alpha = Math.max(0.04, Math.min(0.28, (e.sim || 0) * 0.3));
-          ctx.strokeStyle = "rgba(122,162,247," + alpha.toFixed(3) + ")";
+          const touchesHover = cloud.hoverId != null && (e.a === cloud.hoverId || e.b === cloud.hoverId);
+          const baseAlpha = Math.max(0.05, Math.min(0.3, (e.sim || 0) * 0.32));
+          const alpha = touchesHover ? Math.min(0.7, baseAlpha + 0.4) : baseAlpha;
+          ctx.strokeStyle = "rgba(0,100,255," + alpha.toFixed(3) + ")";
           ctx.beginPath();
           ctx.moveTo(a.sx, a.sy);
           ctx.lineTo(b.sx, b.sy);
@@ -656,9 +733,18 @@
         // Points on top.
         for (const p of points) {
           const s = pos.get(p.id);
+          const isHover = p.id === cloud.hoverId;
+          if (isHover) {
+            // Tasteful hover ring + slightly larger, brighter node.
+            ctx.strokeStyle = "rgba(255,255,255,0.85)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(s.sx, s.sy, 7, 0, Math.PI * 2);
+            ctx.stroke();
+          }
           ctx.fillStyle = kindColor(p.kind);
           ctx.beginPath();
-          ctx.arc(s.sx, s.sy, 3.5, 0, Math.PI * 2);
+          ctx.arc(s.sx, s.sy, isHover ? 4.5 : 3.5, 0, Math.PI * 2);
           ctx.fill();
           cloud.screen.push({ sx: s.sx, sy: s.sy, point: p });
         }
@@ -675,6 +761,11 @@
           const dy = item.sy - my;
           const d = dx * dx + dy * dy;
           if (d < bestD) { bestD = d; best = item; }
+        }
+        const nextHover = best ? best.point.id : null;
+        if (nextHover !== cloud.hoverId) {
+          cloud.hoverId = nextHover;
+          paintCloud();
         }
         if (!best) { cloud.tip.style.display = "none"; return; }
         const p = best.point;
@@ -693,6 +784,14 @@
         cloud.tip.style.top = Math.max(0, ty) + "px";
       }
 
+      function cloudLeave() {
+        cloud.tip.style.display = "none";
+        if (cloud.hoverId != null) {
+          cloud.hoverId = null;
+          paintCloud();
+        }
+      }
+
       async function loadCloud() {
         setCloudStatus("loading…");
         try {
@@ -706,7 +805,7 @@
 
       renderCloudLegend();
       cloud.canvas.addEventListener("mousemove", cloudHover);
-      cloud.canvas.addEventListener("mouseleave", () => { cloud.tip.style.display = "none"; });
+      cloud.canvas.addEventListener("mouseleave", cloudLeave);
       document.getElementById("cloud-refresh").addEventListener("click", loadCloud);
       loadCloud();
     </script>
