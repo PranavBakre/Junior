@@ -38,6 +38,12 @@ Return strictly JSON matching the schema: { "episodes": [...], "profiles": [...]
 export function buildConsolidationPrompt(
   records: MemorySourceRecord[],
   context: ConsolidationContext,
+  /**
+   * Per-record body cap (chars). When set, each record body is truncated to this
+   * many chars in the prompt with a `…[truncated]` marker — runner_output records
+   * are long and rarely need full text for memory derivation. Unset → no cap.
+   */
+  bodyCap?: number,
 ): string {
   const recordLines = records
     .map((r) => {
@@ -45,7 +51,10 @@ export function buildConsolidationPrompt(
       const where = [r.threadId ? `thread=${r.threadId}` : null, r.repoName ? `repo=${r.repoName}` : null]
         .filter(Boolean)
         .join(" ");
-      const body = r.body.replace(/\s+/g, " ").trim();
+      let body = r.body.replace(/\s+/g, " ").trim();
+      if (bodyCap != null && body.length > bodyCap) {
+        body = `${body.slice(0, bodyCap)}…[truncated]`;
+      }
       return `- id=${r.id} from=${who} kind=${r.kind}${where ? ` ${where}` : ""}\n    ${body}`;
     })
     .join("\n");
@@ -68,7 +77,11 @@ export function buildConsolidationPrompt(
   return [
     HIGH_BAR,
     "",
-    "## Source records (this session's evidence)",
+    "## Source records (evidence)",
+    "These records may span MULTIPLE independent sessions/threads (grouped by the",
+    "`thread=` tag). Judge each thread's evidence on its own — do NOT conflate",
+    "facts, affect, or people across threads just because they share this prompt.",
+    "",
     recordLines || "(none)",
     "",
     "## Existing profiles (UPDATE these, do not restate)",

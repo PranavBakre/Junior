@@ -31,6 +31,16 @@ export interface ConsolidateSessionArgs {
   threadId?: string;
   /** Cap the records pulled in one pass. */
   limit?: number;
+  /**
+   * Pre-fetched evidence to consolidate. When provided, the engine uses this set
+   * verbatim and SKIPS the internal `listUnconsolidatedSourceRecords` call (so the
+   * sweep can hand it a bin-packed, multi-thread batch). When absent, the engine
+   * fetches by `threadId`/`limit` as before. Provenance is keyed on source-record
+   * ids, so an arbitrary multi-thread set still persists/stamps correctly.
+   */
+  records?: MemorySourceRecord[];
+  /** Per-record body cap (chars) forwarded to the prompt builder. Default: no cap. */
+  bodyCap?: number;
   /** Clock (epoch ms). Defaults to Date.now(). */
   now?: number;
   /** Cosine dedup threshold. Defaults to DEFAULT_DEDUP_THRESHOLD (0.92). */
@@ -42,11 +52,14 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
   const now = args.now ?? Date.now();
   const threshold = args.dedupThreshold ?? DEFAULT_DEDUP_THRESHOLD;
 
-  // a. Gather unconsolidated evidence.
-  const records = await store.listUnconsolidatedSourceRecords({
-    threadId: args.threadId,
-    limit: args.limit,
-  });
+  // a. Gather unconsolidated evidence — use the pre-fetched set when the caller
+  //    (the bin-packing sweep) supplies one, else fetch by threadId/limit.
+  const records =
+    args.records ??
+    (await store.listUnconsolidatedSourceRecords({
+      threadId: args.threadId,
+      limit: args.limit,
+    }));
 
   // b. Nothing to do.
   if (records.length === 0) return { skipped: true };
@@ -55,7 +68,7 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
   const context = await buildContext(store, profileStore, records);
 
   // d. Ask the LLM for derivations.
-  const output = await invoke(buildConsolidationPrompt(records, context));
+  const output = await invoke(buildConsolidationPrompt(records, context, args.bodyCap));
 
   const recordById = new Map(records.map((r) => [r.id, r]));
 
