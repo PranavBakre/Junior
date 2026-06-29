@@ -1,6 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { AgentIdentity } from "../session/types.ts";
-import { splitResponse } from "./formatting.ts";
+import { prepareSlackResponse, splitResponse } from "./formatting.ts";
 import { log } from "../logger.ts";
 import { ACTION_BUTTON_ID } from "./action-buttons.ts";
 
@@ -85,6 +85,20 @@ export class SlackResponder {
     identity?: AgentIdentity,
     buttons: SlackMessageButton[] = [],
   ): Promise<PostedSlackMessage[]> {
+    // Choke-point guard: every Slack reply funnels through here, so suppress the
+    // NO_SLACK_MESSAGE sentinel (and empty text) here rather than relying on
+    // each caller to pre-clean. Callers that build action buttons already run
+    // prepareSlackResponse; this is the backstop for the ones that don't
+    // (e.g. command/error responses) so the sentinel can never reach a channel.
+    const cleaned = prepareSlackResponse(text);
+    if (cleaned === null) {
+      log.info(
+        "responder",
+        `post.suppressed thread=${threadTs} reason=${text.trim() ? "sentinel" : "empty"}`,
+      );
+      return [];
+    }
+    text = cleaned;
     const chunks = buttons.length > 0
       ? splitActionMessageText(text)
       : splitResponse(text);
