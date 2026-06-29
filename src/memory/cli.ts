@@ -88,6 +88,8 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         invoke,
         threadId: stringOption(options, "thread"),
         limit: numberOption(options, "limit"),
+        maxBatchChars: numberOption(options, "max-batch-chars"),
+        bodyCap: numberOption(options, "body-cap"),
       });
 
       return json
@@ -316,8 +318,8 @@ function formatClaimRecall(results: ClaimRecallResult[]): string {
 function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
   if (reports.length === 0) return "No unconsolidated source records.\n";
   return reports
-    .map(({ threadId, report, error }) => {
-      const scope = threadId ?? "(all unthreaded)";
+    .map(({ threadIds, report, error }) => {
+      const scope = threadIds.length ? threadIds.join(", ") : "(all unthreaded)";
       if (error) return `${scope}: FAILED — ${error}`;
       if (!report || report.skipped) return `${scope}: skipped (nothing to consolidate)`;
       return [
@@ -334,7 +336,7 @@ function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
 function usage(): string {
   return [
     "Usage:",
-    "  bun run src/memory/cli.ts consolidate-v3 [--thread <id>] [--limit n] [--timeout-ms n] [--json]",
+    "  bun run src/memory/cli.ts consolidate-v3 [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--timeout-ms n] [--json]",
     "  bun run src/memory/cli.ts add-lesson --id <id> --title <title> --body <body> [--applies-when <text>] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--json]",
