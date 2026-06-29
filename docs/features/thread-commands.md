@@ -117,7 +117,7 @@ The two most critical control commands.
 
 The problem this solves: a thread that started with Junior often turns into a human-to-human conversation that Junior keeps replying to because the routing is still active. `!mute` exists but is admin-only and overkill — it silences the bot everywhere. We need a thread-local, anyone-can-use control surface for attention.
 
-**The signal that matters is "addressed to me", not "number of participants".** Counting humans is a tempting proxy but misfires both ways. The real trigger is whether the current message continues Junior's conversation or starts a sidebar between humans. See [learnings.md](../../learnings.md) — same principle generalises to any bot in a shared channel.
+**The signal that matters is "addressed to me", not "number of participants".** Counting humans is a tempting proxy but misfires both ways. The real trigger is whether the current message continues Junior's conversation or starts a sidebar between humans. See `learnings.md` — same principle generalises to any bot in a shared channel.
 
 **What it adds:**
 
