@@ -751,8 +751,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         "'gx-backend:repo'), their markdown profiles are fetched VERBATIM by key — no embedding, " +
         "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
         "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
-        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`kinds`) with FTS for exact " +
-        "identifiers. Returns the keyed profiles plus the top-k claims (text, score, repo, tags).",
+        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`kinds`). " +
+        "Returns the keyed profiles plus the top-k claims (text, score, repo, tags).",
       inputSchema: {
         query: z.string().describe("Natural-language query, embedded for semantic claim retrieval"),
         repo: z.string().optional().describe("Scope claims to a repo (e.g. 'gx-backend')"),
@@ -833,38 +833,6 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
-    "memory_set_rule_status",
-    {
-      description:
-        "Accept or reject a proposed draft ingestion rule. Accepted rules become active in the live capture path.",
-      inputSchema: {
-        id: z.string().describe("Rule ID from a consolidation proposal (e.g., rule_tag_foo)"),
-        status: z.enum(["accepted", "rejected"]).describe("New status for the rule"),
-      },
-    },
-    async ({ id, status }) => {
-      return withMemoryStore(async (memory) => {
-        const ok = await memory.setRuleStatus(id, status);
-        return { content: [{ type: "text" as const, text: JSON.stringify({ [status]: ok, id }, null, 2) }] };
-      });
-    },
-  );
-
-  server.registerTool(
-    "memory_accepted_rules",
-    {
-      description:
-        "List all accepted ingestion rules currently active in the live capture path.",
-      inputSchema: {},
-    },
-    async () => {
-      return withMemoryStore(async (memory) => {
-        const rules = await memory.getAcceptedRules();
-        return { content: [{ type: "text" as const, text: JSON.stringify({ rules }, null, 2) }] };
-      });
-    },
-  );
 }
 
 /**
@@ -1051,8 +1019,8 @@ export interface RecallMemoryResult {
  *  1. KEYED — `entityRefs` are fetched by path from the profile store, verbatim,
  *     with no embedding. The interlocutor/workspace is ground truth.
  *  2. SEMANTIC — `query` is embedded in QUERY mode, then `recallClaims` filters
- *     by repo/kind (the WHERE) and ranks by cosine (the ORDER BY) with FTS as the
- *     identifier escape hatch. The store never embeds — we embed at this boundary.
+ *     by repo/kind (the WHERE) and ranks by cosine (the ORDER BY). The store never
+ *     embeds — we embed at this boundary.
  */
 export async function recallMemory(
   args: RecallMemoryArgs,
@@ -1088,7 +1056,6 @@ export async function recallMemory(
     const results = await deps.store.recallClaims({
       queryVector,
       filters,
-      ftsQuery: args.query,
       limit,
     });
     for (const r of results) {

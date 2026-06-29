@@ -19,13 +19,19 @@ import { createEmbeddingProvider } from "./embedding/factory.ts";
 import type { EmbeddingProvider } from "./embedding/types.ts";
 import type { ClaimKind } from "./types.ts";
 
-/** Tables the audit condemned (§2 / §6.3-step-1) — dropped only when applying. */
+/**
+ * Tables the audit condemned (§2 / §6.3-step-1) — dropped only when applying.
+ * `memory_fts` is an fts5 virtual table; `DROP TABLE` removes it and its shadow
+ * tables, and it shows up in sqlite_master with type='table' so `tableExists`
+ * catches it like the rest.
+ */
 const CONDEMNED_TABLES = [
   "memory_event",
   "edge",
   "mention",
   "memory_search_doc",
   "candidate_rule",
+  "memory_fts",
 ] as const;
 
 export interface MigrateV3Options {

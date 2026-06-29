@@ -32,15 +32,15 @@ async function seedClaim(
 }
 
 describe("memory HTTP routes", () => {
-  it("returns recalled memory results", async () => {
+  it("returns recalled claims (filter-only, no embedding)", async () => {
     await withStore(async (store) => {
-      const now = Date.now();
-      await store.appendSourceRecord({ id: "source-1", kind: "slack_message", body: "dashboard", createdAt: now });
-      await store.upsertEvent({ id: "event-1", sourceRecordId: "source-1", threadId: "T1", body: "dashboard means gx-admin-client", createdAt: now });
-      const response = await handleMemoryRecall(store, new URLSearchParams({ query: "dashboard" }));
+      await seedClaim(store, "claim-1", [1, 0, 0, 0, 0, 0, 0, 0], "dashboard means gx-admin-client");
+      // No `query` → recallClaims ranks by weight under the tag filter, so the
+      // dashboard route never loads the embedding model in this test.
+      const response = await handleMemoryRecall(store, new URLSearchParams({ tags: "t-claim-1" }));
       expect(response.status).toBe(200);
       const body = (await response.json()) as { results: Array<{ id: string }> };
-      expect(body.results.map((result) => result.id)).toContain("event-1");
+      expect(body.results.map((result) => result.id)).toContain("claim-1");
     });
   });
 

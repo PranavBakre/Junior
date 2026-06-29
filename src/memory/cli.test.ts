@@ -13,108 +13,6 @@ import type { ConsolidationInvoke, ConsolidationOutput } from "./consolidation/t
 process.env.MEMORY_EMBED_PROVIDER = "hashing";
 
 describe("memory CLI", () => {
-  it("recalls memories from the configured db", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
-    const dbPath = join(tmpDir, "memory.db");
-    const store = new SqliteMemoryStore(dbPath);
-    try {
-      const now = Date.now();
-      await store.appendSourceRecord({ id: "source-1", kind: "slack_message", body: "dashboard alias", createdAt: now });
-      await store.upsertEvent({ id: "event-1", sourceRecordId: "source-1", threadId: "T1", body: "dashboard means gx-admin-client", createdAt: now });
-      const output = await runMemoryCli(["recall", "--db", dbPath, "--query", "dashboard", "--json"]);
-      const parsed = JSON.parse(output) as { results: Array<{ id: string }> };
-      expect(parsed.results.map((result) => result.id)).toContain("event-1");
-    } finally {
-      store.close();
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("runs consolidation from the configured db", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
-    const dbPath = join(tmpDir, "memory.db");
-    const store = new SqliteMemoryStore(dbPath);
-    try {
-      await store.logCorrection({ eventId: "event-a", field: "routing_fact", correctValue: "dashboard means gx-admin-client", correctedBy: "user", createdAt: Date.now() });
-      await store.logCorrection({ eventId: "event-b", field: "routing_fact", correctValue: "dashboard means gx-admin-client", correctedBy: "user", createdAt: Date.now() });
-      const output = await runMemoryCli(["consolidate", "--db", dbPath, "--json"]);
-      const parsed = JSON.parse(output) as { promotedMemoryIds: string[] };
-      expect(parsed.promotedMemoryIds).toContain("routing_memory_dashboard_means_gx-admin-client");
-    } finally {
-      store.close();
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("accepts, rejects, and lists rules from the configured db", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
-    const dbPath = join(tmpDir, "memory.db");
-    const store = new SqliteMemoryStore(dbPath);
-    try {
-      await store.proposeRule({
-        id: "rule_tag_test",
-        status: "draft",
-        domain: "tag",
-        ruleText: "tag(Event, test) :- test.",
-        positiveExampleIds: [],
-        negativeExampleIds: [],
-        createdAt: Date.now(),
-      });
-
-      const acceptOut = await runMemoryCli(["accept-rule", "--db", dbPath, "--id", "rule_tag_test", "--json"]);
-      expect(JSON.parse(acceptOut)).toEqual({ accepted: true, id: "rule_tag_test" });
-
-      const listOut = await runMemoryCli(["accepted-rules", "--db", dbPath, "--json"]);
-      const list = JSON.parse(listOut) as { rules: Array<{ id: string }> };
-      expect(list.rules.map((rule) => rule.id)).toContain("rule_tag_test");
-
-      const rejectOut = await runMemoryCli(["reject-rule", "--db", dbPath, "--id", "rule_tag_test", "--json"]);
-      expect(JSON.parse(rejectOut)).toEqual({ rejected: true, id: "rule_tag_test" });
-
-      const after = await runMemoryCli(["accepted-rules", "--db", dbPath, "--json"]);
-      expect(JSON.parse(after)).toEqual({ rules: [] });
-    } finally {
-      store.close();
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("updates a lesson body and appends tags", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
-    const dbPath = join(tmpDir, "memory.db");
-    const store = new SqliteMemoryStore(dbPath);
-    try {
-      const now = Date.now();
-      // Seed: create a lesson with original tags, plus a source event for provenance
-      await store.appendSourceRecord({ id: "src-upd-1", kind: "manual_correction", body: "source", createdAt: now });
-      await store.upsertLesson({
-        id: "lesson-upd", title: "Original", body: "Original body",
-        appliesWhen: "always", importance: 0.5, createdAt: now,
-        tags: ["memory", "recall"],
-        sourceIds: ["src-upd-1"],
-      });
-
-      // Update: change body, add a tag, add a source
-      await store.updateLesson("lesson-upd", {
-        body: "Updated body with new content",
-        addTags: ["performance"],
-        addSourceIds: ["src-upd-2"],
-      });
-
-      // Verify through recall: updated body should match
-      const results = await store.recall({ query: "Updated body with new", limit: 3 });
-      expect(results.length).toBeGreaterThan(0);
-      expect(results[0].body).toBe("Updated body with new content");
-
-      // Verify original tags still surface the lesson
-      const tagResults = await store.recall({ tags: ["memory"], limit: 3 });
-      expect(tagResults.map((r) => r.id)).toContain("lesson-upd");
-    } finally {
-      store.close();
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
   it("add-lesson mirrors the lesson into the semantic claim store", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
     const dbPath = join(tmpDir, "memory.db");
@@ -127,24 +25,35 @@ describe("memory CLI", () => {
         "--importance", "0.8",
         "--tags", "git,workflow",
       ]);
-      expect(JSON.parse(out).claim).toBe(true);
+      const parsed = JSON.parse(out) as { upserted: string; kind: string; claim: boolean };
+      expect(parsed.upserted).toBe("lesson-claimed");
+      expect(parsed.kind).toBe("lesson");
+      expect(parsed.claim).toBe(true);
 
-      // The claim landed in the claim store with an embedding and is FTS-recallable.
+      // The lesson row landed in the legacy lesson table, and the claim mirror
+      // landed in the claim store with an embedding.
       const store = new SqliteMemoryStore(dbPath);
       try {
         const db = (store as unknown as { db: import("bun:sqlite").Database }).db;
-        const row = db
+        const lessonRow = db
+          .query("SELECT title, body FROM lesson WHERE id = 'lesson-claimed'")
+          .get() as { title: string; body: string } | null;
+        expect(lessonRow).not.toBeNull();
+        expect(lessonRow!.title).toBe("Always branch from main");
+
+        const claimRow = db
           .query("SELECT kind, embedding, dim FROM claim WHERE id = 'lesson-claimed'")
           .get() as { kind: string; embedding: Uint8Array | null; dim: number } | null;
-        expect(row).not.toBeNull();
-        expect(row!.kind).toBe("lesson");
-        expect(row!.dim).toBe(640);
-        expect(row!.embedding).not.toBeNull();
+        expect(claimRow).not.toBeNull();
+        expect(claimRow!.kind).toBe("lesson");
+        expect(claimRow!.dim).toBe(640);
+        expect(claimRow!.embedding).not.toBeNull();
       } finally {
         store.close();
       }
 
-      const recall = await runMemoryCli(["recall-claims", "--db", dbPath, "--fts", "branch from main", "--json"]);
+      // The mirrored claim is recallable via semantic recall.
+      const recall = await runMemoryCli(["recall-claims", "--db", dbPath, "--query", "branch from main", "--json"]);
       expect(JSON.parse(recall).results.map((r: { id: string }) => r.id)).toContain("lesson-claimed");
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
@@ -171,98 +80,45 @@ describe("memory CLI", () => {
     }
   });
 
-  it("updates a fact confidence", async () => {
+  it("add-fact mirrors the fact into the semantic claim store", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
     const dbPath = join(tmpDir, "memory.db");
-    const store = new SqliteMemoryStore(dbPath);
     try {
-      const now = Date.now();
-      await store.upsertFact({
-        id: "fact-upd", kind: "curated_fact", title: "Updatable Fact", body: "dashboard means gx-admin-client",
-        confidence: 0.3, importance: 0.5, createdAt: now,
-      });
+      const out = await runMemoryCli([
+        "add-fact", "--db", dbPath, "--json",
+        "--id", "fact-claimed", "--kind", "routing_memory",
+        "--title", "Frontend routing",
+        "--body", "Frontend requests route to gx-client-next.",
+        "--tags", "routing",
+      ]);
+      const parsed = JSON.parse(out) as { upserted: string; kind: string; claim: boolean };
+      expect(parsed.upserted).toBe("fact-claimed");
+      expect(parsed.kind).toBe("routing_memory");
+      expect(parsed.claim).toBe(true);
 
-      await store.updateFact("fact-upd", { confidence: 0.9 });
+      const store = new SqliteMemoryStore(dbPath);
+      try {
+        const db = (store as unknown as { db: import("bun:sqlite").Database }).db;
+        const factRow = db
+          .query("SELECT kind, body FROM memory_fact WHERE id = 'fact-claimed'")
+          .get() as { kind: string; body: string } | null;
+        expect(factRow).not.toBeNull();
+        expect(factRow!.kind).toBe("routing_memory");
 
-      // Verify fact still surfaces with correct content
-      const results = await store.recall({ query: "dashboard", limit: 3 });
-      const found = results.find((r) => r.id === "fact-upd");
-      expect(found).toBeDefined();
-      expect(found!.body).toBe("dashboard means gx-admin-client");
+        const claimRow = db
+          .query("SELECT kind FROM claim WHERE id = 'fact-claimed'")
+          .get() as { kind: string } | null;
+        expect(claimRow).not.toBeNull();
+        expect(claimRow!.kind).toBe("fact");
+      } finally {
+        store.close();
+      }
     } finally {
-      store.close();
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("merges lessons and the merged node surfaces in recall", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
-    const dbPath = join(tmpDir, "memory.db");
-    const store = new SqliteMemoryStore(dbPath);
-    try {
-      const now = Date.now();
-      await store.upsertLesson({
-        id: "lesson-a", title: "Lesson A", body: "Always use SQLite FTS for search lookups",
-        importance: 0.6, createdAt: now, tags: ["search"],
-      });
-      await store.upsertLesson({
-        id: "lesson-b", title: "Lesson B", body: "Avoid vector DBs until needed",
-        importance: 0.8, createdAt: now, tags: ["vector"],
-      });
-
-      const result = await store.mergeLessons(["lesson-a", "lesson-b"], "Memory Architecture");
-      expect(result.sourceIds).toEqual(["lesson-a", "lesson-b"]);
-      expect(result.mergedId).toContain("lesson_merged_");
-
-      // The merged lesson should show up in recall for either source's content
-      const results = await store.recall({ query: "SQLite FTS search lookups", limit: 3 });
-      expect(results.map((r) => r.id)).toContain(result.mergedId);
-
-      // Source lessons should NOT appear in recall for a new query (they're inactive)
-      const tagResults = await store.recall({ query: "Avoid vector DBs", limit: 3 });
-      const sourceIds = tagResults.map((r) => r.id);
-      expect(sourceIds).not.toContain("lesson-a");
-      expect(sourceIds).not.toContain("lesson-b");
-      // But merged node should appear
-      expect(sourceIds).toContain(result.mergedId);
-    } finally {
-      store.close();
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("merges facts and supersedes sources", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
-    const dbPath = join(tmpDir, "memory.db");
-    const store = new SqliteMemoryStore(dbPath);
-    try {
-      const now = Date.now();
-      await store.upsertFact({
-        id: "fact-x", kind: "routing_memory", title: "Route A", body: "frontend requests go to gx-client-next",
-        importance: 0.7, createdAt: now,
-      });
-      await store.upsertFact({
-        id: "fact-y", kind: "curated_fact", title: "Curated B", body: "frontend is gx-client-next",
-        importance: 0.5, createdAt: now,
-      });
-
-      const result = await store.mergeFacts(["fact-x", "fact-y"], "Frontend routing");
-      expect(result.kind).toBe("fact");
-      expect(result.mergedId).toContain("fact_merged_");
-
-      // Merged fact should surface for shared content
-      const results = await store.recall({ query: "gx-client-next", limit: 3 });
-      expect(results.map((r) => r.id)).toContain(result.mergedId);
-      // Source facts should be superseded (not in results)
-      expect(results.map((r) => r.id)).not.toContain("fact-x");
-      expect(results.map((r) => r.id)).not.toContain("fact-y");
-    } finally {
-      store.close();
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("adds a claim and recalls it FTS-only from the configured db", async () => {
+  it("adds a claim and recalls it from the configured db", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
     const dbPath = join(tmpDir, "memory.db");
     const store = new SqliteMemoryStore(dbPath);
@@ -274,10 +130,11 @@ describe("memory CLI", () => {
         "--repo", "junior", "--tags", "worktrees,isolation", "--json",
       ]);
 
-      const output = await runMemoryCli(["recall-claims", "--db", dbPath, "--fts", "worktrees", "--json"]);
-      const parsed = JSON.parse(output) as { results: Array<{ id: string; ftsMatched: boolean; cosine: number | null }> };
+      // No query vector → recallClaims ranks by weight and returns the claim;
+      // cosine is null because nothing was embedded.
+      const output = await runMemoryCli(["recall-claims", "--db", dbPath, "--json"]);
+      const parsed = JSON.parse(output) as { results: Array<{ id: string; cosine: number | null }> };
       expect(parsed.results.map((r) => r.id)).toContain("claim-cli");
-      expect(parsed.results[0].ftsMatched).toBe(true);
       expect(parsed.results[0].cosine).toBeNull();
     } finally {
       store.close();
@@ -371,30 +228,6 @@ describe("memory CLI", () => {
       const parsed = JSON.parse(out) as { reports: Array<{ report: { skipped: boolean } }> };
       expect(parsed.reports).toHaveLength(1);
       expect(parsed.reports[0].report.skipped).toBe(true);
-    } finally {
-      store.close();
-      rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it("archives a memory from the configured db", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
-    const dbPath = join(tmpDir, "memory.db");
-    const store = new SqliteMemoryStore(dbPath);
-    try {
-      const now = Date.now();
-      await store.upsertLesson({
-        id: "lesson-archive",
-        title: "Bad lesson",
-        body: "This should leave active recall",
-        importance: 0.5,
-        createdAt: now,
-      });
-
-      const output = await runMemoryCli(["archive-memory", "--db", dbPath, "--id", "lesson-archive", "--json"]);
-
-      expect(JSON.parse(output)).toEqual({ archived: true, id: "lesson-archive" });
-      expect(await store.recall({ query: "active recall", limit: 5 })).toEqual([]);
     } finally {
       store.close();
       rmSync(tmpDir, { recursive: true, force: true });

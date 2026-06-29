@@ -59,7 +59,6 @@ describe("MCP memory v3 tools", () => {
       const [queryVector] = await provider.embed(["worktree from main"], "query");
       const claims = await deps.store.recallClaims({
         queryVector,
-        ftsQuery: "worktree",
         limit: 5,
       });
       expect(claims.some((c) => c.id === id)).toBe(true);

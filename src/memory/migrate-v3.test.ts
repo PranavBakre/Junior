@@ -25,6 +25,7 @@ const CONDEMNED = [
   "mention",
   "memory_search_doc",
   "candidate_rule",
+  "memory_fts",
 ];
 
 interface ClaimRow {
@@ -40,12 +41,23 @@ interface ClaimRow {
  * and 2 facts (one with a null title), plus tags via memory_tag ⋈ tag.
  */
 function seed(dbPath: string): void {
-  // createMemoryStore runs the schema migration (lesson/memory_fact/tag/claim/…).
+  // createMemoryStore runs the v3 schema migration (lesson/memory_fact/tag/claim/…).
+  // The v3 schema no longer creates the condemned legacy tables, so recreate them
+  // here to simulate a real PRE-v3 live DB — the migration's job is to drop them.
   const store = createMemoryStore(dbPath);
   store.close();
 
   const db = new Database(dbPath);
   const now = Date.now();
+
+  // Legacy associative-memory tables (gone from the v3 schema). migrateV3 only
+  // needs them to EXIST so it can drop them; it never reads their contents.
+  db.run(`CREATE TABLE memory_event (id TEXT PRIMARY KEY, source_record_id TEXT, thread_id TEXT, body TEXT, created_at INTEGER)`);
+  db.run(`CREATE TABLE edge (src_id TEXT, dst_id TEXT, type TEXT, weight REAL, directed INTEGER, created_at INTEGER, PRIMARY KEY (src_id, dst_id, type))`);
+  db.run(`CREATE TABLE mention (memory_id TEXT, entity_id TEXT, memory_kind TEXT, PRIMARY KEY (memory_id, entity_id))`);
+  db.run(`CREATE TABLE memory_search_doc (id TEXT PRIMARY KEY, kind TEXT, title TEXT, body TEXT, outcome TEXT, updated_at INTEGER)`);
+  db.run(`CREATE TABLE candidate_rule (id TEXT PRIMARY KEY, status TEXT, domain TEXT, rule_text TEXT, positive_example_ids_json TEXT, negative_example_ids_json TEXT, precision REAL, recall REAL, created_at INTEGER)`);
+  db.run(`CREATE VIRTUAL TABLE memory_fts USING fts5(id UNINDEXED, kind UNINDEXED, title, body, outcome)`);
 
   const insLesson = db.query(
     `INSERT INTO lesson (id, title, body, applies_when, importance, created_at, last_used_at, use_count, active)
