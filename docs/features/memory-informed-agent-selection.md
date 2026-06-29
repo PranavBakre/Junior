@@ -1,5 +1,7 @@
 # Memory-Informed Agent Selection
 
+> **Status: NOT BUILT — historical design record.** This proposal was written against the retired associative-memory layer (legacy `memory_recall` over events/edges/rules). That layer is gone (see [memory-system-v3.md](memory-system-v3.md)), and routing today is command/default/keyword driven via `src/agents/router.ts` / `src/support/router.ts` — it does not consult the memory store. The links below to [associative-memory.md](associative-memory.md) point at an equally-retired design. Kept for the idea, not as current behavior.
+
 ## Problem
 
 Agent selection and memory recall are separate features, but they should cooperate. Junior's router needs to choose an agent/action from the current Slack message, thread state, channel defaults, target repo, and available agents. Some of the best routing evidence lives in memory: previous user corrections, channel-specific behavior, project naming patterns, repeated task shapes, and lessons learned from bad dispatches.

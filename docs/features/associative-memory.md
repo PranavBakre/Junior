@@ -1,5 +1,7 @@
 # Associative Memory MVP
 
+> **Status: RETIRED — historical design record.** This describes the original associative-memory layer (the `memory_event`/`edge`/`mention`/`memory_search_doc`/`candidate_rule`/`memory_fts` tables, the FTS+graph `recall()`/`consolidate()`, and rule learning). All of it has been **deleted** from the codebase. The live memory system is [memory-system-v3.md](memory-system-v3.md) (semantic claims + episodes + keyed profiles, cosine-only recall, local embeddings). Kept only for design history; nothing here reflects current code.
+
 ## Problem
 
 Junior needs useful long-term recall across Slack threads without stuffing every past note into prompt context. The current direction is an associative memory system, but the design should avoid unnecessary infrastructure: no vector database as the default substrate, no graph database until proven necessary, and no Prolog/runtime mismatch in a TypeScript codebase.

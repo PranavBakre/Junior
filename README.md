@@ -54,6 +54,20 @@ While a runner is active, it can post to and read from Slack autonomously throug
 
 This is what enables agents to talk back to other agents (or to the human) within a single turn instead of waiting for the turn to end.
 
+### Long-term memory (v3)
+
+Junior keeps a long-term memory in `data/memory.db` (separate from the session DB) so it accumulates knowledge across threads. The design and rationale live in [`docs/features/memory-system-v3.md`](docs/features/memory-system-v3.md); the shipped shape:
+
+- **Capture (hot path).** Slack messages, routing decisions, and runner outputs are appended as raw **source records** by `MemoryIngestor` — cheap provenance, not yet recallable.
+- **Consolidate (offline).** A `claude -p` pass reads the unconsolidated source records and derives durable memory: **episodes** (affect-tagged raw log), keyed entity **profiles** (person/repo/situation, stored as markdown under `memory/profiles/`), and atomic **claims** (lessons/facts) embedded for semantic recall. Run it via the `consolidate-v3` CLI, the `memory-consolidation` workflow, or the `memory_consolidate` MCP tool — all share `runConsolidationSweep`.
+- **Recall (two channels).** `memory_recall` fetches keyed profiles verbatim by `entity_ref` and cosine-ranks the atomic claim store against a locally embedded query. Recall is **cosine-only** — there is no FTS channel.
+- **Local embeddings.** Claims and queries are embedded in-process with `onnx-community/harrier-oss-v1-270m-ONNX` (640-dim, last-token pooling), co-located with the text in SQLite as a Float32 BLOB. Nothing leaves for a remote API.
+- **Decay.** Claims/episodes/profiles track `last_used_at`; an offline pass archives stale **and** low-value claims (`active = 0`, never hard-deleted). `memoryHealth` reports the fade candidates.
+
+MCP tools: `memory_recall`, `memory_add` (add + embed one claim), `memory_consolidate`. CLI (`src/memory/cli.ts`): `consolidate-v3`, `recall-claims`, `add-claim`, `add-lesson`, `add-fact` (the `add-*` commands mirror into the claim store so new lessons/facts are immediately recallable).
+
+The legacy associative-memory layer (event/edge graph, FTS, candidate-rule learning) has been retired; `src/memory/migrate-v3.ts` was the one-shot migration that folded the old `lesson`/`memory_fact` rows into claims and dropped the condemned tables.
+
 ### Dev-server queue
 
 For repos with `devCommand` configured, junior owns the lifecycle of a single shared dev server per repo. Concurrent acquires across threads serialize on a `proper-lockfile` per-repo lock, with a 10-minute slot timeout and a 20-minute idle TTL (kills the server if no one re-acquires).

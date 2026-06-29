@@ -1,5 +1,7 @@
 # Memory Ingestion Rule Learning
 
+> **Status: RETIRED — historical design record.** The candidate-rule / accepted-rule learning layer (`candidate_rule` table, `memory_set_rule_status` / `memory_accepted_rules` MCP tools, the ILP-style rule pipeline) was **never promoted to production and has been deleted**. v3 consolidation is an offline LLM pass that writes derivations directly (see [memory-system-v3.md](memory-system-v3.md) §7) — there is no symbolic rule-learning loop. Kept only for design history.
+
 ## Problem
 
 Associative memory only works if messy Slack conversations become clean, consistent memory records: events, tags, entities, edges, lessons, and routing facts. LLM-only extraction will drift. Hand-written rules will miss patterns. The system needs a path to improve ingestion rules from real history without putting experimental rule learners in the hot path.

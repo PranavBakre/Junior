@@ -1,6 +1,8 @@
 # Junior Memory System — Entity Profiles & Episodic Memory (v3)
 
-> **Status:** Canonical direction. Extends and supersedes [memory-lesson-store.md](memory-lesson-store.md) (v2), which correctly narrowed memory to a *curated, embedded* store after the associative-memory machinery failed in measurement. v3 keeps that curated/embedded core and **generalizes the subject of memory**: memory is no longer only engineering lessons — Junior captures episodic experience (including affect — e.g. being called an idiot), and consolidates it into a heterogeneous set of **derivations** (person/repo profiles, lessons, situation-patterns, facts). Every structural choice here is constrained by **why the original `memory_event` system failed** (§2); v3 is the design that does not rebuild that failure with feelings attached.
+> **Status: SHIPPED.** This is the live memory system and supersedes [memory-lesson-store.md](memory-lesson-store.md) (v2) and the whole legacy associative stack ([associative-memory.md](associative-memory.md), [memory-ingestion-rule-learning.md](memory-ingestion-rule-learning.md), [memory-system-overhaul.md](memory-system-overhaul.md) — all retired, kept only as historical evidence records). The cutover is complete: `migrate-v3.ts` folded the old `lesson`/`memory_fact` rows into claims and the condemned tables (`memory_event`, `edge`, `mention`, `memory_search_doc`, `candidate_rule`, `memory_fts`) were dropped; the legacy associative `recall()`/`consolidate()`, the rule-learning layer, and the `src/memory/eval/` harness are gone. **Recall is cosine-only — there is no FTS channel.** v3 keeps the v2 curated/embedded core and **generalizes the subject of memory**: Junior captures episodic experience (including affect), and consolidates it into a heterogeneous set of **derivations** (person/repo profiles, lessons, situation-patterns, facts). Every structural choice here was constrained by **why the original `memory_event` system failed** (§2).
+>
+> Where this design doc and the shipped code diverge, sections below are annotated **(shipped: …)**. The most consequential divergence: §8/§11/§12 describe an FTS∥vector merge that was *not* built — production recall is pure cosine over the embedded claim store.
 
 ## 1. TL;DR
 
@@ -182,33 +184,34 @@ A dedicated vector store is premature infrastructure here, and it violates CLAUD
 | **2 — `sqlite-vec`** *(gated)* | scan *measurably* exceeds budget | loadable SQLite extension (in-process, one file, **no service**, exact KNN); `bun:sqlite` loads it via `loadExtension`. |
 | **3 — ANN / vector DB** *(probably never)* | 100k+ vectors with measured latency pain | not this workload. |
 
-The only "switch" candidate that adds no service is **LanceDB** (embedded, native vectors) — rejected because it abandons the SQLite substrate that *carries over* (`source_record`, `entity`, FTS, `recall_log`, the eval harness), forcing an FTS reimplementation and a full migration to gain vectors we don't need at this scale. pgvector/Postgres is a service → non-starter for a single-process bot.
+The only "switch" candidate that adds no service is **LanceDB** (embedded, native vectors) — rejected because it abandons the SQLite substrate that *carries over* (`memory_source_record`, `memory_node`, `recall_log`), forcing a full migration to gain vectors we don't need at this scale. pgvector/Postgres is a service → non-starter for a single-process bot. (Shipped: rung 1, brute-force cosine in `SqliteMemoryStore.recallClaims` — the `WHERE` pre-filter narrows candidates, then cosine in TS ranks them.)
 
 ### 6.3 Migrating the existing store
 
-The migration is mostly **deletion + one backfill**, not a lift-and-shift of the 90 MB DB. Carrying the audit-condemned piles forward *is* the failure (§2). Categorize, then:
+> **Shipped — cutover complete.** `src/memory/migrate-v3.ts` is the committed, offline, dry-run-by-default migration that ran the plan below. It supports a `dropCondemned` flag: the first cutover ran with `dropCondemned: false` (CLI `--keep-condemned`) to write the surviving claims while leaving the legacy tables in place for any reader still on them, then a follow-up run dropped the condemned piles. They are now gone. The `recall_log` eval gate referenced in step 5 used the now-retired `src/memory/eval/` harness; that harness was removed once the cosine claim store was live.
 
-1. **Drop the condemned (don't migrate):** `memory_event` (14,243; 96% never recalled), `edge` (42,876), `mention`, `memory_search_doc`, `candidate_rule`. Back up first (`memory.db.bak-before-*` exist; take a fresh one).
-2. **Keep the spine untouched:** `memory_source_record`, `entity`, `memory_fts`, `recall_log`.
-3. **`lesson` + `memory_fact` → `claim` (the one real backfill):** copy `title/body → text`, tags, weight; **batch-embed offline** (harrier-270) to populate `embedding`; **proximity-dedup-merge** in the same pass (the 818 accrued without dedup → near-duplicates; expect collapse to fewer distinct claims).
+The migration was mostly **deletion + one backfill**, not a lift-and-shift of the 90 MB DB. Carrying the audit-condemned piles forward *is* the failure (§2). Categorize, then:
+
+1. **Drop the condemned (don't migrate):** `memory_event` (14,243; 96% never recalled), `edge` (42,876), `mention`, `memory_search_doc`, `candidate_rule`, **and `memory_fts`** (recall is cosine-only — FTS was not carried into v3). Back up first.
+2. **Keep the spine:** `memory_source_record`, `memory_node`, `recall_log`.
+3. **`lesson` + `memory_fact` → `claim` (the one real backfill):** copy `title/body → text`, tags, weight; **batch-embed offline** (harrier-270) to populate `embedding`; **proximity-dedup-merge** in the same pass (the 818 accrued without dedup → near-duplicates; expect collapse to fewer distinct claims). Routing-decision telemetry is excluded (never becomes a claim).
 4. **Profiles + episodes: nothing to migrate** — net-new from future turns.
-5. **Verify before cutover:** eval-harness / `recall_log` replay on the new `claim` store must hold or improve recall *before* flipping the runner.
+5. **Verify before cutover:** the (now-retired) eval-harness / `recall_log` replay on the new `claim` store had to hold or improve recall before flipping the runner.
 6. **Vacuum** — 90 MB → a few MB once the flood is gone.
 
-Run it as a **committed migration script, offline, against a copy** (per `no-prod-db-before-code` — never hand-edit the live DB ahead of the code). Old and new stores coexist behind the provider interface during verification.
+Run as a **committed migration script, offline, against a copy** (per `no-prod-db-before-code` — never hand-edit the live DB ahead of the code).
 
 ```
-migrate-v3.ts  (offline, on a copy of memory.db)
+migrate-v3.ts  (offline, on a copy of memory.db; apply:false = dry run)
   0. cp memory.db memory.db.bak-before-v3
-  1. create  claim, episode tables;  ensure profiles/ exists
-  2. for each lesson + fact:
+  1. create  claim, episode tables;  ensure profiles/ exists  (store migrate())
+  2. for each real lesson + fact (skip routing telemetry):
         text = title + body;  insert claim{ text, tags, weight, source_episode:null }
-  3. embed all claim.text in batches (harrier-270, last-token pool, L2)  ->  claim.embedding
+  3. embed all claim.text (harrier-270, last-token pool, L2)  ->  claim.embedding
   4. proximity-dedup: cluster by cosine >= τ;  merge near-dups (keep highest weight, union tags)
-  5. drop  memory_event, edge, mention, memory_search_doc, candidate_rule
-  6. eval:  run recall_log replay on new store;  assert recall@k >= baseline
-  7. VACUUM
-  # cutover only after step 6 passes
+  5. drop condemned (gated by dropCondemned): memory_event, edge, mention,
+       memory_search_doc, candidate_rule, memory_fts
+  6. VACUUM
 ```
 
 ## 7. Write path — consolidation
@@ -222,12 +225,14 @@ Offline / post-turn, applying the v2 hook discipline:
 
 A **rare high-salience episode** (a major conflict/praise) may be individually promoted to recallable, but that is **salience-gated, never the default.**
 
+**Shipped.** The offline write path is `consolidateSession` (one scope) wrapped by `runConsolidationSweep` (per-thread passes + a final unthreaded sweep, each session isolated so one failure doesn't abort the rest). The LLM is injected as `ConsolidationInvoke`; production uses a one-shot `claude -p … --output-format json` adapter (`createRunnerInvoke`) that is told to return JSON matching `consolidationOutputSchema`. The engine reads unconsolidated source records, asks for derivations, then persists in order — **episodes → profiles (keyed merge by `entity_ref`) → claims (embed + cosine proximity-dedup at τ=0.92)** — and stamps every processed record `consolidated_at` so it is consumed exactly once. Trigger it three equivalent ways (all share `runConsolidationSweep`): the `consolidate-v3` CLI, the `memory-consolidation` workflow, or the `memory_consolidate` MCP tool. Separately, the `add-lesson` / `add-fact` CLI commands and the `memory_add` MCP tool **mirror** their text into the embedded claim store so a hand-added lesson/fact is immediately recallable without waiting for a consolidation pass.
+
 ### 7.1 Last-used & decay (the forgetting driver)
 
 Every unit carries a `last_used_at` so the system can identify memory that should **fade**. The semantics differ by kind, but the discipline is shared:
 
-- **What "used" means:** a **claim/lesson** is "used" when it is **surfaced by a genuine production recall**; an **episode** is "used" when a **consolidation pass reads it** (its last contribution to a derivation); a **profile** when keyed-fetched during a real recall. Claims/lessons already have `last_used_at`; it must still be **added** to `episode` and to the **profile** frontmatter (`ProfileBase`) — both are tracked decay gaps (see §12 follow-ups), not yet wired.
-- **The bump rule — only real recall writes it.** Bumping `last_used_at` is gated by a `recordUsage` flag (as the legacy `recall()` already does). **Eval/replay, the dashboard, and the graph-cloud projection MUST NOT bump it** — they pass `recordUsage=false` or use read-only paths (`exportClaimVectors` is read-only by design). Otherwise inspection traffic makes everything look "fresh" and the fade signal self-pollutes — the exact Phase-0 bug already fixed for legacy recall. *Gap to close: `recallClaims` currently selects `last_used_at` but never bumps it.*
+- **What "used" means:** a **claim/lesson** is "used" when it is **surfaced by a genuine production recall**; an **episode** is "used" when a **consolidation pass reads it** (its last contribution to a derivation); a **profile** when keyed-fetched during a real recall. (Shipped: `last_used_at` is now wired on all three — `claim` (bumped by `recallClaims`), `episode` (`markEpisodesUsed`, called by the consolidation reader), and the `profile` frontmatter (`ProfileBase.last_used_at`, bumped by `fetchByEntityRef(ref, { recordUsage: true })`).)
+- **The bump rule — only real recall writes it.** Bumping `last_used_at` is gated by a `recordUsage` flag (default true). **Eval/replay, the dashboard, the `recall-claims` CLI inspection command, and the memory-cloud projection MUST NOT bump it** — they pass `recordUsage=false` or use read-only paths (`exportClaimVectors` is read-only by design). Otherwise inspection traffic makes everything look "fresh" and the fade signal self-pollutes. (Shipped: `recallClaims` bumps `last_used_at = now` on returned claims unless `recordUsage:false`; `ProfileStore.fetchByEntityRef` and the internal consolidation read default to `recordUsage:false`.)
 - **Decay = forget by value, not age alone.** A fade candidate is **stale** (old or never `last_used_at`) **AND** low-value (decayed/unhelpful `weight`). Age alone never forgets — a rarely-needed but high-value lesson must survive. The offline consolidation / memory-health job archives candidates (`active = 0`); **never hard-delete** — keep provenance. This is a batch decision, never a hot-path TTL.
 - **memory-health surfaces it:** `% never used`, oldest `last_used_at`, and the current fade-candidate set, per kind.
 
@@ -236,10 +241,12 @@ Every unit carries a `last_used_at` so the system can identify memory that shoul
 Recall runs **two channels** and merges:
 
 1. **Keyed fetch.** The interlocutor and workspace are *ground truth*: in a thread with Pranav, in `gx-backend` → read `profiles/people/pranav.md` and `profiles/repos/gx-backend.md` **directly by path**. No LLM phrasing, no cosine.
-2. **Semantic search** over the claim store: embed the query → **filters scope** (`WHERE repo/kind/recency`) → **cosine ranks** within scope → **FTS** for the exact-identifier tail (slugs, file paths, PR numbers). (See [[junior-memory-filters-scope-vectors-rank]].)
+2. **Semantic search** over the claim store: embed the query → **filters scope** (`WHERE repo/kind/recency`) → **cosine ranks** within scope. (See [[junior-memory-filters-scope-vectors-rank]].)
 3. **Return** the keyed profiles + the top-k claims, weighted by `weight`. Never the raw episode stream.
 
-**Filters are the `WHERE`, vectors are the `ORDER BY`, FTS is the identifier escape hatch — and profiles skip all three, fetched by key.** Keyed retrieval is the extreme of "filters scope": the context narrows to exactly one row.
+**Filters are the `WHERE`, cosine is the `ORDER BY` — and profiles skip both, fetched by key.** Keyed retrieval is the extreme of "filters scope": the context narrows to exactly one row.
+
+> **Shipped (cosine-only — divergence from the original §8 design).** The FTS identifier escape-hatch was *not* built; `memory_fts` is gone and there is no lexical channel. `recallClaims` pre-filters by `repo`/`kind`/`sinceMs` (the SQL `WHERE`), then ranks by `cosine(queryVector, claim.embedding) × weight` in TS. The caller embeds the query at the boundary (`recallClaims` never embeds); with no query vector it ranks by `weight` alone. `recallMemory` (the `memory_recall` MCP handler) runs one recall per requested kind, merges, de-dupes, and re-ranks, and also fetches the keyed profiles verbatim.
 
 ## 9. Governance & affect policy (decided)
 
@@ -272,20 +279,22 @@ Recall runs **two channels** and merges:
 
 ## 11. What carries over from v2 / what's new
 
-**Carried:** source records as raw evidence; FTS for keyword/identifier lookup; provenance as a field; the eval harness + `recall_log` gate; dedup-on-write; helpful/unhelpful feedback weighting; "universal rules inject, don't retrieve."
+**Carried:** source records as raw evidence; provenance as a field; dedup-on-write; helpful/unhelpful feedback weighting (the `helpful_count`/`unhelpful_count`/`weight` columns); "universal rules inject, don't retrieve."
 
 **New in v3:** episodes with affect; the keyed/semantic split as the organizing axis; profiles (person/repo/situation) as keyed markdown derivations beside the embedded claim tail; markdown-as-source-of-truth for keyed memory; the local-first embedding mandate for affective data.
 
-**Deleted (still):** event-as-memory promotion, the edge graph + spreading activation, any O(N²) similarity-edge builder, RRF-as-a-recall-play. **Newly dropped vs the first v3 draft:** the whole-profile embedding (profiles are keyed, not embedded).
+**Deleted:** event-as-memory promotion, the edge graph + spreading activation, any O(N²) similarity-edge builder, RRF-as-a-recall-play, and (shipped) **the FTS keyword channel, the candidate-rule learning layer, and the `src/memory/eval/` harness** — recall is cosine-only and the eval-replay gate ran during migration, then the harness was removed. The whole-profile embedding was dropped before v1 (profiles are keyed, not embedded).
 
 ## 12. Phasing (each behind the eval gate)
 
-- **P0 — done:** `recall_log` + eval harness + routing-log prune (v2 Phase 0). Real recall traffic now logged (≈600 rows / 15 days at time of writing).
-- **P1 — episodes + derivations (write path):** `episode` table; `profiles/` markdown files; `claim` table; consolidation builds person & repo profiles (keyed dedup) and atomic claims (proximity dedup); lessons keep their bar. *Gate:* event flood stops; derivations accumulate distinct knowledge.
-- **P2 — read path + feedback:** keyed profile fetch by context; helpful/unhelpful feedback loop on claims. *Gate:* helpful-rate recorded.
-- **P3 — local vector channel:** harrier-270-ONNX provider (last-token pooling, q8); embed the claim store; FTS ∥ vector merge; proximity dedup. *Gate:* `recall_log` replay shows a residual lexical misses **and** the targets exist as ingested claims; p95 within budget.
-- **P4 — affect record-and-inform** surfaced into Junior's context (internal only).
-- **P5 — scale infra** (sqlite-vec, then ANN) only when measured latency demands.
+Phasing as originally planned, annotated with what shipped:
+
+- **P0 — done:** `recall_log` + eval harness + routing-log prune (v2 Phase 0). *(The eval harness has since been removed — it served its purpose gating the migration.)*
+- **P1 — shipped:** `episode` table; `profiles/` markdown files; `claim` table; the offline consolidation engine (`consolidateSession` + `runConsolidationSweep` + `claude -p` runner) builds person/repo/situation profiles (keyed dedup) and atomic claims (cosine proximity dedup); the legacy event flood is gone.
+- **P2 — partial:** keyed profile fetch by context is shipped (`memory_recall` with `entity_refs`). The helpful/unhelpful feedback *columns* exist (`helpful_count`/`unhelpful_count`/`weight`) but the production feedback loop that writes them is not yet wired.
+- **P3 — shipped (cosine-only):** harrier-270-ONNX provider (last-token pooling, q8); the claim store is embedded; recall is **cosine over the embedded corpus**. The planned FTS ∥ vector merge was **dropped** — there is no lexical channel.
+- **P4 — affect record-and-inform:** episodes capture affect today; surfacing it into Junior's live context is not yet wired.
+- **P5 — scale infra** (sqlite-vec, then ANN) only when measured latency demands. Not built — rung 1 (brute-force cosine) is the current and sufficient implementation.
 
 ## 13. Open questions / honest caveats
 
