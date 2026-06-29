@@ -432,6 +432,38 @@ describe("SlackResponder", () => {
     });
   });
 
+  describe("postResponse sentinel/empty suppression (choke-point guard)", () => {
+    it("posts nothing when the text is exactly the NO_SLACK_MESSAGE sentinel", async () => {
+      const { app, calls } = mockApp();
+      const responder = new SlackResponder(app);
+
+      const posted = await responder.postResponse("C123", "1234567890.123456", "NO_SLACK_MESSAGE");
+
+      expect(posted).toEqual([]);
+      expect(calls.postMessage).toHaveLength(0);
+    });
+
+    it("posts nothing for empty/whitespace text", async () => {
+      const { app, calls } = mockApp();
+      const responder = new SlackResponder(app);
+
+      const posted = await responder.postResponse("C123", "1234567890.123456", "   ");
+
+      expect(posted).toEqual([]);
+      expect(calls.postMessage).toHaveLength(0);
+    });
+
+    it("strips a trailing sentinel but still posts the real reply", async () => {
+      const { app, calls } = mockApp();
+      const responder = new SlackResponder(app);
+
+      await responder.postResponse("C123", "1234567890.123456", "Hey Captain\nNO_SLACK_MESSAGE");
+
+      expect(calls.postMessage).toHaveLength(1);
+      expect(calls.postMessage[0].text).toBe("Hey Captain");
+    });
+  });
+
   describe("postResponse with optional iconEmoji", () => {
     it("includes icon_emoji when identity has iconEmoji set", async () => {
       const { app, calls } = mockApp();
