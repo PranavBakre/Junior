@@ -14,9 +14,9 @@ import {
   sourceIdFor,
   tagsForMessage,
 } from "./ingestion.ts";
-import { consolidateSession } from "./consolidation/consolidate.ts";
+import { runConsolidationSweep, type ConsolidateV3Entry } from "./consolidation/index.ts";
 import { createRunnerInvoke } from "./consolidation/runner.ts";
-import type { ConsolidationInvoke, ConsolidationReport } from "./consolidation/types.ts";
+import type { ConsolidationInvoke } from "./consolidation/types.ts";
 import { createEmbeddingProvider } from "./embedding/factory.ts";
 import type { EmbeddingProvider } from "./embedding/types.ts";
 import { createProfileStore } from "./profiles/factory.ts";
@@ -72,43 +72,20 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       // Offline write path (memory v3 §7): read unconsolidated source records, ask
       // the runner LLM for derivations, persist through the gates. Manual trigger
       // only — no cron, and this does NOT touch the v2 `consolidate` path above.
+      // The per-thread + unthreaded-sweep + isolation loop lives in the shared
+      // `runConsolidationSweep` helper so the workflow and MCP tool run the same path.
       const profileStore = deps.profileStore ?? createProfileStore();
       const embedder = deps.embedder ?? createEmbeddingProvider("local");
       const invoke = deps.invoke ?? createRunnerInvoke({ timeoutMs: numberOption(options, "timeout-ms") });
-      const limit = numberOption(options, "limit");
-      const explicitThread = stringOption(options, "thread");
 
-      const reports: ConsolidateV3Entry[] = [];
-
-      // Each session is isolated: a failed consolidation (malformed LLM JSON,
-      // timeout, non-zero claude exit) is recorded and the run continues to the
-      // next thread rather than aborting the whole sweep. The failed thread's
-      // records stay unconsolidated and retry on the next run.
-      const runOne = async (threadId: string | undefined, passLimit?: number) => {
-        try {
-          const report = await consolidateSession({ store, profileStore, embedder, invoke, threadId, limit: passLimit });
-          reports.push({ threadId: threadId ?? null, report });
-        } catch (err) {
-          reports.push({ threadId: threadId ?? null, error: err instanceof Error ? err.message : String(err) });
-        }
-      };
-
-      if (explicitThread) {
-        await runOne(explicitThread, limit);
-      } else {
-        // Consolidation is session-scoped: derive per distinct thread on its own
-        // evidence rather than mixing threads into one prompt, then a final
-        // unscoped sweep mops up records that carry no thread id. Threads are
-        // discovered WITHOUT --limit and drained fully, so the sweep only ever
-        // sees unthreaded records — threading --limit into the per-thread or
-        // discovery path would leak a thread's overflow into the unscoped sweep
-        // and mix sessions. --limit therefore applies only to --thread mode.
-        const pending = await store.listUnconsolidatedSourceRecords({});
-        const threadIds = [...new Set(pending.map((r) => r.threadId).filter((t): t is string => Boolean(t)))];
-        for (const threadId of threadIds) await runOne(threadId, undefined);
-        const hasUnthreaded = pending.some((r) => !r.threadId);
-        if (hasUnthreaded || reports.length === 0) await runOne(undefined, undefined);
-      }
+      const reports = await runConsolidationSweep({
+        store,
+        profileStore,
+        embedder,
+        invoke,
+        threadId: stringOption(options, "thread"),
+        limit: numberOption(options, "limit"),
+      });
 
       return json
         ? `${JSON.stringify({ reports }, null, 2)}\n`
@@ -571,12 +548,6 @@ function formatConsolidation(result: Awaited<ReturnType<ReturnType<typeof create
     `Decisions: ${result.decisions.length}`,
   ].join("\n") + "\n";
 }
-
-type ConsolidateV3Entry = {
-  threadId: string | null;
-  report?: ConsolidationReport;
-  error?: string;
-};
 
 function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
   if (reports.length === 0) return "No unconsolidated source records.\n";
