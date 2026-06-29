@@ -6,7 +6,25 @@
  */
 import path from "node:path";
 import type { MemoryStore } from "../../memory/store.ts";
+import type { ClaimKind } from "../../memory/types.ts";
+import type { EmbeddingProviderKind } from "../../memory/embedding/factory.ts";
 import { projectClaims } from "../projection.ts";
+
+// The local embedding provider lazy-loads a ~500MB ONNX model on its first
+// embed; build it once on the first dashboard recall, never at startup. Mirrors
+// the lazy embedder seam in src/mcp/slack-server.ts.
+let dashboardEmbedder: import("../../memory/embedding/types.ts").EmbeddingProvider | undefined;
+
+async function getDashboardEmbedder(): Promise<
+  import("../../memory/embedding/types.ts").EmbeddingProvider
+> {
+  if (!dashboardEmbedder) {
+    const { createEmbeddingProvider } = await import("../../memory/embedding/factory.ts");
+    const kind = (process.env.MEMORY_EMBED_PROVIDER as EmbeddingProviderKind | undefined) ?? "local";
+    dashboardEmbedder = createEmbeddingProvider(kind);
+  }
+  return dashboardEmbedder;
+}
 
 const DOCS_DIR = path.resolve(import.meta.dir, "../../../docs");
 
@@ -49,17 +67,26 @@ export async function handleMemoryRecall(
   store: MemoryStore,
   params: URLSearchParams,
 ): Promise<Response> {
-  const results = await store.recall({
-    query: params.get("query") ?? undefined,
-    tags: csv(params.get("tags")),
-    entities: csv(params.get("entities")),
-    kinds: csv(params.get("kinds")) as Parameters<MemoryStore["recall"]>[0]["kinds"],
+  const query = params.get("query") ?? undefined;
+  const kinds = csv(params.get("kinds")) as ClaimKind[] | undefined;
+  // Embed the query at this boundary — recallClaims never embeds. Skipped when
+  // no query is given (then recall ranks by weight under the filters).
+  let queryVector: Float32Array | undefined;
+  if (query && query.trim()) {
+    const embedder = await getDashboardEmbedder();
+    [queryVector] = await embedder.embed([query], "query");
+  }
+  const results = await store.recallClaims({
+    queryVector,
+    filters: {
+      repo: params.get("repo") ?? undefined,
+      // ClaimRecallFilters carries a single kind; use the first requested.
+      kind: kinds && kinds.length > 0 ? kinds[0] : undefined,
+      tags: csv(params.get("tags")),
+    },
     limit: numberParam(params.get("limit")),
-    depth: numberParam(params.get("depth")),
-    includeInactive: params.get("includeInactive") === "true",
-    includeInvalid: params.get("includeInvalid") === "true",
     // Operator browsing the dashboard is inspection, not real recall traffic:
-    // don't bump use_count or pollute the replay log.
+    // don't bump last_used_at or pollute the fade signal.
     recordUsage: false,
   });
   return Response.json({ results });
@@ -76,11 +103,6 @@ export async function handleMemoryProjection(store: MemoryStore): Promise<Respon
   const claims = await store.exportClaimVectors();
   const { points, edges } = projectClaims(claims, 5);
   return Response.json({ points, edges });
-}
-
-export async function handleMemoryConsolidate(store: MemoryStore): Promise<Response> {
-  const result = await store.consolidate();
-  return Response.json(result);
 }
 
 function csv(value: string | null): string[] | undefined {

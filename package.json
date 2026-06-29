@@ -9,8 +9,6 @@
     "test": "bun test",
     "build": "bun build ./src/index.ts --outdir ./dist --target bun",
     "cleanup": "bun run src/lifecycle/cleanup.ts",
-    "memory:eval": "bun run src/memory/eval/run.ts",
-    "memory:eval:real": "bun run src/memory/eval/real.ts",
     "migrate:prune-routing-logs": "bun run src/memory/migrations/2026-06-13-prune-routing-decision-logs.ts"
   },
   "dependencies": {
