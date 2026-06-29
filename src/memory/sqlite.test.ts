@@ -19,6 +19,55 @@ describe("SqliteMemoryStore", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("retrofits the memory_node.kind CHECK to allow 'claim' on a pre-v3 DB", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-memnode-retrofit-"));
+    const dbPath = join(dir, "old.db");
+    // Build a DB with the OLD memory_node CHECK (no 'claim'), as live DBs have.
+    const raw = new Database(dbPath);
+    raw.run(
+      `CREATE TABLE memory_node (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory', 'entity', 'tag')), created_at INTEGER NOT NULL, valid_at INTEGER, invalid_at INTEGER, superseded_by TEXT)`,
+    );
+    raw.run("INSERT INTO memory_node (id, kind, created_at) VALUES ('n1', 'lesson', 1)");
+    // Sanity: the old table rejects 'claim'.
+    expect(() =>
+      raw.run("INSERT INTO memory_node (id, kind, created_at) VALUES ('c0', 'claim', 1)"),
+    ).toThrow();
+    raw.close();
+
+    // Opening the store runs migrate() → the retrofit rebuild.
+    const s = new SqliteMemoryStore(dbPath);
+    try {
+      const db = (s as unknown as { db: Database }).db;
+      const sql = (
+        db.query("SELECT sql FROM sqlite_master WHERE name='memory_node'").get() as { sql: string }
+      ).sql;
+      expect(sql).toContain("'claim'");
+      // Pre-existing rows survive the rebuild.
+      expect(
+        (db.query("SELECT kind FROM memory_node WHERE id='n1'").get() as { kind: string }).kind,
+      ).toBe("lesson");
+      // And a claim now upserts (writes a memory_node row with kind='claim').
+      await s.upsertClaim({
+        id: "c1",
+        kind: "lesson",
+        text: "claims now allowed",
+        embedding: new Float32Array(640),
+        embedModel: "hashing",
+        dim: 640,
+        tags: [],
+        weight: 1,
+        createdAt: 1,
+        active: true,
+      });
+      expect(
+        (db.query("SELECT kind FROM memory_node WHERE id='c1'").get() as { kind: string }).kind,
+      ).toBe("claim");
+    } finally {
+      s.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("creates the source, node, event, edge, and FTS tables from the docs schema", () => {
     const db = (store as unknown as { db: Database }).db;
     const rows = db
