@@ -53,8 +53,9 @@ Junior main process
 | `register_worktree` | (internal) | Create a per-thread worktree in a routed repo and persist its path on the session |
 | `agent_search` | (internal) | Search public/private agent definitions and show dispatch registration state |
 | `reload_agent_registry` | (internal) | Reload private overlay agent identities so newly added workers become dispatchable |
-| `memory_recall` | (internal SQLite) | Recall sourced associative-memory snippets by query/tags/entities |
-| `memory_consolidate` | (internal SQLite) | Run deterministic memory consolidation: archive cold events, promote routing memories, propose draft rules |
+| `memory_recall` | (internal SQLite + profiles) | Recall v3 memory: keyed entity profiles (by `entity_refs`) + semantic claims (query embedded locally, cosine-ranked) |
+| `memory_add` | (internal SQLite) | Add and locally embed one atomic claim (lesson/fact/situation-claim) into the semantic store |
+| `memory_consolidate` | (internal SQLite + LLM) | Run the v3 offline consolidation sweep: read unconsolidated source records, derive episodes/profiles/claims via the runner LLM |
 
 Slack tools require explicit `channel_id` and `thread_ts` parameters. The spawned Claude already knows its thread coordinates from the prompt preamble built by `buildPromptPreamble()`.
 
@@ -106,21 +107,27 @@ the registry reload is for persistent-agent identity/dispatch metadata.
 
 ### Memory tools
 
-`memory_recall` and `memory_consolidate` expose the associative memory store to
-normal Junior runner sessions through MCP. They open the SQLite memory database
-from `MEMORY_DB_PATH` or `data/memory.db`, perform the requested operation, and
-close the store after each call.
+`memory_recall`, `memory_add`, and `memory_consolidate` expose Junior's v3 memory
+(see [memory-system-v3.md](memory-system-v3.md)) to normal runner sessions through
+MCP. They open the SQLite memory database from `MEMORY_DB_PATH` or `data/memory.db`,
+perform the requested operation, and close the store after each call. The local
+embedding model (harrier-270 ONNX) is lazy-loaded on the first recall/add, never at
+server startup.
 
-- `memory_recall` accepts `query`, `tags`, `entities`, `kinds`, `limit`, `depth`,
-  `include_inactive`, and `include_invalid`, and returns JSON with scored,
-  sourced snippets and explanation traces.
-- `memory_consolidate` accepts archive/promotion thresholds and returns JSON
-  with decisions, promoted memory ids, archived event ids, and proposed rule ids.
+- `memory_recall` accepts `query`, `repo`, `kinds`, `entity_refs`, and `limit`. It
+  fetches the keyed entity profiles verbatim by `entity_ref` (no vector) and embeds
+  `query` locally to cosine-rank the atomic claim store; returns the profiles plus
+  the top-k claims. Recall is cosine-only — there is no FTS channel.
+- `memory_add` accepts `text`, `kind`, `repo`, and `tags`, embeds the text locally
+  (document mode), and stores one atomic claim with its embedding co-located.
+- `memory_consolidate` takes no inputs. It drains all unconsolidated source records
+  (session-scoped per thread, then a final unthreaded sweep), asks the runner LLM
+  for derivations, and persists episodes/profiles/claims through the v3 gates.
 
 Workflow utility runs use an explicit utility cwd, which skips Junior's project
-MCP wiring by design. Those runs should access the same store through the CLI:
-`bun run <runtime context junior.memoryCli> recall --query "..." --json` and
-`bun run <runtime context junior.memoryCli> consolidate --json`.
+MCP wiring by design. Those runs access the store through the v3 CLI
+(`src/memory/cli.ts`): `consolidate-v3`, `recall-claims`, `add-claim`, `add-lesson`,
+and `add-fact`.
 
 ## What it replaced
 

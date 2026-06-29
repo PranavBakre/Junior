@@ -175,6 +175,16 @@ handle.onEvent((event) => updateSlackStatus(event));
 
 No external message queue needed. If the bot scales to multiple processes, add a real pub/sub boundary then.
 
+### 9. Memory: capture cheap, consolidate offline, recall by two channels
+
+Junior's long-term memory (`src/memory/`, `data/memory.db`, separate from the session DB) follows one invariant: **the recallable unit is the consolidated derivation, not the raw turn.** Three stages:
+
+1. **Capture (hot path).** `MemoryIngestor` appends Slack messages / routing decisions / runner outputs as raw **source records** — cheap provenance, never returned by recall.
+2. **Consolidate (offline).** A `claude -p` pass (`runConsolidationSweep` → `consolidateSession`) reads unconsolidated source records and derives **episodes** (affect-tagged log), keyed **profiles** (person/repo/situation markdown files under `memory/profiles/`), and atomic **claims** (lessons/facts), then stamps the records consolidated so they are processed exactly once.
+3. **Recall (two channels, merged).** Keyed profiles are fetched verbatim by `entity_ref`; the atomic claim store is **cosine-ranked** against a locally embedded query. Recall is cosine-only — no FTS.
+
+Two storage substrates by retrieval mode: profiles → markdown files (keyed, human-inspectable, git-trackable); claims/episodes → SQLite rows with the embedding co-located as a Float32 BLOB. Embeddings are produced in-process by a local provider (harrier-270 ONNX) behind the same provider/factory pattern as decision #6 — affective memory never leaves for a remote API. The retired associative layer (event/edge graph, FTS, candidate-rule learning) was migrated into claims by `migrate-v3.ts` and dropped. Full design: [features/memory-system-v3.md](features/memory-system-v3.md).
+
 ## Data Flow
 
 ### Happy path: new message in new thread
