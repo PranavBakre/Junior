@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
 
-import { createRunnerInvoke, parseConsolidationOutput, type RunText } from "./runner.ts";
+import {
+  buildOpenCodeConsolidationArgs,
+  createRunnerInvoke,
+  DEFAULT_CLAUDE_MODEL,
+  DEFAULT_OPENCODE_MODEL,
+  extractOpenCodeAssistantText,
+  parseConsolidationOutput,
+  type RunText,
+} from "./runner.ts";
 import type { ConsolidationOutput } from "./types.ts";
 
 const WELL_FORMED: ConsolidationOutput = {
@@ -106,6 +114,62 @@ describe("createRunnerInvoke", () => {
       },
     });
     await expect(invoke("PROMPT")).rejects.toThrow(/timed out after 50ms/);
+  });
+
+  it("pins the opencode model by default (no runner/model given)", async () => {
+    let seenModel: string | undefined;
+    const invoke = createRunnerInvoke({
+      runText: async (req) => {
+        seenModel = req.model;
+        return JSON.stringify({ episodes: [], profiles: [], claims: [] });
+      },
+    });
+    await invoke("PROMPT");
+    expect(seenModel).toBe(DEFAULT_OPENCODE_MODEL);
+  });
+
+  it("pins the claude model when runner=claude and no model is given", async () => {
+    let seenModel: string | undefined;
+    const invoke = createRunnerInvoke({
+      runner: "claude",
+      runText: async (req) => {
+        seenModel = req.model;
+        return JSON.stringify({ episodes: [], profiles: [], claims: [] });
+      },
+    });
+    await invoke("PROMPT");
+    expect(seenModel).toBe(DEFAULT_CLAUDE_MODEL);
+  });
+});
+
+describe("opencode consolidation runText helpers", () => {
+  it("builds a stripped one-shot argv: run --format json --model <m> <prompt>", () => {
+    expect(buildOpenCodeConsolidationArgs("THE PROMPT", "opencode-go/deepseek-v4-pro")).toEqual([
+      "run",
+      "--format",
+      "json",
+      "--model",
+      "opencode-go/deepseek-v4-pro",
+      "THE PROMPT",
+    ]);
+  });
+
+  it("omits --model when none is given (no session/dir/agent/mcp flags either)", () => {
+    expect(buildOpenCodeConsolidationArgs("THE PROMPT")).toEqual(["run", "--format", "json", "THE PROMPT"]);
+  });
+
+  it("extracts the final assistant text from an opencode NDJSON envelope", () => {
+    const payload = '{"episodes":[],"profiles":[],"claims":[]}';
+    const stdout = [
+      JSON.stringify({ type: "step_start", sessionID: "ses-123" }),
+      JSON.stringify({ type: "text", text: payload }),
+      JSON.stringify({ type: "step_finish" }),
+    ].join("\n");
+
+    const text = extractOpenCodeAssistantText(stdout);
+    expect(text).toBe(payload);
+    // And it round-trips through the consolidation parser.
+    expect(parseConsolidationOutput(text)).toEqual({ episodes: [], profiles: [], claims: [] });
   });
 });
 

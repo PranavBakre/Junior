@@ -357,4 +357,23 @@ describe("buildConsolidationPrompt body cap", () => {
     expect(prompt).toContain(longBody);
     expect(prompt).not.toContain("…[truncated]");
   });
+
+  it("caps only the low-value kinds — a long curated_fact goes in whole, a long runner_output is cut", () => {
+    const factBody = "F".repeat(500);
+    const runnerBody = "R".repeat(500);
+    const prompt = buildConsolidationPrompt(
+      [
+        record({ id: "fact-1", kind: "curated_fact", body: factBody }),
+        record({ id: "run-1", kind: "runner_output", body: runnerBody }),
+      ],
+      { profiles: [], claims: [] },
+      100,
+    );
+
+    // High-value curated_fact is never truncated, even with a cap set.
+    expect(prompt).toContain(factBody);
+    // Low-value runner_output is cut to the cap.
+    expect(prompt).toContain(`${"R".repeat(100)}…[truncated]`);
+    expect(prompt).not.toContain("R".repeat(101));
+  });
 });

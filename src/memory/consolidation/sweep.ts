@@ -11,6 +11,7 @@ import type { ProfileStore } from "../profiles/store.ts";
 import type { MemoryStore } from "../store.ts";
 import type { MemorySourceRecord } from "../types.ts";
 import { consolidateSession } from "./consolidate.ts";
+import { cappedBodyLength } from "./prompt.ts";
 import type { ConsolidationInvoke, ConsolidationReport } from "./types.ts";
 
 /**
@@ -39,6 +40,18 @@ export const DEFAULT_MAX_BATCH_CHARS = 48_000;
  */
 export const DEFAULT_BODY_CAP = 2_000;
 
+/**
+ * Default set of source-record kinds the sweep consolidates when `kinds` is
+ * unset: the high-value evidence. The live backlog is dominated by low-value
+ * `runner_output` transcript noise (plus `routing_decision` telemetry), so those
+ * are excluded by default — they stay unconsolidated (deferred), not processed.
+ */
+export const DEFAULT_CONSOLIDATION_KINDS: readonly string[] = [
+  "slack_message",
+  "curated_fact",
+  "manual_correction",
+];
+
 /** Label for the group of records that carry no thread id. */
 const UNTHREADED_GROUP = "(unthreaded)";
 
@@ -55,6 +68,12 @@ export interface RunConsolidationSweepArgs {
   maxBatchChars?: number;
   /** Per-record body cap (chars) forwarded to the prompt. Defaults to DEFAULT_BODY_CAP. */
   bodyCap?: number;
+  /**
+   * Source-record kinds to consolidate (full-sweep mode). Records of other kinds
+   * are left unconsolidated (deferred, never marked). Defaults to
+   * DEFAULT_CONSOLIDATION_KINDS (the high-value set).
+   */
+  kinds?: string[];
   /** Clock (epoch ms) forwarded to the engine. Defaults to Date.now() per call. */
   now?: number;
 }
@@ -73,15 +92,18 @@ export interface RunConsolidationSweepArgs {
  * their `sourceRecordId`; only records in the set are promoted), so a record set
  * spanning threads still persists correctly, and the prompt scaffold tells the
  * model to judge each `thread=` group on its own. We fetch all unconsolidated
- * records once, group by thread (unthreaded → one `(unthreaded)` group), size
- * each group by its body-capped char total, and First-Fit-Decreasing bin-pack
- * groups into batches whose capped size ≤ `maxBatchChars`. A single group larger
- * than `maxBatchChars` becomes its own batch (its bodies are capped, so it stays
- * bounded). Each thread's records stay contiguous within a batch.
+ * records once, FILTER to the allowed `kinds` (default = the high-value set), then
+ * group by thread (unthreaded → one `(unthreaded)` group) and size each group by
+ * its body-capped char total. A group whose size exceeds `maxBatchChars` is SPLIT
+ * into consecutive sub-chunks (each ≤ budget; a lone record over budget is its own
+ * chunk), each its own batch. The remaining ≤budget groups are First-Fit-Decreasing
+ * bin-packed into batches whose capped size ≤ `maxBatchChars`. Each thread's records
+ * stay contiguous within a batch (and in source order across its split chunks).
  *
  * Incrementality is automatic: only unconsolidated records are fetched, so
  * fully-consolidated threads never appear, and each batch stamps exactly the
- * records it processed. `limit` applies only to single-thread (`threadId`) mode.
+ * records it processed (records of excluded kinds are simply never touched).
+ * `limit` applies only to single-thread (`threadId`) mode.
  */
 export async function runConsolidationSweep(
   args: RunConsolidationSweepArgs,
@@ -117,8 +139,12 @@ export async function runConsolidationSweep(
     return reports;
   }
 
-  // Full sweep: fetch every pending record once, group by thread, bin-pack.
-  const pending = await store.listUnconsolidatedSourceRecords({});
+  // Full sweep: fetch every pending record once, filter to allowed kinds, group
+  // by thread, split oversized groups, then bin-pack the rest.
+  const allowedKinds = new Set(args.kinds ?? DEFAULT_CONSOLIDATION_KINDS);
+  const pending = (await store.listUnconsolidatedSourceRecords({})).filter((r) =>
+    allowedKinds.has(r.kind),
+  );
   if (pending.length === 0) return [{ threadIds: [], report: { skipped: true } }];
 
   // Group by thread, preserving first-seen (oldest-first) order so each thread's
@@ -132,32 +158,76 @@ export async function runConsolidationSweep(
   }
 
   // Size each group by the BODY-CAPPED char total — the sizing must match what is
-  // actually sent (a thread of huge bodies packs by its capped size, not raw).
+  // actually sent (capped kinds count at min(len, bodyCap), high-value kinds in full).
   const sized = [...groups.entries()].map(([threadId, records]) => ({
     threadId,
     records,
-    size: records.reduce((sum, r) => sum + Math.min(r.body.length, bodyCap), 0),
+    size: records.reduce((sum, r) => sum + cappedBodyLength(r, bodyCap), 0),
   }));
 
-  // First-Fit-Decreasing: place the largest groups first into the first batch
-  // that still has room; an over-budget group lands alone in a fresh batch.
-  sized.sort((a, b) => b.size - a.size);
-  const batches: Array<{ threadIds: string[]; records: MemorySourceRecord[]; size: number }> = [];
+  // Oversized groups are split into ≤budget sub-chunks (each its own batch); the
+  // rest are FFD-packed. Process oversized splits first for a deterministic order.
+  const batches: Array<{ threadIds: string[]; records: MemorySourceRecord[] }> = [];
+  const packable: typeof sized = [];
   for (const group of sized) {
-    let target = batches.find((b) => b.size + group.size <= maxBatchChars);
+    if (group.size > maxBatchChars) {
+      for (const chunk of splitGroup(group.records, maxBatchChars, bodyCap)) {
+        batches.push({ threadIds: [group.threadId], records: chunk });
+      }
+    } else {
+      packable.push(group);
+    }
+  }
+
+  // First-Fit-Decreasing: place the largest groups first into the first batch
+  // that still has room (all packable groups are ≤ budget by construction).
+  packable.sort((a, b) => b.size - a.size);
+  const bins: Array<{ threadIds: string[]; records: MemorySourceRecord[]; size: number }> = [];
+  for (const group of packable) {
+    let target = bins.find((b) => b.size + group.size <= maxBatchChars);
     if (!target) {
       target = { threadIds: [], records: [], size: 0 };
-      batches.push(target);
+      bins.push(target);
     }
     target.threadIds.push(group.threadId);
     target.records.push(...group.records);
     target.size += group.size;
   }
+  for (const bin of bins) batches.push({ threadIds: bin.threadIds, records: bin.records });
 
   for (const batch of batches) {
     await runBatch(batch.threadIds, { records: batch.records });
   }
   return reports;
+}
+
+/**
+ * Split one thread-group's records into consecutive sub-chunks whose body-capped
+ * size is ≤ `maxBatchChars`. Greedy: accumulate records until the next would
+ * overflow, then start a new chunk. A single record larger than the budget cannot
+ * be split further, so it becomes its own (over-budget) chunk. Records stay in
+ * source order, so the thread reads contiguously across its chunks.
+ */
+function splitGroup(
+  records: MemorySourceRecord[],
+  maxBatchChars: number,
+  bodyCap: number,
+): MemorySourceRecord[][] {
+  const chunks: MemorySourceRecord[][] = [];
+  let current: MemorySourceRecord[] = [];
+  let currentSize = 0;
+  for (const r of records) {
+    const size = cappedBodyLength(r, bodyCap);
+    if (current.length > 0 && currentSize + size > maxBatchChars) {
+      chunks.push(current);
+      current = [];
+      currentSize = 0;
+    }
+    current.push(r);
+    currentSize += size;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 /**
