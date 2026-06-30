@@ -107,11 +107,14 @@ describe("runConsolidationSweep", () => {
     expect(recordIdsInPrompt(prompts[1])).toEqual(["b1"]);
   });
 
-  it("gives an over-budget thread its own batch (bodies capped, so still bounded)", async () => {
-    // bodyCap 50: BIG's two records cap to 50 each => group size 100 > maxBatchChars 80.
-    await seed({ id: "big1", threadId: "T-big", body: "x".repeat(80) });
-    await seed({ id: "big2", threadId: "T-big", body: "y".repeat(80) });
-    await seed({ id: "s1", threadId: "T-s", body: "z".repeat(40) });
+  it("splits an oversized thread into consecutive ≤budget sub-chunks (each its own batch)", async () => {
+    // runner_output (a capped kind) so bodyCap applies; kinds includes it so the
+    // default high-value filter doesn't drop it. Four records cap to 50 each =>
+    // group size 200 > maxBatchChars 120. Greedy split: [r1,r2]=100, [r3,r4]=100.
+    let ts = 1000;
+    for (const id of ["r1", "r2", "r3", "r4"]) {
+      await seed({ id, threadId: "T-big", kind: "runner_output", body: `${id}-`.padEnd(80, "z"), createdAt: (ts += 1000) });
+    }
 
     const prompts: string[] = [];
     const invoke: ConsolidationInvoke = async (prompt) => {
@@ -124,23 +127,58 @@ describe("runConsolidationSweep", () => {
       profileStore,
       embedder,
       invoke,
-      maxBatchChars: 80,
+      maxBatchChars: 120,
       bodyCap: 50,
+      kinds: ["runner_output"],
     });
 
+    // ceil(200/120) = 2 batches, each <= budget, all the same thread, in order.
     expect(reports).toHaveLength(2);
-    // FFD desc: BIG(100) alone in its own batch, then S(40) in the next.
     expect(reports[0].threadIds).toEqual(["T-big"]);
-    expect(reports[1].threadIds).toEqual(["T-s"]);
-    expect(recordIdsInPrompt(prompts[0])).toEqual(["big1", "big2"]);
+    expect(reports[1].threadIds).toEqual(["T-big"]);
+    expect(recordIdsInPrompt(prompts[0])).toEqual(["r1", "r2"]);
+    expect(recordIdsInPrompt(prompts[1])).toEqual(["r3", "r4"]);
+    expect(await store.listUnconsolidatedSourceRecords({})).toHaveLength(0);
   });
 
-  it("sizes by body-capped chars, not raw — a huge-body thread still packs with others", async () => {
-    // Raw bodies (1000 each) blow past maxBatchChars 250, but capped at 100 each
-    // the H group is only 200, so H(200) + S(40) = 240 <= 250 packs into ONE batch.
-    await seed({ id: "h1", threadId: "T-h", body: "h".repeat(1000) });
-    await seed({ id: "h2", threadId: "T-h", body: "H".repeat(1000) });
-    await seed({ id: "s1", threadId: "T-s", body: "s".repeat(40) });
+  it("puts an unsplittable single over-budget record alone in its own chunk", async () => {
+    // curated_fact is never capped; the middle record (300 chars) alone exceeds
+    // maxBatchChars 120 and cannot be split further, so it gets its own batch.
+    // Explicit increasing createdAt so source order is deterministic (the store
+    // orders by created_at ASC, then id ASC).
+    await seed({ id: "small1", threadId: "T-cf", kind: "curated_fact", body: "a".repeat(30), createdAt: 1000 });
+    await seed({ id: "big", threadId: "T-cf", kind: "curated_fact", body: "b".repeat(300), createdAt: 2000 });
+    await seed({ id: "small2", threadId: "T-cf", kind: "curated_fact", body: "c".repeat(30), createdAt: 3000 });
+
+    const prompts: string[] = [];
+    const invoke: ConsolidationInvoke = async (prompt) => {
+      prompts.push(prompt);
+      return EMPTY;
+    };
+
+    const reports = await runConsolidationSweep({
+      store,
+      profileStore,
+      embedder,
+      invoke,
+      maxBatchChars: 120,
+      bodyCap: 50,
+      kinds: ["curated_fact"],
+    });
+
+    expect(reports).toHaveLength(3);
+    expect(reports.every((r) => r.threadIds[0] === "T-cf")).toBe(true);
+    expect(recordIdsInPrompt(prompts[0])).toEqual(["small1"]);
+    expect(recordIdsInPrompt(prompts[1])).toEqual(["big"]); // alone, unsplittable
+    expect(recordIdsInPrompt(prompts[2])).toEqual(["small2"]);
+  });
+
+  it("sizes by body-capped chars, not raw — a huge runner_output thread still packs with others", async () => {
+    // Raw bodies (1000 each) blow past maxBatchChars 250, but runner_output capped
+    // at 100 each makes the H group only 200, so H(200) + S(40) = 240 <= 250: ONE batch.
+    await seed({ id: "h1", threadId: "T-h", kind: "runner_output", body: "h".repeat(1000) });
+    await seed({ id: "h2", threadId: "T-h", kind: "runner_output", body: "H".repeat(1000) });
+    await seed({ id: "s1", threadId: "T-s", kind: "runner_output", body: "s".repeat(40) });
 
     const prompts: string[] = [];
     const invoke: ConsolidationInvoke = async (prompt) => {
@@ -155,12 +193,36 @@ describe("runConsolidationSweep", () => {
       invoke,
       maxBatchChars: 250,
       bodyCap: 100,
+      kinds: ["runner_output"],
     });
 
     expect(reports).toHaveLength(1);
     expect([...reports[0].threadIds].sort()).toEqual(["T-h", "T-s"]);
-    // The long bodies are truncated in the prompt at bodyCap.
+    // The long runner_output bodies are truncated in the prompt at bodyCap.
     expect(prompts[0]).toContain("…[truncated]");
+  });
+
+  it("filters to the high-value kinds by default — runner_output/routing_decision are deferred, not marked", async () => {
+    await seed({ id: "keep", threadId: "T-keep", kind: "slack_message", body: "high-value message" });
+    await seed({ id: "noise1", threadId: "T-noise", kind: "runner_output", body: "transcript noise" });
+    await seed({ id: "noise2", threadId: "T-noise", kind: "routing_decision", body: "routing telemetry" });
+
+    const prompts: string[] = [];
+    const invoke: ConsolidationInvoke = async (prompt) => {
+      prompts.push(prompt);
+      return EMPTY;
+    };
+
+    // No `kinds` arg → default high-value set (excludes runner_output/routing_decision).
+    const reports = await runConsolidationSweep({ store, profileStore, embedder, invoke });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0].threadIds).toEqual(["T-keep"]);
+    expect(prompts[0]).not.toContain("transcript noise");
+    expect(prompts[0]).not.toContain("routing telemetry");
+    // Excluded kinds are deferred (left unconsolidated), only the kept record is stamped.
+    expect(await store.listUnconsolidatedSourceRecords({ threadId: "T-noise" })).toHaveLength(2);
+    expect(await store.listUnconsolidatedSourceRecords({ threadId: "T-keep" })).toHaveLength(0);
   });
 
   it("captures a failed batch and continues; that batch's records stay unconsolidated", async () => {

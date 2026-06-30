@@ -13,11 +13,22 @@
 // get retried), never a crash.
 
 import { signalProcessTree } from "../../lifecycle/process-tree.ts";
+import { createOpenCodeEventMapper, createOpenCodeStreamParser } from "../../opencode/parser.ts";
 import { consolidationOutputSchema } from "./types.ts";
 import type { ConsolidationInvoke, ConsolidationOutput } from "./types.ts";
 
 /** Default per-run timeout guard (CLAUDE.md rule 12). 5 minutes. */
 export const DEFAULT_CONSOLIDATION_TIMEOUT_MS = 5 * 60_000;
+
+/** Which CLI backs the consolidation run. */
+export type ConsolidationRunner = "claude" | "opencode";
+
+/** Default runner: OpenCode (so consolidation runs the pinned deepseek model). */
+export const DEFAULT_CONSOLIDATION_RUNNER: ConsolidationRunner = "opencode";
+
+/** Pinned models per runner — never leave the model unpinned (CLI-default drift). */
+export const DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4-pro";
+export const DEFAULT_CLAUDE_MODEL = "claude-opus-4-6[1M]";
 
 /**
  * The injectable subprocess boundary: given the (schema-augmented) prompt, run a
@@ -33,21 +44,27 @@ export type RunText = (req: {
 export interface RunnerInvokeOptions {
   /** Timeout guard in ms (default 5 min). Kills the subprocess tree on expiry. */
   timeoutMs?: number;
-  /** Optional model override passed through to `claude --model`. */
+  /** Which CLI to spawn. Defaults to DEFAULT_CONSOLIDATION_RUNNER ("opencode"). */
+  runner?: ConsolidationRunner;
+  /** Model override. Defaults to the pinned model for the chosen runner. */
   model?: string;
-  /** Subprocess injection point. Defaults to a real one-shot `claude -p` run. */
+  /** Subprocess injection point. Defaults to the chosen runner's one-shot run. */
   runText?: RunText;
 }
 
 /**
  * Build the production `ConsolidationInvoke`: append the JSON-only output
  * contract to the consolidation prompt, run the model, then parse + validate.
+ * The model is ALWAYS pinned (per-runner default) so consolidation never drifts
+ * onto an unpinned CLI default.
  */
 export function createRunnerInvoke(opts: RunnerInvokeOptions = {}): ConsolidationInvoke {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CONSOLIDATION_TIMEOUT_MS;
-  const runText = opts.runText ?? defaultRunText;
+  const runner = opts.runner ?? DEFAULT_CONSOLIDATION_RUNNER;
+  const model = opts.model ?? (runner === "opencode" ? DEFAULT_OPENCODE_MODEL : DEFAULT_CLAUDE_MODEL);
+  const runText = opts.runText ?? (runner === "opencode" ? openCodeRunText : defaultRunText);
   return async (prompt: string): Promise<ConsolidationOutput> => {
-    const raw = await runText({ prompt: appendOutputContract(prompt), timeoutMs, model: opts.model });
+    const raw = await runText({ prompt: appendOutputContract(prompt), timeoutMs, model });
     return parseConsolidationOutput(raw);
   };
 }
@@ -206,4 +223,71 @@ function extractAssistantText(stdout: string): string {
     // Not the json envelope — hand the raw text to the consolidation parser.
   }
   return trimmed;
+}
+
+/**
+ * Argv for a one-shot OpenCode consolidation run. Deliberately STRIPPED relative
+ * to the Slack-turn spawner (`src/opencode/spawner.ts`): no session, no worktree
+ * (`--dir`), no MCP, no agent — just `opencode run --model <m> --format json
+ * "<prompt>"`. The prompt is the positional, kept before any flags.
+ */
+export function buildOpenCodeConsolidationArgs(prompt: string, model?: string): string[] {
+  const args = ["run", "--format", "json"];
+  if (model) args.push("--model", model);
+  args.push(prompt);
+  return args;
+}
+
+/**
+ * Extract the final assistant text from OpenCode's `--format json` stdout. Reuses
+ * the production stream parser + event mapper (NDJSON events); the mapper's
+ * `response` is the text of the last assistant step. Falls back to trimmed stdout
+ * if no assistant text was mapped (the downstream JSON parser still gets a chance).
+ */
+export function extractOpenCodeAssistantText(stdout: string): string {
+  const parser = createOpenCodeStreamParser();
+  const mapper = createOpenCodeEventMapper();
+  for (const event of parser.feed(stdout)) mapper.map(event);
+  for (const event of parser.flush()) mapper.map(event);
+  return mapper.response || stdout.trim();
+}
+
+/**
+ * OpenCode subprocess: a one-shot `opencode run --format json` run with the same
+ * 5-min timeout guard + process-tree SIGINT as `defaultRunText`. Returns the
+ * model's final assistant text for the consolidation parser to validate.
+ */
+async function openCodeRunText(req: { prompt: string; timeoutMs: number; model?: string }): Promise<string> {
+  const proc = Bun.spawn(["opencode", ...buildOpenCodeConsolidationArgs(req.prompt, req.model)], {
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+    detached: true,
+  });
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    signalProcessTree(proc.pid, "SIGINT");
+  }, req.timeoutMs);
+
+  try {
+    const stdout = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    if (timedOut) {
+      throw new Error(`consolidation runner: opencode timed out after ${req.timeoutMs}ms`);
+    }
+    if (exitCode !== 0) {
+      let stderr = "";
+      try {
+        stderr = (await new Response(proc.stderr).text()).trim();
+      } catch {
+        // best-effort stderr capture
+      }
+      throw new Error(`consolidation runner: opencode exited ${exitCode}${stderr ? `: ${stderr}` : ""}`);
+    }
+    return extractOpenCodeAssistantText(stdout);
+  } finally {
+    clearTimeout(timer);
+  }
 }

@@ -8,8 +8,31 @@
 // (existing profiles + a sample of nearby claims) so it merges instead of
 // duplicating.
 
-import type { MemorySourceRecord } from "../types.ts";
+import type { MemorySourceKind, MemorySourceRecord } from "../types.ts";
 import type { ConsolidationContext } from "./types.ts";
+
+/**
+ * Only these source-record kinds are subject to `bodyCap` truncation —
+ * `runner_output`/`routing_decision` are long, low-value transcript noise. The
+ * high-value kinds (`slack_message`, `curated_fact` imported-learning files,
+ * `manual_correction`) are NEVER truncated; they must reach the model whole.
+ */
+export const BODY_CAPPED_KINDS: ReadonlySet<MemorySourceKind> = new Set<MemorySourceKind>([
+  "runner_output",
+  "routing_decision",
+]);
+
+/**
+ * Effective evidence size of a record (chars) under the cap policy: capped kinds
+ * count as `min(len, bodyCap)`, everything else counts in full. The sweep sizes
+ * its batches with this so packing matches exactly what the prompt sends.
+ */
+export function cappedBodyLength(record: MemorySourceRecord, bodyCap?: number): number {
+  if (bodyCap != null && BODY_CAPPED_KINDS.has(record.kind)) {
+    return Math.min(record.body.length, bodyCap);
+  }
+  return record.body.length;
+}
 
 const HIGH_BAR = `You are Junior's memory consolidator. You read raw source records from a work
 session and decide what — if anything — durable should be remembered.
@@ -39,9 +62,10 @@ export function buildConsolidationPrompt(
   records: MemorySourceRecord[],
   context: ConsolidationContext,
   /**
-   * Per-record body cap (chars). When set, each record body is truncated to this
-   * many chars in the prompt with a `…[truncated]` marker — runner_output records
-   * are long and rarely need full text for memory derivation. Unset → no cap.
+   * Per-record body cap (chars). When set, bodies of `BODY_CAPPED_KINDS`
+   * (`runner_output`/`routing_decision`) are truncated to this many chars in the
+   * prompt with a `…[truncated]` marker — they are long and rarely need full text
+   * for memory derivation. High-value kinds are never truncated. Unset → no cap.
    */
   bodyCap?: number,
 ): string {
@@ -52,7 +76,7 @@ export function buildConsolidationPrompt(
         .filter(Boolean)
         .join(" ");
       let body = r.body.replace(/\s+/g, " ").trim();
-      if (bodyCap != null && body.length > bodyCap) {
+      if (bodyCap != null && BODY_CAPPED_KINDS.has(r.kind) && body.length > bodyCap) {
         body = `${body.slice(0, bodyCap)}…[truncated]`;
       }
       return `- id=${r.id} from=${who} kind=${r.kind}${where ? ` ${where}` : ""}\n    ${body}`;

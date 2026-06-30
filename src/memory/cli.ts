@@ -79,7 +79,17 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       // `runConsolidationSweep` helper so the workflow and MCP tool run the same path.
       const profileStore = deps.profileStore ?? createProfileStore();
       const embedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
-      const invoke = deps.invoke ?? createRunnerInvoke({ timeoutMs: numberOption(options, "timeout-ms") });
+      const runner = stringOption(options, "runner");
+      if (runner && runner !== "claude" && runner !== "opencode") {
+        throw new Error(`--runner must be one of: claude, opencode. Got: ${runner}`);
+      }
+      const invoke =
+        deps.invoke ??
+        createRunnerInvoke({
+          timeoutMs: numberOption(options, "timeout-ms"),
+          runner: runner as "claude" | "opencode" | undefined,
+          model: stringOption(options, "model"),
+        });
 
       const reports = await runConsolidationSweep({
         store,
@@ -90,6 +100,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         limit: numberOption(options, "limit"),
         maxBatchChars: numberOption(options, "max-batch-chars"),
         bodyCap: numberOption(options, "body-cap"),
+        kinds: listOption(options, "kinds"),
       });
 
       return json
@@ -336,7 +347,7 @@ function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
 function usage(): string {
   return [
     "Usage:",
-    "  bun run src/memory/cli.ts consolidate-v3 [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--timeout-ms n] [--json]",
+    "  bun run src/memory/cli.ts consolidate-v3 [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--kinds slack_message,curated_fact,...] [--runner claude|opencode] [--model <model>] [--timeout-ms n] [--json]",
     "  bun run src/memory/cli.ts add-lesson --id <id> --title <title> --body <body> [--applies-when <text>] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--json]",
