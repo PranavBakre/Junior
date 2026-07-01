@@ -24,7 +24,9 @@ import type {
   ProfileStoreOptions,
 } from "./types.ts";
 
-const DEFAULT_ROOT = "memory/profiles";
+// Under data/ (gitignored, co-located with the DB) — these are derived character
+// sketches of real people and must never be committed to a public repo.
+const DEFAULT_ROOT = "data/profiles";
 
 const KIND_FOLDER: Record<ProfileKind, string> = {
   person: "people",
