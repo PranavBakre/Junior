@@ -12,6 +12,11 @@ data/
 *.db-wal
 *.db-shm
 
+# Derived entity profiles — character sketches of real people (person/repo/situation),
+# written at consolidation time. Runtime data, never tracked. (Anchored to repo root so
+# it does NOT match the src/memory/profiles/ source code.)
+/memory/profiles/
+
 # Support config (operator-specific, never tracked)
 support/repo-routing.yaml
 support/admin-credentials.yaml
