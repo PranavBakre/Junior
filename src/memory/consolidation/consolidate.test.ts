@@ -53,6 +53,13 @@ describe("consolidateSession", () => {
       .map((r) => r.id);
   }
 
+  function claimSourceEpisodes(): Array<string | null> {
+    return db()
+      .query<{ source_episode: string | null }, []>("SELECT source_episode FROM claim ORDER BY id")
+      .all()
+      .map((r) => r.source_episode);
+  }
+
   async function seedRecord(over: Partial<MemorySourceRecord> & { id: string }): Promise<void> {
     await store.appendSourceRecord({
       kind: "slack_message",
@@ -295,6 +302,57 @@ describe("consolidateSession", () => {
     expect(await store.listUnconsolidatedSourceRecords({ threadId: "T-a" })).toHaveLength(0);
     expect(await store.listUnconsolidatedSourceRecords({ threadId: "T-b" })).toHaveLength(0);
     expect(await store.listUnconsolidatedSourceRecords({ threadId: "T-c" })).toHaveLength(1);
+  });
+
+  it("nulls claim sourceEpisode for a multi-thread batch (no cross-thread backlink)", async () => {
+    // Two threads, each contributing an episode + a claim in one batch. Attributing
+    // either claim to appendedEpisodeIds[0] would falsely link across threads.
+    await seedRecord({ id: "ta-1", threadId: "T-a", body: "thread a moment" });
+    await seedRecord({ id: "tb-1", threadId: "T-b", body: "thread b moment" });
+    const batch = await store.listUnconsolidatedSourceRecords({});
+
+    await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      invoke: mockInvoke({
+        episodes: [
+          { sourceRecordId: "ta-1", emotion: "praise", salience: 0.7 },
+          { sourceRecordId: "tb-1", emotion: "frustration", salience: 0.6 },
+        ],
+        profiles: [],
+        claims: [
+          { kind: "lesson", text: "A lesson from thread A." },
+          { kind: "fact", text: "A fact from thread B." },
+        ],
+      }),
+      records: batch,
+    });
+
+    expect(episodeCount()).toBe(2);
+    const sources = claimSourceEpisodes();
+    expect(sources).toHaveLength(2);
+    expect(sources.every((s) => s === null)).toBe(true);
+  });
+
+  it("keeps the claim→episode backlink for a single-thread batch", async () => {
+    await seedRecord({ id: "solo-1", threadId: "T-solo", body: "a notable single-thread moment" });
+    await seedRecord({ id: "solo-2", threadId: "T-solo", body: "more of the same thread" });
+    const batch = await store.listUnconsolidatedSourceRecords({});
+
+    await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      invoke: mockInvoke({
+        episodes: [{ sourceRecordId: "solo-1", emotion: "resolve", salience: 0.7 }],
+        profiles: [],
+        claims: [{ kind: "lesson", text: "A lesson from the single thread." }],
+      }),
+      records: batch,
+    });
+
+    expect(claimSourceEpisodes()).toEqual(["solo-1"]);
   });
 
   it("persists nothing for the high-bar empty-output case (but still consumes the records)", async () => {

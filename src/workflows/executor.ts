@@ -369,9 +369,10 @@ export class WorkflowExecutor {
   private async runMemoryConsolidation(): Promise<string> {
     if (!this.memoryStore) throw new Error("memory store not configured");
     // v3 offline write path (memory v3 §7): drain unconsolidated source records,
-    // session-scoped per thread plus a final unthreaded sweep, persisting episodes
-    // / profiles / claims through the gates. The legacy deterministic
-    // `memoryStore.consolidate()` is intentionally no longer called here.
+    // kind-filtered to the high-value set and bin-packed by size into batched runner
+    // calls (several threads clubbed per call), persisting episodes / profiles /
+    // claims through the gates. The legacy deterministic `memoryStore.consolidate()`
+    // is intentionally no longer called here.
     const profileStore = this.consolidationDeps?.profileStore ?? createProfileStore();
     const embedder = this.consolidationDeps?.embedder ?? (await loadLocalEmbedder());
     const invoke = this.consolidationDeps?.invoke ?? createRunnerInvoke({});

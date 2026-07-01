@@ -26,10 +26,13 @@ export type ConsolidateV3Entry = {
 };
 
 /**
- * Default batch size budget (chars), measured on the BODY-CAPPED evidence that
- * is actually sent. Conservative: ~48k chars ≈ ~12k tokens of evidence, leaving
- * ample room for the prompt scaffold, the profile/claim context block, and the
- * JSON output within the model context window.
+ * Default batch size budget (chars). NOTE: this counts EVIDENCE body chars only
+ * (the body-capped `cappedBodyLength` sum) — it excludes the per-record framing
+ * (`- id=… from=… kind=… thread=…`) and the `…[truncated]` marker, so it is NOT
+ * an exact bound on the bytes actually sent. That is safe only because ~48k chars
+ * (≈ ~12k tokens of evidence) sits far under every runner's context window, leaving
+ * ample room for the framing, the prompt scaffold, the profile/claim context block,
+ * and the JSON output.
  */
 export const DEFAULT_MAX_BATCH_CHARS = 48_000;
 

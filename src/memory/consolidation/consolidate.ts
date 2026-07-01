@@ -124,6 +124,14 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
   const acceptedBatch: Float32Array[] = [];
   let claimsWritten = 0;
   let claimsDeduped = 0;
+
+  // A batch can club multiple threads. The LLM output carries no per-claim source
+  // episode, so `appendedEpisodeIds[0]` would falsely backlink a claim to whatever
+  // episode happened to be appended first — possibly from a DIFFERENT thread. When
+  // the record set spans more than one thread we can't recover the true episode, so
+  // attribute nothing rather than a wrong link. Single-thread → keep the link.
+  const distinctThreads = new Set(records.map((r) => r.threadId ?? null)).size;
+  const claimSourceEpisode = distinctThreads > 1 ? null : appendedEpisodeIds[0] ?? null;
   for (const draft of output.claims ?? []) {
     const text = draft.text?.trim();
     if (!text) continue;
@@ -146,7 +154,7 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
       dim: embedder.dim,
       repo: draft.repo ?? null,
       tags: draft.tags,
-      sourceEpisode: appendedEpisodeIds[0] ?? null,
+      sourceEpisode: claimSourceEpisode,
       createdAt: now,
     };
     await store.upsertClaim(claim);
