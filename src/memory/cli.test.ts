@@ -189,10 +189,10 @@ describe("memory CLI", () => {
         { invoke, embedder, profileStore },
       );
       const parsed = JSON.parse(out) as {
-        reports: Array<{ threadId: string | null; report: { skipped: boolean; recordsProcessed?: number; claimsWritten?: number } }>;
+        reports: Array<{ threadIds: string[]; report: { skipped: boolean; recordsProcessed?: number; claimsWritten?: number } }>;
       };
 
-      const threaded = parsed.reports.find((r) => r.threadId === "T-v3");
+      const threaded = parsed.reports.find((r) => r.threadIds.includes("T-v3"));
       expect(threaded).toBeDefined();
       expect(threaded!.report.skipped).toBe(false);
       expect(threaded!.report.recordsProcessed).toBe(1);

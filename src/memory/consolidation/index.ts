@@ -10,6 +10,9 @@ export { buildConsolidationPrompt } from "./prompt.ts";
 export {
   runConsolidationSweep,
   summarizeConsolidationSweep,
+  DEFAULT_BODY_CAP,
+  DEFAULT_CONSOLIDATION_KINDS,
+  DEFAULT_MAX_BATCH_CHARS,
   type ConsolidateV3Entry,
   type RunConsolidationSweepArgs,
 } from "./sweep.ts";
