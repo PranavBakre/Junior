@@ -9,6 +9,7 @@ import { ProfileStore } from "../profiles/store.ts";
 import { SqliteMemoryStore } from "../sqlite.ts";
 import type { MemorySourceRecord } from "../types.ts";
 import { consolidateSession } from "./consolidate.ts";
+import { buildConsolidationPrompt } from "./prompt.ts";
 import type { ConsolidationInvoke, ConsolidationOutput } from "./types.ts";
 
 const EMPTY: ConsolidationOutput = { episodes: [], profiles: [], claims: [] };
@@ -43,6 +44,20 @@ describe("consolidateSession", () => {
     return (
       db().query<{ n: number }, []>("SELECT COUNT(*) AS n FROM episode").get()?.n ?? 0
     );
+  }
+
+  function episodeIds(): string[] {
+    return db()
+      .query<{ id: string }, []>("SELECT id FROM episode ORDER BY id")
+      .all()
+      .map((r) => r.id);
+  }
+
+  function claimSourceEpisodes(): Array<string | null> {
+    return db()
+      .query<{ source_episode: string | null }, []>("SELECT source_episode FROM claim ORDER BY id")
+      .all()
+      .map((r) => r.source_episode);
   }
 
   async function seedRecord(over: Partial<MemorySourceRecord> & { id: string }): Promise<void> {
@@ -236,6 +251,110 @@ describe("consolidateSession", () => {
     expect(second).toEqual({ skipped: true });
   });
 
+  it("consolidates a pre-fetched multi-thread record set, citing the right ids across threads", async () => {
+    // Records span two threads; the engine is handed the batch directly (records arg),
+    // so it must NOT call listUnconsolidatedSourceRecords and must persist/stamp the set.
+    await seedRecord({ id: "ta-1", threadId: "T-a", body: "thread a moment" });
+    await seedRecord({ id: "tb-1", threadId: "T-b", body: "thread b moment" });
+    // A decoy record that is NOT in the batch must stay unconsolidated.
+    await seedRecord({ id: "tc-1", threadId: "T-c", body: "not in this batch" });
+
+    const batch = (await store.listUnconsolidatedSourceRecords({})).filter((r) => r.id !== "tc-1");
+    expect(batch).toHaveLength(2);
+
+    const output: ConsolidationOutput = {
+      episodes: [
+        { sourceRecordId: "ta-1", emotion: "praise", intensity: 0.6, valence: 0.7, salience: 0.7 },
+        { sourceRecordId: "tb-1", emotion: "frustration", intensity: 0.5, valence: -0.4, salience: 0.6 },
+      ],
+      profiles: [
+        { kind: "person", entity_ref: "pranav:person", body: "Cross-thread observation about Pranav." },
+      ],
+      claims: [
+        { kind: "lesson", text: "A lesson derived from thread A." },
+        { kind: "fact", text: "A fact derived from thread B." },
+      ],
+    };
+
+    const report = await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      invoke: mockInvoke(output),
+      records: batch,
+    });
+
+    expect(report).toMatchObject({
+      skipped: false,
+      recordsProcessed: 2,
+      episodes: 2,
+      profiles: 1,
+      claimsWritten: 2,
+      claimsDeduped: 0,
+    });
+
+    // Episodes cite the correct source-record ids from BOTH threads.
+    expect(episodeIds()).toEqual(["ta-1", "tb-1"]);
+    expect(await profileStore.fetchByEntityRef("pranav:person")).not.toBeNull();
+    expect(await store.exportClaimVectors()).toHaveLength(2);
+
+    // ALL batch records are stamped consolidated; the decoy is untouched.
+    expect(await store.listUnconsolidatedSourceRecords({ threadId: "T-a" })).toHaveLength(0);
+    expect(await store.listUnconsolidatedSourceRecords({ threadId: "T-b" })).toHaveLength(0);
+    expect(await store.listUnconsolidatedSourceRecords({ threadId: "T-c" })).toHaveLength(1);
+  });
+
+  it("nulls claim sourceEpisode for a multi-thread batch (no cross-thread backlink)", async () => {
+    // Two threads, each contributing an episode + a claim in one batch. Attributing
+    // either claim to appendedEpisodeIds[0] would falsely link across threads.
+    await seedRecord({ id: "ta-1", threadId: "T-a", body: "thread a moment" });
+    await seedRecord({ id: "tb-1", threadId: "T-b", body: "thread b moment" });
+    const batch = await store.listUnconsolidatedSourceRecords({});
+
+    await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      invoke: mockInvoke({
+        episodes: [
+          { sourceRecordId: "ta-1", emotion: "praise", salience: 0.7 },
+          { sourceRecordId: "tb-1", emotion: "frustration", salience: 0.6 },
+        ],
+        profiles: [],
+        claims: [
+          { kind: "lesson", text: "A lesson from thread A." },
+          { kind: "fact", text: "A fact from thread B." },
+        ],
+      }),
+      records: batch,
+    });
+
+    expect(episodeCount()).toBe(2);
+    const sources = claimSourceEpisodes();
+    expect(sources).toHaveLength(2);
+    expect(sources.every((s) => s === null)).toBe(true);
+  });
+
+  it("keeps the claim→episode backlink for a single-thread batch", async () => {
+    await seedRecord({ id: "solo-1", threadId: "T-solo", body: "a notable single-thread moment" });
+    await seedRecord({ id: "solo-2", threadId: "T-solo", body: "more of the same thread" });
+    const batch = await store.listUnconsolidatedSourceRecords({});
+
+    await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      invoke: mockInvoke({
+        episodes: [{ sourceRecordId: "solo-1", emotion: "resolve", salience: 0.7 }],
+        profiles: [],
+        claims: [{ kind: "lesson", text: "A lesson from the single thread." }],
+      }),
+      records: batch,
+    });
+
+    expect(claimSourceEpisodes()).toEqual(["solo-1"]);
+  });
+
   it("persists nothing for the high-bar empty-output case (but still consumes the records)", async () => {
     await seedRecord({ id: "src-empty", body: "mundane chatter, nothing durable" });
 
@@ -262,5 +381,57 @@ describe("consolidateSession", () => {
     // The record was still consumed exactly once.
     const remaining = await store.listUnconsolidatedSourceRecords();
     expect(remaining).toHaveLength(0);
+  });
+});
+
+describe("buildConsolidationPrompt body cap", () => {
+  function record(over: Partial<MemorySourceRecord> & { id: string; body: string }): MemorySourceRecord {
+    return {
+      kind: "runner_output",
+      threadId: "T1",
+      actorKind: "agent",
+      createdAt: Date.now(),
+      ...over,
+    } as MemorySourceRecord;
+  }
+
+  it("truncates a record longer than bodyCap and leaves shorter records untouched", () => {
+    const longBody = "L".repeat(500);
+    const shortBody = "short and sweet";
+    const records = [record({ id: "long-1", body: longBody }), record({ id: "short-1", body: shortBody })];
+
+    const prompt = buildConsolidationPrompt(records, { profiles: [], claims: [] }, 100);
+
+    // Long body is cut to bodyCap chars + marker; the full 500-char run is gone.
+    expect(prompt).toContain(`${"L".repeat(100)}…[truncated]`);
+    expect(prompt).not.toContain("L".repeat(101));
+    // Short body survives verbatim, with no marker.
+    expect(prompt).toContain(shortBody);
+  });
+
+  it("applies no cap when bodyCap is unset", () => {
+    const longBody = "L".repeat(500);
+    const prompt = buildConsolidationPrompt([record({ id: "long-1", body: longBody })], { profiles: [], claims: [] });
+    expect(prompt).toContain(longBody);
+    expect(prompt).not.toContain("…[truncated]");
+  });
+
+  it("caps only the low-value kinds — a long curated_fact goes in whole, a long runner_output is cut", () => {
+    const factBody = "F".repeat(500);
+    const runnerBody = "R".repeat(500);
+    const prompt = buildConsolidationPrompt(
+      [
+        record({ id: "fact-1", kind: "curated_fact", body: factBody }),
+        record({ id: "run-1", kind: "runner_output", body: runnerBody }),
+      ],
+      { profiles: [], claims: [] },
+      100,
+    );
+
+    // High-value curated_fact is never truncated, even with a cap set.
+    expect(prompt).toContain(factBody);
+    // Low-value runner_output is cut to the cap.
+    expect(prompt).toContain(`${"R".repeat(100)}…[truncated]`);
+    expect(prompt).not.toContain("R".repeat(101));
   });
 });

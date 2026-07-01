@@ -814,8 +814,9 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     {
       description:
         "Run Junior's v3 memory consolidation: read the unconsolidated source records " +
-        "(session-scoped per thread, plus a final unthreaded sweep), ask the runner LLM " +
-        "for derivations, and persist episodes, profiles, and claims through the v3 gates. " +
+        "(kind-filtered to the high-value set, then bin-packed by size into batched runner " +
+        "calls that club several threads together), ask the runner LLM for derivations, and " +
+        "persist episodes, profiles, and claims through the v3 gates. " +
         "Processed records are stamped consolidated so they are derived from exactly once. " +
         "Takes no inputs — it drains all pending source records.",
       inputSchema: {},
