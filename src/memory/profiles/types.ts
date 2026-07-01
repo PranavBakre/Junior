@@ -77,7 +77,7 @@ export type ProfileInput =
   | WithOptional<SituationProfile, "updated_at" | "evidence" | "body">;
 
 export interface ProfileStoreOptions {
-  /** Root directory for profile files. Defaults to `memory/profiles`. */
+  /** Root directory for profile files. Defaults to `data/profiles` (gitignored). */
   root?: string;
   /** Injectable clock, used to stamp `updated_at` and `last_used_at`. Defaults to `() => new Date()`. */
   now?: () => Date;
