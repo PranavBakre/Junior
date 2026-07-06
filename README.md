@@ -4,7 +4,7 @@ A Slack bot that acts as the control plane for headless coding-agent sessions. O
 
 Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](https://github.com/PranavBakre/openclaw-agents) — same role (orchestrator + sub-agent dispatcher), rebuilt on top of coding-agent CLIs.
 
-**Stack:** Bun, TypeScript, [@slack/bolt](https://github.com/slackapi/bolt-js) (Socket Mode), OpenCode by default with Claude Code as an alternate provider, SQLite for session persistence.
+**Stack:** Bun, TypeScript, [@slack/bolt](https://github.com/slackapi/bolt-js) (Socket Mode), OpenCode by default with Claude Code as an alternate provider, native session-resume for cross-turn continuity, SQLite for session + long-term memory persistence, and on-device vector embeddings (local ONNX model — no remote embedding API).
 
 For deep architecture and the canonical "critical rules" list, see [CLAUDE.md](./CLAUDE.md). This README is the on-ramp.
 
