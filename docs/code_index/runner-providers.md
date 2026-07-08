@@ -25,7 +25,8 @@ and MCP wiring.
 | `buildOpenCodeConfig(...)` | `config.ts` | Generates model, permissions, primary `agent.build`, MCP entries, and subagent entries. |
 | `loadOpenCodeSupportSubagents()` | `support-agents.ts` | Exposes standalone stateless support prompts as generated OpenCode subagents. |
 | `buildOpenCodeAgentPrompt(...)` | `prompt.ts` | Wraps Junior core + active-agent prompt in the OpenCode provider baseline. |
-| `createOpenCodeStreamParser()` / `createOpenCodeEventMapper()` | `parser.ts` | Converts OpenCode JSON events into normalized runner events. |
+| `resolveOpenCodeModel(...)` | `model.ts` | Resolves session/config model to a valid `provider/model` OpenCode ref; runner-specific aliases (`gpt-5.5`, `opus`, ...) fall back to the config default or null (omit `--model`). |
+| `createOpenCodeStreamParser()` / `createOpenCodeEventMapper()` | `parser.ts` | Converts OpenCode JSON events into normalized runner events; captures native `{"type":"error"}` events on `mapper.error`. |
 
 ## Current OpenCode Runtime Rules
 

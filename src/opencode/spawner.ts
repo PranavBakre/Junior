@@ -2,6 +2,7 @@ import type { AgentIdentity, ThreadSession } from "../session/types.ts";
 import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
 import { buildRunnerRuntime } from "../runners/runtime.ts";
 import { buildOpenCodeArgs } from "./args.ts";
+import { resolveOpenCodeModel } from "./model.ts";
 import {
   buildOpenCodeConfigContent,
   type OpenCodeMcpConfig,
@@ -61,7 +62,7 @@ export function spawnOpenCode(
   });
   const juniorAgentName = juniorAgentNameForSession(session);
   const agentName = config.agentName ?? OPENCODE_PROVIDER_AGENT;
-  const model = session.model ?? config.defaultModel ?? null;
+  const model = resolveOpenCodeModel(session.model, config.defaultModel);
   const agentPrompt = buildOpenCodeAgentPrompt({
     juniorAgentName,
     juniorPrompt: config.agentPrompt ?? session.systemPrompt,
@@ -139,10 +140,14 @@ export function spawnOpenCode(
 
     const exitCode = await proc.exited;
     const stderr = await stderrText;
+    // Prefer OpenCode's own native error event (parsed off stdout) when present:
+    // opencode's embedded server reports failures as a `{"type":"error",...}`
+    // event and exits 1 with an empty stderr, so the generic exit-code string is
+    // useless. Fall back to the original stderr/stdout/generic chain otherwise.
     const error =
       exitCode === 0
         ? stdoutError
-        : stderr || stdoutError || `Process exited with code ${exitCode}`;
+        : (mapper.error ?? (stderr || stdoutError || `Process exited with code ${exitCode}`));
 
     return {
       provider: "opencode",

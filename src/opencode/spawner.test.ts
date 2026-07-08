@@ -261,7 +261,48 @@ describe("spawnOpenCode", () => {
     }
   });
 
+  it("surfaces the native error event message when opencode exits non-zero with empty stderr", async () => {
+    const session = createSession("thread-err", "C01");
+    session.provider = "opencode";
+
+    const { command, cleanup } = createErroringOpenCodeScript();
+
+    try {
+      const handle = spawnOpenCode(session, "trigger error", { command });
+      const result = await handle.result;
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.error).toBe(
+        "UnknownError: Unexpected server error. Check server logs for details. (ref: abc123)",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
 });
+
+function createErroringOpenCodeScript(): {
+  command: string;
+  cleanup: () => void;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "junior-opencode-err-"));
+  const command = join(dir, "erroring-opencode.sh");
+  // Mirrors a slashless-model crash: opencode emits a native error event on
+  // stdout and exits 1 with an empty stderr.
+  writeFileSync(
+    command,
+    `#!/bin/sh
+echo '{"type":"error","timestamp":123,"sessionID":"ses_err","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"abc123"}}}'
+exit 1
+`,
+  );
+  chmodSync(command, 0o755);
+  return {
+    command,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
 
 function createHungOpenCodeScript(sessionId: string): {
   command: string;

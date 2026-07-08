@@ -55,11 +55,28 @@ export interface OpenCodeToolUseEvent {
   [key: string]: unknown;
 }
 
+export interface OpenCodeErrorEvent {
+  type: "error";
+  sessionID?: string;
+  timestamp?: number;
+  error?: {
+    name?: string;
+    data?: {
+      message?: string;
+      ref?: string;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export type OpenCodeEvent =
   | OpenCodeStepStartEvent
   | OpenCodeTextEvent
   | OpenCodeStepFinishEvent
-  | OpenCodeToolUseEvent;
+  | OpenCodeToolUseEvent
+  | OpenCodeErrorEvent;
 
 export interface OpenCodeStreamParser {
   feed(chunk: string): OpenCodeEvent[];
@@ -69,6 +86,7 @@ export interface OpenCodeStreamParser {
 export interface OpenCodeEventMapper {
   readonly sessionId: string | null;
   readonly response: string;
+  readonly error: string | null;
   map(event: OpenCodeEvent): RunnerEvent[];
 }
 
@@ -87,6 +105,7 @@ const KNOWN_EVENT_TYPES = new Set([
   "step-finish",
   "tool_use",
   "tool",
+  "error",
 ]);
 
 function isOpenCodeEvent(value: unknown): value is OpenCodeEvent {
@@ -110,6 +129,10 @@ function isOpenCodeEvent(value: unknown): value is OpenCodeEvent {
     if (typeof value.tool === "string") return true;
     if (!isRecord(value.part)) return false;
     return value.part.type === "tool" && typeof value.part.tool === "string";
+  }
+
+  if (value.type === "error") {
+    return value.error === undefined || isRecord(value.error);
   }
 
   return false;
@@ -193,6 +216,7 @@ export function createOpenCodeEventMapper(): OpenCodeEventMapper {
   let sessionId: string | null = null;
   let response = "";
   let pendingText = "";
+  let error: string | null = null;
 
   function maybeInit(event: OpenCodeEvent): RunnerEvent[] {
     if (sessionId) return [];
@@ -210,10 +234,20 @@ export function createOpenCodeEventMapper(): OpenCodeEventMapper {
     get response(): string {
       return response;
     },
+    get error(): string | null {
+      return error;
+    },
     map(event: OpenCodeEvent): RunnerEvent[] {
       const events = maybeInit(event);
 
-      if (event.type === "text") {
+      if (event.type === "error") {
+        // OpenCode reports server-side failures as a native error event and
+        // then exits 1 with an empty stderr. Capture the real message so the
+        // spawner can surface it instead of a generic exit-code string. There
+        // is no error-shaped RunnerEvent, so this is captured on the mapper
+        // only, not emitted into the event stream.
+        error = getOpenCodeError(event);
+      } else if (event.type === "text") {
         pendingText += getOpenCodeText(event);
       } else if (event.type === "tool_use" || event.type === "tool") {
         events.push(mapOpenCodeToolUse(event));
@@ -245,6 +279,14 @@ export function createOpenCodeEventMapper(): OpenCodeEventMapper {
 
 function getOpenCodeText(event: OpenCodeTextEvent): string {
   return event.text ?? event.part?.text ?? "";
+}
+
+function getOpenCodeError(event: OpenCodeErrorEvent): string {
+  const name = event.error?.name ?? "UnknownError";
+  const message = event.error?.data?.message ?? "";
+  const ref = event.error?.data?.ref;
+  const base = message ? `${name}: ${message}` : name;
+  return ref ? `${base} (ref: ${ref})` : base;
 }
 
 function mapOpenCodeToolUse(event: OpenCodeToolUseEvent): RunnerEventTool {
