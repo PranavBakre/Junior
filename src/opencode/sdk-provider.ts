@@ -19,6 +19,7 @@ import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts"
 import { buildRunnerRuntime } from "../runners/runtime.ts";
 import { OPENCODE_PROVIDER_AGENT, buildOpenCodeAgentPrompt } from "./prompt.ts";
 import { buildOpenCodeConfigContent } from "./config.ts";
+import { resolveOpenCodeModel } from "./model.ts";
 import { loadOpenCodeSupportSubagents } from "./support-agents.ts";
 import { log as _log } from "../logger.ts";
 
@@ -135,7 +136,7 @@ export function spawnOpenCodeSdk(
 
   // Generate config the same way the CLI provider does — embedded agent prompt,
   // MCP wiring, and subagents.
-  const model = session.model ?? config.opencode.model ?? null;
+  const model = resolveOpenCodeModel(session.model, config.opencode.model);
   const agentPrompt = buildOpenCodeAgentPrompt({
     juniorAgentName,
     juniorPrompt: session.systemPrompt ?? undefined,

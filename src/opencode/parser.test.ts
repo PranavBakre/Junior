@@ -105,6 +105,26 @@ describe("createOpenCodeStreamParser", () => {
       { type: "step_start", sessionID: "ses_1" },
     ]);
   });
+
+  it("recognizes native OpenCode error events instead of dropping them", () => {
+    const parser = createOpenCodeStreamParser();
+    const events = parser.feed(
+      '{"type":"error","timestamp":123,"sessionID":"ses_err","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"abc123"}}}\n',
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "error",
+      sessionID: "ses_err",
+      error: {
+        name: "UnknownError",
+        data: {
+          message: "Unexpected server error. Check server logs for details.",
+          ref: "abc123",
+        },
+      },
+    });
+  });
 });
 
 describe("createOpenCodeEventMapper", () => {
@@ -241,5 +261,41 @@ describe("createOpenCodeEventMapper", () => {
       },
     ]);
     expect(mapper.response).toBe("*Worklog — last 24h*\n\n- shipped payout migration");
+  });
+
+  it("captures the native error message (incl. ref) on mapper.error", () => {
+    const parser = createOpenCodeStreamParser();
+    const mapper = createOpenCodeEventMapper();
+    const nativeEvents = parser.feed(
+      '{"type":"error","timestamp":123,"sessionID":"ses_err","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"abc123"}}}\n',
+    );
+
+    const runnerEvents = nativeEvents.flatMap((event) => mapper.map(event));
+
+    // The error event still carries a sessionID, so init is emitted; no
+    // error-shaped RunnerEvent exists, so nothing else is emitted.
+    expect(runnerEvents).toEqual([
+      { type: "init", provider: "opencode", sessionId: "ses_err" },
+    ]);
+    expect(mapper.error).toBe(
+      "UnknownError: Unexpected server error. Check server logs for details. (ref: abc123)",
+    );
+  });
+
+  it("composes the error message without a ref when none is present", () => {
+    const parser = createOpenCodeStreamParser();
+    const mapper = createOpenCodeEventMapper();
+    const nativeEvents = parser.feed(
+      '{"type":"error","error":{"name":"ProviderError","data":{"message":"model not found"}}}\n',
+    );
+
+    nativeEvents.forEach((event) => mapper.map(event));
+
+    expect(mapper.error).toBe("ProviderError: model not found");
+  });
+
+  it("has a null error until an error event is mapped", () => {
+    const mapper = createOpenCodeEventMapper();
+    expect(mapper.error).toBeNull();
   });
 });
