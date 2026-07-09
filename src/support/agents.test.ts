@@ -48,8 +48,8 @@ describe("dispatchableAgentsFor", () => {
     expect(juniorAllowed).toEqual(leadAllowed);
   });
 
-  it("returns empty for the retired thinker agent (no longer dispatchable)", () => {
-    expect(dispatchableAgentsFor("thinker")).toEqual([]);
+  it("keeps thinker's legacy allow-list (resumed pre-merge sessions)", () => {
+    expect(dispatchableAgentsFor("thinker").sort()).toEqual(["reproducer", "review"]);
   });
 
   it("returns empty for workers with no allow-list", () => {
@@ -88,10 +88,14 @@ describe("identity / username collision (the footgun this guards)", () => {
 });
 
 describe("workerMayDispatch", () => {
-  it("allows no worker→worker dispatch after the thinker merge", () => {
-    // WORKER_DISPATCH_ALLOW is empty: the orchestrator emits !reproducer/!review
-    // itself, so workers never dispatch each other.
-    expect(workerMayDispatch("thinker", "review")).toBe(false);
+  it("allows only thinker's legacy chain after the merge", () => {
+    // Live workers never dispatch each other — the orchestrator emits
+    // !reproducer/!review itself. The thinker entry is legacy-only, for
+    // pre-merge sessions resumed under the "thinker" name; it mirrors its old
+    // rights so the dispatch-allow block doesn't contradict the bug-pipeline
+    // preamble those sessions receive.
+    expect(workerMayDispatch("thinker", "review")).toBe(true);
+    expect(workerMayDispatch("thinker", "reproducer")).toBe(true);
     expect(workerMayDispatch("reproducer", "review")).toBe(false);
     expect(workerMayDispatch("review", "reproducer")).toBe(false);
   });
@@ -102,12 +106,13 @@ describe("workerMayDispatch", () => {
 });
 
 describe("buildDispatchAllowBlock", () => {
-  it("emits a deny-all block for the retired thinker agent", () => {
+  it("emits thinker's legacy allow-list (consistent with the pipeline preamble)", () => {
     const block = buildDispatchAllowBlock("thinker");
     expect(block).toContain("<dispatch-allow>");
     expect(block).toContain("</dispatch-allow>");
-    expect(block).toContain("may NOT emit");
-    expect(block).not.toContain("`reproducer`");
+    expect(block).toContain("`reproducer`");
+    expect(block).toContain("`review`");
+    expect(block).not.toContain("may NOT emit");
   });
 
   it("emits a deny-all block for review", () => {

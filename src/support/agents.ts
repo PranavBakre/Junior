@@ -157,8 +157,17 @@ export function agentForUsername(username?: string): string | null {
  * The mechanism stays: add an entry only when a chain is finite and terminates
  * cleanly back at the orchestrator (no risk of worker-loops). Keys are source
  * agents; values are the agents they may dispatch.
+ *
+ * The lone `thinker` entry is LEGACY-only: no live path spawns thinker anymore
+ * (its definition aliases to default), but a pre-merge thread resumed after
+ * this deploy still runs under the "thinker" session name and receives the
+ * bug-pipeline preamble, whose Phase-2 exit emits `!reproducer` / `!review`.
+ * Without this entry the dispatch-allow block would contradict that preamble
+ * ("you may NOT emit directives"). Mirrors thinker's exact pre-merge rights.
  */
-export const WORKER_DISPATCH_ALLOW: Record<string, ReadonlySet<string>> = {};
+export const WORKER_DISPATCH_ALLOW: Record<string, ReadonlySet<string>> = {
+  thinker: new Set(["review", "reproducer"]),
+};
 
 export function workerMayDispatch(
   sourceAgent: string,
