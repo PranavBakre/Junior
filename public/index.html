@@ -1,813 +1,1676 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Junior — Dashboard</title>
-    <style>
-      :root {
-        /* GrowthX dark-first palette */
-        --bg: #060606;
-        --bg-paper: #181818;
-        --bg-secondary: #292929;
-        --bg-hover: #1f1f1f;
-        --surface: rgba(255, 255, 255, 0.05);
-        --surface-strong: rgba(255, 255, 255, 0.08);
-        --border: rgba(113, 116, 121, 0.25);
-        --border-subtle: rgba(255, 255, 255, 0.08);
-        --fg: #ffffff;
-        --fg-dim: #999999;
-        --fg-faint: #666666;
-        --fg-muted: rgba(255, 255, 255, 0.45);
-        --accent: #0064ff;
-        --green: #22c55e;
-        --amber: #f59e0b;
-        --red: #ff3b3b;
-        --purple: #9747ff;
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Junior — Dashboard</title>
+<style>
+  :root {
+    /* GrowthX dark palette */
+    --bg: #060606;
+    --bg-paper: #181818;
+    --bg-secondary: #292929;
+    --bg-hover: #1f1f1f;
+    --surface: rgba(255, 255, 255, 0.05);
+    --surface-strong: rgba(255, 255, 255, 0.08);
+    --border: rgba(113, 116, 121, 0.25);
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --fg: #ffffff;
+    --fg-dim: #999999;
+    --fg-faint: #666666;
+    --fg-muted: rgba(255, 255, 255, 0.45);
+    --accent: #0064ff;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ff3b3b;
+    --purple: #9747ff;
+    --font-sans: Gilroy, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    --font-mono: "DM Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    --sidebar-w: 208px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: var(--font-sans); font-size: 14px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  body { display: flex; }
 
-        --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter,
-          Roboto, Helvetica, Arial, sans-serif;
-        --font-mono: ui-monospace, "DM Mono", SFMono-Regular, "SF Mono", Menlo,
-          Consolas, monospace;
-      }
-      * { box-sizing: border-box; }
-      html, body {
-        margin: 0;
-        background: var(--bg);
-        color: var(--fg);
-        font-family: var(--font-sans);
-        font-size: 14px;
-        line-height: 1.5;
-        -webkit-font-smoothing: antialiased;
-        text-rendering: optimizeLegibility;
-      }
-      header {
-        padding: 16px 28px;
-        border-bottom: 1px solid var(--border-subtle);
-        display: flex;
-        gap: 18px;
-        align-items: baseline;
-        position: sticky;
-        top: 0;
-        background: rgba(6, 6, 6, 0.7);
-        backdrop-filter: blur(20px) saturate(1.4);
-        -webkit-backdrop-filter: blur(20px) saturate(1.4);
-        z-index: 10;
-      }
-      header h1 {
-        margin: 0;
-        font-size: 15px;
-        font-weight: 700;
-        letter-spacing: 0.18em;
-        color: var(--fg);
-      }
-      header .meta {
-        color: var(--fg-dim);
-        font-size: 12px;
-        font-family: var(--font-mono);
-      }
-      header .meta b { color: var(--fg); font-weight: 500; }
-      header .pulse {
-        margin-left: auto;
-        color: var(--accent);
-        font-size: 14px;
-        font-family: var(--font-mono);
-        opacity: 0.8;
-      }
-      main { padding: 28px; max-width: 1280px; margin: 0 auto; }
-      section { margin-bottom: 36px; }
-      h2 {
-        margin: 0 0 14px;
-        font-size: 11px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.12em;
-        color: var(--fg-dim);
-      }
-      .panel {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        overflow: hidden;
-      }
-      .row {
-        display: grid;
-        gap: 14px;
-        padding: 16px 18px;
-        border-bottom: 1px solid var(--border-subtle);
-        transition: background 0.2s ease;
-      }
-      .row:last-child { border-bottom: none; }
-      .row:hover { background: rgba(255, 255, 255, 0.02); }
-      .row.session {
-        grid-template-columns: minmax(200px, 1.2fr) 1fr 1fr;
-        align-items: start;
-      }
-      .row.devserver {
-        grid-template-columns: minmax(160px, 1fr) 2fr 1fr;
-      }
-      .row.workflow {
-        grid-template-columns: minmax(180px, 1fr) 1.2fr 1.4fr;
-        align-items: start;
-      }
-      .row .col-label {
-        font-size: 10px;
-        color: var(--fg-faint);
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        margin-bottom: 4px;
-        font-family: var(--font-mono);
-      }
-      .agent-list {
-        margin-top: 10px;
-        border-left: 2px solid var(--border-subtle);
-        padding-left: 12px;
-      }
-      .agent-row {
-        display: grid;
-        grid-template-columns: 90px 90px 1fr 1fr;
-        gap: 10px;
-        padding: 5px 0;
-        font-size: 12px;
-        color: var(--fg-dim);
-      }
-      .agent-row b { color: var(--fg); font-weight: 600; }
-      .pill {
-        display: inline-flex;
-        align-items: center;
-        padding: 2px 10px;
-        border-radius: 100px;
-        font-size: 10px;
-        font-family: var(--font-mono);
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        background: var(--surface);
-        color: var(--fg-dim);
-        border: 1px solid var(--border-subtle);
-        white-space: nowrap;
-      }
-      .pill.busy { color: var(--amber); border-color: rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.08); }
-      .pill.idle { color: var(--fg-dim); }
-      .pill.draining { color: var(--purple); border-color: rgba(151, 71, 255, 0.35); background: rgba(151, 71, 255, 0.08); }
-      .pill.done, .pill.active { color: var(--green); border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.08); }
-      .pill.failed, .pill.error { color: var(--red); border-color: rgba(255, 59, 59, 0.35); background: rgba(255, 59, 59, 0.08); }
-      .pill.running { color: var(--green); border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.08); }
-      .pill.stopped { color: var(--fg-faint); }
-      .mono { font-family: var(--font-mono); }
-      .dim { color: var(--fg-dim); }
-      .faint { color: var(--fg-faint); }
-      .empty { padding: 24px 18px; color: var(--fg-faint); font-style: italic; }
-      .stat-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-        gap: 12px;
-      }
-      .stat {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 14px 16px;
-        transition: border-color 0.2s ease, background 0.2s ease;
-      }
-      .stat:hover { border-color: rgba(255, 255, 255, 0.18); }
-      .stat .num { font-size: 24px; font-weight: 700; color: var(--fg); line-height: 1.2; }
-      .stat .num.busy { color: var(--amber); }
-      .stat .num.draining { color: var(--purple); }
-      .stat .num.failed { color: var(--red); }
-      .stat .lbl {
-        color: var(--fg-dim);
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        margin-top: 4px;
-        font-family: var(--font-mono);
-      }
-      .waiters {
-        margin-top: 8px;
-        padding: 8px 10px;
-        background: var(--bg-paper);
-        border: 1px solid var(--border-subtle);
-        border-radius: 8px;
-        font-size: 12px;
-        color: var(--fg-dim);
-      }
-      .waiters .wt { display: block; padding: 2px 0; }
-      a { color: var(--accent); text-decoration: none; transition: color 0.2s ease; }
-      a:hover { text-decoration: underline; }
-      code {
-        background: var(--bg-secondary);
-        padding: 1px 6px;
-        border-radius: 6px;
-        font-size: 12px;
-        font-family: var(--font-mono);
-        color: var(--fg);
-      }
-      .threadId, .sessionId { color: var(--accent); word-break: break-all; }
-      .threadId code, .sessionId, code.sessionId { color: var(--accent); background: rgba(0, 100, 255, 0.1); }
-      .truncate { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .run-list { margin-top: 8px; }
-      .run-row { display: block; padding: 3px 0; color: var(--fg-dim); font-size: 12px; }
+  /* ---------- sidebar ---------- */
+  aside {
+    width: var(--sidebar-w); flex: none;
+    height: 100vh; position: sticky; top: 0;
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--border-subtle);
+    background: rgba(10,10,10,0.6);
+    padding: 20px 12px 14px;
+  }
+  .brand { display: flex; align-items: baseline; gap: 8px; padding: 0 10px 18px; }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.18em; }
+  .brand .env {
+    font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--fg-faint);
+    border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1px 6px;
+  }
+  nav { display: flex; flex-direction: column; gap: 2px; }
+  nav a {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 8px;
+    color: var(--fg-dim); text-decoration: none; font-size: 13px; font-weight: 600;
+    transition: background 0.15s ease-in-out, color 0.15s ease-in-out;
+  }
+  nav a:hover { background: var(--bg-hover); color: var(--fg); }
+  nav a.active { background: rgba(0,100,255,0.12); color: var(--fg); }
+  nav a.active .ico { color: var(--accent); }
+  nav a .ico { width: 16px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--fg-faint); }
+  nav a .count {
+    margin-left: auto; font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-faint); background: var(--surface);
+    border: 1px solid var(--border-subtle); border-radius: 100px; padding: 0 7px;
+  }
+  nav a .count.hot { color: var(--amber); border-color: rgba(245,158,11,0.35); }
+  nav a .count.err { color: var(--red); border-color: rgba(255,59,59,0.35); }
+  .side-foot {
+    margin-top: auto; padding: 12px 10px 0; border-top: 1px solid var(--border-subtle);
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); line-height: 1.9;
+  }
+  .side-foot b { color: var(--fg-dim); font-weight: 500; }
+  .live-toggle {
+    display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none;
+    margin-top: 6px; color: var(--fg-dim);
+  }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+  .live-dot.paused { background: var(--fg-faint); animation: none; }
+  @keyframes statusPulse { 0%,100% { opacity: 1; transform: scale(1);} 50% { opacity: 0.5; transform: scale(0.85);} }
+  .live-dot { animation: statusPulse 2s ease-in-out infinite; }
 
-      /* Memory cloud (2D projection of the claim embedding space) */
-      .cloud-head {
-        display: flex;
-        align-items: baseline;
-        gap: 14px;
-        margin-bottom: 10px;
-      }
-      .cloud-head .caveat {
-        color: var(--fg-faint);
-        font-size: 11px;
-        font-style: italic;
-        flex: 1;
-      }
-      .cloud-legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0 0; }
-      .cloud-legend .lg {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        color: var(--fg-dim);
-        font-size: 11px;
-        font-family: var(--font-mono);
-      }
-      .cloud-legend .sw { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-      .cloud-wrap { position: relative; margin-top: 12px; }
-      #memory-canvas {
-        display: block;
-        width: 100%;
-        height: 460px;
-        background: #0a0a0a;
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        cursor: crosshair;
-      }
-      .cloud-tip {
-        position: absolute;
-        pointer-events: none;
-        max-width: 320px;
-        padding: 10px 12px;
-        background: rgba(15, 15, 15, 0.85);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        font-size: 12px;
-        color: var(--fg);
-        z-index: 20;
-        display: none;
-      }
-      .cloud-tip .tip-kind {
-        color: var(--fg-faint);
-        font-size: 10px;
-        text-transform: uppercase;
-        letter-spacing: 0.1em;
-        font-family: var(--font-mono);
-        margin-bottom: 4px;
-      }
-      .cloud-tip .tip-tags { color: var(--fg-dim); margin-top: 4px; }
-      .cloud-btn {
-        background: var(--surface);
-        color: var(--fg-dim);
-        border: 1px solid var(--border-subtle);
-        border-radius: 8px;
-        padding: 5px 12px;
-        font-family: var(--font-mono);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        cursor: pointer;
-        transition: all 0.2s ease;
-      }
-      .cloud-btn:hover { color: var(--fg); border-color: var(--accent); background: rgba(0, 100, 255, 0.08); }
-    </style>
-  </head>
-  <body>
-    <header>
-      <h1>JUNIOR</h1>
-      <div class="meta" id="health-meta">loading…</div>
-      <div class="pulse" id="pulse">·</div>
-    </header>
-    <main>
-      <section>
-        <h2>Health</h2>
-        <div class="stat-grid" id="health-stats"></div>
-      </section>
-      <section>
-        <h2>Dev Servers</h2>
-        <div class="panel" id="devservers"><div class="empty">loading…</div></div>
-      </section>
-      <section>
-        <h2>Workflows</h2>
-        <div class="panel" id="workflows"><div class="empty">loading…</div></div>
-      </section>
-      <section>
+  /* ---------- main ---------- */
+  .content { flex: 1; min-width: 0; height: 100vh; overflow-y: auto; }
+  .view { display: none; padding: 26px 32px 60px; max-width: 1200px; margin: 0 auto; }
+  .view.active { display: block; }
+  .view-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+  .view-head h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.32px; }
+  .view-head .sub { color: var(--fg-dim); font-size: 12.5px; }
+  .view-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+  h3.sect {
+    margin: 26px 0 12px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.12em; color: var(--fg-dim);
+    font-family: var(--font-mono);
+  }
+  h3.sect:first-of-type { margin-top: 0; }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .mono { font-family: var(--font-mono); }
+  .dim { color: var(--fg-dim); }
+  .faint { color: var(--fg-faint); }
+  .empty { padding: 24px 18px; color: var(--fg-faint); font-style: italic; }
+  code {
+    background: var(--bg-secondary); padding: 1px 6px; border-radius: 6px;
+    font-size: 12px; font-family: var(--font-mono); color: var(--fg);
+  }
+  a.tlink { color: var(--accent); text-decoration: none; }
+  a.tlink:hover { text-decoration: underline; }
+
+  /* pills: status is never color-alone — every pill carries its label text */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 100px;
+    font-size: 10px; font-family: var(--font-mono);
+    text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap;
+    background: var(--surface); color: var(--fg-dim); border: 1px solid var(--border-subtle);
+  }
+  .pill::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .pill.busy    { color: var(--amber);  border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+  .pill.idle    { color: var(--fg-dim); }
+  .pill.draining{ color: var(--purple); border-color: rgba(151,71,255,0.35); background: rgba(151,71,255,0.08); }
+  .pill.running, .pill.done, .pill.active, .pill.ok
+                { color: var(--green);  border-color: rgba(34,197,94,0.35);  background: rgba(34,197,94,0.08); }
+  .pill.failed, .pill.error
+                { color: var(--red);    border-color: rgba(255,59,59,0.35);  background: rgba(255,59,59,0.08); }
+  .pill.stopped { color: var(--fg-faint); }
+
+  /* ---------- overview ---------- */
+  .attn { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .attn-card {
+    border-radius: 12px; padding: 14px 16px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface);
+    transition: border-color 0.2s, transform 0.15s ease-in-out;
+    position: relative;
+  }
+  .attn-card:hover { transform: translateY(-1px); }
+  .attn-card.sev-err  { border-color: rgba(255,59,59,0.4); background: rgba(255,59,59,0.05); }
+  .attn-card.sev-warn { border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.05); }
+  .attn-card .kind {
+    font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.1em;
+    text-transform: uppercase; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+  }
+  .attn-card.sev-err .kind { color: var(--red); }
+  .attn-card.sev-warn .kind { color: var(--amber); }
+  .attn-card .t { font-weight: 600; font-size: 13.5px; margin-bottom: 3px; }
+  .attn-card .d { color: var(--fg-dim); font-size: 12px; }
+  .attn-card .go { position: absolute; right: 14px; top: 14px; color: var(--fg-faint); font-family: var(--font-mono); }
+  .attn-ok {
+    border: 1px dashed rgba(34,197,94,0.3); border-radius: 12px; padding: 14px 16px;
+    color: var(--fg-dim); font-size: 13px; display: none;
+  }
+
+  /* stat tiles: label / value / delta contract */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; }
+  .stat .lbl { color: var(--fg-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--font-mono); }
+  .stat .num { font-size: 24px; font-weight: 700; line-height: 1.25; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .stat .num.busy { color: var(--amber); }
+  .stat .num.err { color: var(--red); }
+  .stat .sub { color: var(--fg-faint); font-size: 11px; font-family: var(--font-mono); margin-top: 1px; }
+
+  /* activity strip — single series, accent hue, hover tooltip */
+  .act-wrap { position: relative; }
+  .act-chart { display: flex; align-items: flex-end; gap: 2px; height: 84px; padding: 14px 16px 6px; }
+  .act-bar { flex: 1; min-width: 4px; border-radius: 2px 2px 0 0; background: rgba(0,100,255,0.55); position: relative; transition: background 0.15s; }
+  .act-bar:hover { background: var(--accent); }
+  .act-bar.now { background: var(--accent); }
+  .act-x { display: flex; justify-content: space-between; padding: 0 16px 10px; font-family: var(--font-mono); font-size: 9.5px; color: var(--fg-faint); }
+  .tip {
+    position: absolute; pointer-events: none; display: none; z-index: 30;
+    background: rgba(15,15,15,0.92); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 10px; font-size: 11.5px; font-family: var(--font-mono); white-space: nowrap;
+  }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  .feed-row {
+    display: grid; grid-template-columns: 58px 60px 1fr; gap: 10px;
+    padding: 8px 16px; border-bottom: 1px solid var(--border-subtle);
+    font-size: 12px; font-family: var(--font-mono); align-items: baseline;
+  }
+  .feed-row:last-child { border-bottom: none; }
+  .feed-row .lv { font-size: 9.5px; letter-spacing: 0.08em; }
+  .feed-row .lv.ERROR { color: var(--red); } .feed-row .lv.WARN { color: var(--amber); }
+  .feed-row .msg { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- threads ---------- */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    padding: 4px 12px; border-radius: 100px; cursor: pointer; user-select: none;
+    font-size: 11px; font-family: var(--font-mono); letter-spacing: 0.05em;
+    color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-subtle);
+    transition: all 0.15s ease-in-out;
+  }
+  .chip:hover { color: var(--fg); }
+  .chip.on { color: var(--fg); border-color: var(--accent); background: rgba(0,100,255,0.12); }
+  input.search, select.ctrl, input.ctrl {
+    background: var(--bg-paper); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+    color: var(--fg); font-family: var(--font-mono); font-size: 12px; padding: 6px 10px;
+    outline: none; transition: border-color 0.15s;
+  }
+  input.search:focus, select.ctrl:focus, input.ctrl:focus { border-color: var(--accent); }
+  input.search { width: 220px; }
+
+  .th-row {
+    display: grid; grid-template-columns: minmax(210px,1.3fr) 130px 1fr 120px; gap: 14px;
+    padding: 13px 18px; border-bottom: 1px solid var(--border-subtle); cursor: pointer;
+    transition: background 0.15s; align-items: center;
+  }
+  .th-row:last-child { border-bottom: none; }
+  .th-row:hover { background: rgba(255,255,255,0.03); }
+  .th-row .chan { font-weight: 600; font-size: 13.5px; }
+  .th-row .tid { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+  .th-row .meta { color: var(--fg-faint); font-size: 11.5px; font-family: var(--font-mono); }
+  .th-row .agents-cell { display: flex; gap: 5px; flex-wrap: wrap; }
+  .th-row .last { text-align: right; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); }
+  .apill {
+    font-family: var(--font-mono); font-size: 10px; padding: 1px 8px; border-radius: 100px;
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--fg-dim);
+  }
+  .apill.busy { color: var(--amber); border-color: rgba(245,158,11,0.35); }
+  .apill.error { color: var(--red); border-color: rgba(255,59,59,0.35); }
+  .err-inline { color: var(--red); font-size: 11.5px; margin-top: 3px; }
+
+  /* detail drawer */
+  .drawer-scrim {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  .drawer-scrim.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; right: -560px; width: min(560px, 92vw); height: 100vh; z-index: 50;
+    background: #0f0f0f; border-left: 0.5px solid #201f1f;
+    transition: right 0.25s ease-in-out; overflow-y: auto; padding: 24px 26px 40px;
+  }
+  .drawer.open { right: 0; }
+  .drawer .close {
+    position: absolute; top: 18px; right: 20px; cursor: pointer;
+    color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-subtle);
+    border-radius: 8px; padding: 3px 10px; font-family: var(--font-mono); font-size: 11px;
+  }
+  .drawer .close:hover { color: var(--fg); border-color: var(--accent); }
+  .drawer h3 { margin: 0 0 2px; font-size: 16px; font-weight: 700; }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 12.5px; margin: 14px 0; }
+  .kv .k { color: var(--fg-faint); font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding-top: 1px; }
+  .cmd-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+    background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 6px 8px 6px 10px;
+  }
+  .cmd-row code {
+    background: none; padding: 0; flex: 1; min-width: 0;
+    font-size: 11px; color: var(--fg-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .copy-btn {
+    flex: none; cursor: pointer;
+    background: var(--surface); color: var(--fg-dim);
+    border: 1px solid var(--border-subtle); border-radius: 6px;
+    padding: 2px 9px; font-family: var(--font-mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    transition: all 0.15s ease-in-out;
+  }
+  .copy-btn:hover { color: var(--fg); border-color: var(--accent); background: rgba(0,100,255,0.08); }
+  .copy-btn.copied { color: var(--green); border-color: rgba(34,197,94,0.4); }
+  .agent-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--surface); }
+  .agent-card .top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .agent-card .top b { font-size: 13.5px; }
+  .agent-card .meta { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); line-height: 1.8; }
+  .tl { border-left: 2px solid var(--border-subtle); margin: 6px 0 0 5px; padding-left: 14px; }
+  .tl-item { position: relative; padding: 4px 0; font-size: 12px; color: var(--fg-dim); }
+  .tl-item::before {
+    content: ""; position: absolute; left: -19px; top: 11px;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint);
+  }
+  .tl-item.err::before { background: var(--red); }
+  .tl-item .ts { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); margin-right: 8px; }
+
+  /* ---------- logs ---------- */
+  .log-toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 10; padding: 12px 0;
+    background: linear-gradient(180deg, var(--bg) 82%, transparent);
+  }
+  .log-lines { font-family: var(--font-mono); font-size: 12px; }
+  .log-scroll {
+    max-height: calc(100vh - 230px);
+    overflow-y: auto;
+  }
+  .log-line {
+    display: grid; grid-template-columns: 92px 56px 110px 1fr; gap: 12px;
+    padding: 4px 16px; border-bottom: 1px solid rgba(255,255,255,0.03);
+    align-items: baseline;
+  }
+  .log-line:hover { background: rgba(255,255,255,0.025); }
+  .log-line .ts { color: var(--fg-faint); font-size: 11px; }
+  .log-line .lv { font-size: 10px; letter-spacing: 0.08em; }
+  .log-line .lv.INFO { color: var(--fg-dim); }
+  .log-line .lv.WARN { color: var(--amber); }
+  .log-line .lv.ERROR { color: var(--red); }
+  .log-line .lv.DEBUG { color: var(--fg-faint); }
+  .log-line .tag { color: var(--accent); font-size: 11px; }
+  .log-line .msg { color: rgba(255,255,255,0.8); word-break: break-word; }
+  .log-line.is-error { background: rgba(255,59,59,0.05); }
+  .log-line.is-warn { background: rgba(245,158,11,0.04); }
+  .follow-btn.on { color: var(--green); border-color: rgba(34,197,94,0.4); }
+
+  button.ctrl {
+    background: var(--surface); color: var(--fg-dim); border: 1px solid var(--border-subtle);
+    border-radius: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer; transition: all 0.15s;
+  }
+  button.ctrl:hover { color: var(--fg); border-color: var(--accent); }
+
+  /* ---------- dev servers ---------- */
+  .ds-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+  .ds-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .ds-card .top { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .ds-card .top b { font-size: 14.5px; }
+  .ds-card .cmd { font-family: var(--font-mono); font-size: 11px; color: var(--fg-faint); margin-bottom: 12px; }
+  .meter { height: 5px; border-radius: 100px; background: rgba(0,100,255,0.15); overflow: hidden; margin: 6px 0 4px; }
+  .meter .fill { height: 100%; border-radius: 100px; background: var(--accent); }
+  .meter .fill.low { background: var(--amber); }
+  .ds-card .mrow { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); display: flex; justify-content: space-between; }
+  .qrow {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-top: 6px;
+    background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px;
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim);
+  }
+  .qrow .pos { color: var(--fg-faint); width: 22px; }
+
+  /* ---------- workflows ---------- */
+  .wf-card { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 16px; }
+  .wf-card:last-child { border-bottom: none; }
+  .wf-card .name { font-weight: 700; font-size: 14px; }
+  .wf-card .desc { color: var(--fg-dim); font-size: 12px; margin-top: 2px; }
+  .wf-card .src { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); margin-top: 6px; }
+  .wf-card .mrow { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); line-height: 1.9; }
+  .wf-card .mrow b { color: var(--fg); font-weight: 500; }
+  .runs { display: flex; gap: 4px; align-items: center; margin-top: 6px; }
+  .run-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--surface-strong); cursor: default; }
+  .run-dot.done { background: rgba(34,197,94,0.7); }
+  .run-dot.failed { background: rgba(255,59,59,0.8); }
+  .run-dot.running { background: rgba(245,158,11,0.8); }
+  .run-line { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); padding: 2px 0; }
+
+  /* ---------- memory ---------- */
+  .mem-layout { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+  @media (max-width: 1000px) { .mem-layout { grid-template-columns: 1fr; } }
+  #memory-canvas { display: block; width: 100%; height: 440px; background: #0a0a0a; border: 1px solid var(--border); border-radius: 12px; cursor: crosshair; }
+  .cloud-legend { display: flex; gap: 16px; margin: 10px 2px 0; }
+  .cloud-legend .lg { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); font-size: 11px; font-family: var(--font-mono); }
+  .cloud-legend .sw { width: 9px; height: 9px; border-radius: 50%; }
+  .claim-row { padding: 10px 16px; border-bottom: 1px solid var(--border-subtle); font-size: 12.5px; }
+  .claim-row:last-child { border-bottom: none; }
+  .claim-row .k { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 2px; }
+  .claim-row .k.lesson { color: var(--green); } .claim-row .k.fact { color: var(--accent); } .claim-row .k.situation-claim { color: var(--purple); }
+  .claim-row .tags { color: var(--fg-faint); font-size: 11px; font-family: var(--font-mono); margin-top: 2px; }
+
+  /* ---------- docs ---------- */
+  .docs-layout { display: grid; grid-template-columns: 280px 1fr; gap: 14px; min-height: 500px; }
+  @media (max-width: 900px) { .docs-layout { grid-template-columns: 1fr; } }
+  .doc-tree { padding: 10px 0; max-height: 70vh; overflow-y: auto; }
+  .doc-dir { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-faint); padding: 10px 16px 4px; }
+  .doc-file { display: block; padding: 4px 16px 4px 24px; font-size: 12.5px; color: var(--fg-dim); cursor: pointer; border-left: 2px solid transparent; }
+  .doc-file:hover { color: var(--fg); background: rgba(255,255,255,0.03); }
+  .doc-file.on { color: var(--fg); border-left-color: var(--accent); background: rgba(0,100,255,0.07); }
+  .doc-pane { padding: 22px 26px; overflow-x: auto; }
+  .doc-pane h1 { font-size: 19px; margin: 0 0 12px; }
+  .doc-pane h2 { font-size: 15px; margin: 20px 0 8px; }
+  .doc-pane p, .doc-pane li { color: var(--fg-dim); font-size: 13px; }
+  .doc-pane pre { background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px 14px; font-size: 12px; overflow-x: auto; }
+</style>
+</head>
+
+<body>
+  <aside>
+    <div class="brand"><h1>JUNIOR</h1><span class="env">local</span></div>
+    <nav id="nav">
+      <a href="#overview" data-view="overview"><span class="ico">◉</span>Overview</a>
+      <a href="#threads" data-view="threads"><span class="ico">≡</span>Threads<span class="count" id="nav-threads" style="display:none"></span></a>
+      <a href="#logs" data-view="logs"><span class="ico">▤</span>Logs<span class="count err" id="nav-logs" style="display:none"></span></a>
+      <a href="#devservers" data-view="devservers"><span class="ico">▶</span>Dev Servers<span class="count" id="nav-ds" style="display:none"></span></a>
+      <a href="#workflows" data-view="workflows"><span class="ico">↻</span>Workflows<span class="count" id="nav-wf" style="display:none"></span></a>
+      <a href="#memory" data-view="memory"><span class="ico">✦</span>Memory</a>
+      <a href="#docs" data-view="docs"><span class="ico">¶</span>Docs</a>
+    </nav>
+    <div class="side-foot" id="side-foot">
+      v<b id="sf-version">—</b> · up <b id="sf-uptime">—</b><br />
+      repos <b id="sf-repos">—</b>
+      <div class="live-toggle" id="live-toggle">
+        <span class="live-dot" id="live-dot"></span>
+        <span id="live-label">live · 2s poll</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="content">
+
+    <!-- ================= OVERVIEW ================= -->
+    <section class="view" id="view-overview">
+      <div class="view-head">
+        <h2>Overview</h2>
+        <span class="sub">what needs you, then the numbers</span>
+        <span class="right mono faint" id="ov-refreshed">—</span>
+      </div>
+
+      <h3 class="sect" id="attn-sect">Needs attention</h3>
+      <div class="attn" id="attn"></div>
+      <div class="attn-ok" id="attn-ok">✓ all quiet — no errors, stuck sessions, or queue waiters</div>
+
+      <h3 class="sect">Right now</h3>
+      <div class="stat-grid" id="ov-stats"><div class="empty">loading…</div></div>
+
+      <div id="act-section" style="display:none">
+        <h3 class="sect">Turns per hour · today</h3>
+        <div class="panel act-wrap">
+          <div class="act-chart" id="act-chart"></div>
+          <div class="act-x"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+          <div class="tip" id="act-tip"></div>
+        </div>
+      </div>
+
+      <div class="two-col" style="margin-top: 26px">
+        <div>
+          <h3 class="sect">Recent warnings &amp; errors</h3>
+          <div class="panel" id="ov-feed"><div class="empty">loading…</div></div>
+        </div>
+        <div>
+          <h3 class="sect">Busiest threads</h3>
+          <div class="panel" id="ov-busiest"><div class="empty">loading…</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= THREADS ================= -->
+    <section class="view" id="view-threads">
+      <div class="view-head">
         <h2>Threads</h2>
-        <div class="panel" id="threads"><div class="empty">loading…</div></div>
-      </section>
-      <section>
-        <div class="cloud-head">
-          <h2 style="margin:0">Memory Cloud</h2>
-          <span class="caveat">PCA projection of claim embeddings — distorts. Local neighbourhoods (and the KNN lines) are meaningful; global distances are not. Exploration, not a map.</span>
-          <button class="cloud-btn" id="cloud-refresh" type="button">refresh</button>
-        </div>
-        <div class="cloud-legend" id="cloud-legend"></div>
-        <div class="cloud-wrap">
+        <span class="sub">click a row for full session detail</span>
+        <span class="right"><input class="search" id="th-search" placeholder="filter channel / thread / repo…" /></span>
+      </div>
+      <div class="chips" id="th-chips" style="margin-bottom: 14px"></div>
+      <div class="panel" id="th-list"><div class="empty">loading…</div></div>
+    </section>
+
+    <!-- ================= LOGS ================= -->
+    <section class="view" id="view-logs">
+      <div class="view-head">
+        <h2>Logs</h2>
+        <span class="sub">logs/&lt;date&gt;.log — parsed, filterable, no more ssh + tail</span>
+      </div>
+      <div class="log-toolbar">
+        <input type="date" class="ctrl" id="log-date" />
+        <select class="ctrl" id="log-tag">
+          <option value="">all tags</option>
+          <option>session</option><option>spawner</option><option>slack</option>
+          <option>worktree</option><option>devserver</option><option>http</option><option>memory</option>
+          <option>boot</option><option>workflow</option>
+        </select>
+        <span class="chips" id="log-levels">
+          <span class="chip on" data-lv="">all</span>
+          <span class="chip" data-lv="INFO">info</span>
+          <span class="chip" data-lv="WARN">warn</span>
+          <span class="chip" data-lv="ERROR">error</span>
+        </span>
+        <input class="search" id="log-search" placeholder="grep…" style="width: 170px" />
+        <span style="margin-left:auto; display:flex; gap:8px">
+          <button class="ctrl follow-btn on" id="log-follow" type="button">● follow</button>
+          <button class="ctrl" id="log-clear" type="button">clear filters</button>
+        </span>
+      </div>
+      <div class="panel log-scroll" id="log-scroll">
+        <div class="log-lines" id="log-lines"><div class="empty">loading…</div></div>
+      </div>
+      <div class="faint mono" style="margin-top:8px; font-size:11px" id="log-count"></div>
+    </section>
+
+    <!-- ================= DEV SERVERS ================= -->
+    <section class="view" id="view-devservers">
+      <div class="view-head">
+        <h2>Dev Servers</h2>
+        <span class="sub">one slot per repo · TTL meter shows time until idle reap</span>
+      </div>
+      <div class="ds-grid" id="ds-grid"><div class="empty">loading…</div></div>
+    </section>
+
+    <!-- ================= WORKFLOWS ================= -->
+    <section class="view" id="view-workflows">
+      <div class="view-head">
+        <h2>Workflows</h2>
+        <span class="sub">scheduled runs · last outcomes per workflow</span>
+      </div>
+      <div class="panel" id="wf-list"><div class="empty">loading…</div></div>
+    </section>
+
+    <!-- ================= MEMORY ================= -->
+    <section class="view" id="view-memory">
+      <div class="view-head">
+        <h2>Memory</h2>
+        <span class="sub">PCA projection — local neighbourhoods are meaningful, global distances are not</span>
+        <span class="right"><button class="ctrl" id="cloud-refresh" type="button">refresh</button></span>
+      </div>
+      <div class="mem-layout">
+        <div style="position:relative">
           <canvas id="memory-canvas"></canvas>
-          <div class="cloud-tip" id="cloud-tip"></div>
-          <div class="empty" id="cloud-status" style="position:absolute;top:0;left:0;right:0;text-align:center;padding-top:200px;pointer-events:none">loading…</div>
+          <div class="cloud-legend">
+            <span class="lg"><span class="sw" style="background:#22c55e"></span>lesson</span>
+            <span class="lg"><span class="sw" style="background:#0064ff"></span>fact</span>
+            <span class="lg"><span class="sw" style="background:#9747ff"></span>situation-claim</span>
+          </div>
+          <div class="tip" id="cloud-tip" style="max-width:320px;white-space:normal"></div>
+          <div class="empty" id="cloud-status" style="position:absolute;top:0;left:0;right:0;text-align:center;padding-top:180px;pointer-events:none">loading…</div>
         </div>
-      </section>
-    </main>
+        <div>
+          <h3 class="sect" style="margin-top:0">Recent claims</h3>
+          <div class="panel" id="claim-list"><div class="empty">load the cloud to see claims</div></div>
+        </div>
+      </div>
+    </section>
 
-    <script>
-      const POLL_MS = 2000;
-      const pulseEl = document.getElementById("pulse");
-      let tick = 0;
-      const PULSE = ["·", ":", "·", " "];
+    <!-- ================= DOCS ================= -->
+    <section class="view" id="view-docs">
+      <div class="view-head">
+        <h2>Docs</h2>
+        <span class="sub">read-only browser over docs/**/*.md</span>
+      </div>
+      <div class="docs-layout">
+        <div class="panel doc-tree" id="doc-tree"><div class="empty">loading…</div></div>
+        <div class="panel doc-pane" id="doc-pane"><div class="empty">select a file</div></div>
+      </div>
+    </section>
 
-      function pillClass(status) {
-        if (!status) return "pill";
-        return "pill " + status;
+  </div>
+
+  <!-- thread detail drawer -->
+  <div class="drawer-scrim" id="drawer-scrim"></div>
+  <div class="drawer" id="drawer"></div>
+
+<script>
+
+
+/* =================== helpers =================== */
+const POLL_MS = 2000;
+const STUCK_MS = 15 * 60 * 1000;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s == null ? "" : String(s)
+  .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+function shortId(id) {
+  if (!id) return "—";
+  const s = String(id);
+  return s.length > 16 ? s.slice(0, 10) + "…" + s.slice(-4) : s;
+}
+function ago(ts) {
+  if (ts == null) return "—";
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return s + "s";
+  const mm = Math.floor(s / 60);
+  if (mm < 60) return mm + "m";
+  const h = Math.floor(mm / 60);
+  if (h < 24) return h + "h " + (mm % 60) + "m";
+  return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+function fmtUptime(sec) {
+  if (sec == null) return "—";
+  const s = Math.floor(sec);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return d + "d " + h + "h";
+  if (h > 0) return h + "h " + m + "m";
+  if (m > 0) return m + "m " + (s % 60) + "s";
+  return (s % 60) + "s";
+}
+function fmtRemaining(ms) {
+  if (ms == null) return "—";
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  return m + "m " + String(s % 60).padStart(2, "0") + "s";
+}
+function fmtNext(ts) {
+  if (!ts) return "—";
+  const mins = Math.round((ts - Date.now()) / 60000);
+  if (mins < 0) return "overdue";
+  if (mins < 60) return "in " + mins + "m";
+  return "in " + Math.floor(mins / 60) + "h " + (mins % 60) + "m";
+}
+function pill(status) {
+  const st = status || "unknown";
+  return '<span class="pill ' + esc(st) + '">' + esc(st) + "</span>";
+}
+function todayISO() {
+  // Log files are named by UTC date (src/logger.ts uses toISOString().slice(0, 10)).
+  return new Date().toISOString().slice(0, 10);
+}
+function timeOf(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    // already HH:MM:SS or similar
+    const m = String(iso).match(/(\d{2}:\d{2}:\d{2})/);
+    return m ? m[1] : String(iso).slice(11, 19) || String(iso);
+  }
+  return String(d.getHours()).padStart(2, "0") + ":" +
+    String(d.getMinutes()).padStart(2, "0") + ":" +
+    String(d.getSeconds()).padStart(2, "0");
+}
+function pendingCount(v) {
+  if (Array.isArray(v)) return v.length;
+  if (typeof v === "number") return v;
+  return 0;
+}
+function isErrorSession(s) {
+  return s.status === "error" || !!(s.lastError);
+}
+async function fetchJson(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(path + " " + res.status);
+  return await res.json();
+}
+async function safeFetch(path) {
+  try {
+    return { ok: true, data: await fetchJson(path) };
+  } catch (err) {
+    console.error("fetch failed", path, err);
+    return { ok: false, error: err, data: null };
+  }
+}
+
+/* =================== state =================== */
+let live = true;
+let lastRefreshAt = 0;
+let health = null;
+let sessions = [];
+let devServers = [];
+let idleTtlMs = null;
+let workflows = [];
+let workflowErrors = [];
+let logEntries = [];
+let logErrorCount = 0;
+let logFetchError = null;
+let dayLogEntries = []; // full-day log payload from slow cadence (overview/errors/turns)
+let dayLogError = null;
+let thFilter = "all";
+let thQuery = "";
+let logLevel = "";
+let logQuery = "";
+let follow = true;
+let actBuckets = null; // length-24 or null to hide
+let docsLoaded = false;
+let cloudLoaded = false;
+let drawerThreadId = null;
+
+/* =================== navigation =================== */
+function currentView() {
+  return (location.hash.slice(1) || "overview").split("?")[0];
+}
+function show(view) {
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+  document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
+  const el = $("view-" + view);
+  (el || $("view-overview")).classList.add("active");
+  if (view === "memory" && !cloudLoaded) loadCloud();
+  if (view === "docs" && !docsLoaded) loadDocsTree();
+  if (view === "logs") fetchLogs();
+}
+window.addEventListener("hashchange", () => show(currentView()));
+
+$("live-toggle").addEventListener("click", () => {
+  live = !live;
+  $("live-dot").classList.toggle("paused", !live);
+  $("live-label").textContent = live ? "live · 2s poll" : "paused";
+});
+
+/* =================== copy / resume =================== */
+function resumeCmd(provider, sessionId, cwd) {
+  if (!sessionId) return null;
+  const r = provider === "claude"
+    ? "claude --resume " + sessionId
+    : "opencode --session " + sessionId;
+  return cwd ? "cd " + cwd + " && " + r : r;
+}
+function cmdRow(cmd) {
+  if (!cmd) return '<div class="faint" style="margin-top:8px">no session id</div>';
+  return (
+    '<div class="cmd-row"><code title="' + esc(cmd) + '">' + esc(cmd) + "</code>" +
+    '<button class="copy-btn" type="button" data-cmd="' + esc(cmd) + '">copy</button></div>'
+  );
+}
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".copy-btn");
+  if (!btn) return;
+  await copyText(btn.dataset.cmd || "");
+  btn.textContent = "copied";
+  btn.classList.add("copied");
+  setTimeout(() => { btn.textContent = "copy"; btn.classList.remove("copied"); }, 1500);
+});
+
+/* =================== markdown =================== */
+function renderMarkdown(src) {
+  const raw = String(src || "");
+  // Escape first, then apply light markdown on the escaped text.
+  let text = esc(raw);
+  const blocks = [];
+  // fenced code
+  text = text.replace(/```([\s\S]*?)```/g, (_, code) => {
+    const i = blocks.length;
+    blocks.push("<pre><code>" + code.replace(/^\n/, "") + "</code></pre>");
+    return "\u0000B" + i + "\u0000";
+  });
+  const lines = text.split("\n");
+  const out = [];
+  let i = 0;
+  let listType = null; // ul | ol
+  function closeList() {
+    if (listType) { out.push(listType === "ul" ? "</ul>" : "</ol>"); listType = null; }
+  }
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = line.match(/^\u0000B(\d+)\u0000$/);
+    if (fence) {
+      closeList();
+      out.push(blocks[Number(fence[1])]);
+      i++;
+      continue;
+    }
+    if (/^### /.test(line)) { closeList(); out.push("<h3>" + inlineMd(line.slice(4)) + "</h3>"); i++; continue; }
+    if (/^## /.test(line)) { closeList(); out.push("<h2>" + inlineMd(line.slice(3)) + "</h2>"); i++; continue; }
+    if (/^# /.test(line)) { closeList(); out.push("<h1>" + inlineMd(line.slice(2)) + "</h1>"); i++; continue; }
+    const ul = line.match(/^[-*] (.+)$/);
+    if (ul) {
+      if (listType !== "ul") { closeList(); out.push("<ul>"); listType = "ul"; }
+      out.push("<li>" + inlineMd(ul[1]) + "</li>");
+      i++; continue;
+    }
+    const ol = line.match(/^\d+\. (.+)$/);
+    if (ol) {
+      if (listType !== "ol") { closeList(); out.push("<ol>"); listType = "ol"; }
+      out.push("<li>" + inlineMd(ol[1]) + "</li>");
+      i++; continue;
+    }
+    // table rows (optional)
+    if (/^\|/.test(line) && line.endsWith("|")) {
+      closeList();
+      const rows = [];
+      while (i < lines.length && /^\|/.test(lines[i])) {
+        const cells = lines[i].split("|").slice(1, -1).map((c) => c.trim());
+        if (!/^[-:| ]+$/.test(cells.join(""))) rows.push(cells);
+        i++;
       }
-
-      function fmtAgo(ms) {
-        if (!ms) return "—";
-        const delta = Date.now() - ms;
-        if (delta < 0) return "0s";
-        const s = Math.floor(delta / 1000);
-        if (s < 60) return s + "s";
-        const m = Math.floor(s / 60);
-        if (m < 60) return m + "m " + (s % 60) + "s";
-        const h = Math.floor(m / 60);
-        return h + "h " + (m % 60) + "m";
-      }
-
-      function fmtRemaining(ms) {
-        if (ms == null) return "—";
-        const s = Math.max(0, Math.floor(ms / 1000));
-        const m = Math.floor(s / 60);
-        return m + "m " + (s % 60).toString().padStart(2, "0") + "s";
-      }
-
-      function fmtUptime(s) {
-        if (s == null) return "—";
-        const h = Math.floor(s / 3600);
-        const m = Math.floor((s % 3600) / 60);
-        const r = s % 60;
-        if (h > 0) return h + "h " + m + "m";
-        if (m > 0) return m + "m " + r + "s";
-        return r + "s";
-      }
-
-      function escapeHtml(s) {
-        if (s == null) return "";
-        return String(s)
-          .replaceAll("&", "&amp;")
-          .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;")
-          .replaceAll('"', "&quot;");
-      }
-
-      function shortId(id) {
-        if (!id) return "—";
-        const s = String(id);
-        return s.length > 14 ? s.slice(0, 8) + "…" + s.slice(-4) : s;
-      }
-
-      async function fetchJson(path) {
-        const res = await fetch(path);
-        if (!res.ok) throw new Error(path + " " + res.status);
-        return await res.json();
-      }
-
-      function renderHealth(h) {
-        const meta = document.getElementById("health-meta");
-        meta.innerHTML =
-          "v<b>" + escapeHtml(h.version) + "</b> · uptime <b>" +
-          fmtUptime(h.uptime) + "</b> · repos <b>" +
-          escapeHtml(h.repos.join(", ") || "—") + "</b>";
-
-        const stats = document.getElementById("health-stats");
-        const s = h.sessions || {};
-        const a = h.agents || {};
-        stats.innerHTML = [
-          stat(s.total ?? 0, "Threads"),
-          stat(s.busy ?? 0, "Busy", "busy"),
-          stat(s.idle ?? 0, "Idle"),
-          stat(s.draining ?? 0, "Draining", "draining"),
-          stat(s.errors ?? 0, "Errors", (s.errors ?? 0) > 0 ? "failed" : ""),
-          stat(a.total ?? 0, "Agents"),
-          stat(a.busy ?? 0, "Agents busy", (a.busy ?? 0) > 0 ? "busy" : ""),
-        ].join("");
-      }
-
-      function stat(num, label, cls) {
-        return (
-          '<div class="stat"><div class="num ' + (cls || "") +
-          '">' + num + "</div><div class=\"lbl\">" + label + "</div></div>"
-        );
-      }
-
-      function renderDevServers(payload) {
-        const root = document.getElementById("devservers");
-        const items = payload.devServers || [];
-        if (items.length === 0) {
-          root.innerHTML = '<div class="empty">No repos with devCommand configured.</div>';
-          return;
-        }
-        root.innerHTML = items.map(renderDevServerRow).join("");
-      }
-
-      function renderDevServerRow(d) {
-        const statusPill = d.running
-          ? '<span class="' + pillClass("running") + '">running pid ' + d.pid + "</span>"
-          : '<span class="' + pillClass("stopped") + '">stopped</span>';
-        const branch = d.branch
-          ? '<code>' + escapeHtml(d.branch) + "</code>"
-          : '<span class="faint">no branch</span>';
-        const port = d.devPort ? ":" + d.devPort : "";
-        const idle = d.running
-          ? "idle TTL <b>" + fmtRemaining(d.idleMsRemaining) + "</b>"
-          : '<span class="faint">—</span>';
-
-        const holder = d.holder
-          ? "thread <code>" + escapeHtml(shortId(d.holder.holderThreadId)) +
-            "</code> · acquired " + fmtAgo(d.holder.acquiredAt) + " ago"
-          : '<span class="faint">no holder</span>';
-
-        const waiters = (d.waiters || []).length
-          ? '<div class="waiters"><div class="col-label">' + d.waiters.length +
-            ' waiter' + (d.waiters.length === 1 ? "" : "s") + '</div>' +
-            d.waiters
-              .map(
-                (w) =>
-                  '<span class="wt"><code>' + escapeHtml(shortId(w.threadId)) +
-                  "</code> → <code>" + escapeHtml(w.branch) +
-                  '</code> <span class="faint">' + fmtAgo(w.enqueuedAt) +
-                  " ago</span></span>",
-              )
-              .join("") +
-            "</div>"
-          : "";
-
-        return (
-          '<div class="row devserver">' +
-          "<div><div class=\"col-label\">repo</div><b>" +
-          escapeHtml(d.repo) + "</b><div class=\"dim\">" +
-          escapeHtml(d.devCommand || "—") + port + "</div></div>" +
-          "<div><div class=\"col-label\">status</div>" + statusPill +
-          " · " + branch + " · " + idle + waiters + "</div>" +
-          "<div><div class=\"col-label\">holder</div>" + holder + "</div>" +
-          "</div>"
-        );
-      }
-
-      function renderWorkflows(payload) {
-        const root = document.getElementById("workflows");
-        const items = payload.workflows || [];
-        const errors = payload.errors || [];
-        if (items.length === 0 && errors.length === 0) {
-          root.innerHTML = '<div class="empty">No workflows loaded.</div>';
-          return;
-        }
-        const workflowRows = items.map(renderWorkflowRow).join("");
-        const errorRows = errors.length
-          ? '<div class="row workflow"><div><div class="col-label">validation errors</div><span class="' +
-            pillClass("failed") + '">' + errors.length + '</span></div><div class="dim" style="grid-column: span 2">' +
-            errors.map((e) => '<div><code>' + escapeHtml(e.path) + '</code> ' + escapeHtml(e.message) + '</div>').join("") +
-            "</div></div>"
-          : "";
-        root.innerHTML = workflowRows + errorRows;
-      }
-
-      function renderWorkflowRow(w) {
-        const state = w.state || {};
-        const status = state.status || (w.enabled ? "active" : "stopped");
-        const runner = w.runner
-          ? escapeHtml(w.runner.provider + "/" + w.runner.agentName)
-          : '<span class="faint">none</span>';
-        const nextRun = state.nextRunAt
-          ? new Date(state.nextRunAt).toLocaleString()
-          : '<span class="faint">none</span>';
-        const lastRun = state.lastRunAt
-          ? new Date(state.lastRunAt).toLocaleString()
-          : '<span class="faint">never</span>';
-        const triggers = (w.triggers || [])
-          .map((t) => t.type === "schedule" ? t.cron + " " + t.timezone : t.type)
-          .join(", ") || "none";
-        const latestRuns = (w.runs || []).length
-          ? '<div class="run-list">' + w.runs.map(renderWorkflowRun).join("") + "</div>"
-          : '<div class="faint run-list">no runs yet</div>';
-        const error = state.lastError
-          ? '<div class="dim" style="margin-top:4px;color:var(--red)">' + escapeHtml(state.lastError) + "</div>"
-          : "";
-
-        return (
-          '<div class="row workflow">' +
-          '<div><div class="col-label">workflow</div><b>' + escapeHtml(w.name) +
-          '</b><div class="dim">' + escapeHtml(w.description || "no description") +
-          '</div><div class="dim"><code>' + escapeHtml(w.sourcePath) + '</code></div></div>' +
-          '<div><div class="col-label">state</div><span class="' + pillClass(status) + '">' +
-          escapeHtml(status) + '</span> · ' + (w.enabled ? "enabled" : "disabled") +
-          '<div class="dim">next ' + nextRun + '</div><div class="dim">last ' + lastRun +
-          '</div>' + error + '</div>' +
-          '<div><div class="col-label">runs</div><div class="dim">runner ' + runner +
-          ' · triggers ' + escapeHtml(triggers) + '</div>' + latestRuns + '</div>' +
-          "</div>"
-        );
-      }
-
-      function renderWorkflowRun(run) {
-        const duration = run.finishedAt && run.startedAt
-          ? " · " + fmtRemaining(run.finishedAt - run.startedAt)
-          : "";
-        const sid = run.providerSessionId
-          ? ' · sid <code class="sessionId">' + escapeHtml(shortId(run.providerSessionId)) + '</code>'
-          : "";
-        const err = run.error ? ' <span style="color:var(--red)">' + escapeHtml(run.error) + "</span>" : "";
-        return (
-          '<span class="run-row"><span class="' + pillClass(run.status) + '">' +
-          escapeHtml(run.status) + '</span> ' + new Date(run.startedAt).toLocaleTimeString() +
-          ' · ' + escapeHtml(run.reason) + duration + sid +
-          ' · <code>' + escapeHtml(shortId(run.id)) + '</code>' + err + '</span>'
-        );
-      }
-
-      function renderThreads(payload) {
-        const root = document.getElementById("threads");
-        const sessions = payload.sessions || [];
-        if (sessions.length === 0) {
-          root.innerHTML = '<div class="empty">No active threads.</div>';
-          return;
-        }
-        root.innerHTML = sessions.map(renderThreadRow).join("");
-      }
-
-      function renderThreadRow(s) {
-        const agents = (s.agents || [])
-          .map(
-            (a) =>
-              '<div class="agent-row">' +
-              "<b>" + escapeHtml(a.agentName) + "</b>" +
-              '<span class="' + pillClass(a.status) + '">' +
-              escapeHtml(a.status) + "</span>" +
-              '<span class="truncate">sid <code class="sessionId">' +
-              escapeHtml(shortId(a.sessionId)) + "</code></span>" +
-              '<span>last ' + fmtAgo(a.lastActivity) +
-              " ago" +
-              (a.pendingMessages
-                ? ' · <span class="faint">' + a.pendingMessages + " buffered</span>"
-                : "") +
-              "</span></div>",
-          )
-          .join("");
-
-        const agentBlock = agents
-          ? '<div class="agent-list">' + agents + "</div>"
-          : '<div class="agent-list faint">no agent sessions yet</div>';
-
-        const repoBits = [
-          s.targetRepo ? "<code>" + escapeHtml(s.targetRepo) + "</code>" : null,
-          s.baseRef ? "<code>" + escapeHtml(s.baseRef) + "</code>" : null,
-          s.agentType ? '<span class="dim">' + escapeHtml(s.agentType) + "</span>" : null,
-        ]
-          .filter(Boolean)
-          .join(" · ");
-
-        const errBlock = s.lastError
-          ? '<div class="dim" style="margin-top:4px;color:var(--red)">⚠ ' +
-            escapeHtml(s.lastError.type) + ": " +
-            escapeHtml(s.lastError.message) + "</div>"
-          : "";
-
-        return (
-          '<div class="row session">' +
-          "<div><div class=\"col-label\">thread</div><b class=\"threadId\">" +
-          escapeHtml(shortId(s.threadId)) + "</b><div class=\"dim\">channel " +
-          escapeHtml(s.channel) +
-          (s.muted ? ' · <span class="pill draining">muted</span>' : "") +
-          "</div>" + (repoBits ? '<div class="dim" style="margin-top:2px">' + repoBits + "</div>" : "") +
-          errBlock + "</div>" +
-          "<div><div class=\"col-label\">status</div>" +
-          '<span class="' + pillClass(s.status) + '">' + escapeHtml(s.status) + "</span>" +
-          " · last " + fmtAgo(s.lastActivity) + " ago" +
-          (s.pendingMessages
-            ? ' · <span class="faint">' + s.pendingMessages + " buffered</span>"
-            : "") +
-          "<div class=\"dim\">lead sid <code>" + escapeHtml(shortId(s.leadSessionId)) +
-          "</code></div></div>" +
-          "<div><div class=\"col-label\">agents (" +
-          (s.agents ? s.agents.length : 0) + ")</div>" + agentBlock + "</div>" +
-          "</div>"
-        );
-      }
-
-      async function refresh() {
-        try {
-          const [health, sessions, devServers, workflows] = await Promise.all([
-            fetchJson("/api/health"),
-            fetchJson("/api/sessions"),
-            fetchJson("/api/dev-server"),
-            fetchJson("/api/workflows"),
-          ]);
-          renderHealth(health);
-          renderThreads(sessions);
-          renderDevServers(devServers);
-          renderWorkflows(workflows);
-        } catch (err) {
-          console.error("refresh failed", err);
-        }
-        pulseEl.textContent = PULSE[tick++ % PULSE.length];
-      }
-
-      refresh();
-      setInterval(refresh, POLL_MS);
-
-      // --- Memory cloud: 2D projection of the claim embedding space ----------
-      // Fetched on demand (not on the 2s poll) — PCA + KNN is render-time work.
-      // Palette follows the GrowthX language: blue accent, white, restrained
-      // purple/green, subtle blue edges on a near-black canvas.
-      const KIND_COLORS = {
-        lesson: "#22c55e",
-        fact: "#0064ff",
-        "situation-claim": "#9747ff",
-      };
-      const KIND_FALLBACK = "#999999";
-      const cloud = {
-        canvas: document.getElementById("memory-canvas"),
-        tip: document.getElementById("cloud-tip"),
-        status: document.getElementById("cloud-status"),
-        screen: [], // {sx, sy, point} in CSS pixels for hover hit-testing
-        data: null, // last drawn projection, for hover redraws
-        hoverId: null, // id of currently highlighted node
-      };
-
-      function kindColor(kind) {
-        return KIND_COLORS[kind] || KIND_FALLBACK;
-      }
-
-      function renderCloudLegend() {
-        const el = document.getElementById("cloud-legend");
-        const kinds = [["lesson", "lesson"], ["fact", "fact"], ["situation-claim", "situation-claim"]];
-        el.innerHTML = kinds
-          .map(
-            ([k, label]) =>
-              '<span class="lg"><span class="sw" style="background:' +
-              kindColor(k) + '"></span>' + escapeHtml(label) + "</span>",
-          )
-          .join("");
-      }
-
-      function setCloudStatus(text) {
-        if (text) {
-          cloud.status.textContent = text;
-          cloud.status.style.display = "";
-        } else {
-          cloud.status.style.display = "none";
-        }
-      }
-
-      function drawCloud(data) {
-        cloud.data = data;
-        cloud.hoverId = null;
-        paintCloud();
-      }
-
-      function paintCloud() {
-        const data = cloud.data || {};
-        const points = data.points || [];
-        const edges = data.edges || [];
-        const canvas = cloud.canvas;
-        const dpr = window.devicePixelRatio || 1;
-        const cssW = canvas.clientWidth || 800;
-        const cssH = canvas.clientHeight || 460;
-        canvas.width = Math.round(cssW * dpr);
-        canvas.height = Math.round(cssH * dpr);
-        const ctx = canvas.getContext("2d");
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, cssW, cssH);
-        cloud.screen = [];
-
-        if (points.length === 0) {
-          setCloudStatus("No claims with embeddings yet.");
-          return;
-        }
-        setCloudStatus(null);
-
-        // Map projected coords → canvas with padding. A single point (or all-zero
-        // coords from the guard) centres instead of dividing by a zero range.
-        const pad = 28;
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (const p of points) {
-          if (p.x < minX) minX = p.x;
-          if (p.x > maxX) maxX = p.x;
-          if (p.y < minY) minY = p.y;
-          if (p.y > maxY) maxY = p.y;
-        }
-        const spanX = maxX - minX || 1;
-        const spanY = maxY - minY || 1;
-        const toScreen = (p) => ({
-          sx: points.length === 1 ? cssW / 2 : pad + ((p.x - minX) / spanX) * (cssW - 2 * pad),
-          sy: points.length === 1 ? cssH / 2 : pad + ((p.y - minY) / spanY) * (cssH - 2 * pad),
+      if (rows.length) {
+        let html = "<table style='border-collapse:collapse;width:100%;font-size:12.5px;margin:10px 0'>";
+        rows.forEach((cells, ri) => {
+          const tag = ri === 0 ? "th" : "td";
+          html += "<tr>" + cells.map((c) => "<" + tag + " style='border:1px solid var(--border-subtle);padding:4px 8px;text-align:left'>" + inlineMd(c) + "</" + tag + ">").join("") + "</tr>";
         });
-
-        const pos = new Map();
-        for (const p of points) pos.set(p.id, toScreen(p));
-
-        // Faint KNN edges first, under the points. Stronger cosine = more opaque.
-        ctx.lineWidth = 1;
-        for (const e of edges) {
-          const a = pos.get(e.a);
-          const b = pos.get(e.b);
-          if (!a || !b) continue;
-          const touchesHover = cloud.hoverId != null && (e.a === cloud.hoverId || e.b === cloud.hoverId);
-          const baseAlpha = Math.max(0.05, Math.min(0.3, (e.sim || 0) * 0.32));
-          const alpha = touchesHover ? Math.min(0.7, baseAlpha + 0.4) : baseAlpha;
-          ctx.strokeStyle = "rgba(0,100,255," + alpha.toFixed(3) + ")";
-          ctx.beginPath();
-          ctx.moveTo(a.sx, a.sy);
-          ctx.lineTo(b.sx, b.sy);
-          ctx.stroke();
-        }
-
-        // Points on top.
-        for (const p of points) {
-          const s = pos.get(p.id);
-          const isHover = p.id === cloud.hoverId;
-          if (isHover) {
-            // Tasteful hover ring + slightly larger, brighter node.
-            ctx.strokeStyle = "rgba(255,255,255,0.85)";
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.arc(s.sx, s.sy, 7, 0, Math.PI * 2);
-            ctx.stroke();
-          }
-          ctx.fillStyle = kindColor(p.kind);
-          ctx.beginPath();
-          ctx.arc(s.sx, s.sy, isHover ? 4.5 : 3.5, 0, Math.PI * 2);
-          ctx.fill();
-          cloud.screen.push({ sx: s.sx, sy: s.sy, point: p });
-        }
+        html += "</table>";
+        out.push(html);
       }
+      continue;
+    }
+    if (line.trim() === "") { closeList(); out.push(""); i++; continue; }
+    closeList();
+    out.push("<p>" + inlineMd(line) + "</p>");
+    i++;
+  }
+  closeList();
+  return out.join("\n");
+}
+function isSafeMdHref(href) {
+  // href may still contain HTML entities from esc(); decode the common ones for scheme checks.
+  const u = String(href || "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"');
+  // Refuse any scheme that is not http/https (blocks javascript:, data:, etc.).
+  if (/^[a-z][a-z0-9+.-]*:/i.test(u) && !/^https?:/i.test(u)) return false;
+  return true;
+}
+function inlineMd(s) {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, t, u) => {
+      if (!isSafeMdHref(u)) return t; // plain text when scheme is unsafe
+      return '<a class="tlink" href="' + u + '" target="_blank" rel="noopener">' + t + "</a>";
+    });
+}
 
-      function cloudHover(evt) {
-        const rect = cloud.canvas.getBoundingClientRect();
-        const mx = evt.clientX - rect.left;
-        const my = evt.clientY - rect.top;
-        let best = null;
-        let bestD = 100; // px² threshold (10px radius)
-        for (const item of cloud.screen) {
-          const dx = item.sx - mx;
-          const dy = item.sy - my;
-          const d = dx * dx + dy * dy;
-          if (d < bestD) { bestD = d; best = item; }
-        }
-        const nextHover = best ? best.point.id : null;
-        if (nextHover !== cloud.hoverId) {
-          cloud.hoverId = nextHover;
-          paintCloud();
-        }
-        if (!best) { cloud.tip.style.display = "none"; return; }
-        const p = best.point;
-        const tags = (p.tags || []).length
-          ? '<div class="tip-tags">' + p.tags.map(escapeHtml).join(", ") + "</div>"
-          : "";
-        cloud.tip.innerHTML =
-          '<div class="tip-kind">' + escapeHtml(p.kind) + "</div>" +
-          "<div>" + escapeHtml(p.text) + "</div>" + tags;
-        cloud.tip.style.display = "block";
-        const wrap = cloud.canvas.parentElement.getBoundingClientRect();
-        let tx = best.sx + 12;
-        let ty = best.sy + 12;
-        if (tx + 330 > wrap.width) tx = best.sx - cloud.tip.offsetWidth - 12;
-        cloud.tip.style.left = Math.max(0, tx) + "px";
-        cloud.tip.style.top = Math.max(0, ty) + "px";
-      }
+/* =================== sidebar / header =================== */
+function setNavCount(id, n, cls) {
+  const el = $(id);
+  if (!el) return;
+  if (n == null || n === 0 && id === "nav-logs") {
+    el.style.display = "none";
+    el.textContent = "";
+    return;
+  }
+  if (id === "nav-logs" && n <= 0) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "";
+  el.textContent = String(n);
+  el.className = "count" + (cls ? " " + cls : "");
+}
 
-      function cloudLeave() {
-        cloud.tip.style.display = "none";
-        if (cloud.hoverId != null) {
-          cloud.hoverId = null;
-          paintCloud();
-        }
-      }
+function renderSidebar() {
+  const s = (health && health.sessions) || {};
+  const total = s.total ?? sessions.length;
+  const busy = s.busy ?? sessions.filter((x) => x.status === "busy").length;
+  setNavCount("nav-threads", total, busy > 0 ? "hot" : "");
+  setNavCount("nav-logs", logErrorCount, logErrorCount > 0 ? "err" : "");
+  const running = devServers.filter((d) => d.running).length;
+  setNavCount("nav-ds", running, "");
+  const enabled = workflows.filter((w) => w.enabled).length;
+  setNavCount("nav-wf", enabled, "");
 
-      async function loadCloud() {
-        setCloudStatus("loading…");
-        try {
-          const data = await fetchJson("/api/memory/projection");
-          drawCloud(data);
-        } catch (err) {
-          console.error("memory cloud failed", err);
-          setCloudStatus("Failed to load projection.");
-        }
-      }
+  // Static side-foot DOM — only update text nodes (live-toggle keeps one listener).
+  $("sf-version").textContent = health ? String(health.version || "—") : "—";
+  $("sf-uptime").textContent = health ? fmtUptime(health.uptime) : "—";
+  $("sf-repos").textContent = health && health.repos && health.repos.length
+    ? health.repos.join(", ")
+    : "—";
+}
 
-      renderCloudLegend();
-      cloud.canvas.addEventListener("mousemove", cloudHover);
-      cloud.canvas.addEventListener("mouseleave", cloudLeave);
-      document.getElementById("cloud-refresh").addEventListener("click", loadCloud);
-      loadCloud();
-    </script>
-  </body>
+/* =================== overview =================== */
+function deriveAttention() {
+  const cards = [];
+  for (const s of sessions) {
+    if (s.status === "error" || s.lastError) {
+      const msg = s.lastError
+        ? (s.lastError.type + ": " + s.lastError.message)
+        : "session in error state";
+      cards.push({
+        sev: "err",
+        kind: "session error",
+        title: (s.channel || "thread") + " · " + (s.lastError ? s.lastError.type : "error"),
+        desc: msg + " — thread " + shortId(s.threadId),
+        view: "threads",
+        threadId: s.threadId,
+      });
+    }
+  }
+  for (const s of sessions) {
+    if (s.status === "busy" && s.lastActivity && (Date.now() - s.lastActivity) > STUCK_MS) {
+      cards.push({
+        sev: "warn",
+        kind: "possible stall",
+        title: (s.channel || "thread") + " · possibly stuck",
+        desc: "busy with no activity for " + ago(s.lastActivity) + " — thread " + shortId(s.threadId),
+        view: "threads",
+        threadId: s.threadId,
+      });
+    }
+  }
+  for (const d of devServers) {
+    const waiters = d.waiters || [];
+    if (waiters.length > 0) {
+      const next = waiters[0];
+      cards.push({
+        sev: "warn",
+        kind: "dev-server queue",
+        title: d.repo + " · " + waiters.length + " waiting",
+        desc: (d.holder
+          ? "holder " + shortId(d.holder.holderThreadId) + " for " + ago(d.holder.acquiredAt)
+          : "no holder") +
+          (next ? " — next: " + (next.branch || shortId(next.threadId)) : ""),
+        view: "devservers",
+      });
+    }
+  }
+  for (const w of workflows) {
+    const state = w.state || {};
+    const runs = w.runs || [];
+    const latest = runs[0];
+    const failed = latest && (latest.status === "failed" || latest.status === "error");
+    if (state.lastError || failed) {
+      cards.push({
+        sev: "warn",
+        kind: "workflow",
+        title: w.name + (failed ? " · last run failed" : " · error"),
+        desc: state.lastError || (latest && latest.error) || "latest run failed",
+        view: "workflows",
+      });
+    }
+  }
+  return cards;
+}
+
+function renderOverview() {
+  if (lastRefreshAt) {
+    $("ov-refreshed").textContent = "refreshed " + ago(lastRefreshAt) + " ago";
+  }
+  const cards = deriveAttention();
+  $("attn-sect").textContent = "Needs attention" + (cards.length ? " · " + cards.length : "");
+  if (cards.length === 0) {
+    $("attn").innerHTML = "";
+    $("attn-ok").style.display = "block";
+  } else {
+    $("attn-ok").style.display = "none";
+    $("attn").innerHTML = cards.map((a) =>
+      '<div class="attn-card sev-' + a.sev + '" data-view="' + esc(a.view) + '"' +
+      (a.threadId ? ' data-thread="' + esc(a.threadId) + '"' : "") + ">" +
+      '<div class="kind">' + (a.sev === "err" ? "✕" : "△") + " " + esc(a.kind) + "</div>" +
+      '<div class="t">' + esc(a.title) + '</div><div class="d">' + esc(a.desc) + "</div>" +
+      '<span class="go">→</span></div>'
+    ).join("");
+  }
+
+  const s = (health && health.sessions) || {};
+  const a = (health && health.agents) || {};
+  const buffered = sessions.reduce((n, x) => n + pendingCount(x.pendingMessages), 0);
+  const stuck = sessions.filter((x) => x.status === "busy" && x.lastActivity && Date.now() - x.lastActivity > STUCK_MS).length;
+  const running = devServers.filter((d) => d.running).length;
+  const stats = [
+    ["Threads", s.total ?? sessions.length, "", "active window"],
+    ["Busy", s.busy ?? 0, (s.busy ?? 0) > 0 ? "busy" : "", stuck ? stuck + " possibly stuck" : "ok"],
+    ["Errors", s.errors ?? sessions.filter(isErrorSession).length, (s.errors ?? 0) > 0 ? "err" : "", "with lastError"],
+    ["Agents busy", a.busy ?? 0, (a.busy ?? 0) > 0 ? "busy" : "", "of " + (a.total ?? 0) + " sessions"],
+    ["Buffered msgs", buffered, "", "across threads"],
+    ["Dev servers", running, "", "of " + devServers.length + " repos"],
+  ];
+  $("ov-stats").innerHTML = stats.map(([lbl, num, cls, sub]) =>
+    '<div class="stat"><div class="lbl">' + esc(lbl) + '</div><div class="num ' + esc(cls) + '">' +
+    esc(num) + '</div><div class="sub">' + esc(sub) + "</div></div>"
+  ).join("");
+
+  // activity strip
+  if (actBuckets && actBuckets.some((v) => v > 0)) {
+    $("act-section").style.display = "";
+    const max = Math.max(...actBuckets, 1);
+    const nowH = new Date().getUTCHours();
+    $("act-chart").innerHTML = actBuckets.map((v, i) =>
+      '<div class="act-bar' + (i === nowH ? " now" : "") + '" data-h="' + i + '" data-v="' + v +
+      '" style="height:' + Math.max(4, (v / max) * 100) + '%"></div>'
+    ).join("");
+  } else {
+    $("act-section").style.display = "none";
+  }
+
+  // feed (from slow full-day log cadence — not the Logs-view tail)
+  const feed = dayLogEntries.filter((e) => e.level === "WARN" || e.level === "ERROR").slice(-8).reverse();
+  if (dayLogError && feed.length === 0) {
+    $("ov-feed").innerHTML = '<div class="empty">Could not load logs.</div>';
+  } else if (feed.length === 0) {
+    $("ov-feed").innerHTML = '<div class="empty">No warnings or errors today.</div>';
+  } else {
+    $("ov-feed").innerHTML = feed.map((e) =>
+      '<div class="feed-row"><span class="faint">' + esc(timeOf(e.timestamp)) +
+      '</span><span class="lv ' + esc(e.level) + '">' + esc(e.level) +
+      '</span><span class="msg" title="' + esc(e.message) + '">' + esc(e.message) + "</span></div>"
+    ).join("");
+  }
+
+  // busiest: non-idle, by lastActivity desc already
+  const busyish = sessions.filter((t) => t.status !== "idle").slice(0, 8);
+  if (busyish.length === 0) {
+    $("ov-busiest").innerHTML = '<div class="empty">No busy or draining threads.</div>';
+  } else {
+    $("ov-busiest").innerHTML = busyish.map((t) =>
+      '<div class="feed-row" style="grid-template-columns: 1fr auto auto; cursor:pointer" data-open-thread="' + esc(t.threadId) + '">' +
+      '<span class="msg"><b style="color:var(--fg)">' + esc(t.channel || "—") + '</b> · ' +
+      esc(shortId(t.threadId)) + "</span>" + pill(t.status) +
+      '<span class="faint">' + ago(t.lastActivity) + " ago</span></div>"
+    ).join("");
+  }
+}
+
+$("attn").addEventListener("click", (e) => {
+  const card = e.target.closest(".attn-card");
+  if (!card) return;
+  if (card.dataset.thread) {
+    location.hash = "threads";
+    openDrawer(card.dataset.thread);
+  } else if (card.dataset.view) {
+    location.hash = card.dataset.view;
+  }
+});
+$("ov-busiest").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-open-thread]");
+  if (row) openDrawer(row.dataset.openThread);
+});
+const actTip = $("act-tip");
+$("act-chart").addEventListener("mousemove", (e) => {
+  const bar = e.target.closest(".act-bar");
+  if (!bar) { actTip.style.display = "none"; return; }
+  actTip.textContent = String(bar.dataset.h).padStart(2, "0") + ":00 · " + bar.dataset.v + " turns";
+  actTip.style.display = "block";
+  const wrap = bar.closest(".act-wrap").getBoundingClientRect();
+  const r = bar.getBoundingClientRect();
+  actTip.style.left = Math.min(wrap.width - 130, r.left - wrap.left) + "px";
+  actTip.style.top = (r.top - wrap.top - 34) + "px";
+});
+$("act-chart").addEventListener("mouseleave", () => { actTip.style.display = "none"; });
+
+/* =================== threads =================== */
+function renderThreadChips() {
+  const counts = { all: sessions.length, busy: 0, idle: 0, draining: 0, error: 0 };
+  for (const s of sessions) {
+    if (s.status === "busy") counts.busy++;
+    else if (s.status === "draining") counts.draining++;
+    else if (s.status === "idle") counts.idle++;
+    if (isErrorSession(s)) counts.error++;
+  }
+  const keys = ["all", "busy", "idle", "draining", "error"];
+  $("th-chips").innerHTML = keys.map((k) =>
+    '<span class="chip' + (thFilter === k ? " on" : "") + '" data-f="' + k + '">' +
+    k + " · " + counts[k] + "</span>"
+  ).join("");
+}
+
+function renderThreads() {
+  renderThreadChips();
+  const rows = sessions.filter((t) => {
+    if (thFilter === "error") {
+      if (!isErrorSession(t)) return false;
+    } else if (thFilter !== "all" && t.status !== thFilter) {
+      return false;
+    }
+    if (thQuery) {
+      const hay = ((t.channel || "") + " " + t.threadId + " " + (t.targetRepo || "")).toLowerCase();
+      if (!hay.includes(thQuery)) return false;
+    }
+    return true;
+  });
+  if (rows.length === 0) {
+    $("th-list").innerHTML = '<div class="empty">' +
+      (sessions.length === 0 ? "No active threads." : "No threads match.") + "</div>";
+    return;
+  }
+  $("th-list").innerHTML = rows.map((t) => {
+    const agents = (t.agents || []).map((a) =>
+      '<span class="apill ' + esc(a.status) + '">' + esc(a.agentName) + " · " + esc(a.status) + "</span>"
+    ).join("") || '<span class="faint" style="font-size:11.5px">no agents</span>';
+    const err = t.lastError
+      ? '<div class="err-inline">✕ ' + esc(t.lastError.type) + ": " + esc(t.lastError.message) + "</div>"
+      : "";
+    const stuck = t.status === "busy" && t.lastActivity && Date.now() - t.lastActivity > STUCK_MS
+      ? ' <span class="apill busy">silent ' + ago(t.lastActivity) + "</span>"
+      : "";
+    const pend = pendingCount(t.pendingMessages);
+    return (
+      '<div class="th-row" data-open-thread="' + esc(t.threadId) + '">' +
+      '<div><div class="chan">' + esc(t.channel || "—") +
+      (t.muted ? ' <span class="apill">muted</span>' : "") +
+      (t.dormant ? ' <span class="apill">dormant</span>' : "") + "</div>" +
+      '<div class="tid">' + esc(t.threadId) + "</div>" +
+      '<div class="meta">' + esc(t.targetRepo || "no repo") +
+      (t.baseRef ? " · " + esc(t.baseRef) : "") +
+      (t.agentType ? " · " + esc(t.agentType) : "") + "</div>" + err + "</div>" +
+      "<div>" + pill(t.status) + stuck +
+      (pend ? '<div class="meta" style="margin-top:4px">' + pend + " buffered</div>" : "") + "</div>" +
+      '<div class="agents-cell">' + agents + "</div>" +
+      '<div class="last">' + ago(t.lastActivity) + " ago</div></div>"
+    );
+  }).join("");
+}
+
+$("th-chips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  thFilter = chip.dataset.f;
+  renderThreads();
+});
+$("th-search").addEventListener("input", (e) => {
+  thQuery = e.target.value.toLowerCase();
+  renderThreads();
+});
+$("th-list").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-open-thread]");
+  if (row) openDrawer(row.dataset.openThread);
+});
+
+async function openDrawer(threadId) {
+  drawerThreadId = threadId;
+  $("drawer").innerHTML = '<button class="close" type="button" id="drawer-close">esc</button><div class="empty">loading…</div>';
+  $("drawer").classList.add("open");
+  $("drawer-scrim").classList.add("open");
+  $("drawer-close").addEventListener("click", closeDrawer);
+
+  const res = await safeFetch("/api/sessions/" + encodeURIComponent(threadId));
+  if (drawerThreadId !== threadId) return;
+  if (!res.ok || !res.data || !res.data.session) {
+    $("drawer").innerHTML =
+      '<button class="close" type="button" id="drawer-close">esc</button>' +
+      '<div class="empty">Failed to load session detail.</div>';
+    $("drawer-close").addEventListener("click", closeDrawer);
+    return;
+  }
+  const t = res.data.session;
+  const provider = t.provider || "opencode";
+  const cwd = t.worktreePath || t.cwd || null;
+  const leadId = t.leadSessionId || t.sessionId;
+  const agentsMap = t.agentSessions || {};
+  const agents = Object.values(agentsMap);
+  const pend = pendingCount(t.pendingMessages);
+
+  const agentHtml = agents.length
+    ? agents.map((a) => {
+        const ap = a.provider || provider;
+        const acwd = cwd;
+        return (
+          '<div class="agent-card"><div class="top"><b>' + esc(a.agentName) + "</b>" + pill(a.status) +
+          '<span class="apill" style="margin-left:auto">' + esc(ap) + "</span></div>" +
+          '<div class="meta">sid <code>' + esc(a.sessionId || "—") + "</code><br/>last activity " +
+          ago(a.lastActivity) + " ago" +
+          (pendingCount(a.pendingMessages) ? " · " + pendingCount(a.pendingMessages) + " buffered" : "") +
+          "</div>" +
+          cmdRow(resumeCmd(ap, a.sessionId, acwd)) + "</div>"
+        );
+      }).join("")
+    : '<div class="faint">no agent sessions yet</div>';
+
+  $("drawer").innerHTML =
+    '<button class="close" type="button" id="drawer-close">esc</button>' +
+    "<h3>" + esc(t.channel || "thread") + "</h3>" +
+    '<div class="mono" style="font-size:11px;color:var(--accent)">' + esc(t.threadId) + "</div>" +
+    '<div style="margin-top:10px">' + pill(t.status) +
+    (pend ? ' <span class="apill">' + pend + " buffered</span>" : "") +
+    (t.muted ? ' <span class="apill">muted</span>' : "") +
+    (t.dormant ? ' <span class="apill">dormant</span>' : "") + "</div>" +
+    (t.lastError
+      ? '<div class="err-inline" style="margin-top:10px">✕ ' + esc(t.lastError.type) + ": " +
+        esc(t.lastError.message) + "</div>"
+      : "") +
+    '<div class="kv">' +
+    '<span class="k">lead session</span><code>' + esc(leadId || "—") + "</code>" +
+    '<span class="k">provider</span><span>' + esc(provider) + "</span>" +
+    '<span class="k">agent type</span><span>' + esc(t.agentType || "—") + "</span>" +
+    '<span class="k">target repo</span><span>' + esc(t.targetRepo || "—") +
+    (t.baseRef ? " @ " + esc(t.baseRef) : "") + "</span>" +
+    '<span class="k">worktree</span><span class="mono" style="font-size:11px">' +
+    esc(t.worktreePath || "—") + "</span>" +
+    '<span class="k">cwd</span><span class="mono" style="font-size:11px">' + esc(t.cwd || "—") + "</span>" +
+    '<span class="k">last activity</span><span>' + ago(t.lastActivity) + " ago</span>" +
+    '<span class="k">driver</span><span>' + esc(t.driverMode || "—") + "</span>" +
+    "</div>" +
+    '<h3 class="sect">Resume lead session (' + esc(provider) + ")</h3>" +
+    cmdRow(resumeCmd(provider, leadId, cwd)) +
+    '<h3 class="sect">Agent sessions · ' + agents.length + "</h3>" + agentHtml;
+
+  $("drawer-close").addEventListener("click", closeDrawer);
+}
+
+function closeDrawer() {
+  drawerThreadId = null;
+  $("drawer").classList.remove("open");
+  $("drawer-scrim").classList.remove("open");
+}
+$("drawer-scrim").addEventListener("click", closeDrawer);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+/* =================== logs =================== */
+function renderLogs() {
+  if (logFetchError) {
+    $("log-lines").innerHTML = '<div class="empty">Failed to load logs.</div>';
+    $("log-count").textContent = "";
+    return;
+  }
+  const rows = logEntries.filter((e) => {
+    if (logLevel && e.level !== logLevel) return false;
+    if (logQuery) {
+      const hay = ((e.tag || "") + " " + (e.message || "")).toLowerCase();
+      if (!hay.includes(logQuery)) return false;
+    }
+    return true;
+  });
+  $("log-lines").innerHTML = rows.length
+    ? rows.map((e) =>
+        '<div class="log-line' +
+        (e.level === "ERROR" ? " is-error" : e.level === "WARN" ? " is-warn" : "") + '">' +
+        '<span class="ts">' + esc(timeOf(e.timestamp)) + '</span>' +
+        '<span class="lv ' + esc(e.level) + '">' + esc(e.level) + "</span>" +
+        '<span class="tag">[' + esc(e.tag) + ']</span>' +
+        '<span class="msg">' + esc(e.message) + "</span></div>"
+      ).join("")
+    : '<div class="empty">Nothing matches the current filters.</div>';
+  const date = $("log-date").value || todayISO();
+  $("log-count").textContent =
+    rows.length + " / " + logEntries.length + " lines · " + date + ".log" +
+    (follow ? " · following" : "");
+}
+
+async function fetchLogs() {
+  const date = $("log-date").value || todayISO();
+  const tag = $("log-tag").value;
+  let path = "/api/logs?date=" + encodeURIComponent(date) + "&tail=400";
+  if (tag) path += "&tag=" + encodeURIComponent(tag);
+  if (logLevel) path += "&level=" + encodeURIComponent(logLevel);
+  const res = await safeFetch(path);
+  if (!res.ok) {
+    logFetchError = res.error;
+    logEntries = [];
+    renderLogs();
+    return;
+  }
+  logFetchError = null;
+  logEntries = res.data.entries || [];
+  // client-side grep only; server already filtered tag/level
+  renderLogs();
+  if (follow && $("view-logs").classList.contains("active")) {
+    const panel = $("log-scroll");
+    if (panel) panel.scrollTop = panel.scrollHeight;
+  }
+}
+
+// init date
+$("log-date").value = todayISO();
+$("log-levels").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  document.querySelectorAll("#log-levels .chip").forEach((c) => c.classList.remove("on"));
+  chip.classList.add("on");
+  logLevel = chip.dataset.lv || "";
+  fetchLogs();
+});
+$("log-tag").addEventListener("change", () => fetchLogs());
+$("log-date").addEventListener("change", () => fetchLogs());
+$("log-search").addEventListener("input", (e) => {
+  logQuery = e.target.value.toLowerCase();
+  renderLogs();
+});
+$("log-clear").addEventListener("click", () => {
+  logLevel = "";
+  logQuery = "";
+  $("log-tag").value = "";
+  $("log-search").value = "";
+  $("log-date").value = todayISO();
+  document.querySelectorAll("#log-levels .chip").forEach((c) =>
+    c.classList.toggle("on", c.dataset.lv === "")
+  );
+  fetchLogs();
+});
+$("log-follow").addEventListener("click", (e) => {
+  follow = !follow;
+  e.currentTarget.classList.toggle("on", follow);
+  e.currentTarget.textContent = follow ? "● follow" : "○ follow";
+});
+
+/* =================== dev servers =================== */
+function renderDevServers() {
+  if (!devServers.length) {
+    $("ds-grid").innerHTML = '<div class="empty">No repos with devCommand configured.</div>';
+    return;
+  }
+  const ttl = idleTtlMs || 20 * 60000;
+  $("ds-grid").innerHTML = devServers.map((d) => {
+    const rem = d.idleMsRemaining;
+    const pct = d.running && rem != null ? Math.round((rem / ttl) * 100) : 0;
+    const meter = d.running
+      ? '<div class="mrow"><span>idle TTL</span><span>' +
+        (rem != null ? Math.round(rem / 60000) + "m of " + Math.round(ttl / 60000) + "m" : "—") +
+        "</span></div>" +
+        '<div class="meter"><div class="fill' + (pct < 25 ? " low" : "") +
+        '" style="width:' + Math.max(0, Math.min(100, pct)) + '%"></div></div>'
+      : "";
+    const holder = d.holder
+      ? '<div class="qrow"><span class="pos">held</span><code>' +
+        esc(shortId(d.holder.holderThreadId)) + "</code><span>acquired " +
+        ago(d.holder.acquiredAt) + " ago</span></div>"
+      : '<div class="qrow faint"><span class="pos">—</span>no holder</div>';
+    const waiters = (d.waiters || []).map((w, i) =>
+      '<div class="qrow"><span class="pos">#' + (i + 1) + "</span><code>" +
+      esc(shortId(w.threadId)) + "</code><span>→ " + esc(w.branch || "—") +
+      '</span><span class="faint" style="margin-left:auto">' + ago(w.enqueuedAt) + "</span></div>"
+    ).join("");
+    return (
+      '<div class="ds-card"><div class="top"><b>' + esc(d.repo) + "</b>" +
+      (d.running ? pill("running") : pill("stopped")) +
+      (d.branch ? "<code>" + esc(d.branch) + "</code>" : "") + "</div>" +
+      '<div class="cmd">' + esc(d.devCommand || "—") +
+      (d.devPort ? " · :" + d.devPort : "") +
+      (d.pid ? " · pid " + d.pid : "") + "</div>" +
+      meter + holder + waiters + "</div>"
+    );
+  }).join("");
+}
+
+/* =================== workflows =================== */
+function renderWorkflows() {
+  const items = workflows;
+  const errors = workflowErrors || [];
+  if (!items.length && !errors.length) {
+    $("wf-list").innerHTML = '<div class="empty">No workflows loaded.</div>';
+    return;
+  }
+  let html = items.map((w) => {
+    const state = w.state || {};
+    // runs are newest-first from API; reverse for oldest → newest dots
+    const runs = (w.runs || []).slice().reverse();
+    const dots = runs.map((r) =>
+      '<span class="run-dot ' + esc(r.status) + '" title="' + esc(r.status) + '"></span>'
+    ).join("") || '<span class="faint" style="font-size:11px">no runs</span>';
+    const lastRuns = (w.runs || []).slice(0, 5).map((r) => {
+      const dur = r.finishedAt && r.startedAt
+        ? " · " + fmtRemaining(r.finishedAt - r.startedAt)
+        : "";
+      return (
+        '<div class="run-line">' + pill(r.status) + " " +
+        esc(new Date(r.startedAt).toLocaleString()) + " · " + esc(r.reason || "") +
+        dur +
+        (r.error ? ' <span style="color:var(--red)">' + esc(r.error) + "</span>" : "") +
+        "</div>"
+      );
+    }).join("") || '<div class="faint run-line">no runs yet</div>';
+    const triggers = (w.triggers || []).map((t) =>
+      t.type === "schedule" ? (t.cron + " " + (t.timezone || "")) : t.type
+    ).join(", ") || "none";
+    const runner = w.runner
+      ? (w.runner.provider + "/" + w.runner.agentName)
+      : "none";
+    return (
+      '<div class="wf-card">' +
+      '<div><div class="name">' + esc(w.name) + "</div>" +
+      '<div class="desc">' + esc(w.description || "no description") + "</div>" +
+      '<div class="src">' + esc(w.sourcePath || "") + "</div></div>" +
+      '<div class="mrow">' + (w.enabled ? pill("active") : pill("stopped")) +
+      "<br/>next <b>" + esc(fmtNext(state.nextRunAt)) + "</b>" +
+      "<br/>last <b>" + (state.lastRunAt ? ago(state.lastRunAt) + " ago" : "never") + "</b>" +
+      "<br/>runner <b>" + esc(runner) + "</b>" +
+      "<br/>cron <b>" + esc(triggers) + "</b>" +
+      (state.lastError ? '<br/><span style="color:var(--red)">' + esc(state.lastError) + "</span>" : "") +
+      "</div>" +
+      '<div><div class="mrow" style="margin-bottom:2px">recent runs · oldest → newest</div>' +
+      '<div class="runs">' + dots + "</div>" + lastRuns + "</div></div>"
+    );
+  }).join("");
+  if (errors.length) {
+    html += '<div class="empty" style="color:var(--red)">Validation errors: ' +
+      errors.map((e) => esc(e.path) + " — " + esc(e.message)).join("; ") + "</div>";
+  }
+  $("wf-list").innerHTML = html;
+}
+
+/* =================== memory cloud =================== */
+const KIND_COLORS = {
+  lesson: "#22c55e",
+  fact: "#0064ff",
+  "situation-claim": "#9747ff",
+};
+const KIND_FALLBACK = "#999999";
+const cloud = {
+  canvas: $("memory-canvas"),
+  tip: $("cloud-tip"),
+  status: $("cloud-status"),
+  screen: [],
+  data: null,
+  hoverId: null,
+};
+function kindColor(kind) { return KIND_COLORS[kind] || KIND_FALLBACK; }
+function setCloudStatus(text) {
+  if (text) {
+    cloud.status.textContent = text;
+    cloud.status.style.display = "";
+  } else {
+    cloud.status.style.display = "none";
+  }
+}
+function drawCloud(data) {
+  cloud.data = data;
+  cloud.hoverId = null;
+  paintCloud();
+  // recent claims from points (newest-ish by order returned)
+  const points = (data && data.points) || [];
+  if (points.length === 0) {
+    $("claim-list").innerHTML = '<div class="empty">No claims with embeddings yet.</div>';
+  } else {
+    const recent = points.slice(-12).reverse();
+    $("claim-list").innerHTML = recent.map((c) =>
+      '<div class="claim-row"><div class="k ' + esc(c.kind) + '">' + esc(c.kind) + "</div>" +
+      '<div style="color:rgba(255,255,255,0.85)">' + esc(c.text) + "</div>" +
+      '<div class="tags">' + (c.tags || []).map(esc).join(" · ") + "</div></div>"
+    ).join("");
+  }
+}
+function paintCloud() {
+  const data = cloud.data || {};
+  const points = data.points || [];
+  const edges = data.edges || [];
+  const canvas = cloud.canvas;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || 800;
+  const cssH = canvas.clientHeight || 440;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  cloud.screen = [];
+  if (points.length === 0) {
+    setCloudStatus("No claims with embeddings yet.");
+    return;
+  }
+  setCloudStatus(null);
+  const pad = 28;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const spanX = maxX - minX || 1;
+  const spanY = maxY - minY || 1;
+  const toScreen = (p) => ({
+    sx: points.length === 1 ? cssW / 2 : pad + ((p.x - minX) / spanX) * (cssW - 2 * pad),
+    sy: points.length === 1 ? cssH / 2 : pad + ((p.y - minY) / spanY) * (cssH - 2 * pad),
+  });
+  const pos = new Map();
+  for (const p of points) pos.set(p.id, toScreen(p));
+  ctx.lineWidth = 1;
+  for (const e of edges) {
+    const a = pos.get(e.a);
+    const b = pos.get(e.b);
+    if (!a || !b) continue;
+    const touchesHover = cloud.hoverId != null && (e.a === cloud.hoverId || e.b === cloud.hoverId);
+    const baseAlpha = Math.max(0.05, Math.min(0.3, (e.sim || 0) * 0.32));
+    const alpha = touchesHover ? Math.min(0.7, baseAlpha + 0.4) : baseAlpha;
+    ctx.strokeStyle = "rgba(0,100,255," + alpha.toFixed(3) + ")";
+    ctx.beginPath();
+    ctx.moveTo(a.sx, a.sy);
+    ctx.lineTo(b.sx, b.sy);
+    ctx.stroke();
+  }
+  for (const p of points) {
+    const s = pos.get(p.id);
+    const isHover = p.id === cloud.hoverId;
+    if (isHover) {
+      ctx.strokeStyle = "rgba(255,255,255,0.85)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(s.sx, s.sy, 7, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = kindColor(p.kind);
+    ctx.beginPath();
+    ctx.arc(s.sx, s.sy, isHover ? 4.5 : 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    cloud.screen.push({ sx: s.sx, sy: s.sy, point: p });
+  }
+}
+function cloudHover(evt) {
+  const rect = cloud.canvas.getBoundingClientRect();
+  const mx = evt.clientX - rect.left;
+  const my = evt.clientY - rect.top;
+  let best = null;
+  let bestD = 100;
+  for (const item of cloud.screen) {
+    const dx = item.sx - mx;
+    const dy = item.sy - my;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = item; }
+  }
+  const nextHover = best ? best.point.id : null;
+  if (nextHover !== cloud.hoverId) {
+    cloud.hoverId = nextHover;
+    paintCloud();
+  }
+  if (!best) { cloud.tip.style.display = "none"; return; }
+  const p = best.point;
+  const tags = (p.tags || []).length
+    ? '<div style="color:var(--fg-dim);margin-top:4px">' + p.tags.map(esc).join(", ") + "</div>"
+    : "";
+  cloud.tip.innerHTML =
+    '<div style="color:' + kindColor(p.kind) + ';font-size:10px;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:4px">' +
+    esc(p.kind) + "</div><div>" + esc(p.text) + "</div>" + tags;
+  cloud.tip.style.display = "block";
+  const wrap = cloud.canvas.parentElement.getBoundingClientRect();
+  let tx = best.sx + 12;
+  let ty = best.sy + 12;
+  if (tx + 330 > wrap.width) tx = best.sx - cloud.tip.offsetWidth - 12;
+  cloud.tip.style.left = Math.max(0, tx) + "px";
+  cloud.tip.style.top = Math.max(0, ty) + "px";
+}
+function cloudLeave() {
+  cloud.tip.style.display = "none";
+  if (cloud.hoverId != null) {
+    cloud.hoverId = null;
+    paintCloud();
+  }
+}
+async function loadCloud() {
+  setCloudStatus("loading…");
+  const res = await safeFetch("/api/memory/projection");
+  cloudLoaded = true;
+  if (!res.ok) {
+    setCloudStatus("Failed to load projection.");
+    $("claim-list").innerHTML = '<div class="empty">Failed to load claims.</div>';
+    return;
+  }
+  drawCloud(res.data);
+}
+cloud.canvas.addEventListener("mousemove", cloudHover);
+cloud.canvas.addEventListener("mouseleave", cloudLeave);
+$("cloud-refresh").addEventListener("click", loadCloud);
+if (window.ResizeObserver) {
+  new ResizeObserver(() => { if (cloud.data) paintCloud(); }).observe(cloud.canvas);
+}
+
+/* =================== docs =================== */
+async function loadDocsTree() {
+  const res = await safeFetch("/api/memory");
+  docsLoaded = true;
+  if (!res.ok) {
+    $("doc-tree").innerHTML = '<div class="empty">Failed to load docs tree.</div>';
+    return;
+  }
+  const files = res.data.files || [];
+  if (!files.length) {
+    $("doc-tree").innerHTML = '<div class="empty">No markdown files under docs/.</div>';
+    return;
+  }
+  // group by top-level dir
+  const groups = {};
+  for (const f of files) {
+    const parts = f.split("/");
+    const dir = parts.length > 1 ? parts[0] : ".";
+    if (!groups[dir]) groups[dir] = [];
+    groups[dir].push(f);
+  }
+  let html = "";
+  for (const dir of Object.keys(groups).sort()) {
+    html += '<div class="doc-dir">' + esc(dir === "." ? "docs" : dir) + "/</div>";
+    for (const f of groups[dir]) {
+      const name = f.includes("/") ? f.slice(f.indexOf("/") + 1) : f;
+      html += '<span class="doc-file" data-p="' + esc(f) + '">' + esc(name) + "</span>";
+    }
+  }
+  $("doc-tree").innerHTML = html;
+  // open first feature doc if present
+  const prefer = files.find((f) => f.includes("http-dashboard")) || files[0];
+  if (prefer) openDoc(prefer);
+}
+async function openDoc(p) {
+  document.querySelectorAll(".doc-file").forEach((el) =>
+    el.classList.toggle("on", el.dataset.p === p)
+  );
+  $("doc-pane").innerHTML = '<div class="empty">loading…</div>';
+  const res = await safeFetch("/api/memory/" + p.split("/").map(encodeURIComponent).join("/"));
+  if (!res.ok) {
+    $("doc-pane").innerHTML = '<div class="empty">Failed to load ' + esc(p) + "</div>";
+    return;
+  }
+  $("doc-pane").innerHTML = renderMarkdown(res.data.content || "");
+}
+$("doc-tree").addEventListener("click", (e) => {
+  const f = e.target.closest(".doc-file");
+  if (f) openDoc(f.dataset.p);
+});
+
+/* =================== day logs (slow cadence) =================== */
+const LOG_SLOW_MS = 30000;
+function isTurnStartMessage(msg) {
+  const m = String(msg || "");
+  // Spec/mock phrasing; also match production init lines:
+  // "thread=… agent=… provider=… sessionId=…"
+  if (m.includes("turn started")) return true;
+  return /\bthread=/.test(m) && /\bagent=/.test(m) && /\bsessionId=/.test(m);
+}
+
+/** One full-day log fetch (~30s). Derives ERROR badge, overview feed, turns buckets. */
+async function refreshDayLogs() {
+  const date = todayISO();
+  const res = await safeFetch("/api/logs?date=" + encodeURIComponent(date) + "&tail=0");
+  if (!res.ok) {
+    dayLogError = res.error || true;
+    renderSidebar();
+    renderOverview();
+    return;
+  }
+  dayLogError = null;
+  const entries = res.data.entries || [];
+  dayLogEntries = entries;
+  logErrorCount = entries.filter((e) => e.level === "ERROR").length;
+
+  const buckets = new Array(24).fill(0);
+  for (const e of entries) {
+    if (e.tag !== "session") continue;
+    if (!isTurnStartMessage(e.message)) continue;
+    const d = new Date(e.timestamp);
+    if (Number.isNaN(d.getTime())) continue;
+    buckets[d.getUTCHours()]++;
+  }
+  actBuckets = buckets.some((v) => v > 0) ? buckets : null;
+
+  renderSidebar();
+  renderOverview();
+}
+
+/* =================== poll loop =================== */
+async function refreshMain() {
+  // 2s tick: health + sessions + dev-server + workflows only (no unbounded log scans).
+  const [h, s, d, w] = await Promise.all([
+    safeFetch("/api/health"),
+    safeFetch("/api/sessions"),
+    safeFetch("/api/dev-server"),
+    safeFetch("/api/workflows"),
+  ]);
+
+  if (h.ok) health = h.data;
+
+  if (s.ok) sessions = s.data.sessions || [];
+  if (d.ok) {
+    devServers = d.data.devServers || [];
+    idleTtlMs = d.data.idleTtlMs ?? idleTtlMs;
+  }
+  if (w.ok) {
+    workflows = w.data.workflows || [];
+    workflowErrors = w.data.errors || [];
+  }
+
+  lastRefreshAt = Date.now();
+  renderSidebar();
+  renderOverview();
+  renderThreads();
+  renderDevServers();
+  renderWorkflows();
+
+  // panel-level errors when first load fails
+  if (!s.ok && sessions.length === 0) {
+    $("th-list").innerHTML = '<div class="empty">Failed to load sessions.</div>';
+    $("ov-busiest").innerHTML = '<div class="empty">Failed to load sessions.</div>';
+  }
+  if (!d.ok && devServers.length === 0) {
+    $("ds-grid").innerHTML = '<div class="empty">Failed to load dev servers.</div>';
+  }
+  if (!w.ok && workflows.length === 0) {
+    $("wf-list").innerHTML = '<div class="empty">Failed to load workflows.</div>';
+  }
+  if (!h.ok && !health) {
+    $("ov-stats").innerHTML = '<div class="empty">Failed to load health.</div>';
+  }
+}
+
+async function tick() {
+  if (!live) return;
+  try {
+    await refreshMain();
+    if (currentView() === "logs" && follow) {
+      await fetchLogs();
+    }
+  } catch (err) {
+    console.error("poll tick failed", err);
+  }
+}
+
+// boot — initial show AFTER all const/let bindings exist (avoids TDZ on #memory deep-link)
+show(currentView());
+tick();
+setInterval(tick, POLL_MS);
+refreshDayLogs();
+setInterval(() => { if (live) refreshDayLogs(); }, LOG_SLOW_MS);
+</script>
+</body>
 </html>
