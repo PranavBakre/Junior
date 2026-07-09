@@ -234,6 +234,8 @@ export async function buildPromptPreamble(
       `If you decide this message does NOT need a reply (e.g. it's noise, already handled, or you've finished silent work), your final response must be exactly the sentinel \`${NO_SLACK_MESSAGE}\` and nothing else — no surrounding text, no explanation, no quotes. Anything else will be posted to the channel verbatim.`,
       ``,
       `CRITICAL — no double-posting: if you used \`slack_send_message\` (or any other Slack post tool) during this turn, that tool call IS your reply. Your final response in this turn MUST be exactly \`${NO_SLACK_MESSAGE}\`. Do NOT also return a recap, summary, or "Posted X..." narration — the human already saw what you posted, and a second message restating it is a duplicate. Pick one channel: either post via the tool and return \`${NO_SLACK_MESSAGE}\`, or skip the tool and return prose as your reply. Never both.`,
+      ``,
+      `The inverse also holds — no phantom posts: never say "posting now" / "let me post the confirmation" and then return \`${NO_SLACK_MESSAGE}\` without actually calling the tool. Before returning the sentinel, confirm this turn either (a) called a Slack post tool, or (b) deliberately needs no message. An announced-but-never-sent post leaves the human waiting for a reply that isn't coming.`,
       `</slack-context>`,
     );
   }

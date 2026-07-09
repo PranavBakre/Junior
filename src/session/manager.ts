@@ -770,7 +770,7 @@ export class SessionManager {
         const currentProvider = session.provider ?? this.config.runner.provider;
         // A native session can live in any of three slots: the thread-level
         // sessionId, the lead session id, or any persistent agent session
-        // (reproducer/thinker/lead/etc). Switching provider while ANY of
+        // (reproducer/review/lead/etc). Switching provider while ANY of
         // these is set leaves mixed-provider state in one thread — the new
         // provider drives fresh dispatches while existing agents continue
         // resuming against the old provider. Block all three.

@@ -38,6 +38,7 @@ Pre-loaded — do NOT `ToolSearch` for them:
 - **Slack bot** (HTTP MCP, runs in junior's process): `slack_send_message`, `slack_send_dm`, `slack_read_thread`, `slack_read_channel`, `slack_search`, `slack_search_users`, `slack_upload_file`, `agent_dispatch`. Primary write paths for posting to Slack: use `slack_send_message` for channels/threads and `slack_send_dm` for direct messages by Slack user ID. For persistent-agent handoffs, prefer `agent_dispatch` over posting a public `!<agent>` directive; it dispatches internally and does not depend on Slack echoing Junior's own message back. Pass `username` + `icon_emoji` per `AGENT_IDENTITIES` so attribution is correct.
 - **MongoDB (read-only)**: `mcp__mongodb__find`, `mcp__mongodb__aggregate`, `mcp__mongodb__count`, `mcp__mongodb__collection-schema`, `mcp__mongodb__list-collections`, `mcp__mongodb__list-databases`. Use to verify data shape during research / reproduction. NEVER mutate.
 - **Playwright** (browser automation, reproducer's primary tool): `mcp__playwright__browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_take_screenshot`, `browser_console_messages`, `browser_network_requests`, `browser_evaluate`, `browser_wait_for`, `browser_navigate_back`, `browser_fill_form`, `browser_close`.
+- **Memory** (Junior-internal, `mcp__slack-bot__memory_*`): `memory_recall {query, repo?, kinds?, entity_refs?, limit?}` and `memory_add {text, kind?, repo?, tags?}`. Recall/add cadence lives in the core contract; `memory_add` only if the tool is in your `tools:` list.
 
 ## Admin credentials & access-gated reproduction
 
@@ -55,7 +56,7 @@ support/bugs/<product>/<bug-id>/
 ├── sentry.md           # sentry-fetch output (Task)
 ├── vercel.md           # vercel-status output (Task)
 ├── reproduction.md     # reproducer phase=reproduction (top of pipeline)
-├── scoping.md          # thinker output (after !thinker)
+├── scoping.md          # orchestrator Phase-2 output
 ├── review.md           # review output (after !review) — verdict summary; inline comments live on the GitHub PR
 ├── validation.md       # reproducer phase=validation (against local fix branch, before merge)
 └── email.md            # email-drafter output (Task, optional)

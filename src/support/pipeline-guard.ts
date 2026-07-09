@@ -21,7 +21,13 @@ const ADVANCE_REQUIRED_STATUSES = new Set([
   "observability_done",
 ]);
 
-const PERSISTENT_ADVANCE_RE = /^!(reproducer|thinker)\b/m;
+// Read-only bugs advance by dispatching the reproducer. Write-path / post-
+// reproduction bugs advance by the orchestrator running Phase 1 itself and
+// posting Message 1 (hypotheses + chosen root cause) before the human gate —
+// the "Going with #<n>" line is that turn's signature. Either counts as a valid
+// advance. `!thinker` retired in the 3-way merge and is no longer emitted.
+const PERSISTENT_ADVANCE_RE = /^!reproducer\b/m;
+const HYPOTHESIS_GATE_RE = /Going with #\d+/;
 const BLOCKER_RE = /\b(blocker|blocked|needs-human|need human|escalat(?:e|ing|ion)|missing|cannot|can't|failed)\b/i;
 const STATEFUL_WORKER_DONE_RE = /^DONE:\s+.*\b(?:New Relic|Sentry|Vercel|findings)\b.*\b(?:research|sentry|vercel)\.md\b/i;
 
@@ -39,7 +45,9 @@ export function validateLeadPipelineResponse(
   if (!ADVANCE_REQUIRED_STATUSES.has(state.status)) return { action: "allow", state };
 
   const trimmed = response.trim();
-  if (PERSISTENT_ADVANCE_RE.test(trimmed)) return { action: "allow", state };
+  if (PERSISTENT_ADVANCE_RE.test(trimmed) || HYPOTHESIS_GATE_RE.test(trimmed)) {
+    return { action: "allow", state };
+  }
   if (BLOCKER_RE.test(trimmed) && !STATEFUL_WORKER_DONE_RE.test(trimmed)) {
     return { action: "allow", state };
   }
@@ -86,10 +94,10 @@ function buildContinuationPrompt(
     `Bug: ${state.product ?? "unknown"}/${state.bugId ?? "unknown"} status=${state.status ?? "unknown"}.`,
     "",
     "Do not repeat raw observability worker output.",
-    "Read the bug files under `support/bugs/<product>/<bugId>/`, synthesize observability, classify read-only vs write-path, then emit exactly one of:",
-    "- `!reproducer <bounded reproduction prompt>` for read-only bugs",
-    "- `!thinker <bounded scoping prompt>` for write-path bugs or after reproduction is unsafe",
-    "- a concise blocker/escalation message if required data is missing",
+    "Read the bug files under `support/bugs/<product>/<bugId>/`, synthesize observability, classify read-only vs write-path, then do exactly one of:",
+    "- emit `!reproducer <bounded reproduction prompt>` for read-only bugs",
+    "- run Phase 1 yourself and post Message 1 (tldr + hypotheses + `Going with #<n>`), then stop for the human gate — for write-path bugs or after reproduction is unsafe",
+    "- post a concise blocker/escalation message if required data is missing",
     "",
     "Previous invalid response:",
     leakedResponse.slice(0, 2000),

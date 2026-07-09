@@ -31,7 +31,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How does the bot Slack MCP server work? | [docs/features/mcp-server.md](docs/features/mcp-server.md) |
 | How does Junior's long-term memory work (claims, episodes, profiles, embeddings, recall, consolidation)? | [docs/features/memory-system-v3.md](docs/features/memory-system-v3.md) |
 | Headless vs tmux driver, why two paths exist, how tmux runs the TUI? | [docs/features/interactive-driver.md](docs/features/interactive-driver.md) |
-| How do persistent agents (lead, reproducer, thinker, …) work? | [docs/features/persistent-agents.md](docs/features/persistent-agents.md) |
+| How do persistent agents (orchestrator, reproducer, review, …) work? | [docs/features/persistent-agents.md](docs/features/persistent-agents.md) |
 | How are bug-pipeline worktrees laid out? | [docs/features/bug-pipeline-worktrees.md](docs/features/bug-pipeline-worktrees.md) |
 | How do sessions persist across restarts? | [docs/features/session-persistence.md](docs/features/session-persistence.md) |
 | How does the localhost HTTP dashboard work? | [docs/features/http-dashboard.md](docs/features/http-dashboard.md) |
@@ -154,11 +154,15 @@ junior/
     agents/               -- agent definitions (junior's own, not target repo's)
       common/
         building-philosophy.md
+        bug-pipeline.md     -- merged orchestrator playbook (lead+thinker); appended to support-channel (lead) sessions
+      default.md            -- the one Junior orchestrator; `lead`/`thinker` session markers alias to this file
       build.md
       review.md
       frontend.md
       architect.md
       pm.md
+      reproducer.md
+
   docs/
     features/             -- feature design docs with iteration plans
     code_index/           -- code indexes per module

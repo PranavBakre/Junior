@@ -5,25 +5,35 @@ import fs from "node:fs/promises";
 const agentsDir = path.resolve(import.meta.dir, "../../.claude/agents");
 const commonDir = path.join(agentsDir, "common");
 
-const BUG_PIPELINE_AGENTS = ["lead", "thinker", "reproducer", "review"];
+// Persistent workers still lint their own .md output templates. The
+// orchestrator's bug-pipeline playbook (formerly split across lead.md +
+// thinker.md) now lives in common/bug-pipeline.md and is linted separately.
+const BUG_PIPELINE_AGENTS = ["reproducer", "review"];
 const PUBLIC_AGENT_THREAD_HISTORY_LIMIT = 20;
 const ALL_PUBLIC_AGENTS = [
   "architect",
   "build",
   "default",
   "frontend",
-  "lead",
   "pm",
   "reproducer",
   "review",
-  "thinker",
 ];
 const BUG_PIPELINE_OUTPUT_MARKERS: Record<string, string[]> = {
-  lead: ["Allow-list — post only"],
-  thinker: ["### Message 1", "### Message 2"],
   reproducer: ["### 2. Post to Slack"],
   review: ["## Output", "review: <verdict>"],
 };
+
+// The merged orchestrator playbook lives in one common preamble. These are the
+// load-bearing structural markers: the silence allow-list, the two-turn human
+// gate messages, the Phase-1 pick line, and the byte-exact terminal merge string.
+const BUG_PIPELINE_COMMON_MARKERS = [
+  "Allow-list — post only",
+  "### Message 1",
+  "### Message 2",
+  "Going with #<n>:",
+  "Merged feature → dev (PR <url>). PR <main-pr-url> is ready for human to verify on dev and then merge to main.",
+];
 
 describe("prompt lint", () => {
   async function readAgent(name: string): Promise<string> {
@@ -85,6 +95,16 @@ describe("prompt lint", () => {
       for (const marker of BUG_PIPELINE_OUTPUT_MARKERS[name] ?? []) {
         expect(content).toContain(marker);
       }
+    });
+  });
+
+  describe("common/bug-pipeline.md carries the merged orchestrator playbook", () => {
+    it.each(BUG_PIPELINE_COMMON_MARKERS)("contains marker %p", async (marker) => {
+      const content = await fs.readFile(
+        path.join(commonDir, "bug-pipeline.md"),
+        "utf-8",
+      );
+      expect(content).toContain(marker);
     });
   });
 

@@ -38,7 +38,7 @@ and MCP wiring.
 - Generated subagents include only stateless support fetchers:
   `nr-research`, `sentry-fetch`, `vercel-status`. They are omitted for utility
   `session.cwd` runs and use a constrained read/search/MCP permission surface.
-- Persistent workers (`reproducer`, `thinker`, `review`) are not generated as
+- Persistent workers (`reproducer`, `review`) are not generated as
   OpenCode Task subagents; they are Slack-dispatched persistent sessions.
 - Future OpenCode SDK/server support should be added as a separate provider or
   driver. Its interrupt path should call OpenCode's `session.abort` API and then

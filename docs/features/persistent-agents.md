@@ -1,5 +1,7 @@
 # Persistent Agents
 
+> **Status (2026-07 — 3-way agent merge):** `lead` and `thinker` retired as standalone agent definitions. There is now one orchestrator (`default.md`); support-channel sessions keep the `lead` session marker, which the router aliases to `default.md` and layers `common/bug-pipeline.md` on top of. The orchestrator runs the old thinker methodology **itself** in its own turn(s) — Phase 1 (3-5 hypotheses, cheap-evidence verification, mock-run protocol, anti-anchoring, Message 1 + human gate) and Phase 2 (scoping.md, then dispatch the implementation to `build`/`frontend` via the Task tool; the orchestrator never edits product code). The two-turn human gate survives. `reproducer` and `review` stay as persistent workers; `!thinker` no longer exists as a directive. Read the sections below with those substitutions: "thinker" → "the orchestrator's Phase 1/2", "!thinker proceed" → "the orchestrator posting Message 1 and stopping for the gate", "fix scoped by thinker" → "fix scoped by the orchestrator and dispatched to build/frontend via Task".
+
 > Same backbone as the wiped `support-lead-persistent-agents.md` (persistent Claude Code session per agent role, one thread holds many agent sessions, each agent posts to Slack with its own identity). Refined design after a session of pruning: lead-only dispatch (workers can't tag each other), `NO_SLACK_MESSAGE` for silence, observability-before-UI as a hard invariant, no internal-dispatch-plus-audit-log split. First product use is the bug pipeline; substrate is reusable.
 
 ## Problem

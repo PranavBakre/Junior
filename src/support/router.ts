@@ -207,7 +207,8 @@ export class AgentDispatcher {
 
     // Has directives.
     // Orchestrators (lead, default Junior) may emit anything; workers may emit
-    // only the dispatches in WORKER_DISPATCH_ALLOW (e.g. thinker → !review).
+    // only the dispatches in WORKER_DISPATCH_ALLOW (currently empty — no
+    // worker→worker chain since the thinker merge).
     // Other worker directives are stripped and the message re-routes to lead
     // as plain text so lead can decide what to do with the unauthorised
     // attempt. Unknown self-bots are treated as workers with no allow-list.

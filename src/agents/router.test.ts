@@ -95,8 +95,8 @@ describe("AgentRouter overlay", () => {
       "# public common (should NOT appear when target has its own common)",
     );
     await fs.writeFile(
-      path.join(fallbackDir, "lead.md"),
-      `---\nname: lead\ncommon: repo-rules,org-rules\n---\n\nLEAD BODY`,
+      path.join(fallbackDir, "build.md"),
+      `---\nname: build\ncommon: repo-rules,org-rules\n---\n\nBUILD BODY`,
     );
 
     const router = new AgentRouter(
@@ -105,14 +105,14 @@ describe("AgentRouter overlay", () => {
       orgDir,
     );
     const prompt = await router.composeSystemPrompt(
-      makeSession({ targetRepo: "target-repo", agentType: "lead" }),
+      makeSession({ targetRepo: "target-repo", agentType: "build" }),
     );
 
     expect(prompt).not.toBeNull();
     expect(prompt!).toContain("# target-repo common");
     expect(prompt!).toContain("# org common");
     expect(prompt!).not.toContain("# public common");
-    expect(prompt!).toContain("LEAD BODY");
+    expect(prompt!).toContain("BUILD BODY");
     // Order: target-repo common first, then overlay.
     expect(prompt!.indexOf("# target-repo common")).toBeLessThan(
       prompt!.indexOf("# org common"),
@@ -193,19 +193,19 @@ describe("AgentRouter overlay", () => {
       "# org merge rules",
     );
     await fs.writeFile(
-      path.join(fallbackDir, "lead.md"),
-      `---\nname: lead\ncommon: philosophy,merge-workflow\n---\n\nLEAD BODY`,
+      path.join(fallbackDir, "build.md"),
+      `---\nname: build\ncommon: philosophy,merge-workflow\n---\n\nBUILD BODY`,
     );
 
     const router = new AgentRouter([], fallbackDir, orgDir);
     const prompt = await router.composeSystemPrompt(
-      makeSession({ agentType: "lead" }),
+      makeSession({ agentType: "build" }),
     );
 
     expect(prompt).not.toBeNull();
     expect(prompt!).toContain("# public philosophy");
     expect(prompt!).toContain("# org merge rules");
-    expect(prompt!).toContain("LEAD BODY");
+    expect(prompt!).toContain("BUILD BODY");
     // Org appears AFTER public common (more authoritative trailing block).
     expect(prompt!.indexOf("# public philosophy")).toBeLessThan(
       prompt!.indexOf("# org merge rules"),
@@ -253,6 +253,86 @@ describe("AgentRouter overlay", () => {
     const def = await router.resolveAgent(makeSession({ agentType: "build" }));
 
     expect(def!.prompt).toBe("PUBLIC ONLY");
+  });
+
+  it("aliases the lead session marker to the default agent definition", async () => {
+    await fs.writeFile(
+      path.join(fallbackDir, "default.md"),
+      `---\nname: default\ncommon: core\n---\n\nDEFAULT BODY`,
+    );
+
+    const router = new AgentRouter([], fallbackDir, orgDir);
+    const def = await router.resolveAgent(makeSession({ agentType: "lead" }));
+
+    expect(def).not.toBeNull();
+    expect(def!.name).toBe("default");
+    expect(def!.prompt).toBe("DEFAULT BODY");
+  });
+
+  it("aliases the retired thinker marker to the default agent definition", async () => {
+    await fs.writeFile(
+      path.join(fallbackDir, "default.md"),
+      `---\nname: default\ncommon: core\n---\n\nDEFAULT BODY`,
+    );
+
+    const router = new AgentRouter([], fallbackDir, orgDir);
+    const def = await router.resolveAgent(makeSession({ agentType: "thinker" }));
+
+    expect(def!.name).toBe("default");
+    expect(def!.prompt).toBe("DEFAULT BODY");
+  });
+
+  it("appends pipeline preambles for lead/thinker sessions but not default sessions", async () => {
+    await fs.writeFile(
+      path.join(fallbackDir, "default.md"),
+      `---\nname: default\ncommon: core\n---\n\nDEFAULT BODY`,
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "bug-pipeline.md"),
+      "# BUG PIPELINE PLAYBOOK",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "merge-workflow.md"),
+      "# MERGE WORKFLOW RULES",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "runtime-environment.md"),
+      "# RUNTIME ENVIRONMENT",
+    );
+
+    const router = new AgentRouter([], fallbackDir, orgDir);
+
+    // Support-channel session (marker "lead") gets the pipeline preambles —
+    // merge-workflow and runtime-environment ride along because the pipeline's
+    // merge step and dev-server/bug-folder contracts live there — after the
+    // declared profile (core).
+    const leadPrompt = await router.composeSystemPrompt(
+      makeSession({ agentType: "lead" }),
+    );
+    expect(leadPrompt).toContain("# public core");
+    expect(leadPrompt).toContain("# BUG PIPELINE PLAYBOOK");
+    expect(leadPrompt).toContain("# MERGE WORKFLOW RULES");
+    expect(leadPrompt).toContain("# RUNTIME ENVIRONMENT");
+    expect(leadPrompt).toContain("DEFAULT BODY");
+    expect(leadPrompt!.indexOf("# public core")).toBeLessThan(
+      leadPrompt!.indexOf("# BUG PIPELINE PLAYBOOK"),
+    );
+
+    // Resumed pre-merge "thinker" sessions get the same pipeline preambles.
+    const thinkerPrompt = await router.composeSystemPrompt(
+      makeSession({ agentType: "thinker" }),
+    );
+    expect(thinkerPrompt).toContain("# BUG PIPELINE PLAYBOOK");
+    expect(thinkerPrompt).toContain("# MERGE WORKFLOW RULES");
+
+    // Casual default session carries none of the pipeline preambles.
+    const defaultPrompt = await router.composeSystemPrompt(
+      makeSession({ agentType: "default" }),
+    );
+    expect(defaultPrompt).toContain("DEFAULT BODY");
+    expect(defaultPrompt).not.toContain("# BUG PIPELINE PLAYBOOK");
+    expect(defaultPrompt).not.toContain("# MERGE WORKFLOW RULES");
+    expect(defaultPrompt).not.toContain("# RUNTIME ENVIRONMENT");
   });
 
   it("missing org overlay dir degrades to public fallback", async () => {

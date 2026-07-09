@@ -1,5 +1,5 @@
 // Slash-command tokens consumed by parseCommand. These tokens are stripped
-// from the message text. Persistent agents (lead, reproducer, thinker, review)
+// from the message text. Persistent agents (lead, reproducer, review)
 // are NOT in this set — `!<persistent-agent>` directives flow through to the
 // AgentDispatcher with the prefix intact. `review` was historically here for
 // the standalone code-review workflow but is now a persistent agent; removed

@@ -4,6 +4,23 @@ import { loadAgentDefinition } from "./loader.ts";
 import type { AgentDefinition } from "./loader.ts";
 
 /**
+ * Session agent names that resolve to another agent's definition file. `lead`
+ * and `thinker` retired as standalone agents in the 3-way orchestrator merge:
+ * both now use `default.md`. `lead` survives only as a support-channel session
+ * marker (prod CHANNEL_DEFAULTS) — the alias keeps that marker working without
+ * a config migration, and composeSystemPrompt layers the bug-pipeline preamble
+ * on top for those sessions.
+ */
+const AGENT_DEFINITION_ALIASES: Record<string, string> = {
+  lead: "default",
+  thinker: "default",
+};
+
+function resolveDefinitionName(rawName: string): string {
+  return AGENT_DEFINITION_ALIASES[rawName] ?? rawName;
+}
+
+/**
  * Resolves agent definitions and composes the system prompt.
  *
  * Search order for an agent .md file (first match wins):
@@ -34,8 +51,9 @@ export class AgentRouter {
   async resolveAgent(
     session: ThreadSession,
   ): Promise<AgentDefinition | null> {
-    const agentName = agentNameForSession(session);
-    if (!agentName) return null;
+    const rawName = agentNameForSession(session);
+    if (!rawName) return null;
+    const agentName = resolveDefinitionName(rawName);
 
     const candidates: string[] = [];
 
@@ -60,8 +78,24 @@ export class AgentRouter {
   async composeSystemPrompt(
     session: ThreadSession,
   ): Promise<string | null> {
+    const rawName = agentNameForSession(session);
     const definition = await this.resolveAgent(session);
-    const commonProfile = definition?.common ?? ["core"];
+    const commonProfile = [...(definition?.common ?? ["core"])];
+
+    // Support-channel sessions (marker "lead", plus resumed pre-merge "thinker"
+    // sessions) run the bug pipeline. Append the pipeline preambles AFTER the
+    // agent's declared profile so they participate like any other common name:
+    // readProfileMarkdownFiles resolves them through the target-repo → public
+    // tiers, and the org overlay tier can supplement or override them by the
+    // same additive mechanics. merge-workflow and runtime-environment ride along
+    // because the pipeline's merge step and dev-server/bug-folder contracts live
+    // there — the lean default profile deliberately omits them for casual
+    // threads. Casual "default" sessions get none of this.
+    if (rawName === "lead" || rawName === "thinker") {
+      for (const name of ["merge-workflow", "runtime-environment", "bug-pipeline"]) {
+        if (!commonProfile.includes(name)) commonProfile.push(name);
+      }
+    }
 
     const preambleParts: string[] = [];
     const loadedCommonStems = new Set<string>();

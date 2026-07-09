@@ -31,13 +31,24 @@ describe("loadAgentDefinition", () => {
     expect(def!.description).toBe(
       "Backend engineer. Use for building features, fixing bugs, refactoring code.",
     );
-    expect(def!.tools).toBe("Read, Edit, Write, Bash, Grep, Glob, Agent");
+    expect(def!.tools).toBe(
+      "Read, Edit, Write, Bash, Grep, Glob, Agent, mcp__slack-bot__memory_recall",
+    );
     expect(def!.model).toBeNull();
     expect(def!.common).toEqual(["core", "building-philosophy"]);
     expect(def!.permissions).toEqual({
       intent: null,
-      mcp: [],
-      tools: ["Read", "Edit", "Write", "Bash", "Grep", "Glob", "Agent"],
+      mcp: ["slack-bot"],
+      tools: [
+        "Read",
+        "Edit",
+        "Write",
+        "Bash",
+        "Grep",
+        "Glob",
+        "Agent",
+        "mcp__slack-bot__memory_recall",
+      ],
     });
   });
 

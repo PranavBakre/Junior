@@ -11,14 +11,16 @@ Different Slack threads need different Claude Code personalities. A thread askin
 
 ## Full Vision
 
-- Command selects agent type: `!build`, `!frontend`, `!review`, `!architect`, `!pm`, `!audit`, `!reproducer`, `!thinker`, …
+- Command selects agent type: `!build`, `!frontend`, `!review`, `!architect`, `!pm`, `!audit`, `!reproducer`, …
 - Agent definitions resolved across a **layered search chain** — first match wins:
   1. Target repo's `.claude/agents/<type>.md`
   2. Private org overlay's `<orgAgentsDir>/<type>.md` (e.g. `agents-org/`, a gitignored or submodule-mounted private repo)
   3. Junior's own `.claude/agents/<type>.md` (fallback)
 - Agent definition injected via `--append-system-prompt`
 - Agent type persists across turns in a thread; can be changed mid-thread with a new command
-- Lead and the default `@junior` path also flow through this composition (`lead.md` and `default.md` are explicit public fallback agents).
+- The default `@junior` path flows through this composition (`default.md` is the explicit public fallback orchestrator agent).
+- **Agent-definition aliases.** `lead` and `thinker` retired as standalone agents in the 3-way orchestrator merge; both resolve to `default.md` via `AGENT_DEFINITION_ALIASES` in `router.ts`. `lead` survives only as the support-channel session marker (prod `CHANNEL_DEFAULTS`), so the alias keeps that marker working with no config migration.
+- **Bug-pipeline gating.** For sessions whose pre-alias name is `lead` (support channels), `composeSystemPrompt` appends `common/bug-pipeline.md` to the common profile after the agent's declared profile. That preamble carries the merged orchestrator playbook (Phase 1 hypotheses + Phase 2 scoping, formerly thinker). Casual `default` sessions do NOT get it, so they never carry the bug-pipeline prompt. bug-pipeline participates like any other common name, so a target repo or the org overlay can supplement/override it by the same additive tier mechanics.
 - Common preamble is selected by each agent's `common:` frontmatter profile:
   - `core.md` is the tiny always-on operating contract.
   - Target repo common is checked first per selected file; missing selected files fall back individually to Junior's public common.
