@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ThreadSession } from "../session/types.ts";
+import { createSession, type ThreadSession } from "../session/types.ts";
 import { validateLeadPipelineResponse } from "./pipeline-guard.ts";
 
 const CHANNEL = "C_SUPPORT";
@@ -10,11 +10,10 @@ const THREAD = "1234.5678";
 const supportChannels = new Set([CHANNEL]);
 
 function makeSession(): ThreadSession {
-  return {
-    threadId: THREAD,
-    channel: CHANNEL,
-    activeAgentName: "lead",
-  } as unknown as ThreadSession;
+  const session = createSession(THREAD, CHANNEL);
+  session.activeAgentName = "lead";
+  session.agentType = "lead";
+  return session;
 }
 
 describe("validateLeadPipelineResponse", () => {
