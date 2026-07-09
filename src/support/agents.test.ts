@@ -23,9 +23,9 @@ describe("dispatchableAgentsFor", () => {
 
   it("lets lead dispatch every worker except itself, default, and echo", () => {
     const allowed = dispatchableAgentsFor("lead");
-    expect(allowed).toContain("thinker");
     expect(allowed).toContain("review");
     expect(allowed).toContain("reproducer");
+    expect(allowed).not.toContain("thinker"); // retired in the 3-way merge
     expect(allowed).not.toContain("lead");
     expect(allowed).not.toContain("default");
     expect(allowed).not.toContain("echo");
@@ -48,9 +48,8 @@ describe("dispatchableAgentsFor", () => {
     expect(juniorAllowed).toEqual(leadAllowed);
   });
 
-  it("returns thinker's allow-list", () => {
-    const allowed = dispatchableAgentsFor("thinker").sort();
-    expect(allowed).toEqual(["reproducer", "review"]);
+  it("returns empty for the retired thinker agent (no longer dispatchable)", () => {
+    expect(dispatchableAgentsFor("thinker")).toEqual([]);
   });
 
   it("returns empty for workers with no allow-list", () => {
@@ -89,16 +88,12 @@ describe("identity / username collision (the footgun this guards)", () => {
 });
 
 describe("workerMayDispatch", () => {
-  it("permits thinker → review", () => {
-    expect(workerMayDispatch("thinker", "review")).toBe(true);
-  });
-
-  it("permits thinker → reproducer", () => {
-    expect(workerMayDispatch("thinker", "reproducer")).toBe(true);
-  });
-
-  it("blocks reproducer → thinker", () => {
-    expect(workerMayDispatch("reproducer", "thinker")).toBe(false);
+  it("allows no worker→worker dispatch after the thinker merge", () => {
+    // WORKER_DISPATCH_ALLOW is empty: the orchestrator emits !reproducer/!review
+    // itself, so workers never dispatch each other.
+    expect(workerMayDispatch("thinker", "review")).toBe(false);
+    expect(workerMayDispatch("reproducer", "review")).toBe(false);
+    expect(workerMayDispatch("review", "reproducer")).toBe(false);
   });
 
   it("blocks unknown source agents", () => {
@@ -107,13 +102,12 @@ describe("workerMayDispatch", () => {
 });
 
 describe("buildDispatchAllowBlock", () => {
-  it("emits an allow-list for thinker", () => {
+  it("emits a deny-all block for the retired thinker agent", () => {
     const block = buildDispatchAllowBlock("thinker");
     expect(block).toContain("<dispatch-allow>");
     expect(block).toContain("</dispatch-allow>");
-    expect(block).toContain("`reproducer`");
-    expect(block).toContain("`review`");
-    expect(block).toContain("the code wins");
+    expect(block).toContain("may NOT emit");
+    expect(block).not.toContain("`reproducer`");
   });
 
   it("emits a deny-all block for review", () => {
@@ -131,17 +125,17 @@ describe("buildDispatchAllowBlock", () => {
 
   it("lists every dispatchable agent for lead", () => {
     const block = buildDispatchAllowBlock("lead");
-    expect(block).toContain("`thinker`");
     expect(block).toContain("`review`");
     expect(block).toContain("`reproducer`");
+    expect(block).not.toContain("`thinker`");
     expect(block).not.toContain("may NOT emit");
   });
 
   it("lists every dispatchable core agent for default Junior too", () => {
     const block = buildDispatchAllowBlock("default");
-    expect(block).toContain("`thinker`");
     expect(block).toContain("`review`");
     expect(block).toContain("`reproducer`");
+    expect(block).not.toContain("`thinker`");
     expect(block).not.toContain("may NOT emit");
   });
 

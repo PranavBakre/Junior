@@ -15,14 +15,14 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 
 | Agent | Purpose |
 |---|---|
-| `lead.md` | Bug-pipeline orchestrator. Routes between thinker, reproducer, review; gates the dev-mirror merge. |
-| `thinker.md` | Two-phase root-cause hypothesizer + fix-scoper. |
+| `default.md` | The one Junior orchestrator. Handles broad Slack asks; in support channels (session marker `lead`, aliased to this file) also runs the bug pipeline via the `bug-pipeline` common preamble. `lead.md`/`thinker.md` were folded into this file + `common/bug-pipeline.md` in the 3-way merge. |
 | `reproducer.md` | Two-phase Playwright walker — reproduces the bug, then validates the fix. |
 | `review.md` | Code reviewer (6-pass methodology, inline GitHub comments). |
-| `build.md` | Generic backend builder — for junior itself and repos without their own build agent. |
-| `frontend.md` | Generic frontend builder — for repos without their own frontend agent. |
+| `build.md` | Generic backend builder — also the Task-dispatched worker the orchestrator hands fixes to. |
+| `frontend.md` | Generic frontend builder — also the Task-dispatched worker for UI fixes. |
 | `architect.md` | System architect — specs, data models, state machines. |
 | `pm.md` | Product manager — scoping, iterations, scope cuts. |
+| `common/bug-pipeline.md` | Shared preamble — the merged bug-pipeline playbook (Phase 1 hypotheses + Phase 2 scoping + silence allow-list + merge flow). Appended only to support-channel (`lead`) sessions. |
 | `common/building-philosophy.md` | Shared preamble — generic building principles. |
 | `common/merge-workflow.md` | Shared preamble — generic merge invariants (admin token, 3-way, branch from main). Org-specifics live in the overlay. |
 | `common/runtime-environment.md` | Shared preamble — generic runtime rules (image-reading, repo-locations meta-rule, MCP tool list, bug folder layout). Org-specifics live in the overlay. |

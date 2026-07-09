@@ -4,7 +4,7 @@ import type { AgentIdentity } from "../session/types.ts";
 
 /**
  * Core agents — part of the open-source architecture. Orchestrators (lead,
- * default) and bug-pipeline workers (reproducer, thinker, review) plus the
+ * default) and bug-pipeline workers (reproducer, review) plus the
  * echo debug agent. Identities live in code because these names are
  * referenced from junior's source (special-cases in `manager.ts`, the
  * `isOrchestratorAgent` set, attribution-suffix logic, etc.) — they're part
@@ -26,7 +26,6 @@ export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   // self-bot posts back to the right role.
   lead: { username: "Junior (Lead)", iconEmoji: ":face_with_cowboy_hat:" },
   reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
-  thinker: { username: "Thinker", iconEmoji: ":wrench:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
   echo: { username: "Echo", iconEmoji: ":speech_balloon:" },
 };
@@ -146,23 +145,20 @@ export function agentForUsername(username?: string): string | null {
 }
 
 /**
- * Worker → worker dispatches that bypass the lead-only invariant.
+ * Worker → worker dispatches that bypass the orchestrator-only invariant.
  *
- * Lead always dispatches anything. Workers normally can't dispatch — their
- * directives are stripped and the message is re-routed to lead as plain text.
- * The exceptions are the happy-path chains: thinker's Phase 2 PR-open message
- * dispatches `!review` (for the PR) and, on read-only bugs, `!reproducer
- * validate <branch>` (for fix validation), removing one round-trip each
- * through lead.
+ * The orchestrator (lead/default) always dispatches anything. Workers normally
+ * can't dispatch — their directives are stripped and the message is re-routed
+ * to the orchestrator as plain text. Empty since the 3-way merge retired
+ * thinker: the orchestrator now runs Phase 1/2 itself and emits `!reproducer` /
+ * `!review` directly, so no worker→worker chain remains. reproducer and review
+ * always terminate back at the orchestrator, who handles the merge.
  *
- * Add an entry only when the chain is finite and terminates cleanly back at
- * lead (no risk of worker-loops). Keys are source agents; values are the
- * agents they may dispatch. Neither review nor reproducer can dispatch
- * anything — they always terminate back at lead, who handles the merge.
+ * The mechanism stays: add an entry only when a chain is finite and terminates
+ * cleanly back at the orchestrator (no risk of worker-loops). Keys are source
+ * agents; values are the agents they may dispatch.
  */
-export const WORKER_DISPATCH_ALLOW: Record<string, ReadonlySet<string>> = {
-  thinker: new Set(["review", "reproducer"]),
-};
+export const WORKER_DISPATCH_ALLOW: Record<string, ReadonlySet<string>> = {};
 
 export function workerMayDispatch(
   sourceAgent: string,

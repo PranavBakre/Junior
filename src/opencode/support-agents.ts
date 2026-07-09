@@ -23,9 +23,9 @@ const STATELESS_SUPPORT_AGENTS = [
  * cwd. Junior's stateless observability prompts live under support/agents, so
  * expose those standalone prompts through generated OPENCODE_CONFIG_CONTENT.
  *
- * Deliberately do NOT expose persistent workers (reproducer/thinker/review)
- * here. Lead must dispatch those through Slack directives so they get their own
- * session, identity, and audit trail.
+ * Deliberately do NOT expose persistent workers (reproducer/review) here. The
+ * orchestrator must dispatch those through Slack directives so they get their
+ * own session, identity, and audit trail.
  */
 export function loadOpenCodeSupportSubagents(): OpenCodeSubagentConfig[] {
   const agents: OpenCodeSubagentConfig[] = [];

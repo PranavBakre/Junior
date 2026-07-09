@@ -36,13 +36,12 @@ Persistent agents are Slack participants and must be dispatched with a directive
 
 ```text
 !reproducer <bounded prompt>
-!thinker <bounded prompt>
 !review <bounded prompt>
 ```
 
-Do not invoke persistent agents through Task. That collapses their work into the orchestrator turn, hides their identity from the Slack audit trail, and loses the resume boundary.
+(An org overlay may list additional worker directives.) Do not invoke persistent agents through Task. That collapses their work into the orchestrator turn, hides their identity from the Slack audit trail, and loses the resume boundary.
 
-Use Task only for stateless or one-shot work such as observability fetches, summarization, small read-only investigations, or drafting.
+Use Task only for stateless or one-shot work such as observability fetches, summarization, small read-only investigations, or drafting — and to dispatch *implementation* of a scoped fix to a builder (`Task(subagent_type: "build" | "frontend")`) with a full spec: files, contracts, branch name, conventions, and the memory lessons recalled for the sub-task. You orchestrate and verify; the builder edits the code.
 
 ## Prompt shape
 

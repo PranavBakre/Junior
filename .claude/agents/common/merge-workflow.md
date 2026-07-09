@@ -48,7 +48,7 @@ The org-specific section appended below names the concrete branch order, base na
 
 Before running `gh pr merge`, confirm:
 
-1. Ran `gh pr view <n> --json baseRefName` and the base is correct for this stage?
+1. Confirmed the PR's base branch is correct for this stage (via the base check above)?
 2. Is `GITHUB_TOKEN` set to the admin token, not the regular bot?
 3. Is the strategy `--merge` (3-way), not `--squash`?
 4. Is this PR actually authorized to merge now - or is it the human-gated main PR?

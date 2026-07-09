@@ -114,7 +114,9 @@ export function resolveDispatchAgent(
   const action = record.action;
   if (action.type !== "dispatch_agent") return "";
   if (action.id === "review:make-fix") {
-    return supportChannels?.has(record.channelId) ? "thinker" : "default";
+    // Support channels route the fix back to the bug-pipeline orchestrator
+    // session (marker "lead"); everywhere else it's the default Junior session.
+    return supportChannels?.has(record.channelId) ? "lead" : "default";
   }
   return action.agent;
 }

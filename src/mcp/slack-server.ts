@@ -603,7 +603,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
       description:
         "Internally dispatch a prompt to a registered Junior persistent agent in a Slack thread without posting a Slack !<agent> directive.",
       inputSchema: {
-        agent_name: z.string().describe("Target persistent agent name, e.g. review, thinker, reproducer"),
+        agent_name: z.string().describe("Target persistent agent name, e.g. review, reproducer"),
         prompt: z.string().describe("Prompt to send to the agent"),
         channel_id: z.string().describe("Slack channel ID for the thread context"),
         thread_ts: z.string().describe("Slack thread timestamp / session key"),

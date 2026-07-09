@@ -15,7 +15,7 @@ Multi-agent dispatch layer: registry of agent slack identities, orchestrator/wor
 | `isPersistentAgent(name)` | `agents.ts` | Membership check in `AGENT_IDENTITIES`. |
 | `identityForAgent(name)` | `agents.ts` | Lookup; undefined if not registered. |
 | `agentForUsername(username)` | `agents.ts` | Reverse lookup, used to classify self-bot posts. |
-| `WORKER_DISPATCH_ALLOW` | `agents.ts` | Worker → worker dispatch exceptions (e.g. `thinker → {review, reproducer}`). |
+| `WORKER_DISPATCH_ALLOW` | `agents.ts` | Worker → worker dispatch exceptions. Empty after the 3-way merge retired thinker — the orchestrator emits `!reproducer`/`!review` itself; no worker→worker chain remains. |
 | `workerMayDispatch(src, target)` | `agents.ts` | Gate for worker self-bot directives. |
 | `dispatchableAgentsFor(name)` | `agents.ts` | Returns allowed dispatch targets for an agent. |
 | `buildDispatchAllowBlock(name)` | `agents.ts` | `<dispatch-allow>` system-prompt block injected into every agent. |
