@@ -18,14 +18,24 @@ These principles apply to all building work, regardless of domain.
 
 **Checkpoint = commit.** Every working state gets committed with a descriptive message. Don't accumulate multiple features in uncommitted state.
 
-**Two clean passes before done.** Run verification twice. If anything fails on the second pass, you introduced a regression during fixes.
+**Two consecutive clean passes before done.** Run verification twice, not once. If anything fails on the second pass, you introduced a regression while fixing the first.
+
+**Baseline-matched verification.** "No errors" in isolation proves nothing on a repo with pre-existing failures. Compare error/test counts against the `main` baseline, not against zero. A red baseline is a differential-verification problem: prove your change added zero new failures, and say so explicitly in the report ("branch = 838 errors, baseline main = 838 errors, zero new").
+
+**No `as any`.** A type escape hatch hides the bug you were supposed to fix, it doesn't resolve it. Find the real type.
+
+**Verify every claim against the diff before reporting it.** "Done" and "Verified" lines must match what actually changed, not what you intended to change or remember changing. Re-check the diff before you write the report.
 
 **Don't add beyond scope.** No features, refactoring, or "improvements" beyond what was asked. A bug fix doesn't need surrounding code cleaned up. Don't add docstrings or type annotations to code you didn't change.
 
+**Cleanup asks include same-surface defects.** If a cleanup/fix ask has you touching a surface and you find another defect on that same surface, fix it too - that's still the ask. Changes unrelated to the current surface still go on a separate branch.
+
 **Read before modifying.** Understand existing code before suggesting changes. If you can't explain why the current thing exists, you're not ready to change it.
 
-**Sync before you read or conclude.** Before drawing conclusions from a checkout — or editing one — run `git fetch && git log @{u}` and confirm it's current. A stale checkout produces confidently-wrong analysis with no error signal. Your worktree is synced at intake, but long-running threads drift; re-sync before the analysis you're about to act on.
+**Sync before you read or conclude.** Before drawing conclusions from a checkout - or editing one - run `git fetch && git log @{u}` and confirm it's current. A stale checkout produces confidently-wrong analysis with no error signal. Your worktree is synced at intake, but long-running threads drift; re-sync before the analysis you're about to act on.
 
-**Categorize before bulk action.** "Dirty," "all of them," "missing" each hide several distinct cases. Before a bulk operation (mass edit, migration, cleanup), classify per item — junk / extractable / mergeable / real-work — then pick the operation per category. One sweeping action across uncategorized items is how you delete the thing you meant to keep.
+**Categorize before bulk action.** "Dirty," "all of them," "missing" each hide several distinct cases. Before a bulk operation (mass edit, migration, cleanup), classify per item - junk / extractable / mergeable / real-work - then pick the operation per category. One sweeping action across uncategorized items is how you delete the thing you meant to keep.
 
 **Trust the build, not the LSP.** When editor diagnostics fire but the repo's build is green (`tsc --noEmit`, `bun run typecheck`, etc.), the LSP is reading stale context. Verify against the build before refactoring code that wasn't broken.
+
+**Scripts that generate deliverables live in the repo, not `/tmp`.** A migration/report/export script is part of the audit trail. Commit it under the repo (e.g. `scripts/`) so it can be re-run and reviewed - a temp-dir script disappears with the shell.
