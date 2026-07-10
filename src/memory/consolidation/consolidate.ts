@@ -11,6 +11,7 @@ import type { ProfileStore } from "../profiles/store.ts";
 import type { ProfileKind } from "../profiles/types.ts";
 import type { MemoryStore } from "../store.ts";
 import type { ClaimInput, MemorySourceRecord } from "../types.ts";
+import { referencedSlackUserIds, type PeopleResolver } from "./identity.ts";
 import { buildConsolidationPrompt } from "./prompt.ts";
 import type {
   ClaimContextSample,
@@ -41,6 +42,12 @@ export interface ConsolidateSessionArgs {
   records?: MemorySourceRecord[];
   /** Per-record body cap (chars) forwarded to the prompt builder. Default: no cap. */
   bodyCap?: number;
+  /**
+   * Resolve Slack user ids in the evidence to display names so the LLM can
+   * attribute records/mentions to PEOPLE (and their profiles). Omit → the
+   * prompt shows raw ids only.
+   */
+  resolvePeople?: PeopleResolver;
   /** Clock (epoch ms). Defaults to Date.now(). */
   now?: number;
   /** Cosine dedup threshold. Defaults to DEFAULT_DEDUP_THRESHOLD (0.92). */
@@ -64,8 +71,9 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
   // b. Nothing to do.
   if (records.length === 0) return { skipped: true };
 
-  // c. Build context: existing profiles for referenced entities + nearby claims.
-  const context = await buildContext(store, profileStore, records);
+  // c. Build context: existing profiles for referenced entities + nearby claims
+  //    + resolved identities for the people the evidence references.
+  const context = await buildContext(store, profileStore, records, args.resolvePeople);
 
   // d. Ask the LLM for derivations.
   const output = await invoke(buildConsolidationPrompt(records, context, args.bodyCap));
@@ -184,22 +192,47 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
 // Context building
 // ---------------------------------------------------------------------------
 
+/**
+ * Cap on profiles shown to the LLM. Referenced-entity profiles are always
+ * included; the rest of the corpus fills the remaining slots, most recently
+ * updated first.
+ */
+export const PROFILE_CONTEXT_CAP = 20;
+
 async function buildContext(
   store: MemoryStore,
   profileStore: ProfileStore,
   records: MemorySourceRecord[],
+  resolvePeople?: PeopleResolver,
 ): Promise<ConsolidationContext> {
   // Existing profiles for entities referenced by the records (best-effort,
   // keyed fetch — never bumps last_used_at, this is an internal read).
   const refs = referencedEntityRefs(records);
   const profiles = [];
+  const seen = new Set<string>();
   for (const ref of refs) {
     try {
       const profile = await profileStore.fetchByEntityRef(ref, { recordUsage: false });
-      if (profile) profiles.push(profile);
+      if (profile && !seen.has(profile.entity_ref)) {
+        profiles.push(profile);
+        seen.add(profile.entity_ref);
+      }
     } catch {
       // Malformed ref — skip; the prompt simply won't show that profile.
     }
+  }
+
+  // Ref extraction only catches literal `<slug>:<kind>` mentions and repo names —
+  // plain Slack evidence never says "pranav:person", so on its own the model
+  // never saw existing profiles and therefore never updated them. The corpus is
+  // small and keyed, so show the rest too (most recently updated first, capped).
+  const rest = (await profileStore.list())
+    .filter((p) => !seen.has(p.entity_ref))
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  for (const profile of rest) {
+    if (profiles.length >= PROFILE_CONTEXT_CAP) break;
+    profiles.push(profile);
+    seen.add(profile.entity_ref);
   }
 
   // A sample of nearby existing claims so the LLM avoids restating them.
@@ -207,7 +240,21 @@ async function buildContext(
     .slice(0, 50)
     .map((c) => ({ text: c.text, kind: c.kind, repo: c.repo, tags: c.tags }));
 
-  return { profiles, claims };
+  // Resolve the Slack ids the evidence references to display names. Evidence
+  // identifies people only as raw ids (`actor_id`, `<@U…>` mentions), so without
+  // this the LLM cannot attribute anything to a person. Resolution failures
+  // degrade to raw ids, never abort the batch.
+  let people: ConsolidationContext["people"];
+  if (resolvePeople) {
+    try {
+      const resolved = await resolvePeople(referencedSlackUserIds(records));
+      people = [...resolved.entries()].map(([id, name]) => ({ id, name }));
+    } catch {
+      people = undefined;
+    }
+  }
+
+  return { profiles, claims, people };
 }
 
 const ENTITY_REF_RE = /\b([a-z0-9][a-z0-9_-]*):(person|repo|situation)\b/gi;

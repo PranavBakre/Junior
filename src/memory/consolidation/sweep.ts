@@ -11,6 +11,7 @@ import type { ProfileStore } from "../profiles/store.ts";
 import type { MemoryStore } from "../store.ts";
 import type { MemorySourceRecord } from "../types.ts";
 import { consolidateSession } from "./consolidate.ts";
+import type { PeopleResolver } from "./identity.ts";
 import { cappedBodyLength } from "./prompt.ts";
 import type { ConsolidationInvoke, ConsolidationReport } from "./types.ts";
 
@@ -77,6 +78,8 @@ export interface RunConsolidationSweepArgs {
    * DEFAULT_CONSOLIDATION_KINDS (the high-value set).
    */
   kinds?: string[];
+  /** Slack id → name resolver forwarded to the engine (see ConsolidateSessionArgs). */
+  resolvePeople?: PeopleResolver;
   /** Clock (epoch ms) forwarded to the engine. Defaults to Date.now() per call. */
   now?: number;
 }
@@ -127,6 +130,7 @@ export async function runConsolidationSweep(
         embedder,
         invoke,
         bodyCap,
+        resolvePeople: args.resolvePeople,
         now: args.now,
         ...sessionArgs,
       });

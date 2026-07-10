@@ -20,8 +20,10 @@ import {
 import type { WorkflowStore } from "./store.ts";
 import type { MemoryStore } from "../memory/store.ts";
 import {
+  createSlackPeopleResolver,
   runConsolidationSweep,
   summarizeConsolidationSweep,
+  type PeopleResolver,
 } from "../memory/consolidation/index.ts";
 import { createRunnerInvoke } from "../memory/consolidation/runner.ts";
 import { createProfileStore } from "../memory/profiles/factory.ts";
@@ -49,6 +51,7 @@ export interface WorkflowExecutorOptions {
     profileStore?: ProfileStore;
     embedder?: EmbeddingProvider;
     invoke?: ConsolidationInvoke;
+    resolvePeople?: PeopleResolver;
   };
 }
 
@@ -376,12 +379,16 @@ export class WorkflowExecutor {
     const profileStore = this.consolidationDeps?.profileStore ?? createProfileStore();
     const embedder = this.consolidationDeps?.embedder ?? (await loadLocalEmbedder());
     const invoke = this.consolidationDeps?.invoke ?? createRunnerInvoke({});
+    const resolvePeople =
+      this.consolidationDeps?.resolvePeople ??
+      (this.slackClient ? createSlackPeopleResolver(this.slackClient) : undefined);
 
     const reports = await runConsolidationSweep({
       store: this.memoryStore,
       profileStore,
       embedder,
       invoke,
+      resolvePeople,
     });
     return summarizeConsolidationSweep(reports);
   }

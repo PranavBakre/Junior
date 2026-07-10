@@ -4,7 +4,12 @@ import type {
   ClaimRecallResult,
   MemoryFactInput,
 } from "./types.ts";
-import { runConsolidationSweep, type ConsolidateV3Entry } from "./consolidation/index.ts";
+import {
+  createSlackPeopleResolver,
+  runConsolidationSweep,
+  type ConsolidateV3Entry,
+  type PeopleResolver,
+} from "./consolidation/index.ts";
 import { createRunnerInvoke } from "./consolidation/runner.ts";
 import type { ConsolidationInvoke } from "./consolidation/types.ts";
 import { createEmbeddingProvider } from "./embedding/factory.ts";
@@ -22,6 +27,20 @@ export interface MemoryCliDeps {
   invoke?: ConsolidationInvoke;
   embedder?: EmbeddingProvider;
   profileStore?: ProfileStore;
+  resolvePeople?: PeopleResolver;
+}
+
+/**
+ * CLI identity resolution: a Slack-backed resolver when SLACK_BOT_TOKEN is in
+ * the env (the CLI runs from Junior's project root, so it normally is), else
+ * none — consolidation then shows raw Slack ids. Dynamic import keeps
+ * @slack/web-api out of the module graph for token-less runs.
+ */
+async function defaultPeopleResolver(): Promise<PeopleResolver | undefined> {
+  const token = process.env.SLACK_BOT_TOKEN;
+  if (!token) return undefined;
+  const { WebClient } = await import("@slack/web-api");
+  return createSlackPeopleResolver(new WebClient(token));
 }
 
 /** CLI default embedding provider: honor MEMORY_EMBED_PROVIDER, else local/harrier. */
@@ -92,11 +111,14 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
           effort: stringOption(options, "effort"),
         });
 
+      const resolvePeople = deps.resolvePeople ?? (await defaultPeopleResolver());
+
       const reports = await runConsolidationSweep({
         store,
         profileStore,
         embedder,
         invoke,
+        resolvePeople,
         threadId: stringOption(options, "thread"),
         limit: numberOption(options, "limit"),
         maxBatchChars: numberOption(options, "max-batch-chars"),

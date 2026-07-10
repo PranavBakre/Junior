@@ -52,6 +52,9 @@ Emit a derivation ONLY when it is durable and reusable beyond this thread:
   learned something new and stable about a person, repo, or situation. Do NOT
   restate what the shown profile already says. Do NOT create a profile for a
   one-off. entity_ref is "<slug>:person" | "<slug>:repo" | "<slug>:situation".
+  Use the "Who is who" map to attribute evidence to people. When a mapped person
+  matches an existing profile shown below, reuse that profile's EXACT entity_ref
+  — never invent a second slug for the same person.
 - claims: ONE ATOMIC fact/lesson per claim — never a paragraph bundling several.
   Skip anything already covered by the existing claims shown below.
 
@@ -69,9 +72,13 @@ export function buildConsolidationPrompt(
    */
   bodyCap?: number,
 ): string {
+  const peopleById = new Map((context.people ?? []).map((p) => [p.id, p.name]));
+
   const recordLines = records
     .map((r) => {
-      const who = r.actorId ?? r.agentName ?? r.actorKind ?? "unknown";
+      const rawWho = r.actorId ?? r.agentName ?? r.actorKind ?? "unknown";
+      const name = peopleById.get(rawWho);
+      const who = name ? `${rawWho} (${name})` : rawWho;
       const where = [r.threadId ? `thread=${r.threadId}` : null, r.repoName ? `repo=${r.repoName}` : null]
         .filter(Boolean)
         .join(" ");
@@ -83,10 +90,14 @@ export function buildConsolidationPrompt(
     })
     .join("\n");
 
+  // Show the body near-whole: an emitted profile body REPLACES the file's body,
+  // so a model updating from a short sketch would silently drop everything the
+  // sketch cut off. Profile bodies are a paragraph or two; 1500 chars is a
+  // guard against pathological files, not a working budget.
   const profileLines = context.profiles.length
     ? context.profiles
         .map((p) => {
-          const sketch = p.body.replace(/\s+/g, " ").trim().slice(0, 280);
+          const sketch = p.body.replace(/\s+/g, " ").trim().slice(0, 1500);
           return `- ${p.entity_ref} (updated ${p.updated_at})\n    ${sketch}`;
         })
         .join("\n")
@@ -98,6 +109,10 @@ export function buildConsolidationPrompt(
         .join("\n")
     : "(no nearby existing claims)";
 
+  const peopleLines = (context.people ?? [])
+    .map((p) => `- ${p.id} = ${p.name}`)
+    .join("\n");
+
   return [
     HIGH_BAR,
     "",
@@ -107,6 +122,9 @@ export function buildConsolidationPrompt(
     "facts, affect, or people across threads just because they share this prompt.",
     "",
     recordLines || "(none)",
+    "",
+    "## Who is who (Slack id → person)",
+    peopleLines || "(no resolved identities — attribute only what the message text itself names)",
     "",
     "## Existing profiles (UPDATE these, do not restate)",
     profileLines,
