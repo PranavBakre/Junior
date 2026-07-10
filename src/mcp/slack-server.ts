@@ -19,7 +19,10 @@ import { log } from "../logger.ts";
 import { createMemoryStore } from "../memory/factory.ts";
 import { createProfileStore } from "../memory/profiles/index.ts";
 import type { ProfileStore, Profile } from "../memory/profiles/index.ts";
-import { runConsolidationSweep } from "../memory/consolidation/index.ts";
+import {
+  createSlackPeopleResolver,
+  runConsolidationSweep,
+} from "../memory/consolidation/index.ts";
 import { createRunnerInvoke } from "../memory/consolidation/runner.ts";
 import type { MemoryStore } from "../memory/store.ts";
 import type {
@@ -828,6 +831,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           profileStore: getProfileStore(),
           embedder: await getEmbeddingProvider(),
           invoke: createRunnerInvoke({}),
+          resolvePeople: createSlackPeopleResolver(slack),
         });
         return { content: [{ type: "text" as const, text: JSON.stringify({ reports }, null, 2) }] };
       });

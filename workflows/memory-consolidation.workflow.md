@@ -21,27 +21,46 @@ permissions:
 concurrency: skip
 ---
 
-Run Junior's offline memory consolidation (memory-system-v3.md §7).
+Run Junior's offline v3 memory consolidation sweep (docs/features/memory-system-v3.md §7)
+and report exactly what it wrote.
 
-This workflow runs the **v3 consolidation sweep engine directly** — there is no
-separate LLM-inspection agent pass. The executor drains unconsolidated
-`memory_source_record`s, session-scoped per thread plus a final unthreaded
-sweep, and for each scope spawns the consolidation runner (`claude -p`,
-structured output) to derive memory, then persists it through the write gates:
+The executor normally runs this sweep natively (in-process, no agent) and ignores
+this prompt. If you are an agent reading this, the native path did not run — you
+must execute the sweep yourself:
 
-- **episodes** — what happened, with provenance back to the source records;
-- **entity profiles** — keyed, human-inspectable markdown for a person / repo /
-  situation, merged (never duplicated) on `entity_ref`;
-- **claims** — atomic lessons / facts / situation-claims, embedded locally
-  (harrier) and proximity-deduped against the existing corpus before write.
+1. Resolve the Junior project root from the runtime context (`junior.projectRoot`;
+   `junior.memoryCli` is the CLI entry point).
+2. From the project root, run the full sweep:
 
-Raw source records remain authoritative and are stamped consolidated exactly
-once; derived memory is always rebuildable from them. The runner's structured
-output is the only LLM step — the sweep does not edit database rows directly.
+   ```
+   bun run src/memory/cli.ts consolidate-v3
+   ```
 
-The workflow's artifact is the sweep summary (records processed, episodes,
-profiles, and claims written/deduped per scope, plus any per-session failures).
+   Do not pass `--thread` or `--limit` — the scheduled sweep must cover the entire
+   unconsolidated backlog. Leave batching flags (`--max-batch-chars`, `--body-cap`,
+   `--kinds`) at their defaults unless the operator asked otherwise.
+3. The command drains unconsolidated `memory_source_record`s (high-value kinds
+   only: `slack_message`, `curated_fact`, `manual_correction`), groups them by
+   thread, bin-packs the groups into batches, and spawns the consolidation runner
+   (`claude -p`, structured output) per batch to derive:
+   - **episodes** — what happened, with provenance back to the source records;
+   - **entity profiles** — keyed markdown for a person / repo / situation, merged
+     (never duplicated) on `entity_ref`;
+   - **claims** — atomic lessons / facts, embedded locally and proximity-deduped
+     against the existing corpus before write.
+4. Interpret the output: per-batch failures (malformed runner JSON, timeout) are
+   reported inline and those records stay unconsolidated to retry next run — list
+   them, but only treat the workflow as failed if the CLI itself exits non-zero.
+5. Return the sweep summary as the workflow result: records processed, episodes,
+   profiles, and claims written/deduped per scope, plus any per-batch failures.
 
-This is an offline / operator-triggered pass (daily cron + the
-`memory-consolidation` command), never the hot capture path. Do not run it on
-every Slack message.
+Rules:
+
+- Run the sweep exactly once. Do not re-run it to "fix" a batch failure — failed
+  batches retry automatically on the next scheduled run.
+- Do not edit memory database rows directly; the runner's structured output
+  persisted through the write gates is the only write path. Raw source records
+  remain authoritative and derived memory is always rebuildable from them.
+- This is an offline / operator-triggered pass (daily cron + the
+  `memory-consolidation` command), never the hot capture path. Do not wire it to
+  run on every Slack message.

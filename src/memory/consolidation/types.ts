@@ -83,6 +83,12 @@ export interface ConsolidationContext {
   profiles: Profile[];
   /** A sample of nearby existing claims (avoid near-duplicates). */
   claims: ClaimContextSample[];
+  /**
+   * Slack id → display name for people the evidence references. Absent (or
+   * empty) when no resolver is wired or nothing resolved — the prompt then
+   * shows raw ids only.
+   */
+  people?: Array<{ id: string; name: string }>;
 }
 
 /** Outcome of a consolidation pass. */

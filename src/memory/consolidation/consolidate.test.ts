@@ -141,6 +141,84 @@ describe("consolidateSession", () => {
     expect(vectors[0].text).toContain("dev-first");
   });
 
+  it("shows existing profiles to the LLM even when no record names their entity_ref", async () => {
+    await profileStore.upsertProfile({
+      kind: "person",
+      entity_ref: "pranav:person",
+      body: "Pranav prefers direct, plain implementation writing.",
+    });
+
+    // Plain Slack evidence: no literal "pranav:person" anywhere.
+    await seedRecord({ id: "src-ctx", body: "shipped the dashboard tweaks" });
+
+    let seenPrompt = "";
+    await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      invoke: async (prompt) => {
+        seenPrompt = prompt;
+        return EMPTY;
+      },
+    });
+
+    expect(seenPrompt).toContain("pranav:person");
+    expect(seenPrompt).toContain("direct, plain implementation writing");
+  });
+
+  it("resolves Slack ids to names and shows the identity map in the prompt", async () => {
+    await seedRecord({
+      id: "src-who",
+      actorId: "U03PNSJ33S5",
+      body: "ask <@U0BONESID99> to review this",
+    });
+
+    let seenPrompt = "";
+    await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      resolvePeople: async (ids) => {
+        expect(ids.sort()).toEqual(["U03PNSJ33S5", "U0BONESID99"]);
+        return new Map([
+          ["U03PNSJ33S5", "Pranav Bakre"],
+          ["U0BONESID99", "Bones"],
+        ]);
+      },
+      invoke: async (prompt) => {
+        seenPrompt = prompt;
+        return EMPTY;
+      },
+    });
+
+    expect(seenPrompt).toContain("## Who is who (Slack id → person)");
+    expect(seenPrompt).toContain("- U03PNSJ33S5 = Pranav Bakre");
+    expect(seenPrompt).toContain("- U0BONESID99 = Bones");
+    // The record's from= line is annotated with the resolved name.
+    expect(seenPrompt).toContain("from=U03PNSJ33S5 (Pranav Bakre)");
+  });
+
+  it("survives a resolver failure by falling back to raw ids", async () => {
+    await seedRecord({ id: "src-who-fail", body: "hello" });
+
+    let seenPrompt = "";
+    const report = await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      resolvePeople: async () => {
+        throw new Error("slack down");
+      },
+      invoke: async (prompt) => {
+        seenPrompt = prompt;
+        return EMPTY;
+      },
+    });
+
+    expect(report).toMatchObject({ skipped: false, recordsProcessed: 1 });
+    expect(seenPrompt).toContain("(no resolved identities");
+  });
+
   it("merges an updating profile in place rather than duplicating it", async () => {
     await seedRecord({ id: "src-a", body: "first session about Pranav" });
     await consolidateSession({

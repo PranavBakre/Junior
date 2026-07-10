@@ -8,6 +8,11 @@ export {
 } from "./consolidate.ts";
 export { buildConsolidationPrompt } from "./prompt.ts";
 export {
+  createSlackPeopleResolver,
+  referencedSlackUserIds,
+  type PeopleResolver,
+} from "./identity.ts";
+export {
   runConsolidationSweep,
   summarizeConsolidationSweep,
   DEFAULT_BODY_CAP,
