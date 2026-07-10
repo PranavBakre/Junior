@@ -1,0 +1,1133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Junior — Dashboard (redesign mock)</title>
+<!--
+  MOCK — static sample data, nothing is wired to the API.
+  Redesign goals vs public/index.html:
+    1. Sidebar views instead of one long scroll — each concern gets a full page.
+    2. Overview leads with "needs attention" (errors, stuck-busy, queue waiters).
+    3. Logs viewer (GET /api/logs exists but the current UI never renders it).
+    4. Thread detail drawer (GET /api/sessions/:threadId, currently unused).
+    5. Docs browser (GET /api/memory + /api/memory/:path, currently unused).
+  Every view maps 1:1 to an existing endpoint — no new API surface needed.
+-->
+<style>
+  :root {
+    /* GrowthX dark palette */
+    --bg: #060606;
+    --bg-paper: #181818;
+    --bg-secondary: #292929;
+    --bg-hover: #1f1f1f;
+    --surface: rgba(255, 255, 255, 0.05);
+    --surface-strong: rgba(255, 255, 255, 0.08);
+    --border: rgba(113, 116, 121, 0.25);
+    --border-subtle: rgba(255, 255, 255, 0.08);
+    --fg: #ffffff;
+    --fg-dim: #999999;
+    --fg-faint: #666666;
+    --fg-muted: rgba(255, 255, 255, 0.45);
+    --accent: #0064ff;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ff3b3b;
+    --purple: #9747ff;
+    --font-sans: Gilroy, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    --font-mono: "DM Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    --sidebar-w: 208px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: var(--font-sans); font-size: 14px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  body { display: flex; }
+
+  /* ---------- sidebar ---------- */
+  aside {
+    width: var(--sidebar-w); flex: none;
+    height: 100vh; position: sticky; top: 0;
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--border-subtle);
+    background: rgba(10,10,10,0.6);
+    padding: 20px 12px 14px;
+  }
+  .brand { display: flex; align-items: baseline; gap: 8px; padding: 0 10px 18px; }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.18em; }
+  .brand .env {
+    font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--fg-faint);
+    border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1px 6px;
+  }
+  nav { display: flex; flex-direction: column; gap: 2px; }
+  nav a {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 8px;
+    color: var(--fg-dim); text-decoration: none; font-size: 13px; font-weight: 600;
+    transition: background 0.15s ease-in-out, color 0.15s ease-in-out;
+  }
+  nav a:hover { background: var(--bg-hover); color: var(--fg); }
+  nav a.active { background: rgba(0,100,255,0.12); color: var(--fg); }
+  nav a.active .ico { color: var(--accent); }
+  nav a .ico { width: 16px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--fg-faint); }
+  nav a .count {
+    margin-left: auto; font-family: var(--font-mono); font-size: 10px;
+    color: var(--fg-faint); background: var(--surface);
+    border: 1px solid var(--border-subtle); border-radius: 100px; padding: 0 7px;
+  }
+  nav a .count.hot { color: var(--amber); border-color: rgba(245,158,11,0.35); }
+  nav a .count.err { color: var(--red); border-color: rgba(255,59,59,0.35); }
+  .side-foot {
+    margin-top: auto; padding: 12px 10px 0; border-top: 1px solid var(--border-subtle);
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); line-height: 1.9;
+  }
+  .side-foot b { color: var(--fg-dim); font-weight: 500; }
+  .live-toggle {
+    display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none;
+    margin-top: 6px; color: var(--fg-dim);
+  }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+  .live-dot.paused { background: var(--fg-faint); animation: none; }
+  @keyframes statusPulse { 0%,100% { opacity: 1; transform: scale(1);} 50% { opacity: 0.5; transform: scale(0.85);} }
+  .live-dot { animation: statusPulse 2s ease-in-out infinite; }
+
+  /* ---------- main ---------- */
+  .content { flex: 1; min-width: 0; height: 100vh; overflow-y: auto; }
+  .view { display: none; padding: 26px 32px 60px; max-width: 1200px; margin: 0 auto; }
+  .view.active { display: block; }
+  .view-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+  .view-head h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.32px; }
+  .view-head .sub { color: var(--fg-dim); font-size: 12.5px; }
+  .view-head .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+  h3.sect {
+    margin: 26px 0 12px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.12em; color: var(--fg-dim);
+    font-family: var(--font-mono);
+  }
+  h3.sect:first-of-type { margin-top: 0; }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .mono { font-family: var(--font-mono); }
+  .dim { color: var(--fg-dim); }
+  .faint { color: var(--fg-faint); }
+  .empty { padding: 24px 18px; color: var(--fg-faint); font-style: italic; }
+  code {
+    background: var(--bg-secondary); padding: 1px 6px; border-radius: 6px;
+    font-size: 12px; font-family: var(--font-mono); color: var(--fg);
+  }
+  a.tlink { color: var(--accent); text-decoration: none; }
+  a.tlink:hover { text-decoration: underline; }
+
+  /* pills: status is never color-alone — every pill carries its label text */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 100px;
+    font-size: 10px; font-family: var(--font-mono);
+    text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap;
+    background: var(--surface); color: var(--fg-dim); border: 1px solid var(--border-subtle);
+  }
+  .pill::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .pill.busy    { color: var(--amber);  border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+  .pill.idle    { color: var(--fg-dim); }
+  .pill.draining{ color: var(--purple); border-color: rgba(151,71,255,0.35); background: rgba(151,71,255,0.08); }
+  .pill.running, .pill.done, .pill.active, .pill.ok
+                { color: var(--green);  border-color: rgba(34,197,94,0.35);  background: rgba(34,197,94,0.08); }
+  .pill.failed, .pill.error
+                { color: var(--red);    border-color: rgba(255,59,59,0.35);  background: rgba(255,59,59,0.08); }
+  .pill.stopped { color: var(--fg-faint); }
+
+  /* ---------- overview ---------- */
+  .attn { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .attn-card {
+    border-radius: 12px; padding: 14px 16px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface);
+    transition: border-color 0.2s, transform 0.15s ease-in-out;
+    position: relative;
+  }
+  .attn-card:hover { transform: translateY(-1px); }
+  .attn-card.sev-err  { border-color: rgba(255,59,59,0.4); background: rgba(255,59,59,0.05); }
+  .attn-card.sev-warn { border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.05); }
+  .attn-card .kind {
+    font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.1em;
+    text-transform: uppercase; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+  }
+  .attn-card.sev-err .kind { color: var(--red); }
+  .attn-card.sev-warn .kind { color: var(--amber); }
+  .attn-card .t { font-weight: 600; font-size: 13.5px; margin-bottom: 3px; }
+  .attn-card .d { color: var(--fg-dim); font-size: 12px; }
+  .attn-card .go { position: absolute; right: 14px; top: 14px; color: var(--fg-faint); font-family: var(--font-mono); }
+  .attn-ok {
+    border: 1px dashed rgba(34,197,94,0.3); border-radius: 12px; padding: 14px 16px;
+    color: var(--fg-dim); font-size: 13px; display: none;
+  }
+
+  /* stat tiles: label / value / delta contract */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; }
+  .stat .lbl { color: var(--fg-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--font-mono); }
+  .stat .num { font-size: 24px; font-weight: 700; line-height: 1.25; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .stat .num.busy { color: var(--amber); }
+  .stat .num.err { color: var(--red); }
+  .stat .sub { color: var(--fg-faint); font-size: 11px; font-family: var(--font-mono); margin-top: 1px; }
+
+  /* activity strip — single series, accent hue, hover tooltip */
+  .act-wrap { position: relative; }
+  .act-chart { display: flex; align-items: flex-end; gap: 2px; height: 84px; padding: 14px 16px 6px; }
+  .act-bar { flex: 1; min-width: 4px; border-radius: 2px 2px 0 0; background: rgba(0,100,255,0.55); position: relative; transition: background 0.15s; }
+  .act-bar:hover { background: var(--accent); }
+  .act-bar.now { background: var(--accent); }
+  .act-x { display: flex; justify-content: space-between; padding: 0 16px 10px; font-family: var(--font-mono); font-size: 9.5px; color: var(--fg-faint); }
+  .tip {
+    position: absolute; pointer-events: none; display: none; z-index: 30;
+    background: rgba(15,15,15,0.92); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 10px; font-size: 11.5px; font-family: var(--font-mono); white-space: nowrap;
+  }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  .feed-row {
+    display: grid; grid-template-columns: 58px 60px 1fr; gap: 10px;
+    padding: 8px 16px; border-bottom: 1px solid var(--border-subtle);
+    font-size: 12px; font-family: var(--font-mono); align-items: baseline;
+  }
+  .feed-row:last-child { border-bottom: none; }
+  .feed-row .lv { font-size: 9.5px; letter-spacing: 0.08em; }
+  .feed-row .lv.ERROR { color: var(--red); } .feed-row .lv.WARN { color: var(--amber); }
+  .feed-row .msg { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- threads ---------- */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    padding: 4px 12px; border-radius: 100px; cursor: pointer; user-select: none;
+    font-size: 11px; font-family: var(--font-mono); letter-spacing: 0.05em;
+    color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-subtle);
+    transition: all 0.15s ease-in-out;
+  }
+  .chip:hover { color: var(--fg); }
+  .chip.on { color: var(--fg); border-color: var(--accent); background: rgba(0,100,255,0.12); }
+  input.search, select.ctrl, input.ctrl {
+    background: var(--bg-paper); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+    color: var(--fg); font-family: var(--font-mono); font-size: 12px; padding: 6px 10px;
+    outline: none; transition: border-color 0.15s;
+  }
+  input.search:focus, select.ctrl:focus, input.ctrl:focus { border-color: var(--accent); }
+  input.search { width: 220px; }
+
+  .th-row {
+    display: grid; grid-template-columns: minmax(210px,1.3fr) 130px 1fr 120px; gap: 14px;
+    padding: 13px 18px; border-bottom: 1px solid var(--border-subtle); cursor: pointer;
+    transition: background 0.15s; align-items: center;
+  }
+  .th-row:last-child { border-bottom: none; }
+  .th-row:hover { background: rgba(255,255,255,0.03); }
+  .th-row .chan { font-weight: 600; font-size: 13.5px; }
+  .th-row .tid { font-family: var(--font-mono); font-size: 11px; color: var(--accent); }
+  .th-row .meta { color: var(--fg-faint); font-size: 11.5px; font-family: var(--font-mono); }
+  .th-row .agents-cell { display: flex; gap: 5px; flex-wrap: wrap; }
+  .th-row .last { text-align: right; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); }
+  .apill {
+    font-family: var(--font-mono); font-size: 10px; padding: 1px 8px; border-radius: 100px;
+    background: var(--surface); border: 1px solid var(--border-subtle); color: var(--fg-dim);
+  }
+  .apill.busy { color: var(--amber); border-color: rgba(245,158,11,0.35); }
+  .apill.error { color: var(--red); border-color: rgba(255,59,59,0.35); }
+  .err-inline { color: var(--red); font-size: 11.5px; margin-top: 3px; }
+
+  /* detail drawer */
+  .drawer-scrim {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  .drawer-scrim.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; right: -560px; width: min(560px, 92vw); height: 100vh; z-index: 50;
+    background: #0f0f0f; border-left: 0.5px solid #201f1f;
+    transition: right 0.25s ease-in-out; overflow-y: auto; padding: 24px 26px 40px;
+  }
+  .drawer.open { right: 0; }
+  .drawer .close {
+    position: absolute; top: 18px; right: 20px; cursor: pointer;
+    color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-subtle);
+    border-radius: 8px; padding: 3px 10px; font-family: var(--font-mono); font-size: 11px;
+  }
+  .drawer .close:hover { color: var(--fg); border-color: var(--accent); }
+  .drawer h3 { margin: 0 0 2px; font-size: 16px; font-weight: 700; }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 12.5px; margin: 14px 0; }
+  .kv .k { color: var(--fg-faint); font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding-top: 1px; }
+  .cmd-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+    background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 6px 8px 6px 10px;
+  }
+  .cmd-row code {
+    background: none; padding: 0; flex: 1; min-width: 0;
+    font-size: 11px; color: var(--fg-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .copy-btn {
+    flex: none; cursor: pointer;
+    background: var(--surface); color: var(--fg-dim);
+    border: 1px solid var(--border-subtle); border-radius: 6px;
+    padding: 2px 9px; font-family: var(--font-mono); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    transition: all 0.15s ease-in-out;
+  }
+  .copy-btn:hover { color: var(--fg); border-color: var(--accent); background: rgba(0,100,255,0.08); }
+  .copy-btn.copied { color: var(--green); border-color: rgba(34,197,94,0.4); }
+  .agent-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--surface); }
+  .agent-card .top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .agent-card .top b { font-size: 13.5px; }
+  .agent-card .meta { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); line-height: 1.8; }
+  .tl { border-left: 2px solid var(--border-subtle); margin: 6px 0 0 5px; padding-left: 14px; }
+  .tl-item { position: relative; padding: 4px 0; font-size: 12px; color: var(--fg-dim); }
+  .tl-item::before {
+    content: ""; position: absolute; left: -19px; top: 11px;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint);
+  }
+  .tl-item.err::before { background: var(--red); }
+  .tl-item .ts { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); margin-right: 8px; }
+
+  /* ---------- logs ---------- */
+  .log-toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 10; padding: 12px 0;
+    background: linear-gradient(180deg, var(--bg) 82%, transparent);
+  }
+  .log-lines { font-family: var(--font-mono); font-size: 12px; }
+  .log-line {
+    display: grid; grid-template-columns: 92px 56px 110px 1fr; gap: 12px;
+    padding: 4px 16px; border-bottom: 1px solid rgba(255,255,255,0.03);
+    align-items: baseline;
+  }
+  .log-line:hover { background: rgba(255,255,255,0.025); }
+  .log-line .ts { color: var(--fg-faint); font-size: 11px; }
+  .log-line .lv { font-size: 10px; letter-spacing: 0.08em; }
+  .log-line .lv.INFO { color: var(--fg-dim); }
+  .log-line .lv.WARN { color: var(--amber); }
+  .log-line .lv.ERROR { color: var(--red); }
+  .log-line .lv.DEBUG { color: var(--fg-faint); }
+  .log-line .tag { color: var(--accent); font-size: 11px; }
+  .log-line .msg { color: rgba(255,255,255,0.8); word-break: break-word; }
+  .log-line.is-error { background: rgba(255,59,59,0.05); }
+  .log-line.is-warn { background: rgba(245,158,11,0.04); }
+  .follow-btn.on { color: var(--green); border-color: rgba(34,197,94,0.4); }
+
+  button.ctrl {
+    background: var(--surface); color: var(--fg-dim); border: 1px solid var(--border-subtle);
+    border-radius: 8px; padding: 6px 12px; font-family: var(--font-mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em; cursor: pointer; transition: all 0.15s;
+  }
+  button.ctrl:hover { color: var(--fg); border-color: var(--accent); }
+
+  /* ---------- dev servers ---------- */
+  .ds-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+  .ds-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+  .ds-card .top { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .ds-card .top b { font-size: 14.5px; }
+  .ds-card .cmd { font-family: var(--font-mono); font-size: 11px; color: var(--fg-faint); margin-bottom: 12px; }
+  .meter { height: 5px; border-radius: 100px; background: rgba(0,100,255,0.15); overflow: hidden; margin: 6px 0 4px; }
+  .meter .fill { height: 100%; border-radius: 100px; background: var(--accent); }
+  .meter .fill.low { background: var(--amber); }
+  .ds-card .mrow { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); display: flex; justify-content: space-between; }
+  .qrow {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-top: 6px;
+    background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px;
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim);
+  }
+  .qrow .pos { color: var(--fg-faint); width: 22px; }
+
+  /* ---------- workflows ---------- */
+  .wf-card { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 16px; }
+  .wf-card:last-child { border-bottom: none; }
+  .wf-card .name { font-weight: 700; font-size: 14px; }
+  .wf-card .desc { color: var(--fg-dim); font-size: 12px; margin-top: 2px; }
+  .wf-card .src { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); margin-top: 6px; }
+  .wf-card .mrow { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); line-height: 1.9; }
+  .wf-card .mrow b { color: var(--fg); font-weight: 500; }
+  .runs { display: flex; gap: 4px; align-items: center; margin-top: 6px; }
+  .run-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--surface-strong); cursor: default; }
+  .run-dot.done { background: rgba(34,197,94,0.7); }
+  .run-dot.failed { background: rgba(255,59,59,0.8); }
+  .run-dot.running { background: rgba(245,158,11,0.8); }
+  .run-line { font-family: var(--font-mono); font-size: 11px; color: var(--fg-dim); padding: 2px 0; }
+
+  /* ---------- memory ---------- */
+  .mem-layout { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+  @media (max-width: 1000px) { .mem-layout { grid-template-columns: 1fr; } }
+  #memory-canvas { display: block; width: 100%; height: 440px; background: #0a0a0a; border: 1px solid var(--border); border-radius: 12px; cursor: crosshair; }
+  .cloud-legend { display: flex; gap: 16px; margin: 10px 2px 0; }
+  .cloud-legend .lg { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); font-size: 11px; font-family: var(--font-mono); }
+  .cloud-legend .sw { width: 9px; height: 9px; border-radius: 50%; }
+  .claim-row { padding: 10px 16px; border-bottom: 1px solid var(--border-subtle); font-size: 12.5px; }
+  .claim-row:last-child { border-bottom: none; }
+  .claim-row .k { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 2px; }
+  .claim-row .k.lesson { color: var(--green); } .claim-row .k.fact { color: var(--accent); } .claim-row .k.situation-claim { color: var(--purple); }
+  .claim-row .tags { color: var(--fg-faint); font-size: 11px; font-family: var(--font-mono); margin-top: 2px; }
+
+  /* ---------- docs ---------- */
+  .docs-layout { display: grid; grid-template-columns: 280px 1fr; gap: 14px; min-height: 500px; }
+  @media (max-width: 900px) { .docs-layout { grid-template-columns: 1fr; } }
+  .doc-tree { padding: 10px 0; max-height: 70vh; overflow-y: auto; }
+  .doc-dir { font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-faint); padding: 10px 16px 4px; }
+  .doc-file { display: block; padding: 4px 16px 4px 24px; font-size: 12.5px; color: var(--fg-dim); cursor: pointer; border-left: 2px solid transparent; }
+  .doc-file:hover { color: var(--fg); background: rgba(255,255,255,0.03); }
+  .doc-file.on { color: var(--fg); border-left-color: var(--accent); background: rgba(0,100,255,0.07); }
+  .doc-pane { padding: 22px 26px; overflow-x: auto; }
+  .doc-pane h1 { font-size: 19px; margin: 0 0 12px; }
+  .doc-pane h2 { font-size: 15px; margin: 20px 0 8px; }
+  .doc-pane p, .doc-pane li { color: var(--fg-dim); font-size: 13px; }
+  .doc-pane pre { background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px 14px; font-size: 12px; overflow-x: auto; }
+</style>
+</head>
+<body>
+  <aside>
+    <div class="brand"><h1>JUNIOR</h1><span class="env">mock</span></div>
+    <nav id="nav">
+      <a href="#overview" data-view="overview"><span class="ico">◉</span>Overview</a>
+      <a href="#threads" data-view="threads"><span class="ico">≡</span>Threads<span class="count hot" id="nav-threads">6</span></a>
+      <a href="#logs" data-view="logs"><span class="ico">▤</span>Logs<span class="count err" id="nav-logs">2</span></a>
+      <a href="#devservers" data-view="devservers"><span class="ico">▶</span>Dev Servers<span class="count" id="nav-ds">1</span></a>
+      <a href="#workflows" data-view="workflows"><span class="ico">↻</span>Workflows<span class="count" id="nav-wf">3</span></a>
+      <a href="#memory" data-view="memory"><span class="ico">✦</span>Memory</a>
+      <a href="#docs" data-view="docs"><span class="ico">¶</span>Docs</a>
+    </nav>
+    <div class="side-foot">
+      v<b>0.9.2</b> · up <b>2d 14h</b><br />
+      repos <b>gx-backend, gx-client-next</b>
+      <div class="live-toggle" id="live-toggle">
+        <span class="live-dot" id="live-dot"></span>
+        <span id="live-label">live · 2s poll</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="content">
+
+    <!-- ================= OVERVIEW ================= -->
+    <section class="view" id="view-overview">
+      <div class="view-head">
+        <h2>Overview</h2>
+        <span class="sub">what needs you, then the numbers</span>
+        <span class="right mono faint" id="ov-refreshed">refreshed 2s ago</span>
+      </div>
+
+      <h3 class="sect">Needs attention · 3</h3>
+      <div class="attn" id="attn"></div>
+
+      <h3 class="sect">Right now</h3>
+      <div class="stat-grid" id="ov-stats"></div>
+
+      <h3 class="sect">Turns per hour · last 24h</h3>
+      <div class="panel act-wrap">
+        <div class="act-chart" id="act-chart"></div>
+        <div class="act-x"><span>−24h</span><span>−18h</span><span>−12h</span><span>−6h</span><span>now</span></div>
+        <div class="tip" id="act-tip"></div>
+      </div>
+
+      <div class="two-col" style="margin-top: 26px">
+        <div>
+          <h3 class="sect">Recent warnings &amp; errors</h3>
+          <div class="panel" id="ov-feed"></div>
+        </div>
+        <div>
+          <h3 class="sect">Busiest threads</h3>
+          <div class="panel" id="ov-busiest"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= THREADS ================= -->
+    <section class="view" id="view-threads">
+      <div class="view-head">
+        <h2>Threads</h2>
+        <span class="sub">click a row for full session detail</span>
+        <span class="right"><input class="search" id="th-search" placeholder="filter channel / thread / repo…" /></span>
+      </div>
+      <div class="chips" id="th-chips" style="margin-bottom: 14px">
+        <span class="chip on" data-f="all">all · 6</span>
+        <span class="chip" data-f="busy">busy · 2</span>
+        <span class="chip" data-f="idle">idle · 2</span>
+        <span class="chip" data-f="draining">draining · 1</span>
+        <span class="chip" data-f="error">error · 1</span>
+      </div>
+      <div class="panel" id="th-list"></div>
+    </section>
+
+    <!-- ================= LOGS ================= -->
+    <section class="view" id="view-logs">
+      <div class="view-head">
+        <h2>Logs</h2>
+        <span class="sub">logs/&lt;date&gt;.log — parsed, filterable, no more ssh + tail</span>
+      </div>
+      <div class="log-toolbar">
+        <input type="date" class="ctrl" id="log-date" value="2026-07-10" />
+        <select class="ctrl" id="log-tag">
+          <option value="">all tags</option>
+          <option>session</option><option>spawner</option><option>slack</option>
+          <option>worktree</option><option>devserver</option><option>http</option><option>memory</option>
+        </select>
+        <span class="chips" id="log-levels">
+          <span class="chip on" data-lv="">all</span>
+          <span class="chip" data-lv="INFO">info</span>
+          <span class="chip" data-lv="WARN">warn</span>
+          <span class="chip" data-lv="ERROR">error</span>
+        </span>
+        <input class="search" id="log-search" placeholder="grep…" style="width: 170px" />
+        <span style="margin-left:auto; display:flex; gap:8px">
+          <button class="ctrl follow-btn on" id="log-follow">● follow</button>
+          <button class="ctrl" id="log-clear">clear filters</button>
+        </span>
+      </div>
+      <div class="panel">
+        <div class="log-lines" id="log-lines"></div>
+      </div>
+      <div class="faint mono" style="margin-top:8px; font-size:11px" id="log-count"></div>
+    </section>
+
+    <!-- ================= DEV SERVERS ================= -->
+    <section class="view" id="view-devservers">
+      <div class="view-head">
+        <h2>Dev Servers</h2>
+        <span class="sub">one slot per repo · TTL meter shows time until idle reap</span>
+      </div>
+      <div class="ds-grid" id="ds-grid"></div>
+    </section>
+
+    <!-- ================= WORKFLOWS ================= -->
+    <section class="view" id="view-workflows">
+      <div class="view-head">
+        <h2>Workflows</h2>
+        <span class="sub">scheduled runs · last 10 outcomes per workflow</span>
+      </div>
+      <div class="panel" id="wf-list"></div>
+    </section>
+
+    <!-- ================= MEMORY ================= -->
+    <section class="view" id="view-memory">
+      <div class="view-head">
+        <h2>Memory</h2>
+        <span class="sub">PCA projection — local neighbourhoods are meaningful, global distances are not</span>
+        <span class="right"><button class="ctrl" id="cloud-refresh">refresh</button></span>
+      </div>
+      <div class="mem-layout">
+        <div>
+          <canvas id="memory-canvas"></canvas>
+          <div class="cloud-legend">
+            <span class="lg"><span class="sw" style="background:#22c55e"></span>lesson</span>
+            <span class="lg"><span class="sw" style="background:#0064ff"></span>fact</span>
+            <span class="lg"><span class="sw" style="background:#9747ff"></span>situation-claim</span>
+          </div>
+          <div class="tip" id="cloud-tip"></div>
+        </div>
+        <div>
+          <h3 class="sect" style="margin-top:0">Recent claims</h3>
+          <div class="panel" id="claim-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= DOCS ================= -->
+    <section class="view" id="view-docs">
+      <div class="view-head">
+        <h2>Docs</h2>
+        <span class="sub">read-only browser over docs/**/*.md</span>
+      </div>
+      <div class="docs-layout">
+        <div class="panel doc-tree" id="doc-tree"></div>
+        <div class="panel doc-pane" id="doc-pane"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- thread detail drawer -->
+  <div class="drawer-scrim" id="drawer-scrim"></div>
+  <div class="drawer" id="drawer"></div>
+
+<script>
+/* =================== MOCK DATA =================== */
+const now = Date.now();
+const m = (n) => now - n * 60000;
+
+const THREADS = [
+  {
+    threadId: "1720598234.104200", channel: "#bugs-backlog", status: "busy",
+    targetRepo: "gx-backend", baseRef: "main", agentType: "lead", lastActivity: m(2),
+    pendingMessages: 2, leadSessionId: "ses_9f2ab41c88d0", leadProvider: "opencode", muted: false,
+    worktreePath: "~/Projects/gx-backend/.claude/worktrees/bug-1720598234",
+    agents: [
+      { agentName: "thinker", status: "done", sessionId: "ses_77aa02be1c44", provider: "opencode", lastActivity: m(41), pendingMessages: 0 },
+      { agentName: "build", status: "busy", sessionId: "ses_c31d99e04f2a", provider: "opencode", lastActivity: m(2), pendingMessages: 0 },
+    ],
+    timeline: [
+      { ts: "10:04", txt: "intake — bug report from #bugs-backlog, screenshot downloaded", err: false },
+      { ts: "10:11", txt: "thinker dispatched — hypothesis: project_id linking broken on POW clone", err: false },
+      { ts: "10:52", txt: "human gate passed — Pranav approved scope", err: false },
+      { ts: "11:02", txt: "build dispatched on worktree bug-1720598234", err: false },
+    ],
+  },
+  {
+    threadId: "1720601077.226540", channel: "#support", status: "busy",
+    targetRepo: "gx-client-next", baseRef: "main", agentType: "lead", lastActivity: m(27),
+    pendingMessages: 0, leadSessionId: "ses_b02fe6d1a390", leadProvider: "opencode", muted: false,
+    worktreePath: "~/Projects/gx-client-next/.claude/worktrees/bug-1720601077",
+    stuck: true,
+    agents: [
+      { agentName: "reproducer", status: "busy", sessionId: "ses_4e8c17aa5b02", provider: "claude", lastActivity: m(27), pendingMessages: 0 },
+    ],
+    timeline: [
+      { ts: "09:20", txt: "intake — member reports blank POW page", err: false },
+      { ts: "09:31", txt: "reproducer dispatched with member impersonation", err: false },
+      { ts: "09:48", txt: "no stream events for 27m — possible stall", err: true },
+    ],
+  },
+  {
+    threadId: "1720588103.988100", channel: "#eng-junior", status: "error",
+    targetRepo: "gx-backend", baseRef: "dev", agentType: "build", lastActivity: m(64),
+    pendingMessages: 1, leadSessionId: "ses_1d40cc27e9ab", leadProvider: "claude", muted: false,
+    worktreePath: "~/Projects/gx-backend/.claude/worktrees/feat-notif-batch",
+    lastError: { type: "spawn_timeout", message: "runner exceeded 300s with no exit — killed with SIGINT" },
+    agents: [
+      { agentName: "build", status: "error", sessionId: "ses_a99e30b7f1d6", provider: "claude", lastActivity: m(64), pendingMessages: 1 },
+    ],
+    timeline: [
+      { ts: "08:12", txt: "!build feat/notif-batching on gx-backend", err: false },
+      { ts: "08:14", txt: "worktree created from origin/main", err: false },
+      { ts: "10:06", txt: "spawn_timeout — runner killed after 300s, 1 message still buffered", err: true },
+    ],
+  },
+  {
+    threadId: "1720576440.771320", channel: "#bugs-backlog", status: "draining",
+    targetRepo: "gx-client-next", baseRef: "main", agentType: "lead", lastActivity: m(9),
+    pendingMessages: 3, leadSessionId: "ses_5cc0e18b2d47", leadProvider: "opencode", muted: false,
+    worktreePath: "~/Projects/gx-client-next/.claude/worktrees/bug-1720576440",
+    agents: [
+      { agentName: "thinker", status: "done", sessionId: "ses_e02b995c6a18", provider: "opencode", lastActivity: m(140), pendingMessages: 0 },
+      { agentName: "build", status: "done", sessionId: "ses_08d1f4a7c3e9", provider: "claude", lastActivity: m(22), pendingMessages: 0 },
+      { agentName: "review", status: "done", sessionId: "ses_63f7b20d914c", provider: "opencode", lastActivity: m(9), pendingMessages: 0 },
+    ],
+    timeline: [
+      { ts: "06:15", txt: "intake — sidebar flicker on section POWs", err: false },
+      { ts: "08:40", txt: "PR #482 opened against dev", err: false },
+      { ts: "11:21", txt: "review pass 2 clean — draining buffered follow-ups", err: false },
+    ],
+  },
+  {
+    threadId: "1720544201.335470", channel: "#eng-junior", status: "idle",
+    targetRepo: null, baseRef: null, agentType: "default", lastActivity: m(190),
+    pendingMessages: 0, leadSessionId: "ses_f61a08d3b7e0", leadProvider: "opencode", muted: false, worktreePath: null,
+    agents: [],
+    timeline: [{ ts: "05:02", txt: "discussion thread — memory consolidation tuning", err: false }],
+  },
+  {
+    threadId: "1720511987.660210", channel: "#support", status: "idle",
+    targetRepo: "gx-backend", baseRef: "main", agentType: "lead", lastActivity: m(1420),
+    pendingMessages: 0, leadSessionId: "ses_2ab9c07d15fe", leadProvider: "opencode", muted: true, worktreePath: null,
+    agents: [
+      { agentName: "reproducer", status: "done", sessionId: "ses_90cd4b28a6f1", provider: "claude", lastActivity: m(1425), pendingMessages: 0 },
+    ],
+    timeline: [{ ts: "yest", txt: "not-reproduced — closed with reporter follow-up", err: false }],
+  },
+];
+
+const LOGS = [
+  ["11:42:08", "INFO",  "session",   "thread 1720598234 turn started (build, gx-backend)"],
+  ["11:42:10", "INFO",  "spawner",   "opencode run --session ses_c31d99e04f2a --agent build"],
+  ["11:41:55", "INFO",  "slack",     "buffered message on busy thread 1720598234 (2 pending)"],
+  ["11:40:31", "WARN",  "devserver", "gx-client-next idle TTL 4m remaining, holder 1720576440"],
+  ["11:38:02", "INFO",  "http",      "GET /api/sessions 200 3ms"],
+  ["11:35:44", "WARN",  "session",   "thread 1720601077 no stream events for 20m"],
+  ["11:31:12", "INFO",  "memory",    "appendSourceRecord: 3 records for ses_63f7b20d914c"],
+  ["11:28:47", "INFO",  "worktree",  "created bug-1720576440 from origin/main (gx-client-next)"],
+  ["11:24:15", "INFO",  "slack",     "posted review verdict to 1720576440 (pass 2 clean)"],
+  ["11:19:03", "ERROR", "spawner",   "thread 1720588103 spawn_timeout: no exit after 300s — SIGINT sent"],
+  ["11:18:58", "WARN",  "spawner",   "thread 1720588103 runner silent for 280s"],
+  ["11:12:26", "INFO",  "devserver", "gx-client-next dev server started pid 48112 branch fix/pow-sidebar"],
+  ["11:07:41", "INFO",  "session",   "thread 1720576440 drain: 3 buffered messages combined"],
+  ["11:02:19", "INFO",  "spawner",   "claude -p --resume ses_08d1f4a7c3e9 (build)"],
+  ["10:58:03", "ERROR", "slack",     "files.upload failed for 1720601077: request_timeout (retrying)"],
+  ["10:52:30", "INFO",  "session",   "human gate passed on 1720598234 — scope approved"],
+  ["10:47:12", "DEBUG", "http",      "GET /api/logs?tail=200 200 11ms"],
+  ["10:41:09", "INFO",  "memory",    "consolidation sweep: 12 claims written, 3 merged"],
+];
+
+const DEVSERVERS = [
+  {
+    repo: "gx-client-next", devCommand: "npm run dev", devPort: 3000,
+    running: true, pid: 48112, branch: "fix/pow-sidebar",
+    idleMsRemaining: 4 * 60000, idleTtlMs: 20 * 60000,
+    holder: { holderThreadId: "1720576440.771320", acquiredAt: m(31) },
+    waiters: [
+      { threadId: "1720598234.104200", branch: "bug/pow-clone-linking", enqueuedAt: m(12) },
+      { threadId: "1720601077.226540", branch: "repro/blank-pow", enqueuedAt: m(5) },
+    ],
+  },
+  {
+    repo: "gx-backend", devCommand: "npm run start:dev", devPort: 8000,
+    running: false, pid: null, branch: null,
+    idleMsRemaining: null, idleTtlMs: 20 * 60000, holder: null, waiters: [],
+  },
+];
+
+const WORKFLOWS = [
+  {
+    name: "bugs-backlog-sweep", enabled: true, description: "Pick up unhandled #bugs-backlog messages",
+    sourcePath: "workflows/bugs-backlog-sweep.md", runner: "opencode/lead",
+    triggers: "*/30 * * * * Asia/Kolkata", nextRunAt: now + 14 * 60000, lastRunAt: m(16),
+    runs: ["done","done","done","failed","done","done","done","done","running","done"].reverse(),
+    lastRuns: [
+      { status: "running", at: "11:30", reason: "schedule", dur: null },
+      { status: "done", at: "11:00", reason: "schedule", dur: "1m 42s" },
+      { status: "failed", at: "08:30", reason: "schedule", dur: "0m 12s", error: "slack rate_limited" },
+    ],
+  },
+  {
+    name: "memory-consolidation", enabled: true, description: "Nightly consolidation sweep over closed sessions",
+    sourcePath: "workflows/memory-consolidation.md", runner: "claude/default",
+    triggers: "0 3 * * * Asia/Kolkata", nextRunAt: now + 15.4 * 3600000, lastRunAt: m(520),
+    runs: ["done","done","done","done","done","done","done","done","done","done"],
+    lastRuns: [
+      { status: "done", at: "03:00", reason: "schedule", dur: "6m 08s" },
+      { status: "done", at: "yest 03:00", reason: "schedule", dur: "5m 51s" },
+    ],
+  },
+  {
+    name: "stale-session-cleanup", enabled: false, description: "Delete idle/draining session rows older than 24h",
+    sourcePath: "workflows/stale-session-cleanup.md", runner: "none",
+    triggers: "0 */6 * * * Asia/Kolkata", nextRunAt: null, lastRunAt: m(3100),
+    runs: ["done","done","failed","done","done","done","done","done","done","done"],
+    lastRuns: [{ status: "done", at: "2d ago", reason: "manual", dur: "0m 03s" }],
+  },
+];
+
+const CLAIMS = [
+  { kind: "lesson", text: "Section-based POWs leak into personal views when project_id linking breaks — check upstream filtering before rendering.", tags: ["gx-backend", "pow"] },
+  { kind: "fact", text: "gx-client-next dev server runs on port 3000; backend on 8000; admin client on 3002.", tags: ["gx", "dev-env"] },
+  { kind: "situation-claim", text: "Reporter in 1720601077 is a member account — flows need impersonation, not admin.", tags: ["support"] },
+  { kind: "lesson", text: "Never maxHeight on CSS Grid panes — flex:1 + height:1px + overflow:scroll.", tags: ["gx-client-next", "css"] },
+  { kind: "fact", text: "All GX repos merge feature→dev first, verify, then dev→main with gxt-admin.", tags: ["workflow", "git"] },
+  { kind: "lesson", text: "Review per-commit diffs — fix commits can paper over violations in the cumulative diff.", tags: ["review"] },
+  { kind: "situation-claim", text: "PR #482 awaiting dev verification before main merge.", tags: ["gx-client-next"] },
+  { kind: "fact", text: "junior repo remote is `personal`, not `origin`.", tags: ["junior", "git"] },
+];
+
+const DOCS = {
+  "features": ["session-management.md", "http-dashboard.md", "memory-system-v3.md", "persistent-agents.md", "runner-providers.md", "worktree-manager.md"],
+  "code_index": ["session-management.md", "claude-spawner.md", "mcp-server.md"],
+  "workflows": ["ideation.md", "building.md"],
+};
+
+/* =================== helpers =================== */
+const $ = (id) => document.getElementById(id);
+const esc = (s) => s == null ? "" : String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
+const shortId = (id) => { const s = String(id ?? "—"); return s.length > 16 ? s.slice(0, 10) + "…" + s.slice(-4) : s; };
+function ago(ts) {
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 60) return s + "s";
+  const mm = Math.floor(s / 60);
+  if (mm < 60) return mm + "m";
+  const h = Math.floor(mm / 60);
+  if (h < 24) return h + "h " + (mm % 60) + "m";
+  return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+const pill = (status) => '<span class="pill ' + esc(status) + '">' + esc(status) + "</span>";
+
+/* =================== navigation =================== */
+function show(view) {
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+  document.querySelectorAll("nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
+  const el = $("view-" + view);
+  (el || $("view-overview")).classList.add("active");
+}
+window.addEventListener("hashchange", () => show(location.hash.slice(1) || "overview"));
+show(location.hash.slice(1) || "overview");
+
+let live = true;
+$("live-toggle").addEventListener("click", () => {
+  live = !live;
+  $("live-dot").classList.toggle("paused", !live);
+  $("live-label").textContent = live ? "live · 2s poll" : "paused";
+});
+
+/* =================== overview =================== */
+const ATTN = [
+  { sev: "err", kind: "session error", title: "#eng-junior · spawn_timeout", desc: "runner killed after 300s, 1 message still buffered — thread 1720588103", view: "threads" },
+  { sev: "warn", kind: "possible stall", title: "#support · reproducer silent 27m", desc: "busy with no stream events since 09:48 — thread 1720601077", view: "threads" },
+  { sev: "warn", kind: "dev-server queue", title: "gx-client-next · 2 waiting", desc: "holder on fix/pow-sidebar for 31m, TTL 4m — next: bug/pow-clone-linking", view: "devservers" },
+];
+$("attn").innerHTML = ATTN.map((a) =>
+  '<div class="attn-card sev-' + a.sev + '" onclick="location.hash=\'' + a.view + '\'">' +
+  '<div class="kind">' + (a.sev === "err" ? "✕" : "△") + " " + esc(a.kind) + "</div>" +
+  '<div class="t">' + esc(a.title) + '</div><div class="d">' + esc(a.desc) + "</div>" +
+  '<span class="go">→</span></div>'
+).join("");
+
+$("ov-stats").innerHTML = [
+  ["Threads", 6, "", "2d window"],
+  ["Busy", 2, "busy", "1 possibly stuck"],
+  ["Errors", 1, "err", "spawn_timeout"],
+  ["Agents busy", 2, "busy", "of 7 sessions"],
+  ["Buffered msgs", 6, "", "across 3 threads"],
+  ["Dev servers", 1, "", "of 2 repos"],
+].map(([lbl, num, cls, sub]) =>
+  '<div class="stat"><div class="lbl">' + lbl + '</div><div class="num ' + cls + '">' + num + '</div><div class="sub">' + sub + "</div></div>"
+).join("");
+
+/* activity strip — single series, fixed mock counts */
+const ACT = [1,0,0,0,0,1,2,1,0,1,3,2,4,2,1,3,5,4,2,6,3,4,7,5];
+const actMax = Math.max(...ACT);
+$("act-chart").innerHTML = ACT.map((v, i) =>
+  '<div class="act-bar' + (i === ACT.length - 1 ? " now" : "") + '" data-h="' + (24 - i) + '" data-v="' + v +
+  '" style="height:' + Math.max(4, (v / actMax) * 100) + '%"></div>'
+).join("");
+const actTip = $("act-tip");
+$("act-chart").addEventListener("mousemove", (e) => {
+  const bar = e.target.closest(".act-bar");
+  if (!bar) { actTip.style.display = "none"; return; }
+  actTip.textContent = "−" + bar.dataset.h + "h · " + bar.dataset.v + " turns";
+  actTip.style.display = "block";
+  const wrap = bar.closest(".act-wrap").getBoundingClientRect();
+  const r = bar.getBoundingClientRect();
+  actTip.style.left = Math.min(wrap.width - 130, r.left - wrap.left) + "px";
+  actTip.style.top = (r.top - wrap.top - 34) + "px";
+});
+$("act-chart").addEventListener("mouseleave", () => (actTip.style.display = "none"));
+
+$("ov-feed").innerHTML = LOGS.filter((l) => l[1] === "WARN" || l[1] === "ERROR").slice(0, 6).map((l) =>
+  '<div class="feed-row"><span class="faint">' + l[0] + '</span><span class="lv ' + l[1] + '">' + l[1] + '</span><span class="msg" title="' + esc(l[3]) + '">' + esc(l[3]) + "</span></div>"
+).join("");
+
+$("ov-busiest").innerHTML = THREADS.filter((t) => t.status !== "idle").map((t) =>
+  '<div class="feed-row" style="grid-template-columns: 1fr auto auto; cursor:pointer" onclick="openDrawer(\'' + t.threadId + '\')">' +
+  '<span class="msg"><b style="color:var(--fg)">' + esc(t.channel) + '</b> · ' + esc(shortId(t.threadId)) + "</span>" +
+  pill(t.status) + '<span class="faint">' + ago(t.lastActivity) + " ago</span></div>"
+).join("");
+
+/* =================== threads =================== */
+let thFilter = "all", thQuery = "";
+function renderThreads() {
+  const rows = THREADS.filter((t) => {
+    if (thFilter !== "all" && t.status !== thFilter) return false;
+    if (thQuery) {
+      const hay = (t.channel + " " + t.threadId + " " + (t.targetRepo || "")).toLowerCase();
+      if (!hay.includes(thQuery)) return false;
+    }
+    return true;
+  });
+  $("th-list").innerHTML = rows.length === 0
+    ? '<div class="empty">No threads match.</div>'
+    : rows.map((t) => {
+        const agents = (t.agents || []).map((a) =>
+          '<span class="apill ' + esc(a.status) + '">' + esc(a.agentName) + " · " + esc(a.status) + "</span>"
+        ).join("") || '<span class="faint" style="font-size:11.5px">no agents</span>';
+        const err = t.lastError ? '<div class="err-inline">✕ ' + esc(t.lastError.type) + ": " + esc(t.lastError.message) + "</div>" : "";
+        const stuck = t.stuck ? ' <span class="apill busy">silent ' + ago(t.lastActivity) + '</span>' : "";
+        return (
+          '<div class="th-row" onclick="openDrawer(\'' + t.threadId + '\')">' +
+          '<div><div class="chan">' + esc(t.channel) + (t.muted ? ' <span class="apill">muted</span>' : "") + '</div>' +
+          '<div class="tid">' + esc(t.threadId) + '</div>' +
+          '<div class="meta">' + esc(t.targetRepo || "no repo") + (t.baseRef ? " · " + esc(t.baseRef) : "") + " · " + esc(t.agentType) + "</div>" + err + "</div>" +
+          "<div>" + pill(t.status) + stuck +
+          (t.pendingMessages ? '<div class="meta" style="margin-top:4px">' + t.pendingMessages + " buffered</div>" : "") + "</div>" +
+          '<div class="agents-cell">' + agents + "</div>" +
+          '<div class="last">' + ago(t.lastActivity) + " ago</div></div>"
+        );
+      }).join("");
+}
+renderThreads();
+$("th-chips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip"); if (!chip) return;
+  document.querySelectorAll("#th-chips .chip").forEach((c) => c.classList.remove("on"));
+  chip.classList.add("on");
+  thFilter = chip.dataset.f;
+  renderThreads();
+});
+$("th-search").addEventListener("input", (e) => { thQuery = e.target.value.toLowerCase(); renderThreads(); });
+
+/* drawer */
+function resumeCmd(provider, sessionId, cwd) {
+  const r = provider === "claude"
+    ? "claude --resume " + sessionId
+    : "opencode --session " + sessionId;
+  return cwd ? "cd " + cwd + " && " + r : r;
+}
+function cmdRow(cmd) {
+  return (
+    '<div class="cmd-row"><code title="' + esc(cmd) + '">' + esc(cmd) + "</code>" +
+    '<button class="copy-btn" data-cmd="' + esc(cmd) + '">copy</button></div>'
+  );
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); ta.remove();
+  }
+}
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".copy-btn"); if (!btn) return;
+  await copyText(btn.dataset.cmd);
+  btn.textContent = "copied"; btn.classList.add("copied");
+  setTimeout(() => { btn.textContent = "copy"; btn.classList.remove("copied"); }, 1500);
+});
+function openDrawer(threadId) {
+  const t = THREADS.find((x) => x.threadId === threadId); if (!t) return;
+  const agents = (t.agents || []).map((a) =>
+    '<div class="agent-card"><div class="top"><b>' + esc(a.agentName) + "</b>" + pill(a.status) +
+    '<span class="apill" style="margin-left:auto">' + esc(a.provider) + "</span></div>" +
+    '<div class="meta">sid <code>' + esc(a.sessionId) + "</code><br/>last activity " + ago(a.lastActivity) + " ago" +
+    (a.pendingMessages ? " · " + a.pendingMessages + " buffered" : "") + "</div>" +
+    cmdRow(resumeCmd(a.provider, a.sessionId, t.worktreePath)) + "</div>"
+  ).join("") || '<div class="faint">no agent sessions yet</div>';
+  const tl = (t.timeline || []).map((i) =>
+    '<div class="tl-item' + (i.err ? " err" : "") + '"><span class="ts">' + esc(i.ts) + "</span>" + esc(i.txt) + "</div>"
+  ).join("");
+  $("drawer").innerHTML =
+    '<button class="close" onclick="closeDrawer()">esc</button>' +
+    "<h3>" + esc(t.channel) + "</h3>" +
+    '<div class="mono" style="font-size:11px;color:var(--accent)">' + esc(t.threadId) + "</div>" +
+    '<div style="margin-top:10px">' + pill(t.status) +
+    (t.pendingMessages ? ' <span class="apill">' + t.pendingMessages + " buffered</span>" : "") +
+    (t.muted ? ' <span class="apill">muted</span>' : "") + "</div>" +
+    (t.lastError ? '<div class="err-inline" style="margin-top:10px">✕ ' + esc(t.lastError.type) + ": " + esc(t.lastError.message) + "</div>" : "") +
+    '<div class="kv">' +
+    '<span class="k">lead session</span><code>' + esc(t.leadSessionId) + "</code>" +
+    '<span class="k">agent type</span><span>' + esc(t.agentType) + "</span>" +
+    '<span class="k">target repo</span><span>' + esc(t.targetRepo || "—") + (t.baseRef ? " @ " + esc(t.baseRef) : "") + "</span>" +
+    '<span class="k">worktree</span><span class="mono" style="font-size:11px">' + esc(t.worktreePath || "—") + "</span>" +
+    '<span class="k">last activity</span><span>' + ago(t.lastActivity) + " ago</span>" +
+    "</div>" +
+    '<h3 class="sect">Resume lead session (' + esc(t.leadProvider) + ")</h3>" +
+    cmdRow(resumeCmd(t.leadProvider, t.leadSessionId, t.worktreePath)) +
+    '<h3 class="sect">Agent sessions · ' + (t.agents || []).length + "</h3>" + agents +
+    '<h3 class="sect">Timeline</h3><div class="tl">' + tl + "</div>" +
+    '<h3 class="sect">Open in Slack</h3>' +
+    '<a class="tlink mono" style="font-size:12px" href="#" onclick="return false">slack://channel?…&thread_ts=' + esc(t.threadId) + "</a>";
+  $("drawer").classList.add("open");
+  $("drawer-scrim").classList.add("open");
+}
+function closeDrawer() { $("drawer").classList.remove("open"); $("drawer-scrim").classList.remove("open"); }
+$("drawer-scrim").addEventListener("click", closeDrawer);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+/* =================== logs =================== */
+let logLevel = "", logTag = "", logQuery = "", follow = true;
+let logData = LOGS.slice().reverse(); // oldest → newest, tail renders newest last
+
+function renderLogs() {
+  const rows = logData.filter((l) => {
+    if (logLevel && l[1] !== logLevel) return false;
+    if (logTag && l[2] !== logTag) return false;
+    if (logQuery && !(l[2] + " " + l[3]).toLowerCase().includes(logQuery)) return false;
+    return true;
+  });
+  $("log-lines").innerHTML = rows.map((l) =>
+    '<div class="log-line' + (l[1] === "ERROR" ? " is-error" : l[1] === "WARN" ? " is-warn" : "") + '">' +
+    '<span class="ts">' + l[0] + '</span><span class="lv ' + l[1] + '">' + l[1] + "</span>" +
+    '<span class="tag">[' + esc(l[2]) + ']</span><span class="msg">' + esc(l[3]) + "</span></div>"
+  ).join("") || '<div class="empty">Nothing matches the current filters.</div>';
+  $("log-count").textContent = rows.length + " / " + logData.length + " lines · 2026-07-10.log" + (follow ? " · following" : "");
+}
+renderLogs();
+$("log-levels").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip"); if (!chip) return;
+  document.querySelectorAll("#log-levels .chip").forEach((c) => c.classList.remove("on"));
+  chip.classList.add("on");
+  logLevel = chip.dataset.lv;
+  renderLogs();
+});
+$("log-tag").addEventListener("change", (e) => { logTag = e.target.value; renderLogs(); });
+$("log-search").addEventListener("input", (e) => { logQuery = e.target.value.toLowerCase(); renderLogs(); });
+$("log-clear").addEventListener("click", () => {
+  logLevel = logTag = logQuery = "";
+  $("log-tag").value = ""; $("log-search").value = "";
+  document.querySelectorAll("#log-levels .chip").forEach((c) => c.classList.toggle("on", c.dataset.lv === ""));
+  renderLogs();
+});
+$("log-follow").addEventListener("click", (e) => {
+  follow = !follow;
+  e.currentTarget.classList.toggle("on", follow);
+  e.currentTarget.textContent = follow ? "● follow" : "○ follow";
+  renderLogs();
+});
+/* simulated live tail while follow is on */
+const FAKE = [
+  ["INFO", "session", "thread 1720598234 stream: tool_use Edit src/services/pow.ts"],
+  ["INFO", "http", "GET /api/health 200 1ms"],
+  ["INFO", "slack", "status update posted to 1720598234"],
+  ["WARN", "devserver", "gx-client-next idle TTL 3m remaining, holder 1720576440"],
+  ["INFO", "spawner", "stream event: assistant message chunk (1.2kb)"],
+];
+let fakeI = 0;
+setInterval(() => {
+  if (!live || !follow) return;
+  const f = FAKE[fakeI++ % FAKE.length];
+  const d = new Date();
+  const ts = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0");
+  logData.push([ts, f[0], f[1], f[2]]);
+  if (logData.length > 400) logData.shift();
+  if ($("view-logs").classList.contains("active")) renderLogs();
+}, 3500);
+
+/* =================== dev servers =================== */
+$("ds-grid").innerHTML = DEVSERVERS.map((d) => {
+  const pct = d.running ? Math.round((d.idleMsRemaining / d.idleTtlMs) * 100) : 0;
+  const meter = d.running
+    ? '<div class="mrow"><span>idle TTL</span><span>' + Math.round(d.idleMsRemaining / 60000) + "m of " + Math.round(d.idleTtlMs / 60000) + 'm</span></div>' +
+      '<div class="meter"><div class="fill' + (pct < 25 ? " low" : "") + '" style="width:' + pct + '%"></div></div>'
+    : "";
+  const holder = d.holder
+    ? '<div class="qrow"><span class="pos">held</span><code>' + esc(shortId(d.holder.holderThreadId)) + "</code><span>acquired " + ago(d.holder.acquiredAt) + " ago</span></div>"
+    : '<div class="qrow faint"><span class="pos">—</span>no holder</div>';
+  const waiters = (d.waiters || []).map((w, i) =>
+    '<div class="qrow"><span class="pos">#' + (i + 1) + "</span><code>" + esc(shortId(w.threadId)) + "</code><span>→ " + esc(w.branch) + '</span><span class="faint" style="margin-left:auto">' + ago(w.enqueuedAt) + "</span></div>"
+  ).join("");
+  return (
+    '<div class="ds-card"><div class="top"><b>' + esc(d.repo) + "</b>" +
+    (d.running ? pill("running") : pill("stopped")) +
+    (d.branch ? "<code>" + esc(d.branch) + "</code>" : "") + "</div>" +
+    '<div class="cmd">' + esc(d.devCommand) + " · :" + d.devPort + (d.pid ? " · pid " + d.pid : "") + "</div>" +
+    meter + holder + waiters + "</div>"
+  );
+}).join("");
+
+/* =================== workflows =================== */
+function fmtNext(ts) {
+  if (!ts) return "—";
+  const mins = Math.round((ts - now) / 60000);
+  if (mins < 60) return "in " + mins + "m";
+  return "in " + Math.floor(mins / 60) + "h " + (mins % 60) + "m";
+}
+$("wf-list").innerHTML = WORKFLOWS.map((w) => {
+  const dots = w.runs.map((r) => '<span class="run-dot ' + r + '" title="' + r + '"></span>').join("");
+  const lastRuns = w.lastRuns.map((r) =>
+    '<div class="run-line">' + pill(r.status) + " " + esc(r.at) + " · " + esc(r.reason) +
+    (r.dur ? " · " + esc(r.dur) : "") +
+    (r.error ? ' <span style="color:var(--red)">' + esc(r.error) + "</span>" : "") + "</div>"
+  ).join("");
+  return (
+    '<div class="wf-card">' +
+    '<div><div class="name">' + esc(w.name) + "</div>" +
+    '<div class="desc">' + esc(w.description) + '</div>' +
+    '<div class="src">' + esc(w.sourcePath) + "</div></div>" +
+    '<div class="mrow">' + (w.enabled ? pill("active") : pill("stopped")) +
+    "<br/>next <b>" + fmtNext(w.nextRunAt) + "</b><br/>last <b>" + ago(w.lastRunAt) + " ago</b>" +
+    "<br/>runner <b>" + esc(w.runner) + "</b><br/>cron <b>" + esc(w.triggers) + "</b></div>" +
+    '<div><div class="mrow" style="margin-bottom:2px">last 10 runs · oldest → newest</div>' +
+    '<div class="runs">' + dots + "</div>" + lastRuns + "</div></div>"
+  );
+}).join("");
+
+/* =================== memory =================== */
+const KIND_COLORS = { lesson: "#22c55e", fact: "#0064ff", "situation-claim": "#9747ff" };
+/* deterministic pseudo-points: clustered per kind so neighbourhoods look plausible */
+const CLUSTERS = { lesson: [0.3, 0.35], fact: [0.68, 0.62], "situation-claim": [0.45, 0.78] };
+const POINTS = [];
+let seed = 7;
+const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed % 1000) / 1000; };
+CLAIMS.forEach((c, i) => {
+  const [cx, cy] = CLUSTERS[c.kind];
+  POINTS.push({ id: i, kind: c.kind, text: c.text, tags: c.tags, x: cx + (rnd() - 0.5) * 0.34, y: cy + (rnd() - 0.5) * 0.3 });
+});
+for (let i = 0; i < 26; i++) {
+  const kinds = Object.keys(CLUSTERS);
+  const k = kinds[Math.floor(rnd() * kinds.length)];
+  const [cx, cy] = CLUSTERS[k];
+  POINTS.push({ id: 100 + i, kind: k, text: "(mock claim " + (i + 1) + ")", tags: [], x: cx + (rnd() - 0.5) * 0.4, y: cy + (rnd() - 0.5) * 0.36 });
+}
+const memCanvas = $("memory-canvas");
+let hoverId = null;
+function paintCloud() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = memCanvas.clientWidth || 700, h = memCanvas.clientHeight || 440;
+  memCanvas.width = w * dpr; memCanvas.height = h * dpr;
+  const ctx = memCanvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const pad = 28;
+  const sx = (p) => pad + p.x * (w - 2 * pad), sy = (p) => pad + p.y * (h - 2 * pad);
+  /* KNN-ish edges: connect each point to its nearest same-kind neighbour */
+  ctx.lineWidth = 1;
+  for (const p of POINTS) {
+    let best = null, bd = Infinity;
+    for (const q of POINTS) {
+      if (q === p || q.kind !== p.kind) continue;
+      const d = (p.x - q.x) ** 2 + (p.y - q.y) ** 2;
+      if (d < bd) { bd = d; best = q; }
+    }
+    if (!best) continue;
+    const hot = hoverId != null && (p.id === hoverId || best.id === hoverId);
+    ctx.strokeStyle = "rgba(0,100,255," + (hot ? 0.55 : 0.12) + ")";
+    ctx.beginPath(); ctx.moveTo(sx(p), sy(p)); ctx.lineTo(sx(best), sy(best)); ctx.stroke();
+  }
+  for (const p of POINTS) {
+    const isH = p.id === hoverId;
+    if (isH) {
+      ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(sx(p), sy(p), 7, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.fillStyle = KIND_COLORS[p.kind];
+    ctx.beginPath(); ctx.arc(sx(p), sy(p), isH ? 4.5 : 3.5, 0, Math.PI * 2); ctx.fill();
+  }
+}
+memCanvas.addEventListener("mousemove", (e) => {
+  const r = memCanvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const w = memCanvas.clientWidth, h = memCanvas.clientHeight, pad = 28;
+  let best = null, bd = 120;
+  for (const p of POINTS) {
+    const dx = pad + p.x * (w - 2 * pad) - mx, dy = pad + p.y * (h - 2 * pad) - my;
+    const d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = p; }
+  }
+  const next = best ? best.id : null;
+  if (next !== hoverId) { hoverId = next; paintCloud(); }
+  const tip = $("cloud-tip");
+  if (!best) { tip.style.display = "none"; return; }
+  tip.innerHTML = '<span style="color:' + KIND_COLORS[best.kind] + '">' + esc(best.kind) + "</span> · " + esc(best.text);
+  tip.style.display = "block"; tip.style.whiteSpace = "normal"; tip.style.maxWidth = "300px";
+  const wrap = memCanvas.parentElement.getBoundingClientRect();
+  tip.style.left = Math.min(wrap.width - 310, mx + 14) + "px";
+  tip.style.top = (my + 14) + "px";
+});
+memCanvas.addEventListener("mouseleave", () => { hoverId = null; paintCloud(); $("cloud-tip").style.display = "none"; });
+$("cloud-refresh").addEventListener("click", paintCloud);
+new ResizeObserver(paintCloud).observe(memCanvas);
+paintCloud();
+
+$("claim-list").innerHTML = CLAIMS.map((c) =>
+  '<div class="claim-row"><div class="k ' + esc(c.kind) + '">' + esc(c.kind) + "</div>" +
+  '<div style="color:rgba(255,255,255,0.85)">' + esc(c.text) + "</div>" +
+  '<div class="tags">' + c.tags.map(esc).join(" · ") + "</div></div>"
+).join("");
+
+/* =================== docs =================== */
+const DOC_BODY = {
+  "features/http-dashboard.md":
+    "<h1>HTTP Dashboard</h1><p>Operators running junior on a server have no live view of what's happening: which threads are active, which agents are busy, which dev-servers are running…</p><h2>Security posture</h2><p>Loopback-only. Binds <code>127.0.0.1</code> — never reachable off-host without an explicit SSH tunnel. Same-origin, no CORS. Projection strips filesystem paths, PIDs and prompt details from <code>/api/sessions</code>.</p><h2>Endpoints</h2><pre>GET /api/health\nGET /api/sessions\nGET /api/sessions/:threadId\nGET /api/dev-server\nGET /api/logs?date=YYYY-MM-DD&amp;tail=N\nGET /api/memory\nGET /api/memory/:path</pre>",
+  "features/session-management.md":
+    "<h1>Session Management</h1><p>The session map (thread_id → session) is the single source of truth for whether a thread is idle/busy, what its session ID is, and what messages are pending.</p><h2>Buffer, don't interrupt</h2><p>If a runner is mid-execution and new messages arrive, buffer them. Drain as a combined prompt after the current turn exits.</p>",
+};
+const treeHtml = Object.entries(DOCS).map(([dir, files]) =>
+  '<div class="doc-dir">' + esc(dir) + "/</div>" +
+  files.map((f) => '<span class="doc-file" data-p="' + esc(dir + "/" + f) + '">' + esc(f) + "</span>").join("")
+).join("");
+$("doc-tree").innerHTML = treeHtml;
+function openDoc(p) {
+  document.querySelectorAll(".doc-file").forEach((el) => el.classList.toggle("on", el.dataset.p === p));
+  $("doc-pane").innerHTML = DOC_BODY[p] ||
+    "<h1>" + esc(p.split("/").pop()) + '</h1><p class="faint">(mock — this file\'s contents would render here via GET /api/memory/' + esc(p) + ")</p>";
+}
+$("doc-tree").addEventListener("click", (e) => {
+  const f = e.target.closest(".doc-file"); if (f) openDoc(f.dataset.p);
+});
+openDoc("features/http-dashboard.md");
+</script>
+</body>
+</html>
