@@ -60,6 +60,11 @@ export interface ExtractionRunnerOptions {
  *   instruction has nothing to act with.
  * - `--strict-mcp-config` with no `--mcp-config` loads zero MCP servers, closing
  *   the MCP-tool vector too.
+ * - `--settings '{"disableAllHooks":true}'` blocks USER-level (~/.claude) hooks,
+ *   which the neutral cwd does NOT: a user Stop hook injects a follow-up turn
+ *   and the hook-reply becomes the envelope's `result`, replacing the model's
+ *   JSON (observed live: every sweep returned the learnings-hook's "No durable
+ *   lesson…" prose and parse-failed).
  *
  * Paired at spawn time with a neutral cwd (so no project CLAUDE.md / `.claude/`
  * settings / `.mcp.json` are inherited) this makes the run text-in / text-out
@@ -76,6 +81,8 @@ export function buildExtractionArgs(model: string): string[] {
     "--tools",
     "", // disable ALL built-in tools
     "--strict-mcp-config", // no --mcp-config -> zero MCP servers load
+    "--settings",
+    '{"disableAllHooks":true}', // user hooks would hijack the final message
   ];
 }
 
