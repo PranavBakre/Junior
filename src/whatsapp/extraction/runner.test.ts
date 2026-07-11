@@ -26,6 +26,12 @@ describe("buildExtractionArgs — untrusted-content lockdown", () => {
     expect(args).not.toContain("--mcp-config");
   });
 
+  test("disables user-level hooks via --settings (a Stop hook's reply would replace the model's JSON as the envelope result)", () => {
+    const settingsIdx = args.indexOf("--settings");
+    expect(settingsIdx).toBeGreaterThan(-1);
+    expect(JSON.parse(args[settingsIdx + 1]!)).toEqual({ disableAllHooks: true });
+  });
+
   test("never enables a permission-bypass or tool-allow flag", () => {
     expect(args).not.toContain("--dangerously-skip-permissions");
     expect(args).not.toContain("--allow-dangerously-skip-permissions");
