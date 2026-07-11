@@ -83,7 +83,14 @@ export class WhatsAppClient {
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
       logger,
-      browser: ["Junior", "Chrome", "1.0.0"],
+      // A DESKTOP-class platform signature (browser[1] = "Desktop") is what
+      // makes WhatsApp honor syncFullHistory — web-browser-class devices only
+      // get a shallow recent window at pairing. Shows up in Linked Devices as
+      // a generic macOS desktop app rather than "Junior"; cosmetic tradeoff.
+      browser: ["Mac OS", "Desktop", "14.4.1"],
+      // Deep history backfill at pairing (v7 default, pinned here on purpose:
+      // the buildathon groups predate pairing and we want their backlog).
+      syncFullHistory: true,
       // Read-only device: don't announce presence to the groups.
       markOnlineOnConnect: false,
     });
