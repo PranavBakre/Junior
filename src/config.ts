@@ -6,6 +6,7 @@ import {
   type SessionVerbosity,
 } from "./session/types.ts";
 import type { EmbeddingProviderKind } from "./memory/embedding/factory.ts";
+import type { WhatsAppConfig } from "./whatsapp/types.ts";
 
 export interface RepoConfig {
   name: string;
@@ -167,6 +168,12 @@ export interface Config {
     enabled: boolean;
     port: number;
   };
+  /**
+   * WhatsApp Hermes ingestion (Phase 0+1, read-only). Off unless
+   * WHATSAPP_ENABLED. Optional so existing Config test fixtures stay valid;
+   * `loadConfig` always populates it and read sites gate on `?.enabled`.
+   */
+  whatsapp?: WhatsAppConfig;
 }
 
 function required(name: string): string {
@@ -281,6 +288,21 @@ export function loadConfig(): Config {
     ),
     adminSlackUserId: process.env.ADMIN_SLACK_USER_ID?.trim() || null,
     http: parseHttpDashboard(process.env.HTTP_DASHBOARD_PORT),
+    whatsapp: {
+      enabled: parseBooleanEnv("WHATSAPP_ENABLED", false),
+      dbPath: optional("WHATSAPP_DB_PATH", "data/whatsapp.db"),
+      authDir: optional("WHATSAPP_AUTH_DIR", "data/whatsapp-auth"),
+      groupPattern: optional("WHATSAPP_GROUP_PATTERN", "hermes"),
+      extractionIntervalMs: parsePositiveIntEnv(
+        "WHATSAPP_EXTRACTION_INTERVAL_MS",
+        optional("WHATSAPP_EXTRACTION_INTERVAL_MS", "600000"),
+      ),
+      notionToken: process.env.NOTION_TOKEN?.trim() || null,
+      notionPageId: optional(
+        "HERMES_NOTION_PAGE_ID",
+        "39a3578dc3f08015b386cc6638029bed",
+      ),
+    },
   };
 }
 
@@ -305,6 +327,22 @@ function parseHttpDashboard(raw: string | undefined): { enabled: boolean; port: 
     );
   }
   return { enabled: true, port };
+}
+
+/**
+ * Parse a required-positive-integer env var strictly, mirroring
+ * `parseHttpDashboard`'s throw-on-bad-input convention: NaN, 0, negative, and
+ * non-integer (decimal/Infinity) values throw at config load rather than
+ * silently feeding a degenerate near-zero delay into `setInterval`.
+ */
+function parsePositiveIntEnv(name: string, raw: string): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `Invalid ${name}: ${JSON.stringify(raw)} (expected a positive integer)`,
+    );
+  }
+  return value;
 }
 
 function parseEmbedProvider(value: string): EmbeddingProviderKind {

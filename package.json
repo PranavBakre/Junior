@@ -14,10 +14,14 @@
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@notionhq/client": "^5.23.0",
     "@playwright/mcp": "^0.0.70",
     "@slack/bolt": "^4.3.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "baileys": "^7.0.0-rc13",
     "cron-parser": "^5.5.0",
     "proper-lockfile": "^4.1.2",
+    "qrcode-terminal": "^0.12.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
