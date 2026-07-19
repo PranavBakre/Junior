@@ -27,7 +27,7 @@ export type PreRecallRunner = "claude" | "opencode" | "codex";
 // ── Pinned cheapest models per runner ────────────────────────────────────────
 const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4-pro";
-const DEFAULT_CODEX_MODEL = "gpt-4o-mini";
+const DEFAULT_CODEX_MODEL = "gpt-5.4-nano";
 
 // ── Extraction system prompt ─────────────────────────────────────────────────
 const EXTRACTION_SYSTEM_PROMPT = `You analyze incoming Slack messages and extract what should be recalled from long-term memory before processing.
