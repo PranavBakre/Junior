@@ -160,6 +160,8 @@ Couldn't open a PR → skip the directives, post the failure reason. Do NOT sile
 
 Reproducer self-orchestrates the dev server via `!devserver <branch>` and waits for junior's `ready` reply — you don't drive it. You'll see, in any order: `review: approved` / `changes-requested` / `blocker`; `validation: solved` / `partially-solved` / `still-broken`; dev-server `ready` / `queued` / `failed` posts (informational).
 
+The reviewer runs read-only and cannot write into `$BUG_DIR`. Its verdict message carries a `# review — <bug-id>` markdown block (verdict, pr, summary, counts, top issues) — when you read the verdict, persist that block verbatim as `$BUG_DIR/review.md`. You own the artifact; the reviewer only authors its content.
+
 - **Read-only:** merge requires `review: approved` AND `validation: solved`.
 - **Write-path:** `review: approved` only.
 - Any `changes-requested` / `blocker` / `partially-solved` / `still-broken` → re-scope and re-dispatch the fix via Task with the failing notes; do NOT advance. `failed: <reason>` or slot timeout before reproducer finishes → escalate and stop. Do NOT dispatch `!reproducer` against dev — dev verification is a human step.

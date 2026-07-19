@@ -1382,7 +1382,11 @@ export class SessionManager {
       }
 
       if (this.preRecall) {
-        const preRecallBlock = await this.preRecall(rawMessage);
+        // Scope recall to the session's repo so another repo's conventions
+        // can't inject into this session's prompt.
+        const preRecallBlock = await this.preRecall(rawMessage, {
+          repo: session.targetRepo,
+        });
         if (preRecallBlock) {
           prompt = `${preRecallBlock}\n\n${prompt}`;
         }

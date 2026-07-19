@@ -358,13 +358,16 @@ function normalizeActionButtonSpec(
         return null;
       }
       if (
-        proseCandidates.length > 1 &&
+        proseCandidates.length > 0 &&
         !proseCandidates.some(
           (c) =>
             c.repo === resourceAnchor.repo && c.prNumber === resourceAnchor.prNumber,
         )
       ) {
-        // Anchor does not match any PR mentioned in the response — refuse.
+        // Anchor does not match ANY PR mentioned in the response — refuse.
+        // This must fire even with a single prose candidate: a verdict about
+        // PR A with an anchor pinning PR B would otherwise render a merge
+        // button that dispatches against a PR the visible review never covered.
         return null;
       }
     }

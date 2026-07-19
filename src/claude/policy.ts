@@ -44,6 +44,21 @@ const READ_ONLY_DISALLOWED = [
 /** Hardest lockdown — no edits and no shell at all. */
 const NO_TOOLS_DISALLOWED = ["Edit", "Write", "NotebookEdit", "Bash"];
 
+/**
+ * True for tool specifiers that can mutate state: file editors and any Bash
+ * pattern (Bash(git *) can commit/push — command patterns don't make it safe).
+ */
+function isMutatingToolSpec(spec: string): boolean {
+  const name = spec.trim();
+  return (
+    name === "Edit" ||
+    name === "Write" ||
+    name === "NotebookEdit" ||
+    name === "Bash" ||
+    name.startsWith("Bash(")
+  );
+}
+
 export function mapClaudeRunPolicy(options: {
   config: Config["claude"];
   session: ThreadSession;
@@ -83,9 +98,16 @@ export function mapClaudeRunPolicy(options: {
   if (intent === "human-gated") {
     // Propose, don't execute. A later phase layers live approval on top; the
     // policy module's safe base is `plan`.
+    //
+    // Mutating tools MUST NOT be pre-allowed: when the approval round-trip is
+    // active the spawner switches to `default` mode, and anything in
+    // --allowedTools skips the permission prompt entirely — a declared
+    // Write/Edit would silently bypass the human gate it exists for. Leaving
+    // them un-allowed routes each mutation through the approval tool
+    // (approval mode) or blocks it (plan mode).
     return {
       permissionMode: "plan",
-      allowedTools: declaredTools,
+      allowedTools: declaredTools.filter((tool) => !isMutatingToolSpec(tool)),
       disallowedTools: [],
       addDirs: [cwd],
     };

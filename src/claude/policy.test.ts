@@ -75,9 +75,24 @@ describe("mapClaudeRunPolicy", () => {
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
     expect(policy.permissionMode).toBe("plan");
-    expect(policy.allowedTools).toEqual(["Read", "Edit"]);
+    // Declared mutating tools must NOT be pre-allowed: under the approval
+    // round-trip (default mode) --allowedTools skips the permission prompt,
+    // which would bypass the human gate this intent exists for.
+    expect(policy.allowedTools).toEqual(["Read"]);
     expect(policy.disallowedTools).toEqual([]);
     expect(policy.addDirs).toEqual(["/repo"]);
+  });
+
+  test("human-gated strips every mutating tool spec from the pre-allow list", () => {
+    const session = sessionWith({
+      intent: "human-gated",
+      mcp: [],
+      tools: ["Read", "Write", "Edit", "NotebookEdit", "Bash", "Bash(git *)", "Grep", "mcp__slack-bot__memory_recall"],
+    });
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.allowedTools).toEqual(["Read", "Grep", "mcp__slack-bot__memory_recall"]);
   });
 
   test("utility preserves the configured permission mode", () => {
@@ -133,7 +148,8 @@ describe("mapClaudeRunPolicy", () => {
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
     expect(policy.permissionMode).toBe("plan");
-    expect(policy.allowedTools).toEqual(["Read", "Write"]);
+    // Write is declared but human-gated must not pre-allow it.
+    expect(policy.allowedTools).toEqual(["Read"]);
   });
 
   test("declared intent cannot widen catalog ceiling for restricted roles", () => {

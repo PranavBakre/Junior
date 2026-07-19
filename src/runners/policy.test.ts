@@ -116,12 +116,14 @@ describe("provider permission compilation matrix", () => {
       expect(row.openCode).toMatchObject({ edit: "deny", write: "deny" });
     }
 
-    // PM / architect: human-gated.
+    // PM / architect: human-gated. Codex gets a read-only jail — with
+    // workspace-write + on-request, ordinary edits never trigger an approval,
+    // so the gate would be advisory. Mutations must be explicit escalations.
     for (const name of ["pm", "architect"] as const) {
       const row = byName.get(name)!;
       expect(row.intent).toBe("human-gated");
       expect(row.claudePermissionMode).toBe("plan");
-      expect(row.codexSandbox).toBe("workspace-write");
+      expect(row.codexSandbox).toBe("read-only");
       expect(row.openCode).toMatchObject({ edit: "ask", write: "ask" });
     }
 

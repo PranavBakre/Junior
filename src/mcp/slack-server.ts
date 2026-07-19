@@ -1233,6 +1233,8 @@ export interface MemoryToolDeps {
 export interface RecallMemoryArgs {
   query: string;
   repo?: string;
+  /** With `repo`, also include repo-less (global) claims. See ClaimRecallFilters. */
+  repoIncludeGlobal?: boolean;
   kinds?: ClaimKind[];
   entityRefs?: string[];
   limit?: number;
@@ -1289,7 +1291,10 @@ export async function recallMemory(
   const merged: ClaimRecallResult[] = [];
   for (const kind of kindScopes) {
     const filters: ClaimRecallFilters = {};
-    if (args.repo) filters.repo = args.repo;
+    if (args.repo) {
+      filters.repo = args.repo;
+      if (args.repoIncludeGlobal) filters.repoIncludeGlobal = true;
+    }
     if (kind) filters.kind = kind;
     const results = await deps.store.recallClaims({
       queryVector,

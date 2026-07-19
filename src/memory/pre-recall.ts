@@ -44,7 +44,19 @@ Examples:
 - "onboard rahul, phone 9876543210, email rahul@test.com" → ["member onboarding procedure"]`;
 
 // ── Public types ─────────────────────────────────────────────────────────────
-export type PreRecallFn = (message: string) => Promise<string | null>;
+export interface PreRecallOptions {
+  /**
+   * Session target repo (RepoConfig.name). Scopes recall so another repo's
+   * conventions or operational data can't inject into this session's prompt.
+   * Null/undefined recalls across the whole corpus (repo-less sessions).
+   */
+  repo?: string | null;
+}
+
+export type PreRecallFn = (
+  message: string,
+  options?: PreRecallOptions,
+) => Promise<string | null>;
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
@@ -80,19 +92,33 @@ export function createPreRecall(config: Config): PreRecallFn {
     return deps;
   }
 
-  return async (message: string): Promise<string | null> => {
+  return async (
+    message: string,
+    options?: PreRecallOptions,
+  ): Promise<string | null> => {
     try {
       // Step 1: Extract recall queries via cheap LLM
       const queries = await extractRecallQueries(message, runner, model, timeoutMs);
       if (queries.length === 0) return null;
 
-      // Step 2: Run each query through recallMemory()
+      // Step 2: Run each query through recallMemory(), scoped to the session's
+      // repo when one is set.
       const memDeps = await getDeps();
       const seenClaimIds = new Set<string>();
       const allClaims: RecallMemoryResult["claims"] = [];
 
       for (const query of queries) {
-        const result = await recallMemory({ query, limit: 3 }, memDeps);
+        const result = await recallMemory(
+          {
+            query,
+            limit: 3,
+            // "This repo or global, never other repos" — a strict repo filter
+            // would drop the repo-less lessons that make up most of the corpus.
+            repo: options?.repo ?? undefined,
+            repoIncludeGlobal: true,
+          },
+          memDeps,
+        );
         for (const claim of result.claims) {
           if (seenClaimIds.has(claim.id)) continue;
           seenClaimIds.add(claim.id);
@@ -183,18 +209,35 @@ function runTextForRunner(runner: PreRecallRunner): RunTextFn {
 
 // ── Claude subprocess ────────────────────────────────────────────────────────
 
-async function claudeRunText(req: RunTextRequest): Promise<string> {
-  const args = [
-    "-p", req.message,
+/**
+ * Locked down like the untrusted-content extraction runners: the input is a
+ * raw Slack message, so the subprocess gets NO tools, NO MCP servers, NO
+ * user/project hooks (a user-level Stop hook otherwise replaces the -p JSON
+ * envelope's `result` with the hook reply). The message rides stdin, not argv
+ * (E2BIG on long messages). Exported for tests.
+ */
+export function buildPreRecallClaudeArgs(model: string): string[] {
+  return [
+    "-p",
     "--system-prompt", EXTRACTION_SYSTEM_PROMPT,
     "--output-format", "json",
-    "--model", sanitizeClaudeModel(req.model),
+    "--model", sanitizeClaudeModel(model),
+    "--tools", "",
+    "--strict-mcp-config",
+    "--settings", '{"disableAllHooks":true}',
   ];
+}
+
+async function claudeRunText(req: RunTextRequest): Promise<string> {
+  // Neutral cwd outside the repo so the run can't inherit junior's CLAUDE.md /
+  // .claude/ / .mcp.json context.
+  const args = buildPreRecallClaudeArgs(req.model);
 
   const proc = Bun.spawn(["claude", ...args], {
+    cwd: tmpdir(),
     stdout: "pipe",
     stderr: "pipe",
-    stdin: "ignore",
+    stdin: new TextEncoder().encode(req.message),
     detached: true,
   });
 
@@ -256,7 +299,19 @@ async function openCodeRunText(req: RunTextRequest): Promise<string> {
   if (req.model) args.push("--model", req.model);
   args.push(combinedPrompt);
 
+  // Same lockdown intent as the claude branch: neutral cwd outside the repo
+  // (no junior project config/MCP discovery), an inline config that denies
+  // every tool (the extractor only needs text-in/text-out), and no
+  // OPENCODE_CONFIG env layer from the developer shell.
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { "*": "deny" } }),
+  };
+  delete env.OPENCODE_CONFIG;
+
   const proc = Bun.spawn(["opencode", ...args], {
+    cwd: tmpdir(),
+    env,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",

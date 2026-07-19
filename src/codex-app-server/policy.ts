@@ -51,10 +51,15 @@ export function mapCodexRunPolicy(options: {
   }
 
   if (intent === "human-gated") {
+    // Read-only sandbox, NOT workspace-write: with a writable workspace and
+    // `on-request`, ordinary in-workspace edits never trigger an approval —
+    // the sandbox permits them and the model only asks when IT chooses. A
+    // read-only jail makes every mutation an explicit escalation request,
+    // which is the human gate this intent advertises.
     return {
       approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-      sandboxPolicy: workspaceWritePolicy(cwd),
+      sandbox: "read-only",
+      sandboxPolicy: { type: "readOnly" },
       mcpAllowed: !session.cwd,
     };
   }

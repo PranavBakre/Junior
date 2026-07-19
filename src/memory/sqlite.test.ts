@@ -226,6 +226,44 @@ describe("SqliteMemoryStore", () => {
     expect(results.map((r) => r.id)).toEqual(["claim-repoA"]);
   });
 
+  it("repoIncludeGlobal keeps repo-less claims but still excludes other repos", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "claim-mine",
+      kind: "fact",
+      text: "my repo claim",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      repo: "gx-backend",
+      createdAt: now,
+    });
+    await store.upsertClaim({
+      id: "claim-global",
+      kind: "lesson",
+      text: "global lesson",
+      embedding: new Float32Array([0.9, 0.1, 0, 0]),
+      createdAt: now,
+    });
+    await store.upsertClaim({
+      id: "claim-other",
+      kind: "fact",
+      text: "other repo claim",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      repo: "gx-client-next",
+      createdAt: now,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      filters: { repo: "gx-backend", repoIncludeGlobal: true },
+      limit: 5,
+    });
+
+    const ids = results.map((r) => r.id);
+    expect(ids).toContain("claim-mine");
+    expect(ids).toContain("claim-global");
+    expect(ids).not.toContain("claim-other");
+  });
+
   it("filters claims by kind, tags, and sinceMs before ranking", async () => {
     const now = Date.now();
     await store.upsertClaim({ id: "c-old", kind: "fact", text: "old", repo: "r", tags: ["x"], createdAt: now - 10_000 });
