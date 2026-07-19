@@ -5,12 +5,13 @@
  *   bun run src/whatsapp/pair.ts
  *
  * Connects with Baileys, renders the pairing QR in the terminal, waits for the
- * link to complete, then prints the Hermes groups it can see and exits.
- * Read-only — pairs a linked device, sends nothing.
+ * link to complete, then prints the visible groups (filtered by
+ * WHATSAPP_GROUP_PATTERN when set) and exits. Read-only — pairs a linked
+ * device, sends nothing.
  *
  * Env (same defaults as the running subsystem):
  *   WHATSAPP_AUTH_DIR       (default data/whatsapp-auth)
- *   WHATSAPP_GROUP_PATTERN  (default "hermes")
+ *   WHATSAPP_GROUP_PATTERN  (unset = list all groups)
  */
 import qrcode from "qrcode-terminal";
 import { WhatsAppClient } from "./client.ts";
@@ -21,23 +22,22 @@ function configFromEnv(): WhatsAppConfig {
     enabled: true,
     dbPath: process.env.WHATSAPP_DB_PATH ?? "data/whatsapp.db",
     authDir: process.env.WHATSAPP_AUTH_DIR ?? "data/whatsapp-auth",
-    groupPattern: process.env.WHATSAPP_GROUP_PATTERN ?? "hermes",
-    // Pairing is a one-shot CLI that never runs the extraction sweep — these
-    // just satisfy the shared config type.
-    extractionIntervalMs: 600_000,
-    notionToken: null,
-    notionPageId: process.env.HERMES_NOTION_PAGE_ID ?? "",
+    groupPattern: process.env.WHATSAPP_GROUP_PATTERN?.trim() || null,
   };
 }
 
 async function main(): Promise<void> {
   const config = configFromEnv();
-  const groupPattern = new RegExp(config.groupPattern, "i");
+  const groupPattern = config.groupPattern
+    ? new RegExp(config.groupPattern, "i")
+    : null;
 
   console.log("");
-  console.log("=== WhatsApp pairing (Hermes tracker) ===");
+  console.log("=== WhatsApp pairing ===");
   console.log(`Auth state dir : ${config.authDir}`);
-  console.log(`Group pattern  : /${config.groupPattern}/i`);
+  console.log(
+    `Group pattern  : ${config.groupPattern ? `/${config.groupPattern}/i` : "(none — all groups)"}`,
+  );
   console.log("");
   console.log("If already paired, this reconnects and skips straight to the group list.");
   console.log("");
@@ -66,19 +66,21 @@ async function main(): Promise<void> {
     onOpen: () => {
       const groups = client.getGroups();
       const matched = [...groups.entries()]
-        .filter(([, subject]) => groupPattern.test(subject))
+        .filter(([, subject]) => groupPattern === null || groupPattern.test(subject))
         .sort((a, b) => a[1].localeCompare(b[1]));
 
       console.log("");
       console.log("✅ Paired and connected.");
-      console.log(`Visible groups: ${groups.size} total, ${matched.length} match /${config.groupPattern}/i`);
+      console.log(
+        `Visible groups: ${groups.size} total, ${matched.length}${groupPattern ? ` match /${config.groupPattern}/i` : " listed"}`,
+      );
       console.log("");
       if (matched.length === 0) {
-        console.log("No matching Hermes groups found yet.");
-        console.log("- Confirm this number is a member of the buildathon groups.");
-        console.log(`- Adjust WHATSAPP_GROUP_PATTERN if the group names differ from "${config.groupPattern}".`);
+        console.log("No matching groups found yet.");
+        console.log("- Confirm this number is a member of the expected groups.");
+        console.log("- Adjust WHATSAPP_GROUP_PATTERN if the group names differ.");
       } else {
-        console.log("Matched Hermes groups:");
+        console.log("Groups:");
         for (const [jid, subject] of matched) {
           console.log(`  • ${subject}  (${jid})`);
         }

@@ -1,0 +1,247 @@
+/**
+ * WhatsApp read/search tools for the bot MCP server.
+ *
+ * The WhatsApp subsystem is a passive archive: Baileys ingests group messages
+ * into SQLite and nothing is triggered off them. These tools are the only read
+ * surface — agents call them on demand to list groups, read a transcript
+ * window, or search text. There is no send/write surface.
+ *
+ * The subsystem starts in the async bootstrap AFTER `startMcpServer` runs, so
+ * the handle arrives via `setWhatsAppHandle` rather than a constructor arg;
+ * tools answer with a plain "not enabled" message until it is set (or forever,
+ * when WHATSAPP_ENABLED is off).
+ */
+
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import type { WhatsAppHandle } from "../whatsapp/index.ts";
+import type { WaMessage } from "../whatsapp/types.ts";
+
+let handle: WhatsAppHandle | null = null;
+
+export function setWhatsAppHandle(h: WhatsAppHandle | null): void {
+  handle = h;
+}
+
+const NOT_ENABLED =
+  "WhatsApp integration is not enabled (WHATSAPP_ENABLED is off or the socket has not started).";
+
+function text(s: string) {
+  return { content: [{ type: "text" as const, text: s }] };
+}
+
+/**
+ * Resolve a user-supplied group reference — exact JID or case-insensitive
+ * subject substring — to a JID. Returns an error string when ambiguous/unknown
+ * so the tool can surface the candidates instead of guessing.
+ */
+function resolveGroup(
+  h: WhatsAppHandle,
+  group: string,
+): { jid: string } | { error: string } {
+  const groups = h.store.listGroups();
+  if (groups.some((g) => g.groupJid === group)) return { jid: group };
+  const needle = group.toLowerCase();
+  const matches = groups.filter((g) =>
+    (g.groupName ?? "").toLowerCase().includes(needle),
+  );
+  if (matches.length === 1) return { jid: matches[0]!.groupJid };
+  if (matches.length === 0) {
+    return {
+      error: `No stored group matches "${group}". Use whatsapp_list_groups to see what's available.`,
+    };
+  }
+  return {
+    error: `"${group}" matches ${matches.length} groups: ${matches
+      .map((g) => `${g.groupName} (${g.groupJid})`)
+      .join(", ")}. Pass the JID to disambiguate.`,
+  };
+}
+
+/** Per-message body cap — WhatsApp texts can be tens of KB (forwarded docs). */
+const MAX_MESSAGE_CHARS = 1500;
+/** Aggregate response cap so a valid limit=200 request can't blow the runner's context. */
+const MAX_RESPONSE_CHARS = 60_000;
+
+function formatMessage(m: WaMessage, includeGroup: boolean): string {
+  // Keep the Z — without it a truncated ISO string reads as local wall time.
+  const when = `${new Date(m.ts * 1000).toISOString().slice(0, 16).replace("T", " ")}Z`;
+  const sender = m.senderName ?? m.senderJid;
+  const where = includeGroup ? ` [${m.groupName ?? m.groupJid}]` : "";
+  const reply = m.replyToId ? " (reply)" : "";
+  const body = m.text ?? "";
+  const clipped =
+    body.length > MAX_MESSAGE_CHARS
+      ? `${body.slice(0, MAX_MESSAGE_CHARS)} […truncated]`
+      : body;
+  return `[${when}]${where} ${sender}${reply}: ${clipped}`;
+}
+
+/**
+ * Cap the aggregate size by dropping lines from `dropEnd` (`"start"` drops the
+ * oldest lines of a chronological transcript; `"end"` drops the lowest-ranked
+ * tail of a newest-first result list). Returns the kept lines + omitted count.
+ */
+function capLines(
+  lines: string[],
+  dropEnd: "start" | "end",
+): { kept: string[]; omitted: number } {
+  let total = 0;
+  let keep = 0;
+  const ordered = dropEnd === "start" ? [...lines].reverse() : lines;
+  for (const line of ordered) {
+    total += line.length + 1;
+    if (total > MAX_RESPONSE_CHARS) break;
+    keep += 1;
+  }
+  const omitted = lines.length - keep;
+  if (omitted === 0) return { kept: lines, omitted };
+  return {
+    kept: dropEnd === "start" ? lines.slice(omitted) : lines.slice(0, keep),
+    omitted,
+  };
+}
+
+function formatMessages(messages: WaMessage[], includeGroup: boolean): string {
+  if (messages.length === 0) return "No messages found.";
+  const { kept, omitted } = capLines(
+    messages.map((m) => formatMessage(m, includeGroup)),
+    "start",
+  );
+  const head =
+    omitted > 0
+      ? `(… ${omitted} earlier messages omitted to bound response size — page with before_ts/before_id or lower the limit)\n`
+      : "";
+  // getMessages returns the window chronologically — the first entry is the
+  // earliest, and (ts, id) together form the tie-safe backwards cursor.
+  const earliest = messages[0]!;
+  return `${head}${kept.join("\n")}\n\n(${messages.length} messages; to page further back pass before_ts=${earliest.ts} and before_id=${earliest.id})`;
+}
+
+export function registerWhatsAppTools(server: McpServer): void {
+  server.registerTool(
+    "whatsapp_list_groups",
+    {
+      description:
+        "List WhatsApp groups with stored messages (name, JID, message count, first/last activity). The archive is read-only.",
+      inputSchema: {},
+    },
+    async () => {
+      if (!handle) return text(NOT_ENABLED);
+      const groups = handle.store.listGroups();
+      if (groups.length === 0) return text("No WhatsApp messages stored yet.");
+      const lines = groups.map((g) => {
+        const first = new Date(g.firstTs * 1000).toISOString().slice(0, 10);
+        const last = new Date(g.lastTs * 1000).toISOString().slice(0, 10);
+        return `- ${g.groupName ?? "(unknown)"} — jid=${g.groupJid}, ${g.messageCount} messages, active ${first} → ${last}`;
+      });
+      return text(lines.join("\n"));
+    },
+  );
+
+  server.registerTool(
+    "whatsapp_read_messages",
+    {
+      description:
+        "Read stored WhatsApp messages, newest window first (returned in chronological order). Filter by group and/or timestamp range; page backwards with before_ts + before_id from the previous response.",
+      inputSchema: {
+        group: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Group JID or a subject substring (from whatsapp_list_groups)"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("Max messages to return (default 50)"),
+        before_ts: z
+          .number()
+          .optional()
+          .describe("Only messages older than this unix timestamp (seconds)"),
+        before_id: z
+          .string()
+          .optional()
+          .describe(
+            "Tie-breaker for before_ts: also include same-second messages whose id sorts below this one (use the earliest id from the previous page)",
+          ),
+        after_ts: z
+          .number()
+          .optional()
+          .describe("Only messages at or after this unix timestamp (seconds)"),
+      },
+    },
+    async ({ group, limit, before_ts, before_id, after_ts }) => {
+      if (!handle) return text(NOT_ENABLED);
+      let groupJid: string | undefined;
+      if (group) {
+        const resolved = resolveGroup(handle, group);
+        if ("error" in resolved) return text(resolved.error);
+        groupJid = resolved.jid;
+      }
+      const messages = handle.store.getMessages({
+        groupJid,
+        beforeTs: before_ts,
+        beforeId: before_id,
+        afterTs: after_ts,
+        limit: limit ?? 50,
+      });
+      return text(formatMessages(messages, groupJid === undefined));
+    },
+  );
+
+  server.registerTool(
+    "whatsapp_search_messages",
+    {
+      description:
+        "Search stored WhatsApp messages by text (case-insensitive substring), newest first. Optionally scope to a group or sender.",
+      inputSchema: {
+        query: z.string().min(1).describe("Text to search for"),
+        group: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Group JID or a subject substring (from whatsapp_list_groups)"),
+        sender: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Sender name or JID substring"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("Max results (default 30)"),
+      },
+    },
+    async ({ query, group, sender, limit }) => {
+      if (!handle) return text(NOT_ENABLED);
+      let groupJid: string | undefined;
+      if (group) {
+        const resolved = resolveGroup(handle, group);
+        if ("error" in resolved) return text(resolved.error);
+        groupJid = resolved.jid;
+      }
+      const messages = handle.store.searchMessages({
+        query,
+        groupJid,
+        sender,
+        limit: limit ?? 30,
+      });
+      if (messages.length === 0) return text("No messages matched.");
+      const { kept, omitted } = capLines(
+        messages.map((m) => formatMessage(m, groupJid === undefined)),
+        "end",
+      );
+      const tail =
+        omitted > 0
+          ? `\n(… ${omitted} older matches omitted to bound response size — narrow the query or lower the limit)`
+          : "";
+      return text(kept.join("\n") + tail);
+    },
+  );
+}

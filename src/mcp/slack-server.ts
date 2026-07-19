@@ -46,6 +46,7 @@ import {
 } from "../support/agents.ts";
 import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
+import { registerWhatsAppTools } from "./whatsapp-tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 import { registerPendingApproval } from "./approval.ts";
 import { prepareSlackResponseWithActions, type SlackActionButtonSpec } from "../slack/formatting.ts";
@@ -96,6 +97,7 @@ let sessionManager: SessionManager | undefined;
 let slackActionStore: SlackActionStore | undefined;
 
 function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
+  registerWhatsAppTools(server);
   server.registerTool(
     "slack_send_message",
     {
@@ -1237,7 +1239,10 @@ export function startMcpServer(
   sessionManager = manager;
   slackActionStore = actionStore;
 
-  const httpServer = createServer(async (req, res) => {
+  const handleHttpRequest = async (
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse,
+  ) => {
     const pathname = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`).pathname;
     if (pathname === "/mcp/mongodb") {
       await handleMongoMcpRequest(req, res);
@@ -1255,9 +1260,26 @@ export function startMcpServer(
 
     await mcpServer.connect(transport);
     await transport.handleRequest(req, res);
-  });
+  };
+  const httpServer = createServer(handleHttpRequest);
 
-  httpServer.listen(MCP_PORT, () => {
-    log.info("mcp", `Slack bot MCP server listening on port ${MCP_PORT}`);
+  // Loopback only. Every consumer (spawned runners, dashboard) connects via
+  // localhost, and the tools here are unauthenticated — Slack posting, memory,
+  // and the WhatsApp archive must not be reachable from the network. Bind BOTH
+  // loopback families: `localhost` resolves to ::1 first on common macOS/Node
+  // setups, so an IPv4-only bind would refuse every existing client URL. The
+  // ::1 listener is best-effort — some environments have IPv6 disabled.
+  httpServer.listen(MCP_PORT, "127.0.0.1", () => {
+    log.info("mcp", `Slack bot MCP server listening on 127.0.0.1:${MCP_PORT}`);
+  });
+  const httpServerV6 = createServer(handleHttpRequest);
+  httpServerV6.on("error", (err) => {
+    log.warn(
+      "mcp",
+      `IPv6 loopback listener unavailable (${err instanceof Error ? err.message : String(err)}) — IPv4 loopback still serving`,
+    );
+  });
+  httpServerV6.listen(MCP_PORT, "::1", () => {
+    log.info("mcp", `Slack bot MCP server listening on [::1]:${MCP_PORT}`);
   });
 }

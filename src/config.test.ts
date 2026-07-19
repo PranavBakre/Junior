@@ -46,7 +46,7 @@ const ENV_KEYS = [
   "CHANNEL_DEFAULTS",
   "ADMIN_SLACK_USER_ID",
   "HTTP_DASHBOARD_PORT",
-  "WHATSAPP_EXTRACTION_INTERVAL_MS",
+  "WHATSAPP_GROUP_PATTERN",
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -162,24 +162,19 @@ describe("loadConfig runner providers", () => {
     );
   });
 
-  it("defaults WHATSAPP_EXTRACTION_INTERVAL_MS to 600000", () => {
-    expect(loadConfig().whatsapp?.extractionIntervalMs).toBe(600000);
+  it("defaults WHATSAPP_GROUP_PATTERN to null (no group filter)", () => {
+    expect(loadConfig().whatsapp?.groupPattern).toBeNull();
   });
 
-  it("parses a valid WHATSAPP_EXTRACTION_INTERVAL_MS", () => {
-    process.env.WHATSAPP_EXTRACTION_INTERVAL_MS = "120000";
-    expect(loadConfig().whatsapp?.extractionIntervalMs).toBe(120000);
+  it("treats a blank WHATSAPP_GROUP_PATTERN as unset", () => {
+    process.env.WHATSAPP_GROUP_PATTERN = "  ";
+    expect(loadConfig().whatsapp?.groupPattern).toBeNull();
   });
 
-  it.each(["0", "-1", "abc", "1.5", "Infinity", ""])(
-    "rejects a non-positive-integer WHATSAPP_EXTRACTION_INTERVAL_MS (%p)",
-    (raw) => {
-      process.env.WHATSAPP_EXTRACTION_INTERVAL_MS = raw;
-      expect(() => loadConfig()).toThrow(
-        "Invalid WHATSAPP_EXTRACTION_INTERVAL_MS",
-      );
-    },
-  );
+  it("parses WHATSAPP_GROUP_PATTERN when set", () => {
+    process.env.WHATSAPP_GROUP_PATTERN = "hermes";
+    expect(loadConfig().whatsapp?.groupPattern).toBe("hermes");
+  });
 
   it("parses codex-app-server provider and Codex env vars", () => {
     process.env.RUNNER_PROVIDER = "codex-app-server";

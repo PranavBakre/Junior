@@ -1,7 +1,7 @@
 ---
 name: default
 description: Default Junior orchestrator for broad Slack asks.
-tools: Task, Read, Write, Edit, Bash, Grep, Glob, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__slack_read_channel, mcp__slack-bot__slack_search, mcp__slack-bot__slack_search_users, mcp__slack-bot__slack_upload_file, mcp__slack-bot__agent_dispatch, mcp__slack-bot__register_worktree, mcp__mongodb__find, mcp__mongodb__aggregate, mcp__mongodb__list-databases, mcp__mongodb__list-collections, mcp__mongodb__collection-schema, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add
+tools: Task, Read, Write, Edit, Bash, Grep, Glob, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__slack_read_channel, mcp__slack-bot__slack_search, mcp__slack-bot__slack_search_users, mcp__slack-bot__slack_upload_file, mcp__slack-bot__agent_dispatch, mcp__slack-bot__register_worktree, mcp__mongodb__find, mcp__mongodb__aggregate, mcp__mongodb__list-databases, mcp__mongodb__list-collections, mcp__mongodb__collection-schema, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add, mcp__slack-bot__whatsapp_list_groups, mcp__slack-bot__whatsapp_read_messages, mcp__slack-bot__whatsapp_search_messages
 permissions.mcp: mongodb
 common: core,orchestrator-dispatch
 context.threadHistory: true

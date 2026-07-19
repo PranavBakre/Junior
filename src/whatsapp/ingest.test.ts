@@ -19,11 +19,11 @@ function collector() {
 function deps(
   store: IngestDeps["store"],
   groups: Record<string, string> = { "g1@g.us": "Hermes Bangalore" },
-  pattern = "hermes",
+  pattern: string | null = "hermes",
 ): IngestDeps {
   return {
     store,
-    groupPattern: new RegExp(pattern, "i"),
+    groupPattern: pattern === null ? null : new RegExp(pattern, "i"),
     resolveGroupName: (jid) => groups[jid],
   };
 }
@@ -109,6 +109,18 @@ describe("toWaMessage filtering", () => {
     const { store } = collector();
     const d = deps(store, { "g1@g.us": "HERMES buildathon" });
     expect(toWaMessage(fakeMessage(), d)).not.toBeNull();
+  });
+
+  test("a null pattern ingests any known group", () => {
+    const { store } = collector();
+    const d = deps(store, { "g2@g.us": "Random Chat" }, null);
+    expect(toWaMessage(fakeMessage({ remoteJid: "g2@g.us" }), d)).not.toBeNull();
+  });
+
+  test("a null pattern still skips groups with no resolved subject", () => {
+    const { store } = collector();
+    const d = deps(store, {}, null);
+    expect(toWaMessage(fakeMessage(), d)).toBeNull();
   });
 });
 
