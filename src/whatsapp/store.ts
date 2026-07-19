@@ -190,11 +190,16 @@ export class WhatsAppStore {
    * Case-insensitive substring search over message text (and optionally sender
    * name/JID), newest match first. Matching happens in JS via `toLowerCase()`
    * so it stays case-insensitive for non-ASCII text too — SQLite's LIKE only
-   * folds ASCII. The scan walks rows newest-first in batches and stops at
-   * `limit` matches; volumes here are small enough that FTS would be ceremony.
+   * folds ASCII. The scan walks rows newest-first in batches, yields the event
+   * loop between batches (the store lives in Junior's main process — a long
+   * synchronous scan would stall Slack handling and ingestion), and stops at
+   * `limit` matches or after `MAX_SCAN_ROWS` rows. `scannedAll` is false when
+   * the row bound cut the scan short of the archive's oldest messages.
    * `raw` is not loaded during the scan and is returned as null.
    */
-  searchMessages(query: WaSearchQuery): WaMessage[] {
+  async searchMessages(
+    query: WaSearchQuery,
+  ): Promise<{ matches: WaMessage[]; scannedAll: boolean }> {
     // Keyset batches on the same stable (ts, id) ordering `getMessages` uses:
     // each batch resumes strictly below the previous one, so every row is
     // visited at most once (OFFSET would re-walk all preceding rows per batch).
@@ -219,11 +224,14 @@ export class WhatsAppStore {
     const senderNeedle = query.sender?.toLowerCase();
     const matches: WaMessage[] = [];
     const BATCH = 500;
+    const MAX_SCAN_ROWS = 100_000;
+    let scanned = 0;
     // Cursor starts above any real row (WhatsApp ids are printable ASCII).
     let cursorTs = Number.MAX_SAFE_INTEGER;
     let cursorId = "￿";
     while (matches.length < query.limit) {
       const rows = stmt.all(...scanParams, cursorTs, cursorId, BATCH);
+      scanned += rows.length;
       for (const row of rows) {
         if (!row.text!.toLowerCase().includes(needle)) continue;
         if (
@@ -236,12 +244,15 @@ export class WhatsAppStore {
         matches.push(rowToMessage({ ...row, raw: null }));
         if (matches.length >= query.limit) break;
       }
-      if (rows.length < BATCH) break; // scanned everything
+      if (rows.length < BATCH) return { matches, scannedAll: true };
+      if (scanned >= MAX_SCAN_ROWS) return { matches, scannedAll: false };
       const last = rows[rows.length - 1]!;
       cursorTs = last.ts;
       cursorId = last.id;
+      // Yield between batches so a long scan can't monopolise the event loop.
+      await Bun.sleep(0);
     }
-    return matches;
+    return { matches, scannedAll: true };
   }
 }
 

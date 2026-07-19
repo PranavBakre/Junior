@@ -228,6 +228,7 @@ export function registerWhatsAppTools(server: McpServer, auth: WhatsAppToolAuth)
       inputSchema: {
         group: z
           .string()
+          .trim()
           .min(1)
           .optional()
           .describe("Group JID or a subject substring (from whatsapp_list_groups)"),
@@ -281,14 +282,16 @@ export function registerWhatsAppTools(server: McpServer, auth: WhatsAppToolAuth)
       description:
         "Search stored WhatsApp messages by text (case-insensitive substring), newest first. Optionally scope to a group or sender.",
       inputSchema: {
-        query: z.string().min(1).describe("Text to search for"),
+        query: z.string().trim().min(1).describe("Text to search for"),
         group: z
           .string()
+          .trim()
           .min(1)
           .optional()
           .describe("Group JID or a subject substring (from whatsapp_list_groups)"),
         sender: z
           .string()
+          .trim()
           .min(1)
           .optional()
           .describe("Sender name or JID substring"),
@@ -310,22 +313,27 @@ export function registerWhatsAppTools(server: McpServer, auth: WhatsAppToolAuth)
         if ("error" in resolved) return text(resolved.error);
         groupJid = resolved.jid;
       }
-      const messages = handle.store.searchMessages({
+      const { matches, scannedAll } = await handle.store.searchMessages({
         query,
         groupJid,
         sender,
         limit: limit ?? 30,
       });
-      if (messages.length === 0) return text("No messages matched.");
+      const scanNote = scannedAll
+        ? ""
+        : "\n(scan bounded — the oldest part of the archive was not searched; scope to a group or refine the query)";
+      if (matches.length === 0) {
+        return text(`No messages matched.${scanNote}`);
+      }
       const { kept, omitted } = capLines(
-        messages.map((m) => formatMessage(m, groupJid === undefined)),
+        matches.map((m) => formatMessage(m, groupJid === undefined)),
         "end",
       );
       const tail =
         omitted > 0
           ? `\n(… ${omitted} older matches omitted to bound response size — narrow the query or lower the limit)`
           : "";
-      return text(untrusted(kept.join("\n") + tail));
+      return text(untrusted(kept.join("\n") + tail + scanNote));
     },
   );
 }

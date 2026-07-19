@@ -173,59 +173,51 @@ describe("WhatsAppStore.searchMessages", () => {
     store.close();
   });
 
-  test("matches case-insensitively, newest first", () => {
-    const rows = store.searchMessages({ query: "deploy", limit: 10 });
+  async function search(q: Parameters<WhatsAppStore["searchMessages"]>[0]) {
+    return (await store.searchMessages(q)).matches;
+  }
+
+  test("matches case-insensitively, newest first", async () => {
+    const rows = await search({ query: "deploy", limit: 10 });
     expect(rows.map((r) => r.id)).toEqual(["d", "b", "a"]);
   });
 
-  test("scopes to a group", () => {
-    const rows = store.searchMessages({ query: "deploy", groupJid: "123@g.us", limit: 10 });
+  test("scopes to a group", async () => {
+    const rows = await search({ query: "deploy", groupJid: "123@g.us", limit: 10 });
     expect(rows.map((r) => r.id)).toEqual(["b", "a"]);
   });
 
-  test("filters by sender name or JID substring", () => {
-    expect(
-      store.searchMessages({ query: "lunch", sender: "bob", limit: 10 }),
-    ).toHaveLength(1);
-    expect(
-      store.searchMessages({ query: "lunch", sender: "111@", limit: 10 }),
-    ).toHaveLength(1);
-    expect(
-      store.searchMessages({ query: "lunch", sender: "alice", limit: 10 }),
-    ).toHaveLength(0);
+  test("filters by sender name or JID substring", async () => {
+    expect(await search({ query: "lunch", sender: "bob", limit: 10 })).toHaveLength(1);
+    expect(await search({ query: "lunch", sender: "111@", limit: 10 })).toHaveLength(1);
+    expect(await search({ query: "lunch", sender: "alice", limit: 10 })).toHaveLength(0);
   });
 
-  test("treats % and _ as literals, not wildcards", () => {
+  test("treats % and _ as literals, not wildcards", async () => {
     store.upsertMessage(msg({ id: "pct", ts: 500, text: "we hit 100% coverage" }));
-    expect(
-      store.searchMessages({ query: "100%", limit: 10 }).map((r) => r.id),
-    ).toEqual(["pct"]);
+    expect((await search({ query: "100%", limit: 10 })).map((r) => r.id)).toEqual(["pct"]);
     // A bare % must not act as a wildcard matching everything.
-    expect(store.searchMessages({ query: "0%c", limit: 10 })).toHaveLength(0);
+    expect(await search({ query: "0%c", limit: 10 })).toHaveLength(0);
   });
 
-  test("case-folds non-ASCII text (beyond SQLite's ASCII-only LIKE)", () => {
+  test("case-folds non-ASCII text (beyond SQLite's ASCII-only LIKE)", async () => {
     store.upsertMessage(msg({ id: "fr", ts: 600, text: "rendez-vous à l'École" }));
-    expect(
-      store.searchMessages({ query: "école", limit: 10 }).map((r) => r.id),
-    ).toEqual(["fr"]);
+    expect((await search({ query: "école", limit: 10 })).map((r) => r.id)).toEqual(["fr"]);
   });
 
-  test("honors the limit", () => {
-    expect(store.searchMessages({ query: "deploy", limit: 2 })).toHaveLength(2);
+  test("honors the limit", async () => {
+    expect(await search({ query: "deploy", limit: 2 })).toHaveLength(2);
   });
 
-  test("scans past a non-matching batch boundary", () => {
+  test("scans past a non-matching batch boundary and reports a complete scan", async () => {
     // 600+ filler rows newer than the match force the scan into a second batch.
     for (let i = 0; i < 620; i++) {
       store.upsertMessage(msg({ id: `filler-${i}`, ts: 1000 + i, text: "noise" }));
     }
-    expect(
-      store.searchMessages({ query: "kickoff", limit: 10 }),
-    ).toHaveLength(0);
+    const empty = await store.searchMessages({ query: "kickoff", limit: 10 });
+    expect(empty.matches).toHaveLength(0);
+    expect(empty.scannedAll).toBe(true);
     store.upsertMessage(msg({ id: "old", ts: 50, text: "kickoff notes" }));
-    expect(
-      store.searchMessages({ query: "kickoff", limit: 10 }).map((r) => r.id),
-    ).toEqual(["old"]);
+    expect((await search({ query: "kickoff", limit: 10 })).map((r) => r.id)).toEqual(["old"]);
   });
 });
