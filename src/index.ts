@@ -13,7 +13,6 @@ import {
 import { SlackResponder } from "./slack/responder.ts";
 import { SlackActionStore } from "./slack/action-store.ts";
 import {
-  cleanupThreadWorktrees,
   disableAgentActionMessages,
   registerAgentActionButtons,
 } from "./slack/action-buttons.ts";
@@ -116,10 +115,6 @@ const workflowController = new WorkflowController({
   slackClient: app.client,
   isAdmin: (userId) => sessionManager.isAdmin(userId),
 });
-
-function isApprovedReviewResponse(response: string): boolean {
-  return /^review:\s*approved\b/i.test(response.trim());
-}
 
 sessionManager.onResponse = async (session, response) => {
   const prepared = prepareSlackResponseWithActions(response);
@@ -246,29 +241,9 @@ sessionManager.onAgentDispatched = async (session, agentName) => {
   );
 };
 
-sessionManager.onAgentSettled = async (session, agentName, response) => {
-  if (agentName !== "review" || !response || !isApprovedReviewResponse(response)) {
-    return;
-  }
-  const result = await cleanupThreadWorktrees(
-    session.threadId,
-    sessionManager,
-    worktreeManager,
-  );
-  await app.client.chat.postMessage({
-    channel: session.channel,
-    thread_ts: session.threadId,
-    text: result,
-  });
-  if (result.startsWith("Cleaned up worktree")) {
-    await disableAgentActionMessages(
-      actionStore,
-      app.client,
-      session.threadId,
-      "review",
-    );
-  }
-};
+// Review approval must not auto-cleanup worktrees or disable merge/retry
+// actions. Cleanup is explicit (Cleanup worktree button) or terminal-pipeline
+// only. See docs/features/agent-product-debugging-pipeline-implementation-plan.md Phase 0.
 
 registerHomeTab(app, store, config.session.homeWindowMs, workflowStore);
 registerAgentActionButtons(app, actionStore, sessionManager, worktreeManager, {
