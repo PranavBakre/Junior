@@ -48,6 +48,7 @@ const ENV_KEYS = [
   "HTTP_DASHBOARD_PORT",
   "WHATSAPP_EXTRACTION_INTERVAL_MS",
   "PIPELINE_RUNTIME_MODE",
+  "PIPELINE_LEGACY_DIRECTIVES_ENABLED",
   "GITHUB_RECONCILE_ENABLED",
   "GITHUB_EVENT_WAKE_ENABLED",
   "GITHUB_RECONCILE_TOKEN",
@@ -172,9 +173,18 @@ describe("loadConfig runner providers", () => {
     expect(loadConfig().pipeline?.runtimeMode).toBe("off");
   });
 
+  it("defaults PIPELINE_LEGACY_DIRECTIVES_ENABLED to true", () => {
+    expect(loadConfig().pipeline?.legacyDirectivesEnabled).toBe(true);
+  });
+
   it("parses PIPELINE_RUNTIME_MODE=shadow", () => {
     process.env.PIPELINE_RUNTIME_MODE = "shadow";
     expect(loadConfig().pipeline?.runtimeMode).toBe("shadow");
+  });
+
+  it("parses PIPELINE_LEGACY_DIRECTIVES_ENABLED=false", () => {
+    process.env.PIPELINE_LEGACY_DIRECTIVES_ENABLED = "false";
+    expect(loadConfig().pipeline?.legacyDirectivesEnabled).toBe(false);
   });
 
   it("rejects invalid PIPELINE_RUNTIME_MODE", () => {

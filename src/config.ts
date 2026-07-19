@@ -194,6 +194,13 @@ export interface Config {
    */
   pipeline?: {
     runtimeMode: PipelineRuntimeMode;
+    /**
+     * When true (default) and runtimeMode=active with an active pipeline run,
+     * parse legacy `!review`/`!reproducer`/etc directives into structured
+     * assignments with shared idempotency keys. When runtimeMode=off, this
+     * flag has no effect — existing Slack routing is unchanged.
+     */
+    legacyDirectivesEnabled: boolean;
   };
   /**
    * Outbound GitHub PR reconciliation (Phase 5). Default OFF. Observation is
@@ -350,6 +357,10 @@ export function loadConfig(): Config {
     pipeline: {
       runtimeMode: parsePipelineRuntimeMode(
         optional("PIPELINE_RUNTIME_MODE", "off"),
+      ),
+      legacyDirectivesEnabled: parseBooleanEnv(
+        "PIPELINE_LEGACY_DIRECTIVES_ENABLED",
+        true,
       ),
     },
     github: parseGitHubConfig(),

@@ -51,6 +51,10 @@ import {
   SqliteWorkflowStore,
   type WorkflowStore,
 } from "./workflows/store.ts";
+import { createPipelineStore } from "./pipelines/store/factory.ts";
+import { pumpOutbox } from "./pipelines/pump.ts";
+import { recoverPipelineRuntime } from "./pipelines/recovery.ts";
+import type { PipelineToolRuntime } from "./pipelines/tools.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -70,7 +74,41 @@ const agentRouter = new AgentRouter(
 const worktreeManager = new WorktreeManager(config.repos);
 const devServerManager = new DevServerManager(config.repos, worktreeManager);
 const devServerQueue = new DevServerQueue(devServerManager, config.repos);
-startMcpServer(config.slack.botToken, store, worktreeManager, sessionManager, actionStore);
+
+// Pipeline control plane (Phase 2+ substrate). Always construct the store so
+// MCP tools can answer; live dispatch/routing only when runtimeMode=active.
+const pipelineStore = createPipelineStore({
+  kind: config.session.store === "memory" ? "memory" : "sqlite",
+  sqlitePath: resolve(config.session.sqlitePath),
+});
+const pipelineToolRuntime: PipelineToolRuntime = {
+  store: pipelineStore,
+  runtimeMode: config.pipeline?.runtimeMode ?? "off",
+  githubTrackingEnabled: config.github?.reconcileEnabled ?? false,
+  onOutcomeCommitted: async () => {
+    if ((config.pipeline?.runtimeMode ?? "off") !== "active") return;
+    try {
+      await pumpOutbox({
+        store: pipelineStore,
+        dispatcher: sessionManager,
+        sessionReader: store,
+      });
+    } catch (err) {
+      log.warn(
+        "pipeline",
+        `outbox pump after outcome failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  },
+};
+startMcpServer(
+  config.slack.botToken,
+  store,
+  worktreeManager,
+  sessionManager,
+  actionStore,
+  pipelineToolRuntime,
+);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
 sessionManager.slackApp = app;
@@ -89,6 +127,12 @@ const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
   sessionStore: store,
   slackClient: app.client,
   repos: config.repos,
+  pipeline: {
+    store: pipelineStore,
+    runtimeMode: config.pipeline?.runtimeMode ?? "off",
+    legacyDirectivesEnabled: config.pipeline?.legacyDirectivesEnabled ?? true,
+    githubTrackingEnabled: config.github?.reconcileEnabled ?? false,
+  },
 });
 const workflowRegistry = new WorkflowRegistry({
   repos: config.repos,
@@ -260,6 +304,7 @@ setupGracefulShutdown(sessionManager, devServerManager, async () => {
   await workflowScheduler.shutdown();
   workflowRegistry.stopWatching();
   workflowStore.close?.();
+  pipelineStore.close?.();
   actionStore.close();
   memoryStore.close();
   if (whatsappInitialSweepTimer) clearTimeout(whatsappInitialSweepTimer);
@@ -268,6 +313,38 @@ setupGracefulShutdown(sessionManager, devServerManager, async () => {
     await whatsappHandle.stop();
   }
 });
+
+// Pipeline outbox recovery + periodic pump when runtime is active.
+recoverPipelineRuntime(pipelineStore)
+  .then((report) => {
+    if (report.reclaimedOutboxLeases > 0) {
+      log.info(
+        "pipeline",
+        `reclaimed ${report.reclaimedOutboxLeases} expired outbox lease(s) on boot`,
+      );
+    }
+  })
+  .catch((err) => {
+    log.warn(
+      "pipeline",
+      `boot recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+
+if ((config.pipeline?.runtimeMode ?? "off") === "active") {
+  setInterval(() => {
+    pumpOutbox({
+      store: pipelineStore,
+      dispatcher: sessionManager,
+      sessionReader: store,
+    }).catch((err) => {
+      log.warn(
+        "pipeline",
+        `periodic outbox pump failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+  }, 15_000);
+}
 
 // Periodic health checks
 setInterval(() => {

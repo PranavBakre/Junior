@@ -3,7 +3,10 @@ import type { SlackMessageEvent } from "../slack/events.ts";
 import type { SessionManager } from "../session/manager.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
-import type { RepoConfig } from "../config.ts";
+import type { PipelineRuntimeMode, RepoConfig } from "../config.ts";
+import type { PipelineStore } from "../pipelines/store/interface.ts";
+import { convertLegacyDirectivesToHandoffs } from "../pipelines/legacy-directives.ts";
+import { pumpOutbox } from "../pipelines/pump.ts";
 import {
   agentForUsername,
   isOrchestratorAgent,
@@ -18,6 +21,15 @@ import { looksLikePrReviewRequest } from "./pipeline-guard.ts";
 import { log } from "../logger.ts";
 
 export { parseAgentDirectives, type AgentDirective } from "./directives.ts";
+
+/** Optional pipeline control-plane wiring for Phase 4 soft integration. */
+export type PipelineRoutingOptions = {
+  store: PipelineStore;
+  runtimeMode: PipelineRuntimeMode;
+  /** Default true — only applies when runtimeMode=active and thread has a run. */
+  legacyDirectivesEnabled?: boolean;
+  githubTrackingEnabled?: boolean;
+};
 
 // ---------------------------------------------------------------------------
 // Devserver directive types
@@ -105,6 +117,7 @@ export class AgentDispatcher {
   private sessionStore: SessionStore | null;
   private slackClient: WebClient | null;
   private repos: RepoConfig[];
+  private pipeline: PipelineRoutingOptions | null;
 
   constructor(
     manager: SessionManager,
@@ -114,6 +127,7 @@ export class AgentDispatcher {
       sessionStore?: SessionStore;
       slackClient?: WebClient;
       repos?: RepoConfig[];
+      pipeline?: PipelineRoutingOptions;
     } = {},
   ) {
     this.manager = manager;
@@ -122,6 +136,7 @@ export class AgentDispatcher {
     this.sessionStore = opts.sessionStore ?? null;
     this.slackClient = opts.slackClient ?? null;
     this.repos = opts.repos ?? [];
+    this.pipeline = opts.pipeline ?? null;
   }
 
   isSupportChannel(channel: string): boolean {
@@ -232,6 +247,17 @@ export class AgentDispatcher {
       dispatchableDirectives = allowed;
     }
 
+    // Soft typed path: when pipeline mode is active, the thread has an active
+    // run, and legacy directives are enabled, convert directives into
+    // structured handoffs with shared idempotency keys. When mode=off (default),
+    // this is a no-op and existing Slack routing is unchanged.
+    const typed = await this.tryTypedLegacyDirectivePath(
+      event,
+      dispatchableDirectives,
+      sourceAgent,
+    );
+    if (typed) return;
+
     // Dispatch each directive (works in any channel).
     const byAgent = new Map<string, Array<{ directive: AgentDirective; index: number }>>();
     dispatchableDirectives.forEach((directive, index) => {
@@ -255,6 +281,98 @@ export class AgentDispatcher {
         }
       }),
     );
+  }
+
+  /**
+   * When PIPELINE_RUNTIME_MODE=active and the thread has an active pipeline
+   * run, convert pure directives into structured handoffs. Returns true when
+   * the typed path handled the message (caller should not also Slack-dispatch).
+   * Returns false when mode is off/shadow or no active run — legacy path continues.
+   */
+  private async tryTypedLegacyDirectivePath(
+    event: SlackMessageEvent,
+    directives: AgentDirective[],
+    sourceAgent: string | null,
+  ): Promise<boolean> {
+    const pipeline = this.pipeline;
+    if (!pipeline) return false;
+    if (pipeline.runtimeMode !== "active") return false;
+    if (pipeline.legacyDirectivesEnabled === false) return false;
+    if (directives.length === 0) return false;
+
+    // Need a session with an active pipeline run.
+    if (!this.sessionStore) return false;
+    const session = await this.sessionStore.get(event.threadId);
+    const runId = session?.activePipelineRunId;
+    if (!runId) return false;
+
+    const run = await pipeline.store.getRun(runId);
+    if (!run || run.status === "terminal") return false;
+
+    const assignments = await pipeline.store.listAssignments(run.id);
+    const open = assignments
+      .filter(
+        (a) =>
+          a.status === "pending" ||
+          a.status === "leased" ||
+          a.status === "waiting",
+      )
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const caller = sourceAgent ?? run.ownerAgent;
+    const sourceAssignment =
+      open.find((a) => a.targetAgent === caller) ??
+      open.find((a) => a.targetAgent === run.ownerAgent) ??
+      open[0];
+    if (!sourceAssignment) {
+      log.warn(
+        "pipeline-legacy",
+        `active run ${run.id} has no open assignment; falling back to legacy directive dispatch`,
+      );
+      return false;
+    }
+
+    const result = await convertLegacyDirectivesToHandoffs(
+      pipeline.store,
+      {
+        directives,
+        messageTs: event.ts,
+        sourceAgent: caller,
+        runId: run.id,
+        sourceAssignmentId: sourceAssignment.id,
+        expectedRunVersion: run.stateVersion,
+        auth: {
+          agent: caller,
+          channelId: event.channel,
+          threadId: event.threadId,
+        },
+        orchestratorContext: run.kind === "bug" ? "support" : "default",
+      },
+      { githubTrackingEnabled: pipeline.githubTrackingEnabled },
+    );
+
+    log.info(
+      "pipeline-legacy",
+      `typed path run=${run.id} converted=${result.converted.length} skipped=${result.skipped.length}`,
+    );
+
+    // Pump outbox so accepted handoffs wake targets without waiting for a timer.
+    try {
+      await pumpOutbox({
+        store: pipeline.store,
+        dispatcher: this.manager,
+        sessionReader: this.sessionStore ?? undefined,
+      });
+    } catch (err) {
+      log.warn(
+        "pipeline-legacy",
+        `outbox pump after legacy conversion failed (handoffs retained): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // If every directive was skipped (e.g. unauthorized), fall back to legacy
+    // so existing Slack routing still surfaces the attempt.
+    if (result.converted.length === 0) return false;
+    return true;
   }
 
   // ---------------------------------------------------------------------------
