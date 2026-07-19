@@ -52,23 +52,28 @@ export function resolvePipelineArtifactPath(
     };
   }
 
-  // Secondary: assignment-registered absolute or project-relative refs.
+  // Secondary: assignment-registered refs are allowed only when they resolve
+  // *inside* the pipeline run root. Absolute or project-escape paths are
+  // rejected so a forged artifactRef cannot become an MCP write primitive.
   const assignment = input.assignment;
   if (assignment) {
     for (const ref of assignment.artifactRefs) {
-      const refAbs = isAbsolute(ref) ? resolve(ref) : resolve(rootDir, ref);
-      // If relativePath is under this registered ref directory:
+      if (isAbsolute(ref) || ref.includes("..")) continue;
+      const refAbs = resolve(rootDir, ref);
+      if (!isPathInside(runRoot, refAbs) && refAbs !== runRoot) continue;
       const underRef = resolve(refAbs, rel);
-      if (isPathInside(refAbs, underRef) || underRef === refAbs) {
+      if (isPathInside(runRoot, underRef) && isPathInside(refAbs, underRef)) {
         return {
           ok: true,
           absPath: underRef,
           artifactRef: relative(rootDir, underRef).split(sep).join("/"),
         };
       }
-      // Or if relativePath equals the registered ref itself:
       const normalizedRef = normalize(ref).replace(/^\.\/+/, "");
-      if (rel === normalizedRef || rel === ref) {
+      if (
+        (rel === normalizedRef || rel === ref) &&
+        isPathInside(runRoot, refAbs)
+      ) {
         return {
           ok: true,
           absPath: refAbs,
@@ -81,7 +86,7 @@ export function resolvePipelineArtifactPath(
   return {
     ok: false,
     reason:
-      "artifact path must be under data/pipelines/<runId>/ or an assignment-registered artifact ref",
+      "artifact path must be under data/pipelines/<runId>/ (assignment refs cannot escape the run root)",
   };
 }
 

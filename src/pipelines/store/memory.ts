@@ -314,10 +314,27 @@ export class InMemoryPipelineStore implements PipelineStore {
     leaseMs: number,
   ): Promise<PipelineOutboxRecord[]> {
     const now = this.clock.now();
+    const maxAttempts = 8;
+    // Dead-letter exhausted rows.
+    for (const [id, r] of this.outbox) {
+      if (
+        (r.status === "pending" || r.status === "leased") &&
+        r.attempts >= maxAttempts
+      ) {
+        this.outbox.set(id, {
+          ...r,
+          status: "dead",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          lastError: r.lastError ?? "max attempts exceeded",
+        });
+      }
+    }
     const ready = [...this.outbox.values()]
       .filter(
         (r) =>
           r.status === "pending" &&
+          r.attempts < maxAttempts &&
           r.availableAt <= now &&
           (r.leaseOwner == null ||
             (r.leaseExpiresAt != null && r.leaseExpiresAt <= now)),
@@ -478,6 +495,15 @@ export class InMemoryPipelineStore implements PipelineStore {
         invalidatedAt: this.clock.now(),
         invalidationReason: "revision vector changed",
       });
+      // Bump run CAS version so stale outcomes cannot land on invalidated gates.
+      const run = this.runs.get(attempt.runId);
+      if (run && run.status !== "terminal") {
+        this.runs.set(run.id, {
+          ...run,
+          stateVersion: run.stateVersion + 1,
+          updatedAt: this.clock.now(),
+        });
+      }
     } else {
       this.attempts.set(attemptId, {
         ...attempt,

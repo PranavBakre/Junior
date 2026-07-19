@@ -946,16 +946,31 @@ export class SqlitePipelineStore implements PipelineStore {
     leaseMs: number,
   ): Promise<PipelineOutboxRecord[]> {
     const now = this.clock.now();
+    const maxAttempts = 8;
     const claim = this.db.transaction(() => {
+      // Dead-letter exhausted rows before claiming.
+      this.db
+        .query(
+          `UPDATE pipeline_outbox SET
+            status = 'dead',
+            lease_owner = NULL,
+            lease_expires_at = NULL,
+            last_error = COALESCE(last_error, 'max attempts exceeded')
+           WHERE status IN ('pending', 'leased')
+             AND attempts >= ?`,
+        )
+        .run(maxAttempts);
+
       const rows = this.db
-        .query<OutboxRow, [number, number]>(
+        .query<OutboxRow, [number, number, number]>(
           `SELECT * FROM pipeline_outbox
            WHERE status = 'pending'
+             AND attempts < ?
              AND available_at <= ?
              AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)
            ORDER BY created_at ASC`,
         )
-        .all(now, now)
+        .all(maxAttempts, now, now)
         .slice(0, Math.max(0, limit));
 
       const claimed: PipelineOutboxRecord[] = [];
@@ -1193,6 +1208,16 @@ export class SqlitePipelineStore implements PipelineStore {
              WHERE id = ?`,
           )
           .run(digest, now, "revision vector changed", attemptId);
+        // Bump owning run state_version so stale outcome CAS cannot advance
+        // on gates that were just invalidated by a new commit.
+        this.db
+          .query(
+            `UPDATE pipeline_runs SET
+              state_version = state_version + 1,
+              updated_at = ?
+             WHERE id = ? AND status != 'terminal'`,
+          )
+          .run(now, attempt.runId);
       } else {
         this.db
           .query(
@@ -2097,6 +2122,8 @@ export class SqlitePipelineStore implements PipelineStore {
   }
 
   private insertAssignment(assignment: Assignment): void {
+    // Idempotency: reuse existing row on key conflict (matches memory store).
+    // A hard INSERT throw here would abort handoff transactions on replay.
     this.db
       .query(
         `INSERT INTO pipeline_assignments (
@@ -2105,7 +2132,8 @@ export class SqlitePipelineStore implements PipelineStore {
           acceptance_json, mutation_scope_json, dependencies_json,
           attempt_number, attempt_id, candidate_revision_digest, deadline_at,
           lease_owner, lease_expires_at, idempotency_key, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(idempotency_key) DO NOTHING`,
       )
       .run(
         assignment.id,

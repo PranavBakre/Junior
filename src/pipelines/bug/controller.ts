@@ -29,6 +29,7 @@ import {
 } from "./definition.ts";
 import {
   evidenceKindsFromRefs,
+  canAdvanceToMerge,
   revisionGatesConsistent,
   validateBugOutcome,
 } from "./policy.ts";
@@ -362,7 +363,7 @@ export async function reduceBugOutcome(
     }
   }
 
-  const suggested =
+  let suggested =
     (input.toPhase as BugPhase | undefined) ??
     suggestPhaseAfterOutcome({
       mode,
@@ -371,6 +372,37 @@ export async function reduceBugOutcome(
       riskClass: input.riskClass,
     }) ??
     undefined;
+
+  // Cannot enter dev-merge / main-merge / merged without all required gates
+  // passed. Main merge additionally requires a human actor.
+  if (
+    suggested === "dev-merge" ||
+    suggested === "main-merge-gate" ||
+    suggested === "merged"
+  ) {
+    const mergeOk = canAdvanceToMerge(gates);
+    if (!mergeOk.ok) {
+      return {
+        status: "rejected",
+        runVersion: run.stateVersion,
+        assignmentId: assignment.id,
+        reason: mergeOk.reason ?? "gates incomplete for merge",
+        mode,
+      };
+    }
+  }
+  if (
+    (suggested === "merged" || suggested === "main-merge-gate") &&
+    (input.actorType ?? "agent") !== "human"
+  ) {
+    return {
+      status: "rejected",
+      runVersion: run.stateVersion,
+      assignmentId: assignment.id,
+      reason: "main-merge/merged requires human actor",
+      mode,
+    };
+  }
 
   // Record evidence from this outcome.
   const newKinds = evidenceKindsFromRefs(input.outcome.evidenceRefs);

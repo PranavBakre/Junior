@@ -686,15 +686,16 @@ export class SessionManager {
           this.handles.delete(key);
           killed++;
         }
-        session.status = "idle";
-        session.pid = null;
-        session.pendingMessages = [];
-        for (const agentSession of Object.values(session.agentSessions ?? {})) {
-          agentSession.status = "idle";
-          agentSession.pid = null;
-          agentSession.pendingMessages = [];
-        }
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.status = "idle";
+          s.pid = null;
+          s.pendingMessages = [];
+          for (const agentSession of Object.values(s.agentSessions ?? {})) {
+            agentSession.status = "idle";
+            agentSession.pid = null;
+            agentSession.pendingMessages = [];
+          }
+        });
         this.onCommandResponse?.(
           event,
           killed === 0 ? "Nothing running." : `Cancelled (${killed} process${killed === 1 ? "" : "es"}).`,
@@ -853,22 +854,25 @@ export class SessionManager {
       }
 
       case "quiet": {
-        session.verbosity = "quiet";
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.verbosity = "quiet";
+        });
         this.onCommandResponse?.(event, "Quiet mode.");
         return true;
       }
 
       case "verbose": {
-        session.verbosity = "verbose";
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.verbosity = "verbose";
+        });
         this.onCommandResponse?.(event, "Verbose mode.");
         return true;
       }
 
       case "normal": {
-        session.verbosity = "normal";
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.verbosity = "normal";
+        });
         this.onCommandResponse?.(event, "Normal mode.");
         return true;
       }
@@ -877,11 +881,12 @@ export class SessionManager {
       case "frontend":
       case "architect":
       case "pm": {
-        session.agentType = event.command;
-        await this.store.set(session.threadId, session);
+        const updated = await this.mutateSession(session.threadId, (s) => {
+          s.agentType = event.command;
+        });
         // Soft product-pipeline start: only !pm / !build when flags allow.
         if (event.command === "pm" || event.command === "build") {
-          await this.tryCreateProductRun(session, event);
+          await this.tryCreateProductRun(updated, event);
         }
         return false;
       }
@@ -890,8 +895,9 @@ export class SessionManager {
         const repoName = event.text.trim();
         const match = this.config.repos.find((r) => r.name === repoName);
         if (match) {
-          session.targetRepo = match.name;
-          await this.store.set(session.threadId, session);
+          await this.mutateSession(session.threadId, (s) => {
+            s.targetRepo = match.name;
+          });
           this.onCommandResponse?.(event, `Repository set to *${match.name}*.`);
         } else {
           const available = this.config.repos.map((r) => r.name).join(", ");
@@ -905,8 +911,9 @@ export class SessionManager {
 
       case "branch": {
         const ref = event.text.trim();
-        session.baseRef = ref;
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.baseRef = ref;
+        });
         this.onCommandResponse?.(event, `Base ref set to *${ref}*.`);
         return true;
       }
@@ -914,12 +921,14 @@ export class SessionManager {
       case "agent": {
         const agentName = event.text.trim().toLowerCase();
         if (agentName === "junior" || agentName === "default") {
-          session.defaultAgent = "junior";
-          await this.store.set(session.threadId, session);
+          await this.mutateSession(session.threadId, (s) => {
+            s.defaultAgent = "junior";
+          });
           this.onCommandResponse?.(event, "Thread default set to *Junior*. Future messages will go to Junior instead of the channel default.");
         } else if (agentName === "lead") {
-          session.defaultAgent = "lead";
-          await this.store.set(session.threadId, session);
+          await this.mutateSession(session.threadId, (s) => {
+            s.defaultAgent = "lead";
+          });
           this.onCommandResponse?.(event, "Thread default set to *Lead*. Future messages will go to the support lead.");
         } else {
           this.onCommandResponse?.(event, `Unknown agent "${agentName}". Use \`!agent junior\` or \`!agent lead\`.`);
@@ -976,8 +985,9 @@ export class SessionManager {
           return true;
         }
 
-        session.provider = provider;
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.provider = provider;
+        });
         this.onCommandResponse?.(event, `Runner provider set to *${provider}*.`);
         return true;
       }
@@ -1000,9 +1010,10 @@ export class SessionManager {
           itemText = itemText.replace(/^today\s*/i, "").trim();
         }
 
-        session.model = "haiku";
-        session.cwd = "/tmp/junior-utility";
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.model = "haiku";
+          s.cwd = "/tmp/junior-utility";
+        });
         const dateStr = targetDate.toISOString().split("T")[0];
         const fromThread = !itemText;
 
@@ -1043,11 +1054,12 @@ export class SessionManager {
           this.handles.delete(key);
           touched++;
         }
-        session.status = "idle";
-        for (const agentSession of Object.values(session.agentSessions ?? {})) {
-          if (agentSession.status === "busy") agentSession.status = "idle";
-        }
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.status = "idle";
+          for (const agentSession of Object.values(s.agentSessions ?? {})) {
+            if (agentSession.status === "busy") agentSession.status = "idle";
+          }
+        });
         this.onCommandResponse?.(
           event,
           touched === 0 ? "Nothing running." : `Interrupted (${touched} agent${touched === 1 ? "" : "s"}). Send a new message to continue.`,
@@ -1096,26 +1108,31 @@ export class SessionManager {
               await outgoing
                 .close(session.threadId, agentSession.agentName)
                 .catch(() => undefined);
-              agentSession.tmuxSessionName = null;
             }
           }
         }
-        session.driverMode = arg;
-        if (arg !== "tmux") {
-          session.tmuxSessionName = null;
-          session.topLevelTmuxAgent = null;
-        }
-        // `handleCommand` runs before the busy gate in `runSingleSession`, so
-        // !driver can fire mid-turn. The handle-delete-then-close loop above
-        // intentionally bails out of `onRunComplete` via the guard, but that
-        // guard skips the busy→idle flip too — so without this reset the row
-        // wedges at "busy" and every subsequent message buffers without a
-        // drain. !stop and !cancel both do the same flip for the same reason.
-        if (session.status === "busy") session.status = "idle";
-        for (const agentSession of Object.values(session.agentSessions ?? {})) {
-          if (agentSession.status === "busy") agentSession.status = "idle";
-        }
-        await this.store.set(session.threadId, session);
+        // Persist driver switch via CAS so concurrent agent settle cannot be
+        // clobbered by a stale command snapshot.
+        await this.mutateSession(session.threadId, (s) => {
+          if (s.driverMode === "tmux") {
+            for (const agentSession of Object.values(s.agentSessions ?? {})) {
+              if (agentSession.tmuxSessionName) {
+                agentSession.tmuxSessionName = null;
+              }
+            }
+          }
+          s.driverMode = arg;
+          if (arg !== "tmux") {
+            s.tmuxSessionName = null;
+            s.topLevelTmuxAgent = null;
+          }
+          // `handleCommand` runs before the busy gate in `runSingleSession`, so
+          // !driver can fire mid-turn. Reset busy so subsequent messages drain.
+          if (s.status === "busy") s.status = "idle";
+          for (const agentSession of Object.values(s.agentSessions ?? {})) {
+            if (agentSession.status === "busy") agentSession.status = "idle";
+          }
+        });
         this.onCommandResponse?.(event, `Driver set to *${arg}*. Next message starts on the new path.`);
         return true;
       }
@@ -1131,8 +1148,9 @@ export class SessionManager {
 
       case "listen": {
         if (session.dormant) {
-          session.dormant = false;
-          await this.store.set(session.threadId, session);
+          await this.mutateSession(session.threadId, (s) => {
+            s.dormant = false;
+          });
         }
         this.onReaction?.(event, "ear");
         return true;
@@ -1140,16 +1158,18 @@ export class SessionManager {
 
       case "mute": {
         if (await this.denyIfNotAdmin(event)) return true;
-        session.muted = true;
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.muted = true;
+        });
         this.onCommandResponse?.(event, "Muted. I'll stop responding until you `!unmute`.");
         return true;
       }
 
       case "unmute": {
         if (await this.denyIfNotAdmin(event)) return true;
-        session.muted = false;
-        await this.store.set(session.threadId, session);
+        await this.mutateSession(session.threadId, (s) => {
+          s.muted = false;
+        });
         this.onCommandResponse?.(event, "Unmuted.");
         return true;
       }

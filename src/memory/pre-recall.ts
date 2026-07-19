@@ -16,7 +16,10 @@ import type { MemoryToolDeps, RecallMemoryResult } from "../mcp/slack-server.ts"
 import { recallMemory } from "../mcp/slack-server.ts";
 import { createMemoryStore } from "./factory.ts";
 import { createProfileStore } from "./profiles/index.ts";
-import { signalProcessTree } from "../lifecycle/process-tree.ts";
+import {
+  isProcessTreeAlive,
+  terminateProcessTree,
+} from "../lifecycle/process-tree.ts";
 import { sanitizeClaudeModel } from "./consolidation/runner.ts";
 import { createOpenCodeStreamParser, createOpenCodeEventMapper } from "../opencode/parser.ts";
 import { log as _log } from "../logger.ts";
@@ -241,31 +244,7 @@ async function claudeRunText(req: RunTextRequest): Promise<string> {
     detached: true,
   });
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    signalProcessTree(proc.pid, "SIGINT");
-  }, req.timeoutMs);
-
-  try {
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    if (timedOut) {
-      throw new Error(`pre-recall: claude timed out after ${req.timeoutMs}ms`);
-    }
-    if (exitCode !== 0) {
-      let stderr = "";
-      try {
-        stderr = (await new Response(proc.stderr).text()).trim();
-      } catch {
-        // best-effort
-      }
-      throw new Error(`pre-recall: claude exited ${exitCode}${stderr ? `: ${stderr}` : ""}`);
-    }
-    return extractClaudeAssistantText(stdout);
-  } finally {
-    clearTimeout(timer);
-  }
+  return runPreRecallProcess(proc, req.timeoutMs, "claude", extractClaudeAssistantText);
 }
 
 /**
@@ -318,31 +297,7 @@ async function openCodeRunText(req: RunTextRequest): Promise<string> {
     detached: true,
   });
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    signalProcessTree(proc.pid, "SIGINT");
-  }, req.timeoutMs);
-
-  try {
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    if (timedOut) {
-      throw new Error(`pre-recall: opencode timed out after ${req.timeoutMs}ms`);
-    }
-    if (exitCode !== 0) {
-      let stderr = "";
-      try {
-        stderr = (await new Response(proc.stderr).text()).trim();
-      } catch {
-        // best-effort
-      }
-      throw new Error(`pre-recall: opencode exited ${exitCode}${stderr ? `: ${stderr}` : ""}`);
-    }
-    return extractOpenCodeAssistantText(stdout);
-  } finally {
-    clearTimeout(timer);
-  }
+  return runPreRecallProcess(proc, req.timeoutMs, "opencode", extractOpenCodeAssistantText);
 }
 
 /**
@@ -385,17 +340,8 @@ async function codexRunText(req: RunTextRequest): Promise<string> {
     detached: true,
   });
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    signalProcessTree(proc.pid, "SIGINT");
-  }, req.timeoutMs);
-
   try {
-    const exitCode = await proc.exited;
-    if (timedOut) {
-      throw new Error(`pre-recall: codex timed out after ${req.timeoutMs}ms`);
-    }
+    const exitCode = await runPreRecallExited(proc, req.timeoutMs, "codex");
     if (exitCode !== 0) {
       let stderr = "";
       try {
@@ -417,7 +363,112 @@ async function codexRunText(req: RunTextRequest): Promise<string> {
     }
     return text;
   } finally {
-    clearTimeout(timer);
     await rm(outFile, { force: true }).catch(() => {});
   }
+}
+
+/**
+ * Await process exit with a hard deadline. On timeout, SIGINT then SIGKILL the
+ * process tree so a hung child cannot leave the Slack turn stuck forever.
+ */
+type PreRecallProc = {
+  pid?: number | null;
+  exited: Promise<number>;
+  stdout?: ReadableStream<Uint8Array> | number | null;
+  stderr?: ReadableStream<Uint8Array> | number | null;
+};
+
+async function runPreRecallExited(
+  proc: PreRecallProc,
+  timeoutMs: number,
+  label: string,
+): Promise<number> {
+  let timedOut = false;
+  const forceMs = Math.min(2_000, Math.max(500, Math.floor(timeoutMs / 4)));
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void terminateProcessTree(proc.pid, {
+      signal: "SIGINT",
+      forceAfterMs: forceMs,
+      waitAfterForceMs: 500,
+    });
+  }, timeoutMs);
+
+  try {
+    // Hard ceiling: if SIGKILL also fails to reap, don't hang the turn.
+    const hardDeadlineMs = timeoutMs + forceMs + 2_000;
+    const exitCode = await Promise.race([
+      proc.exited,
+      sleep(hardDeadlineMs).then(async () => {
+        timedOut = true;
+        await terminateProcessTree(proc.pid, {
+          signal: "SIGKILL",
+          forceAfterMs: 0,
+          waitAfterForceMs: 200,
+        });
+        throw new Error(
+          `pre-recall: ${label} hung after ${hardDeadlineMs}ms (forced kill)`,
+        );
+      }),
+    ]);
+    if (timedOut) {
+      throw new Error(`pre-recall: ${label} timed out after ${timeoutMs}ms`);
+    }
+    return exitCode;
+  } finally {
+    clearTimeout(timer);
+    if (isProcessTreeAlive(proc.pid)) {
+      await terminateProcessTree(proc.pid, {
+        signal: "SIGKILL",
+        forceAfterMs: 0,
+        waitAfterForceMs: 200,
+      });
+    }
+  }
+}
+
+async function runPreRecallProcess(
+  proc: PreRecallProc,
+  timeoutMs: number,
+  label: string,
+  extract: (stdout: string) => string,
+): Promise<string> {
+  try {
+    // Start reading stdout immediately so the pipe cannot fill and stall.
+    const stdoutStream = proc.stdout;
+    const stdoutPromise =
+      stdoutStream && typeof stdoutStream !== "number"
+        ? new Response(stdoutStream).text()
+        : Promise.resolve("");
+    const exitCode = await runPreRecallExited(proc, timeoutMs, label);
+    const stdout = await stdoutPromise;
+    if (exitCode !== 0) {
+      let stderr = "";
+      try {
+        const stderrStream = proc.stderr;
+        if (stderrStream && typeof stderrStream !== "number") {
+          stderr = (await new Response(stderrStream).text()).trim();
+        }
+      } catch {
+        // best-effort
+      }
+      throw new Error(
+        `pre-recall: ${label} exited ${exitCode}${stderr ? `: ${stderr}` : ""}`,
+      );
+    }
+    return extract(stdout);
+  } catch (err) {
+    if (isProcessTreeAlive(proc.pid)) {
+      await terminateProcessTree(proc.pid, {
+        signal: "SIGKILL",
+        forceAfterMs: 0,
+        waitAfterForceMs: 200,
+      });
+    }
+    throw err;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

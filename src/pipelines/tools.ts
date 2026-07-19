@@ -4,7 +4,14 @@
  */
 
 import type { PipelineRuntimeMode } from "../config.ts";
-import { canWritePipelineArtifacts } from "../agents/capabilities.ts";
+import {
+  canEditProductCode,
+  canWritePipelineArtifacts,
+  isReadOnlyRole,
+} from "../agents/capabilities.ts";
+import {
+  canonicalAgentName,
+} from "../agents/registry.ts";
 import type { SlackMcpRunContext } from "../mcp/context.ts";
 import type { PipelineStore } from "./store/interface.ts";
 import { projectRunSummary } from "./projection.ts";
@@ -16,7 +23,12 @@ import {
   type OutcomeAuthContext,
 } from "./outcomes.ts";
 import { runPipelineCheck, writePipelineArtifact } from "./artifacts.ts";
-import type { GitHubResourceRegistration, TransitionReceipt } from "./types.ts";
+import type {
+  Assignment,
+  GitHubResourceRegistration,
+  PipelineRun,
+  TransitionReceipt,
+} from "./types.ts";
 
 export type PipelineToolRuntime = {
   store: PipelineStore;
@@ -50,6 +62,57 @@ function authFromContext(runContext: SlackMcpRunContext): OutcomeAuthContext {
     channelId: runContext.channel,
     threadId: runContext.threadId,
   };
+}
+
+/**
+ * Caller may act on an assignment only if they own it (target) or are the
+ * run's orchestrator owner. Read-only workers never get write/check tools
+ * through the "orchestrator" path unless they truly own the assignment.
+ */
+function authorizeAssignmentAction(
+  run: PipelineRun,
+  assignment: Assignment,
+  agent: string,
+  opts: { requireWriteCapable?: boolean } = {},
+): string | null {
+  if (assignment.runId !== run.id) {
+    return "assignment does not belong to run";
+  }
+  const caller = canonicalAgentName(agent) ?? agent.trim();
+  const target =
+    canonicalAgentName(assignment.targetAgent) ?? assignment.targetAgent;
+  const owner =
+    canonicalAgentName(run.ownerAgent) ?? run.ownerAgent;
+
+  const ownsAssignment = caller === target;
+  const isOrch =
+    caller === owner ||
+    caller === "lead" ||
+    caller === "default" ||
+    caller === "junior";
+
+  if (!ownsAssignment && !isOrch) {
+    return `agent "${agent}" is not authorized for assignment target "${assignment.targetAgent}"`;
+  }
+
+  if (opts.requireWriteCapable) {
+    if (isReadOnlyRole(caller) && !ownsAssignment) {
+      return `read-only agent "${agent}" cannot forge checks or write artifacts for another assignment`;
+    }
+    // Evidence/check recording is for builders/orchestrators, not pure reviewers.
+    if (
+      isReadOnlyRole(caller) &&
+      !canEditProductCode(caller) &&
+      caller !== "reproducer"
+    ) {
+      // Reproducer may write validation artifacts under its own assignment only.
+      if (!(ownsAssignment && caller === "reproducer")) {
+        return `agent "${agent}" lacks permission to record pipeline checks/artifacts`;
+      }
+    }
+  }
+
+  return null;
 }
 
 function requireActive(
@@ -290,14 +353,33 @@ export async function pipelineWriteArtifact(
     );
   }
 
-  const assignment = args.assignment_id
-    ? await runtime.store.getAssignment(args.assignment_id)
-    : null;
+  // assignment_id is required so foreign artifactRefs cannot authorize escape.
+  if (!args.assignment_id) {
+    return textResult(
+      { ok: false, reason: "assignment_id is required for pipeline_write_artifact" },
+      true,
+    );
+  }
+  const assignment = await runtime.store.getAssignment(args.assignment_id);
+  if (!assignment) {
+    return textResult({ ok: false, reason: "assignment not found" }, true);
+  }
+  const authFailure = authorizeAssignmentAction(
+    run,
+    assignment,
+    runContext.agent,
+    { requireWriteCapable: true },
+  );
+  if (authFailure) {
+    return textResult({ ok: false, reason: authFailure }, true);
+  }
 
   const result = await writePipelineArtifact({
     runId: run.id,
     relativePath: args.path,
     content: args.content,
+    // Only use assignment refs for namespacing under the pipeline root — never
+    // as a path escape hatch.
     assignment,
   });
 
@@ -389,6 +471,27 @@ export async function pipelineRunCheck(
   if (run.channelId !== runContext.channel || run.threadId !== runContext.threadId) {
     return textResult(
       { ok: false, reason: "run does not match authenticated thread/channel" },
+      true,
+    );
+  }
+
+  // Assignment ownership + non-read-only: prevent review/reproducer (or any
+  // thread peer) from forging passed typecheck/build/test evidence.
+  const authFailure = authorizeAssignmentAction(
+    run,
+    assignment,
+    runContext.agent,
+    { requireWriteCapable: true },
+  );
+  if (authFailure) {
+    return textResult({ ok: false, reason: authFailure }, true);
+  }
+  if (isReadOnlyRole(runContext.agent) && !canEditProductCode(runContext.agent)) {
+    return textResult(
+      {
+        ok: false,
+        reason: `agent "${runContext.agent}" cannot record pipeline_run_check evidence`,
+      },
       true,
     );
   }

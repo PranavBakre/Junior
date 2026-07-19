@@ -215,8 +215,36 @@ export function evidenceKindsFromRefs(refs: string[]): EvidenceKind[] {
 }
 
 /**
+ * Merge requires every required gate kind to be present and `passed` against
+ * the same attempt. Empty gate sets fail closed — never treat "no gates" as ok.
+ */
+export function canAdvanceToMerge(gates: PipelineGate[]): {
+  ok: boolean;
+  reason?: string;
+} {
+  const required = ["review", "validation", "checks"] as const;
+  const active = gates.filter((g) => g.status !== "invalidated");
+  if (active.length === 0) {
+    return { ok: false, reason: "no gates recorded for attempt" };
+  }
+  for (const kind of required) {
+    const g = active.find((x) => x.gateKind === kind);
+    if (!g) {
+      return { ok: false, reason: `missing ${kind} gate` };
+    }
+    if (g.status !== "passed") {
+      return {
+        ok: false,
+        reason: `${kind} gate status is ${g.status}, not passed`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
  * Aggregate gate check: review, validation, and checks must share one
- * attempt revision digest / subject SHAs.
+ * attempt revision digest / subject SHAs. Empty set fails closed.
  */
 export function revisionGatesConsistent(gates: PipelineGate[]): {
   ok: boolean;
@@ -229,7 +257,11 @@ export function revisionGatesConsistent(gates: PipelineGate[]): {
         g.gateKind === "validation" ||
         g.gateKind === "checks"),
   );
-  if (active.length === 0) return { ok: true };
+  // Fail closed: zero gates is not "consistent" — callers that only need
+  // SHA agreement for partial progress should filter before calling.
+  if (active.length === 0) {
+    return { ok: false, reason: "no active review/validation/checks gates" };
+  }
 
   const shas = new Set(
     active.map((g) => g.subjectSha).filter((s): s is string => s != null),

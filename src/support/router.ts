@@ -364,18 +364,24 @@ export class AgentDispatcher {
       );
 
       if (result.created && this.sessionStore) {
-        await this.sessionStore.mutateThread(event.threadId, (session) => {
-          session.activePipelineRunId = result.run.id;
-          session.activePipelineKind = "bug";
-        }).catch(async () => {
-          // Session may not exist yet — best-effort set after create path.
-          const session = await this.sessionStore?.get(event.threadId);
-          if (session) {
+        try {
+          await this.sessionStore.mutateThread(event.threadId, (session) => {
             session.activePipelineRunId = result.run.id;
             session.activePipelineKind = "bug";
-            await this.sessionStore?.set(event.threadId, session);
+          });
+        } catch (err) {
+          // Only fall back when the session row is missing. Real CAS conflicts
+          // must retry via mutateThread, not a blind set that clobbers peers.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/session not found/i.test(msg)) throw err;
+          const session = await this.sessionStore.get(event.threadId);
+          if (session) {
+            await this.sessionStore.mutateThread(event.threadId, (s) => {
+              s.activePipelineRunId = result.run.id;
+              s.activePipelineKind = "bug";
+            });
           }
-        });
+        }
       }
 
       log.info(

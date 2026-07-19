@@ -224,10 +224,55 @@ export async function reconcileTrackedResources(
       if (ok) claimed.push(resource);
     }
     if (claimed.length > 0) {
-      const byNodeId = await options.client.fetchPullRequestsByNodeIds(
-        claimed.map((r) => r.nodeId!),
-      );
+      let byNodeId: Map<
+        string,
+        Awaited<ReturnType<GitHubClient["fetchPullRequest"]>>
+      >;
+      try {
+        byNodeId = await options.client.fetchPullRequestsByNodeIds(
+          claimed.map((r) => r.nodeId!),
+        );
+      } catch (err) {
+        // Never abort the whole pass / strand leases on CLI/transport throws.
+        const error = err instanceof Error ? err.message : String(err);
+        const invalidCredentials = /401|bad credentials|unauthorized/i.test(
+          error,
+        );
+        for (const resource of claimed) {
+          pass.examined += 1;
+          const one = await applyFetchResult({
+            resource,
+            fetchResult: {
+              ok: false,
+              error,
+              ...(invalidCredentials ? { invalidCredentials: true } : {}),
+            },
+            store: options.store,
+            clock,
+            random,
+            onInvalidCredentials: options.onInvalidCredentials,
+            onRateLimited: options.onRateLimited,
+            allowWakes,
+            onEventsPersisted: options.onEventsPersisted,
+          });
+          mergePass(pass, one);
+        }
+        byNodeId = new Map();
+      }
+      // All-null / all-error batch with auth signal → halt once.
+      if (
+        claimed.length > 0 &&
+        [...byNodeId.values()].every(
+          (r) =>
+            r &&
+            !r.ok &&
+            ("invalidCredentials" in r ? r.invalidCredentials : false),
+        )
+      ) {
+        pass.credentialsInvalid = true;
+      }
       for (const resource of claimed) {
+        if (pass.credentialsInvalid && byNodeId.size === 0) break;
         pass.examined += 1;
         const fetchResult = byNodeId.get(resource.nodeId!) ?? {
           ok: false as const,
@@ -245,11 +290,13 @@ export async function reconcileTrackedResources(
           onEventsPersisted: options.onEventsPersisted,
         });
         mergePass(pass, one);
+        if (pass.credentialsInvalid) break;
       }
     }
   }
 
   for (const resource of withoutNodeIds) {
+    if (pass.credentialsInvalid) break;
     const ok = await options.store.claimGitHubResourceLease(
       resource.id,
       leaseOwner,
@@ -258,11 +305,23 @@ export async function reconcileTrackedResources(
     );
     if (!ok) continue;
     pass.examined += 1;
-    const fetchResult = await options.client.fetchPullRequest(
-      resource.owner,
-      resource.repo,
-      resource.number,
-    );
+    let fetchResult: Awaited<ReturnType<GitHubClient["fetchPullRequest"]>>;
+    try {
+      fetchResult = await options.client.fetchPullRequest(
+        resource.owner,
+        resource.repo,
+        resource.number,
+      );
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      fetchResult = {
+        ok: false,
+        error,
+        ...(/401|bad credentials|unauthorized/i.test(error)
+          ? { invalidCredentials: true as const }
+          : {}),
+      };
+    }
     const one = await applyFetchResult({
       resource,
       fetchResult,

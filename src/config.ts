@@ -343,7 +343,9 @@ export function loadConfig(): Config {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
       embedProvider: parseEmbedProvider(optional("MEMORY_EMBED_PROVIDER", "local")),
       preRecall: {
-        enabled: parseBooleanEnv("PRE_RECALL_ENABLED", true),
+        // Default OFF: pre-recall spawns a subprocess on every Slack turn.
+        // Operators must opt in after verifying timeout/kill behaviour.
+        enabled: parseBooleanEnv("PRE_RECALL_ENABLED", false),
         runner: parsePreRecallRunner(optional("PRE_RECALL_RUNNER", "claude")),
         model: process.env.PRE_RECALL_MODEL || undefined,
         timeoutMs: Number(optional("PRE_RECALL_TIMEOUT_MS", "15000")),

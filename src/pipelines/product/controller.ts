@@ -481,12 +481,13 @@ export async function reduceProductOutcome(
       outcomeAction: input.outcome.action,
       reviewVerdict,
       allBuildersDone: buildersDone,
+      // Every required workstream must have a registered PR. A non-empty
+      // registry must NOT short-circuit missing workstreams.
       allPrsRegistered:
         workstreams.length === 0 ||
         workstreams.every((w) =>
           registeredPrKeys.some((k) => k.includes(`:${w}`) || k.endsWith(w)),
-        ) ||
-        registeredPrKeys.length > 0,
+        ),
       needsProductDecision: input.needsProductDecision === true,
     }) ??
     undefined;
