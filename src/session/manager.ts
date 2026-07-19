@@ -25,6 +25,7 @@ import {
   sessionProvider,
   spawnRunner as defaultSpawnRunner,
 } from "../runners/index.ts";
+import { willResume } from "../runners/runtime.ts";
 import { createDrivers, type DriverMap } from "../claude/factory.ts";
 import { tmuxSessionNameFor } from "../claude/tmux-driver.ts";
 import {
@@ -1075,13 +1076,21 @@ export class SessionManager {
       }
       runSession.agentPermissions = agentDefinition?.permissions;
 
-      // Build the prompt. On the first turn (no sessionId yet), inject the
-      // preamble blocks the agent asked for. On resumed turns, --resume already
-      // carries identity/context/history — keep just the workspace block (cheap
-      // insurance for the worktree safety rule), and only if the agent wants
-      // the workspace context at all.
+      // Build the prompt. When the provider will not resume a prior model
+      // session, inject the preamble blocks the agent asked for. On resumed
+      // turns, provider-native resume already carries identity/context/history —
+      // keep just the workspace block (cheap insurance for the worktree safety
+      // rule), and only if the agent wants the workspace context at all.
+      // OpenCode may store a sessionId while continuity is disabled; treat that
+      // as a fresh turn so thread/assignment/memory context is still injected.
       if (this.slackApp && latestTs) {
-        const isFirstTurn = !runSession.sessionId;
+        const provider = sessionProvider(runSession, this.config);
+        const resumes = willResume({
+          provider,
+          sessionId: runSession.sessionId,
+          opencodeContinuityEnabled: this.config.opencode.continuityEnabled,
+        });
+        const isFirstTurn = !resumes;
         const needsThreadCatchup = !!session.needsThreadCatchup;
         const readablePrompt = await resolveSlackMentions(
           this.slackApp,
