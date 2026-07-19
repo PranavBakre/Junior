@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { registerWhatsAppTools, setWhatsAppHandle } from "./whatsapp-tools.ts";
+import {
+  registerWhatsAppTools,
+  setWhatsAppHandle,
+  type WhatsAppToolAuth,
+} from "./whatsapp-tools.ts";
 import { WhatsAppStore } from "../whatsapp/store.ts";
 import type { WhatsAppHandle } from "../whatsapp/index.ts";
 
@@ -52,6 +56,12 @@ function seedStore(store: WhatsAppStore): void {
   });
 }
 
+/** Direct local connection (no run context) — always authorized. */
+const LOCAL_AUTH: WhatsAppToolAuth = {
+  runContext: null,
+  isAdmin: async () => false,
+};
+
 describe("whatsapp MCP tools", () => {
   let store: WhatsAppStore;
   let tools: Map<string, ToolHandler>;
@@ -67,7 +77,7 @@ describe("whatsapp MCP tools", () => {
     setWhatsAppHandle(handle);
     const captured = captureTools();
     tools = captured.tools;
-    registerWhatsAppTools(captured.server);
+    registerWhatsAppTools(captured.server, LOCAL_AUTH);
   });
 
   afterEach(() => {
@@ -201,5 +211,82 @@ describe("whatsapp MCP tools", () => {
       before_id: cursor![2],
     });
     expect(nextPage).toContain(`bulk message ${earliestShownIdx - 1} `);
+  });
+});
+
+describe("whatsapp MCP tool authorization", () => {
+  let store: WhatsAppStore;
+
+  beforeEach(() => {
+    store = new WhatsAppStore(":memory:");
+    seedStore(store);
+    setWhatsAppHandle({
+      store,
+      resolveGroupName: () => undefined,
+      stop: async () => {},
+    });
+  });
+
+  afterEach(() => {
+    setWhatsAppHandle(null);
+    store.close();
+  });
+
+  function toolsWith(auth: WhatsAppToolAuth): Map<string, ToolHandler> {
+    const captured = captureTools();
+    registerWhatsAppTools(captured.server, auth);
+    return captured.tools;
+  }
+
+  const runContext = (users: string[]) => ({
+    agent: "default",
+    channel: "C1",
+    threadId: "171.001",
+    users,
+  });
+
+  async function callAll(tools: Map<string, ToolHandler>): Promise<string[]> {
+    const out: string[] = [];
+    for (const handler of tools.values()) {
+      out.push((await handler({ query: "deploy" })).content[0]!.text);
+    }
+    return out;
+  }
+
+  test("runner turns where every participant is admin are allowed", async () => {
+    const tools = toolsWith({
+      runContext: runContext(["U_ADMIN", "U_ADMIN2"]),
+      isAdmin: async (u) => u.startsWith("U_ADMIN"),
+    });
+    for (const text of await callAll(tools)) {
+      expect(text).not.toContain("denied");
+    }
+  });
+
+  test("a single non-admin participant denies every tool", async () => {
+    const tools = toolsWith({
+      runContext: runContext(["U_ADMIN", "U_RANDO"]),
+      isAdmin: async (u) => u === "U_ADMIN",
+    });
+    for (const text of await callAll(tools)) {
+      expect(text).toContain("denied");
+    }
+  });
+
+  test("a runner turn with no attributable humans is denied", async () => {
+    const tools = toolsWith({
+      runContext: runContext([]),
+      isAdmin: async () => true,
+    });
+    for (const text of await callAll(tools)) {
+      expect(text).toContain("denied");
+    }
+  });
+
+  test("a direct local connection (null run context) is allowed", async () => {
+    const tools = toolsWith(LOCAL_AUTH);
+    for (const text of await callAll(tools)) {
+      expect(text).not.toContain("denied");
+    }
   });
 });

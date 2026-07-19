@@ -16,6 +16,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { WhatsAppHandle } from "../whatsapp/index.ts";
 import type { WaMessage } from "../whatsapp/types.ts";
+import type { SlackMcpRunContext } from "./context.ts";
 
 let handle: WhatsAppHandle | null = null;
 
@@ -23,8 +24,39 @@ export function setWhatsAppHandle(h: WhatsAppHandle | null): void {
   handle = h;
 }
 
+export interface WhatsAppToolAuth {
+  /**
+   * The Slack run context of the requesting runner turn, or null for a direct
+   * local connection (no query params — e.g. a developer session using the
+   * bare `.mcp.json` URL on this machine).
+   */
+  runContext: SlackMcpRunContext | null;
+  /** Admin check backed by ADMIN_SLACK_USER_ID + the admins table. */
+  isAdmin: (userId: string) => Promise<boolean>;
+}
+
 const NOT_ENABLED =
   "WhatsApp integration is not enabled (WHATSAPP_ENABLED is off or the socket has not started).";
+
+const NOT_AUTHORIZED =
+  "WhatsApp archive access denied: this thread includes non-admin participants (or none attributable). The archive is personal data and is only readable in admin-only threads.";
+
+/**
+ * The archive is the operator's personal WhatsApp history, so a Slack-initiated
+ * turn may read it only when EVERY human in the originating thread passes the
+ * admin check — the tool output lands in that thread, visible to all of them.
+ * A null run context means a direct local connection (loopback-only listener),
+ * which is the operator's own machine access and is allowed.
+ */
+async function isAuthorized(auth: WhatsAppToolAuth): Promise<boolean> {
+  if (auth.runContext === null) return true;
+  const { users } = auth.runContext;
+  if (users.length === 0) return false;
+  for (const user of users) {
+    if (!(await auth.isAdmin(user))) return false;
+  }
+  return true;
+}
 
 function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
@@ -120,7 +152,7 @@ function formatMessages(messages: WaMessage[], includeGroup: boolean): string {
   return `${head}${kept.join("\n")}\n\n(${kept.length} messages shown; to page further back pass before_ts=${earliest.ts} and before_id=${earliest.id})`;
 }
 
-export function registerWhatsAppTools(server: McpServer): void {
+export function registerWhatsAppTools(server: McpServer, auth: WhatsAppToolAuth): void {
   server.registerTool(
     "whatsapp_list_groups",
     {
@@ -130,6 +162,7 @@ export function registerWhatsAppTools(server: McpServer): void {
     },
     async () => {
       if (!handle) return text(NOT_ENABLED);
+      if (!(await isAuthorized(auth))) return text(NOT_AUTHORIZED);
       const groups = handle.store.listGroups();
       if (groups.length === 0) return text("No WhatsApp messages stored yet.");
       const lines = groups.map((g) => {
@@ -177,6 +210,7 @@ export function registerWhatsAppTools(server: McpServer): void {
     },
     async ({ group, limit, before_ts, before_id, after_ts }) => {
       if (!handle) return text(NOT_ENABLED);
+      if (!(await isAuthorized(auth))) return text(NOT_AUTHORIZED);
       let groupJid: string | undefined;
       if (group) {
         const resolved = resolveGroup(handle, group);
@@ -222,6 +256,7 @@ export function registerWhatsAppTools(server: McpServer): void {
     },
     async ({ query, group, sender, limit }) => {
       if (!handle) return text(NOT_ENABLED);
+      if (!(await isAuthorized(auth))) return text(NOT_AUTHORIZED);
       let groupJid: string | undefined;
       if (group) {
         const resolved = resolveGroup(handle, group);

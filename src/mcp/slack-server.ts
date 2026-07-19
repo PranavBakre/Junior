@@ -97,7 +97,12 @@ let sessionManager: SessionManager | undefined;
 let slackActionStore: SlackActionStore | undefined;
 
 function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
-  registerWhatsAppTools(server);
+  registerWhatsAppTools(server, {
+    runContext,
+    // Deny-by-default until the SessionManager is wired in: without it the
+    // admin roster can't be consulted, and the archive is personal data.
+    isAdmin: (userId) => sessionManager?.isAdmin(userId) ?? Promise.resolve(false),
+  });
   server.registerTool(
     "slack_send_message",
     {
