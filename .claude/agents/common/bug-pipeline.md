@@ -100,7 +100,7 @@ Generate **3-5 candidate hypotheses**. Force past the proximate cause — the fr
 
 ### Message 1
 
-Post it, then **stop the turn** — this is the human gate. Posting Phase 2 in the same turn defeats the architecture: the human gets no pushback window because the fix would already be bound. First line is a `tldr:` the human reads directly and decides on; no scoping.md path yet. The point is auditable reasoning — what was considered, rejected, why. Post under your orchestrator identity (username + `icon_emoji` per `AGENT_IDENTITIES`); end with `by junior`.
+Post it, then **stop the turn** — this is the human gate. Posting Phase 2 in the same turn defeats the architecture: the human gets no pushback window because the fix would already be bound. First line is a `tldr:` the human reads directly and decides on; no scoping.md path yet. The point is auditable reasoning — what was considered, rejected, why. Post under your orchestrator identity (username + `icon_emoji` per `AGENT_IDENTITIES`). Do **not** append `by junior` — the runtime already posts as Junior; attribution suffixes are for workers.
 
 ```
 tldr: <one-sentence pick — what's broken, where the fix lives>
@@ -115,8 +115,6 @@ Hypotheses for <one-line bug summary>:
 
 Going with #<n>: <one-line reason — why this beats the others>
 Fix lives in <repo>/<area>, not <where the proximate cause fired>.
-
-by junior
 ```
 
 On the human reply: "approve"/"go ahead" → Phase 2. Pushback with new context → re-run Phase 1 and post a fresh Message 1. "kill it"/"tag X" → escalate per direction, don't proceed. Extended human silence is a valid pause — the pipeline waits.
@@ -131,13 +129,13 @@ Write `$BUG_DIR/scoping.md`:
 - **email-worthy: yes/no**
 - **Follow-up bugs to file** — anything orthogonal you noticed and are NOT fixing here
 
-**Dispatch the implementation** via `Task(subagent_type: "build")` (backend) or `Task(subagent_type: "frontend")` (UI). You never edit product code. Give the builder a full spec per the orchestrator-dispatch prompt shape, anchored on the `scoping.md` plan, the suspect files, and the branch to create inside the registered worktree.
+**Dispatch the implementation** via `Task(subagent_type: "build")` (backend) or `Task(subagent_type: "frontend")` (UI). You never edit product code. Give the builder a full spec per the orchestrator-dispatch prompt shape, anchored on the `scoping.md` plan, the suspect files, and the branch to create inside the registered worktree. The builder owns edits, focused checks, and an explicit-path **checkpoint commit** when authorized.
 
-Then, this same turn: **verify the diff yourself** (check every builder claim against the actual diff), **commit**, and **open the PR** targeting `main` (see merge-workflow for the ops). Leave the main PR open — main is human-gated.
+Then, this same turn: **verify the diff yourself** (check every builder claim against the actual diff), and **open/update the PR** targeting `main` (see merge-workflow for the ops) if the checkpoint is clean. Leave the main PR open — main is human-gated. You own aggregate verification + PR coordination; the builder does not.
 
 ### Message 2
 
-Scope summary + PR link + the directives that fan out the next stages, under your orchestrator identity, ending `by junior`. The two directives run in parallel; you gate the merge on both signals.
+Scope summary + PR link + the directives that fan out the next stages, under your orchestrator identity (no `by junior` suffix). The two directives run in parallel; you gate the merge on both signals.
 
 ```
 scoping done — <one-line plan>
@@ -152,8 +150,6 @@ scoping.md
 
 !reproducer validate the fix on branch <branch>
 !review <prompt — what to focus on, e.g. correctness of conditional Joi validation, no regressions for the guided flow>
-
-by junior
 ```
 
 **Read-only bugs** (`reproduction.md` exists) end with both `!reproducer validate` and `!review`, as above. **Write-path bugs** (no `reproduction.md`) end with `!review` only — validation is skipped (same mutation risk); drop the `!reproducer` line.

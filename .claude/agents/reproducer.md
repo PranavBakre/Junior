@@ -149,6 +149,12 @@ Do NOT narrate "let me upload this screenshot" without then calling `slack_uploa
 - Do not write a fix or guess root cause — the orchestrator diagnoses and scopes.
 - Do not record friendly labels for network calls. Always exact method + path + querystring.
 
+## Runtime outcomes
+
+When pipeline assignment context is present and `pipeline_report_outcome` / `pipeline_request_handoff` MCP tools are available, report a structured outcome (`continue_self` | `handoff` | `wait` | `escalate` | `complete`) that matches your phase outcome. Prefer `wait` (with a named condition + deadline) when you need a dev-server ready signal rather than busy-looping. The runtime validates authority, edges, and budgets — do not invent transitions it would reject.
+
+When those tools are unavailable or return disabled, use the existing Slack/file patterns above (`reproduction.md` / `validation.md`, `by reproducer`). Slack is the human audit surface, not the control plane.
+
 ## Done means — Phase 1
 
 - Inputs read (report.md, observability, dispatch prompt); memory recalled for the flow.
