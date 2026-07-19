@@ -197,32 +197,38 @@ export async function reportOutcome(
   const { outcome, auth } = input;
   const assignment = await deps.store.getAssignment(outcome.assignmentId);
   if (!assignment) {
-    return {
+    const receipt: TransitionReceipt = {
       status: "rejected",
       runVersion: 0,
       assignmentId: outcome.assignmentId,
       reason: "assignment not found",
     };
+    logRejectedOutcome(null, outcome.assignmentId, "assignment not found");
+    return receipt;
   }
 
   const run = await deps.store.getRun(assignment.runId);
   if (!run) {
-    return {
+    const receipt: TransitionReceipt = {
       status: "rejected",
       runVersion: 0,
       assignmentId: assignment.id,
       reason: "run not found",
     };
+    logRejectedOutcome(assignment.runId, assignment.id, "run not found");
+    return receipt;
   }
 
   const authFailure = authenticateAssignment(run, assignment, auth);
   if (authFailure) {
-    return {
+    const receipt: TransitionReceipt = {
       status: "rejected",
       runVersion: run.stateVersion,
       assignmentId: assignment.id,
       reason: authFailure,
     };
+    logRejectedOutcome(run.id, assignment.id, authFailure);
+    return receipt;
   }
 
   // Handoff edge authority (catalog graph).
@@ -232,15 +238,13 @@ export async function reportOutcome(
     const source = assignment.targetAgent;
     const ctx = auth.orchestratorContext ?? orchestratorContextFor(run);
     if (!canDispatch(source, target, ctx)) {
-      log.info(
-        "pipeline-outcomes",
-        `rejected unauthorized handoff ${source}→${target} run=${run.id}`,
-      );
+      const reason = `unauthorized handoff edge: ${source} → ${target}`;
+      logRejectedOutcome(run.id, assignment.id, reason);
       return {
         status: "rejected",
         runVersion: run.stateVersion,
         assignmentId: assignment.id,
-        reason: `unauthorized handoff edge: ${source} → ${target}`,
+        reason,
       };
     }
 
@@ -259,12 +263,17 @@ export async function reportOutcome(
     if (prior && outcome.evidenceRefs.length === 0) {
       // Force escalate path via a synthetic outcome rewrite only for the check —
       // return escalated receipt without committing a handoff.
+      const reason =
+        "loop policy: unchanged (run, source, target, progressFingerprint, candidateRevisionDigest) without new evidence";
+      log.info(
+        "pipeline-outcomes",
+        `escalated loop-policy run=${run.id} assignment=${assignment.id}: ${reason}`,
+      );
       return {
         status: "escalated",
         runVersion: run.stateVersion,
         assignmentId: assignment.id,
-        reason:
-          "loop policy: unchanged (run, source, target, progressFingerprint, candidateRevisionDigest) without new evidence",
+        reason,
       };
     }
   }
@@ -283,21 +292,25 @@ export async function reportOutcome(
         a.role === "review-target",
     );
     if (registered.length === 0) {
+      const reason =
+        "PR-opening completion requires registered PRs (pipeline_register_pr) when GitHub tracking is enabled";
+      logRejectedOutcome(run.id, assignment.id, reason);
       return {
         status: "rejected",
         runVersion: run.stateVersion,
         assignmentId: assignment.id,
-        reason:
-          "PR-opening completion requires registered PRs (pipeline_register_pr) when GitHub tracking is enabled",
+        reason,
       };
     }
     const missingSha = registered.find((a) => !a.expectedHeadSha?.trim());
     if (missingSha) {
+      const reason = `registered PR association ${missingSha.id} is missing expectedHeadSha`;
+      logRejectedOutcome(run.id, assignment.id, reason);
       return {
         status: "rejected",
         runVersion: run.stateVersion,
         assignmentId: assignment.id,
-        reason: `registered PR association ${missingSha.id} is missing expectedHeadSha`,
+        reason,
       };
     }
   }
@@ -310,14 +323,31 @@ export async function reportOutcome(
     idempotencyKey: input.idempotencyKey,
   });
 
-  if (receipt.status === "accepted" || receipt.status === "waiting" || receipt.status === "escalated") {
+  if (
+    receipt.status === "accepted" ||
+    receipt.status === "waiting" ||
+    receipt.status === "escalated"
+  ) {
     log.info(
       "pipeline-outcomes",
       `outcome ${outcome.action} ${receipt.status} run=${run.id} assignment=${assignment.id} v${receipt.runVersion}`,
     );
+  } else if (receipt.status === "rejected") {
+    logRejectedOutcome(run.id, assignment.id, receipt.reason ?? "rejected");
   }
 
   return receipt;
+}
+
+function logRejectedOutcome(
+  runId: string | null,
+  assignmentId: string,
+  reason: string,
+): void {
+  log.info(
+    "pipeline-outcomes",
+    `rejected transition run=${runId ?? "unknown"} assignment=${assignmentId}: ${reason}`,
+  );
 }
 
 /**

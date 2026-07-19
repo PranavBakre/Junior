@@ -1,10 +1,17 @@
 # Agent Product-Building and Bug-Debugging Pipeline Implementation Plan
 
-> Status: in progress (Phase 0 landed)
+> Status: Phases 0–9 landed (shadow/off by default)
 >
 > Source audit: [Agent Product-Building and Bug-Debugging Pipeline Audit](../audits/2026-07-19-agent-product-debugging-pipeline.md)
 >
 > Scope excludes WhatsApp and unrelated local work.
+>
+> **Rollout:** all controllers and GitHub wakes stay off by default
+> (`PIPELINE_RUNTIME_MODE=off`, `BUG_PIPELINE_ENABLED=false`,
+> `PRODUCT_PIPELINE_ENABLED=false`, `GITHUB_RECONCILE_ENABLED=false`,
+> `GITHUB_EVENT_WAKE_ENABLED=false`). Substrate, recovery, retention GC, and
+> `!status` pipeline projection are present; enable controllers only via
+> validated flag combinations at boot.
 
 ## Outcome
 

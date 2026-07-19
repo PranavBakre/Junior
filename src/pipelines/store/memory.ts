@@ -377,6 +377,64 @@ export class InMemoryPipelineStore implements PipelineStore {
       .map((r) => ({ ...r }));
   }
 
+  async listTerminalRuns(filter?: {
+    updatedBefore?: number;
+  }): Promise<PipelineRun[]> {
+    return [...this.runs.values()]
+      .filter((r) => {
+        if (r.status !== "terminal") return false;
+        if (
+          filter?.updatedBefore != null &&
+          r.updatedAt > filter.updatedBefore
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .map(cloneRun);
+  }
+
+  async compactTerminalRunHistory(runId: string): Promise<{
+    outboxCompacted: number;
+    eventsCompacted: number;
+  }> {
+    const run = this.runs.get(runId);
+    if (!run || run.status !== "terminal") {
+      return { outboxCompacted: 0, eventsCompacted: 0 };
+    }
+    let outboxCompacted = 0;
+    for (const [id, r] of this.outbox) {
+      if (r.runId !== runId) continue;
+      if (r.status !== "delivered" && r.status !== "dead") continue;
+      if (r.payload && Object.keys(r.payload).length === 0) continue;
+      if (r.payload?.compacted === true) continue;
+      this.outbox.set(id, {
+        ...r,
+        payload: { compacted: true },
+      });
+      outboxCompacted += 1;
+    }
+    let eventsCompacted = 0;
+    const events = this.events.get(runId) ?? [];
+    for (let i = 0; i < events.length; i++) {
+      const e = events[i]!;
+      if (e.payload?.compacted === true) continue;
+      if (!e.payload || Object.keys(e.payload).length === 0) continue;
+      events[i] = {
+        ...e,
+        payload: {
+          compacted: true,
+          eventType: e.eventType,
+          fromPhase: e.fromPhase,
+          toPhase: e.toPhase,
+        },
+      };
+      eventsCompacted += 1;
+    }
+    this.events.set(runId, events);
+    return { outboxCompacted, eventsCompacted };
+  }
+
   async createAttempt(attempt: PipelineAttempt): Promise<void> {
     if (this.attempts.has(attempt.id)) {
       throw new Error(`attempt already exists: ${attempt.id}`);
@@ -547,6 +605,28 @@ export class InMemoryPipelineStore implements PipelineStore {
       leaseUntil: null,
       updatedAt: this.clock.now(),
     });
+  }
+
+  async reclaimExpiredGitHubResourceLeases(
+    now = this.clock.now(),
+  ): Promise<number> {
+    let count = 0;
+    for (const [id, r] of this.githubResources) {
+      if (
+        r.leaseOwner != null &&
+        r.leaseUntil != null &&
+        r.leaseUntil <= now
+      ) {
+        this.githubResources.set(id, {
+          ...r,
+          leaseOwner: null,
+          leaseUntil: null,
+          updatedAt: now,
+        });
+        count += 1;
+      }
+    }
+    return count;
   }
 
   async recordGitHubPollFailure(

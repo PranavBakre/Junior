@@ -54,6 +54,24 @@ export interface PipelineStore {
   reclaimExpiredOutboxLeases(now?: number): Promise<number>;
   listOutbox(runId: string): Promise<PipelineOutboxRecord[]>;
 
+  /**
+   * Terminal runs eligible for retention GC (status=terminal and
+   * updated_at <= updatedBefore when provided). Never returns active runs.
+   */
+  listTerminalRuns(filter?: {
+    updatedBefore?: number;
+  }): Promise<PipelineRun[]>;
+
+  /**
+   * Compact verbose history for a terminal run only: clear delivered outbox
+   * payloads and strip verbose event payloads. No-ops (and returns zeros)
+   * when the run is missing or non-terminal.
+   */
+  compactTerminalRunHistory(runId: string): Promise<{
+    outboxCompacted: number;
+    eventsCompacted: number;
+  }>;
+
   createAttempt(attempt: PipelineAttempt): Promise<void>;
   getAttempt(id: string): Promise<PipelineAttempt | undefined>;
   /**
@@ -91,6 +109,8 @@ export interface PipelineStore {
     now?: number,
   ): Promise<boolean>;
   releaseGitHubResourceLease(id: string): Promise<void>;
+  /** Clear GitHub resource leases whose lease_until has passed. */
+  reclaimExpiredGitHubResourceLeases(now?: number): Promise<number>;
   recordGitHubPollFailure(
     resourceId: string,
     error: string,

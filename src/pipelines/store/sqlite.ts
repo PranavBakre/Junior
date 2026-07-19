@@ -983,6 +983,88 @@ export class SqlitePipelineStore implements PipelineStore {
     return result.changes;
   }
 
+  async listTerminalRuns(filter?: {
+    updatedBefore?: number;
+  }): Promise<PipelineRun[]> {
+    if (filter?.updatedBefore != null) {
+      return this.db
+        .query<RunRow, [number]>(
+          `SELECT * FROM pipeline_runs
+           WHERE status = 'terminal' AND updated_at <= ?
+           ORDER BY updated_at ASC`,
+        )
+        .all(filter.updatedBefore)
+        .map(runFromRow);
+    }
+    return this.db
+      .query<RunRow, []>(
+        `SELECT * FROM pipeline_runs
+         WHERE status = 'terminal'
+         ORDER BY updated_at ASC`,
+      )
+      .all()
+      .map(runFromRow);
+  }
+
+  async compactTerminalRunHistory(runId: string): Promise<{
+    outboxCompacted: number;
+    eventsCompacted: number;
+  }> {
+    const run = await this.getRun(runId);
+    if (!run || run.status !== "terminal") {
+      return { outboxCompacted: 0, eventsCompacted: 0 };
+    }
+
+    const compactedPayload = JSON.stringify({ compacted: true });
+    const outboxResult = this.db
+      .query(
+        `UPDATE pipeline_outbox SET payload_json = ?
+         WHERE run_id = ?
+           AND status IN ('delivered', 'dead')
+           AND payload_json IS NOT NULL
+           AND payload_json != '{}'
+           AND payload_json NOT LIKE '%"compacted":true%'`,
+      )
+      .run(compactedPayload, runId);
+
+    // Compact verbose event payloads while preserving phase anchors.
+    const eventRows = this.db
+      .query<
+        { id: string; event_type: string; from_phase: string | null; to_phase: string | null; payload_json: string },
+        [string]
+      >(
+        `SELECT id, event_type, from_phase, to_phase, payload_json
+         FROM pipeline_events
+         WHERE run_id = ?
+           AND payload_json IS NOT NULL
+           AND payload_json != '{}'
+           AND payload_json NOT LIKE '%"compacted":true%'`,
+      )
+      .all(runId);
+
+    let eventsCompacted = 0;
+    const updateEvent = this.db.query(
+      `UPDATE pipeline_events SET payload_json = ? WHERE id = ?`,
+    );
+    for (const row of eventRows) {
+      updateEvent.run(
+        JSON.stringify({
+          compacted: true,
+          eventType: row.event_type,
+          fromPhase: row.from_phase,
+          toPhase: row.to_phase,
+        }),
+        row.id,
+      );
+      eventsCompacted += 1;
+    }
+
+    return {
+      outboxCompacted: outboxResult.changes,
+      eventsCompacted,
+    };
+  }
+
   async listOutbox(runId: string): Promise<PipelineOutboxRecord[]> {
     return this.db
       .query<OutboxRow, [string]>(
@@ -1306,6 +1388,23 @@ export class SqlitePipelineStore implements PipelineStore {
          WHERE id = ?`,
       )
       .run(this.clock.now(), id);
+  }
+
+  async reclaimExpiredGitHubResourceLeases(
+    now = this.clock.now(),
+  ): Promise<number> {
+    const result = this.db
+      .query(
+        `UPDATE github_resources SET
+          lease_owner = NULL,
+          lease_until = NULL,
+          updated_at = ?
+         WHERE lease_owner IS NOT NULL
+           AND lease_until IS NOT NULL
+           AND lease_until <= ?`,
+      )
+      .run(now, now);
+    return result.changes;
   }
 
   async recordGitHubPollFailure(
