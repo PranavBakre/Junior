@@ -90,23 +90,92 @@ export class InMemoryPipelineStore implements PipelineStore {
     assignment: AssignmentCreate;
     events?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
   }): Promise<Assignment> {
-    // Memory store is single-threaded; still apply all-or-nothing semantics.
+    // Mirror sqlite: resolve assignment idempotency before mutating state.
+    let assignmentInput = input.assignment;
+    const existingAsgId = this.assignmentByIdempotency.get(
+      assignmentInput.idempotencyKey,
+    );
+    if (existingAsgId) {
+      const existingAsg = this.assignments.get(existingAsgId);
+      const existingRun = existingAsg
+        ? this.runs.get(existingAsg.runId)
+        : undefined;
+      if (
+        existingRun &&
+        existingRun.status !== "terminal" &&
+        existingRun.threadId === input.run.threadId
+      ) {
+        throw new Error(
+          `active pipeline run already exists for thread ${input.run.threadId}`,
+        );
+      }
+      // Prior key belonged to a terminal/missing run — rekey for the new run.
+      assignmentInput = {
+        ...assignmentInput,
+        idempotencyKey: `${assignmentInput.idempotencyKey}:run:${input.run.id}`,
+      };
+    }
+
+    // Snapshot keys we may need to roll back (only our run's data).
+    const runId = input.run.id;
+    const asgId = assignmentInput.id;
+    const asgKey = assignmentInput.idempotencyKey;
+
     await this.createRun(input.run);
     try {
-      const assignment = await this.createAssignment(input.assignment);
+      // Insert assignment directly — do not use createAssignment which returns
+      // a foreign assignment on key collision (would leave this run empty).
+      const now = this.clock.now();
+      const assignment: Assignment = {
+        id: asgId,
+        runId: assignmentInput.runId,
+        parentAssignmentId: assignmentInput.parentAssignmentId,
+        sourceAgent: assignmentInput.sourceAgent,
+        targetAgent: assignmentInput.targetAgent,
+        status: assignmentInput.status ?? "pending",
+        objective: assignmentInput.objective,
+        contextRefs: [...assignmentInput.contextRefs],
+        artifactRefs: [...assignmentInput.artifactRefs],
+        acceptanceCriteria: [...assignmentInput.acceptanceCriteria],
+        mutationScope: [...assignmentInput.mutationScope],
+        dependsOn: [...assignmentInput.dependsOn],
+        attempt: assignmentInput.attempt,
+        attemptId: assignmentInput.attemptId,
+        candidateRevisionDigest: assignmentInput.candidateRevisionDigest,
+        deadlineAt: assignmentInput.deadlineAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        idempotencyKey: asgKey,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.assignments.set(assignment.id, cloneAssignment(assignment));
+      this.assignmentByIdempotency.set(asgKey, assignment.id);
+
       for (const event of input.events ?? []) {
         await this.appendEvent(event);
       }
-      return assignment;
+      return cloneAssignment(assignment);
     } catch (err) {
-      // Roll back run + any partial state.
-      this.runs.delete(input.run.id);
-      if (this.runsByThread.get(input.run.threadId) === input.run.id) {
-        this.runsByThread.delete(input.run.threadId);
+      // Roll back only this run's records — never another run's assignment/events.
+      this.runs.delete(runId);
+      if (this.runsByThread.get(input.run.threadId) === runId) {
+        // Restore pointer to newest remaining non-terminal run on the thread, if any.
+        let restored: string | undefined;
+        for (const [id, r] of this.runs) {
+          if (r.threadId === input.run.threadId && r.status !== "terminal") {
+            restored = id;
+            break;
+          }
+        }
+        if (restored) this.runsByThread.set(input.run.threadId, restored);
+        else this.runsByThread.delete(input.run.threadId);
       }
-      this.assignments.delete(input.assignment.id);
-      this.assignmentByIdempotency.delete(input.assignment.idempotencyKey);
-      this.events.delete(input.run.id);
+      if (this.assignmentByIdempotency.get(asgKey) === asgId) {
+        this.assignmentByIdempotency.delete(asgKey);
+      }
+      this.assignments.delete(asgId);
+      this.events.delete(runId);
       throw err;
     }
   }

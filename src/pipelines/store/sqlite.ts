@@ -558,6 +558,9 @@ export class SqlitePipelineStore implements PipelineStore {
     `);
 
     // At most one non-terminal pipeline run per Slack thread.
+    // Heal legacy duplicates first — bare INSERT at 116f7c4 allowed multiple
+    // non-terminal rows per thread; creating the unique index would crash boot.
+    this.healDuplicateActivePipelineRuns();
     this.db.run(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_active_thread
       ON pipeline_runs (thread_id)
@@ -580,6 +583,57 @@ export class SqlitePipelineStore implements PipelineStore {
       CREATE INDEX IF NOT EXISTS idx_pipeline_thread_cursors_thread
       ON pipeline_thread_cursors (thread_id)
     `);
+  }
+
+  /**
+   * Terminal-mark older non-terminal runs that share a thread_id, keeping the
+   * newest (by created_at, then id). Required before creating the partial
+   * unique index on active thread_id.
+   */
+  private healDuplicateActivePipelineRuns(): void {
+    const dups = this.db
+      .query<{ thread_id: string; cnt: number }, []>(
+        `SELECT thread_id, COUNT(*) AS cnt FROM pipeline_runs
+         WHERE status != 'terminal'
+         GROUP BY thread_id
+         HAVING cnt > 1`,
+      )
+      .all();
+    if (dups.length === 0) return;
+
+    const now = this.clock.now();
+    const heal = this.db.transaction(() => {
+      for (const { thread_id } of dups) {
+        const rows = this.db
+          .query<{ id: string }, [string]>(
+            `SELECT id FROM pipeline_runs
+             WHERE thread_id = ? AND status != 'terminal'
+             ORDER BY created_at DESC, id DESC`,
+          )
+          .all(thread_id);
+        // Keep newest (first); abandon the rest.
+        for (const row of rows.slice(1)) {
+          this.db
+            .query(
+              `UPDATE pipeline_runs SET
+                status = 'terminal',
+                phase = CASE
+                  WHEN phase IN ('abandoned', 'shipped', 'merged', 'expected-behavior', 'not-reproduced', 'cleanup')
+                  THEN phase ELSE 'abandoned'
+                END,
+                terminal_outcome = COALESCE(terminal_outcome, 'abandoned'),
+                terminal_reason = COALESCE(
+                  terminal_reason,
+                  'healed: duplicate active run for thread; kept newer run'
+                ),
+                updated_at = ?
+               WHERE id = ? AND status != 'terminal'`,
+            )
+            .run(now, row.id);
+        }
+      }
+    });
+    heal();
   }
 
   /**
@@ -703,6 +757,37 @@ export class SqlitePipelineStore implements PipelineStore {
     assignment: AssignmentCreate;
     events?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
   }): Promise<Assignment> {
+    // Resolve assignment idempotency before the TX so a start-message replay
+    // after the prior run went terminal does not hit UNIQUE and roll back.
+    let assignmentInput = input.assignment;
+    const existingAsg = this.db
+      .query<AssignmentRow, [string]>(
+        "SELECT * FROM pipeline_assignments WHERE idempotency_key = ?",
+      )
+      .get(assignmentInput.idempotencyKey);
+    if (existingAsg) {
+      const existingRun = this.db
+        .query<RunRow, [string]>(
+          "SELECT * FROM pipeline_runs WHERE id = ?",
+        )
+        .get(existingAsg.run_id);
+      if (
+        existingRun &&
+        existingRun.status !== "terminal" &&
+        existingRun.thread_id === input.run.threadId
+      ) {
+        throw new Error(
+          `active pipeline run already exists for thread ${input.run.threadId}`,
+        );
+      }
+      // Prior assignment belonged to a terminal (or missing) run — rekey so
+      // the new run can start without a constraint failure.
+      assignmentInput = {
+        ...assignmentInput,
+        idempotencyKey: `${assignmentInput.idempotencyKey}:run:${input.run.id}`,
+      };
+    }
+
     const create = this.db.transaction(() => {
       try {
         this.db
@@ -750,28 +835,27 @@ export class SqlitePipelineStore implements PipelineStore {
         throw err;
       }
 
-      // Inline assignment insert (createAssignment is async; stay in TX).
       const now = this.clock.now();
       const assignment: Assignment = {
-        id: input.assignment.id,
-        runId: input.assignment.runId,
-        parentAssignmentId: input.assignment.parentAssignmentId,
-        sourceAgent: input.assignment.sourceAgent,
-        targetAgent: input.assignment.targetAgent,
-        status: input.assignment.status ?? "pending",
-        objective: input.assignment.objective,
-        contextRefs: [...input.assignment.contextRefs],
-        artifactRefs: [...input.assignment.artifactRefs],
-        acceptanceCriteria: [...input.assignment.acceptanceCriteria],
-        mutationScope: [...input.assignment.mutationScope],
-        dependsOn: [...input.assignment.dependsOn],
-        attempt: input.assignment.attempt,
-        attemptId: input.assignment.attemptId,
-        candidateRevisionDigest: input.assignment.candidateRevisionDigest,
-        deadlineAt: input.assignment.deadlineAt,
+        id: assignmentInput.id,
+        runId: assignmentInput.runId,
+        parentAssignmentId: assignmentInput.parentAssignmentId,
+        sourceAgent: assignmentInput.sourceAgent,
+        targetAgent: assignmentInput.targetAgent,
+        status: assignmentInput.status ?? "pending",
+        objective: assignmentInput.objective,
+        contextRefs: [...assignmentInput.contextRefs],
+        artifactRefs: [...assignmentInput.artifactRefs],
+        acceptanceCriteria: [...assignmentInput.acceptanceCriteria],
+        mutationScope: [...assignmentInput.mutationScope],
+        dependsOn: [...assignmentInput.dependsOn],
+        attempt: assignmentInput.attempt,
+        attemptId: assignmentInput.attemptId,
+        candidateRevisionDigest: assignmentInput.candidateRevisionDigest,
+        deadlineAt: assignmentInput.deadlineAt,
         leaseOwner: null,
         leaseExpiresAt: null,
-        idempotencyKey: input.assignment.idempotencyKey,
+        idempotencyKey: assignmentInput.idempotencyKey,
         createdAt: now,
         updatedAt: now,
       };

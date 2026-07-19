@@ -446,6 +446,88 @@ describe("SqlitePipelineStore", () => {
     expect(await store.getRun("run-atomic-2")).toBeUndefined();
   });
 
+  it("heals duplicate active runs before creating unique index", async () => {
+    // Simulate pre-index DB with two non-terminal runs on one thread.
+    const healPath = join(tmpDir, "heal-active.db");
+    const { Database } = await import("bun:sqlite");
+    const raw = new Database(healPath);
+    raw.run(`
+      CREATE TABLE pipeline_runs (
+        id TEXT PRIMARY KEY,
+        kind TEXT, definition_version INTEGER, channel_id TEXT, thread_id TEXT,
+        phase TEXT, status TEXT, owner_agent TEXT, repo_refs_json TEXT,
+        acceptance_json TEXT, artifact_refs_json TEXT, blocker_refs_json TEXT,
+        active_attempt_id TEXT, state_version INTEGER, deadline_at INTEGER,
+        terminal_outcome TEXT, terminal_reason TEXT, created_at INTEGER, updated_at INTEGER
+      )
+    `);
+    raw.run(
+      `INSERT INTO pipeline_runs (
+        id, kind, definition_version, channel_id, thread_id, phase, status,
+        owner_agent, repo_refs_json, acceptance_json, artifact_refs_json,
+        blocker_refs_json, active_attempt_id, state_version, deadline_at,
+        terminal_outcome, terminal_reason, created_at, updated_at
+      ) VALUES
+      ('old', 'product', 1, 'C', 'T-dup', 'needs-human', 'needs-human',
+       'lead', '[]', '[]', '[]', '[]', NULL, 0, NULL, NULL, NULL, 1000, 1000),
+      ('new', 'product', 1, 'C', 'T-dup', 'building', 'active',
+       'lead', '[]', '[]', '[]', '[]', NULL, 0, NULL, NULL, NULL, 2000, 2000)`,
+    );
+    raw.close();
+
+    // Constructor must not crash and must heal older duplicate.
+    const healed = new SqlitePipelineStore(healPath, clock);
+    const old = await healed.getRun("old");
+    const neu = await healed.getRun("new");
+    expect(old?.status).toBe("terminal");
+    expect(old?.terminalOutcome).toBe("abandoned");
+    expect(neu?.status).toBe("active");
+    const active = await healed.getRunByThread("T-dup");
+    expect(active?.id).toBe("new");
+    // Index is in place: another active insert fails cleanly.
+    await expect(
+      healed.createRun(
+        makeProductRun({ id: "third", threadId: "T-dup", phase: "discovery" }),
+      ),
+    ).rejects.toThrow(/active pipeline run already exists/);
+    healed.close();
+  });
+
+  it("replays start after prior run is terminal without idempotency crash", async () => {
+    await store.createRunWithAssignment({
+      run: makeProductRun({
+        id: "run-old",
+        threadId: "T-replay",
+        status: "terminal",
+        phase: "shipped",
+        terminalOutcome: "shipped",
+      }),
+      assignment: makeAssignmentCreate({
+        id: "asg-old",
+        runId: "run-old",
+        idempotencyKey: "start-key-shared",
+      }),
+    });
+
+    const asg = await store.createRunWithAssignment({
+      run: makeProductRun({
+        id: "run-new",
+        threadId: "T-replay",
+        status: "active",
+        phase: "discovery",
+      }),
+      assignment: makeAssignmentCreate({
+        id: "asg-new",
+        runId: "run-new",
+        idempotencyKey: "start-key-shared",
+      }),
+    });
+    expect(asg.id).toBe("asg-new");
+    expect(asg.runId).toBe("run-new");
+    expect(asg.idempotencyKey).toBe("start-key-shared:run:run-new");
+    expect((await store.getRun("run-new"))?.status).toBe("active");
+  });
+
   it("atomically persists GitHub snapshots and multi-PR semantic events without wakes", async () => {
     await store.createRun(makeProductRun({ id: "run-1", threadId: "T1" }));
     await store.createRun(

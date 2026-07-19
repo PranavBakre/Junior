@@ -442,19 +442,10 @@ export async function reduceBugOutcome(
     };
   }
 
-  // Release dev-server slots whenever validation is finishing — even if the
-  // subsequent outcome CAS is rejected (stale version). Otherwise a CAS
-  // conflict leaves the FS lock held until a process-local deadline timer
-  // that does not survive restart.
-  const shouldReleaseDevServer =
-    config.jobStore &&
-    (run.phase === "validating" ||
-      input.outcome.wait?.conditionName === DEVSERVER_READY_CONDITION) &&
-    (input.outcome.action === "complete" ||
-      input.outcome.status === "failed" ||
-      input.outcome.action === "escalate");
-
-  // Commit the outcome CAS first for evidence/devserver-job side effects.
+  // Commit the outcome CAS first. Rejected CAS must have zero side effects
+  // (a stale writer must not free the live validation slot). Release only for
+  // committed or duplicate receipts — the leak case is a successful commit
+  // path that previously forgot to release.
   const receipt = await store.recordOutcomeTransaction({
     outcome: input.outcome,
     toPhase: suggested,
@@ -463,7 +454,27 @@ export async function reduceBugOutcome(
     idempotencyKey: input.idempotencyKey,
   });
 
-  // Always free slots on terminal validation attempts (accept or reject).
+  if (
+    receipt.status !== "accepted" &&
+    receipt.status !== "waiting" &&
+    receipt.status !== "escalated" &&
+    receipt.status !== "duplicate"
+  ) {
+    return {
+      ...receipt,
+      mode,
+      notes: bugPolicy.notes,
+    };
+  }
+
+  // Free slots only after a successful commit (or duplicate of one).
+  const shouldReleaseDevServer =
+    config.jobStore &&
+    (run.phase === "validating" ||
+      input.outcome.wait?.conditionName === DEVSERVER_READY_CONDITION) &&
+    (input.outcome.action === "complete" ||
+      input.outcome.status === "failed" ||
+      input.outcome.action === "escalate");
   if (shouldReleaseDevServer && config.jobStore) {
     const jobs = await config.jobStore.listDevServerJobs({ runId: run.id });
     const forAssignment = jobs.filter((j) => j.assignmentId === assignment.id);
@@ -477,19 +488,6 @@ export async function reduceBugOutcome(
       await releaseDevServerJobOnce(config.jobStore, job.id, reason);
       await invokeDevServerSlotRelease(job.id);
     }
-  }
-
-  if (
-    receipt.status !== "accepted" &&
-    receipt.status !== "waiting" &&
-    receipt.status !== "escalated" &&
-    receipt.status !== "duplicate"
-  ) {
-    return {
-      ...receipt,
-      mode,
-      notes: bugPolicy.notes,
-    };
   }
 
   // Record evidence from this outcome (post-commit audit).
