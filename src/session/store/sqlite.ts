@@ -530,6 +530,9 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   session.humanParticipants ??= [];
   session.pipelineGuardRetryCount ??= 0;
   session.stateVersion ??= 0;
+  // Pipeline substrate (Phase 2): pre-existing rows default to no active run.
+  session.activePipelineRunId ??= null;
+  session.activePipelineKind ??= null;
   return session;
 }
 

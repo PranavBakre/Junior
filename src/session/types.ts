@@ -176,6 +176,13 @@ export interface ThreadSession {
    * on every successful store write. Missing / legacy rows normalize to 0.
    */
   stateVersion?: number;
+  /**
+   * Active multi-agent pipeline run (ProductRun / BugRun). Null when the
+   * thread is not under the durable pipeline control plane. Phase 2 substrate
+   * only — live routing still does not create pipeline rows when mode=off.
+   */
+  activePipelineRunId?: string | null;
+  activePipelineKind?: "product" | "bug" | null;
 }
 
 export function createSession(
@@ -225,6 +232,8 @@ export function createSession(
     idleInterruptCount: 0,
     pipelineGuardRetryCount: 0,
     stateVersion: 0,
+    activePipelineRunId: null,
+    activePipelineKind: null,
   };
 }
 

@@ -108,6 +108,8 @@ describe("createSession", () => {
     const session = createSession("t1", "C01");
     const keys = Object.keys(session).sort();
     expect(keys).toEqual([
+      "activePipelineKind",
+      "activePipelineRunId",
       "agentSessions",
       "agentType",
       "baseRef",

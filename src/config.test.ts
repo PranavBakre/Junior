@@ -47,6 +47,7 @@ const ENV_KEYS = [
   "ADMIN_SLACK_USER_ID",
   "HTTP_DASHBOARD_PORT",
   "WHATSAPP_EXTRACTION_INTERVAL_MS",
+  "PIPELINE_RUNTIME_MODE",
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -160,6 +161,20 @@ describe("loadConfig runner providers", () => {
     expect(() => loadConfig()).toThrow(
       "RUNNER_PROVIDER=codex is a planned provider but is not yet implemented. Use opencode|opencode-sdk|codex-app-server|claude.",
     );
+  });
+
+  it("defaults PIPELINE_RUNTIME_MODE to off", () => {
+    expect(loadConfig().pipeline?.runtimeMode).toBe("off");
+  });
+
+  it("parses PIPELINE_RUNTIME_MODE=shadow", () => {
+    process.env.PIPELINE_RUNTIME_MODE = "shadow";
+    expect(loadConfig().pipeline?.runtimeMode).toBe("shadow");
+  });
+
+  it("rejects invalid PIPELINE_RUNTIME_MODE", () => {
+    process.env.PIPELINE_RUNTIME_MODE = "maybe";
+    expect(() => loadConfig()).toThrow("Invalid PIPELINE_RUNTIME_MODE");
   });
 
   it("defaults WHATSAPP_EXTRACTION_INTERVAL_MS to 600000", () => {

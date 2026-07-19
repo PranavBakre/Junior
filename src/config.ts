@@ -187,7 +187,17 @@ export interface Config {
    * `loadConfig` always populates it and read sites gate on `?.enabled`.
    */
   whatsapp?: WhatsAppConfig;
+  /**
+   * Durable ProductRun/BugRun control plane. Default `off` — substrate is
+   * present but live routing does not create pipeline rows. `shadow` records
+   * without dispatching; `active` enables typed controllers (later phases).
+   */
+  pipeline?: {
+    runtimeMode: PipelineRuntimeMode;
+  };
 }
+
+export type PipelineRuntimeMode = "off" | "shadow" | "active";
 
 function required(name: string): string {
   const val = process.env[name];
@@ -320,6 +330,11 @@ export function loadConfig(): Config {
       notionPageId: optional(
         "HERMES_NOTION_PAGE_ID",
         "39a3578dc3f08015b386cc6638029bed",
+      ),
+    },
+    pipeline: {
+      runtimeMode: parsePipelineRuntimeMode(
+        optional("PIPELINE_RUNTIME_MODE", "off"),
       ),
     },
   };
@@ -478,5 +493,14 @@ function parseVerbosity(value: string): SessionVerbosity {
   }
   throw new Error(
     `Invalid SESSION_DEFAULT_VERBOSITY: ${value} (expected quiet|normal|verbose)`,
+  );
+}
+
+function parsePipelineRuntimeMode(value: string): PipelineRuntimeMode {
+  if (value === "off" || value === "shadow" || value === "active") {
+    return value;
+  }
+  throw new Error(
+    `Invalid PIPELINE_RUNTIME_MODE: ${value} (expected off|shadow|active)`,
   );
 }
