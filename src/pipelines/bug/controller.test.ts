@@ -1,5 +1,5 @@
 /**
- * Phase 6: bug controller modes, durable dev-server jobs, GitHub wakes.
+ * Bug controller: adaptive modes, durable dev-server jobs, GitHub wakes.
  */
 import { describe, expect, it } from "bun:test";
 import { fakeClock } from "../../time/clock.ts";
@@ -551,7 +551,7 @@ describe("GitHub wake delivery", () => {
       idempotencyKey: "wait-checks-1",
     });
 
-    // Simulate Phase 5 shadow event persisted while laptop slept.
+    // Simulate a shadow GitHub event persisted while the laptop slept.
     await store.appendEvent({
       id: "gh-evt-1",
       runId: run.id,

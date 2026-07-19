@@ -1,5 +1,5 @@
 /**
- * Phase 7: product controller — discovery → build → review ↔ rework → human merge.
+ * Product controller: discovery → build → review ↔ rework → human merge.
  */
 import { describe, expect, it } from "bun:test";
 import { fakeClock } from "../../time/clock.ts";

@@ -1,5 +1,5 @@
 /**
- * Phase 8 golden tests: provider-neutral operational parity.
+ * Provider-neutral operational parity goldens.
  *
  * Locks the safety-critical surface so no provider / prompt path grants a
  * catalog role different authority or handoff rights than the trusted catalog.

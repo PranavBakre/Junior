@@ -1,5 +1,5 @@
 /**
- * Phase 9: outbox at-least-once + idempotent consumers, shadow dispatch guard.
+ * Outbox at-least-once delivery, idempotent consumers, and shadow dispatch guard.
  */
 import { describe, expect, it, mock } from "bun:test";
 import { fakeClock } from "../time/clock.ts";

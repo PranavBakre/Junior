@@ -24,7 +24,7 @@ import {
 } from "./registry.ts";
 
 describe("trusted agent catalog", () => {
-  it("registers the Phase 3 operational roles", () => {
+  it("registers the operational roles", () => {
     const names = listCatalogAgents().map((m) => m.name).sort();
     expect(names).toEqual(
       [
@@ -71,7 +71,7 @@ describe("trusted agent catalog", () => {
 });
 
 describe("handoff graph", () => {
-  it("encodes the Phase 3 initial edges", () => {
+  it("encodes the initial handoff edges", () => {
     // pm → architect | build | frontend | orchestrator
     expect(registryAllowsHandoff("pm", "architect")).toBe(true);
     expect(registryAllowsHandoff("pm", "build")).toBe(true);

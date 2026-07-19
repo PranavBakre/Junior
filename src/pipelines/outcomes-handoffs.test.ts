@@ -1,5 +1,5 @@
 /**
- * Phase 4: authenticated outcomes, handoffs, outbox pump, PR registration gate.
+ * Authenticated outcomes, handoffs, outbox pump, and PR registration gate.
  */
 import { describe, expect, it, mock } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
