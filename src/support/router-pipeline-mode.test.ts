@@ -54,6 +54,12 @@ function memorySessionStore(
     mutateAgent: async () => {
       throw new Error("not implemented");
     },
+    removeAgentSession: async (id: string, agentName: string) => {
+      const s = sessions.get(id);
+      if (s?.agentSessions?.[agentName]) {
+        delete s.agentSessions[agentName];
+      }
+    },
   };
 }
 

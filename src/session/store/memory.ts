@@ -143,6 +143,20 @@ export class InMemorySessionStore implements SessionStore {
     });
   }
 
+  async removeAgentSession(threadId: string, agentName: string): Promise<void> {
+    await this.mutateThread(threadId, (session) => {
+      if (session.agentSessions?.[agentName]) {
+        delete session.agentSessions[agentName];
+      }
+    }).catch((err) => {
+      // Session missing is fine for reset of non-existent agent.
+      if (err instanceof Error && /session not found/i.test(err.message)) {
+        return;
+      }
+      throw err;
+    });
+  }
+
   /**
    * Force a CAS write with an explicit expected version. Used by tests to
    * provoke SessionVersionConflictError without the retry loop.

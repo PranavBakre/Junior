@@ -631,24 +631,33 @@ export class SessionManager {
           .close(threadId, session.topLevelTmuxAgent ?? agentName)
           .catch(() => undefined);
       }
-      session.sessionId = null;
-      session.leadSessionId = null;
-      session.pendingMessages = [];
-      session.status = "idle";
-      session.pid = null;
-      session.tmuxSessionName = null;
-      session.topLevelTmuxAgent = null;
+      await this.mutateSession(threadId, (s) => {
+        s.sessionId = null;
+        s.leadSessionId = null;
+        s.pendingMessages = [];
+        s.status = "idle";
+        s.pid = null;
+        s.tmuxSessionName = null;
+        s.topLevelTmuxAgent = null;
+      });
     } else if (session.agentSessions?.[agentName]) {
       const agentSession = session.agentSessions[agentName];
       if (session.driverMode === "tmux" && agentSession.tmuxSessionName) {
         const tmux = this.driverFor("tmux");
         await tmux.close(threadId, agentName).catch(() => undefined);
       }
-      delete session.agentSessions[agentName];
+      // Drop from the map via CAS, then delete the dual-write agent row.
+      // UPSERT no longer deletes omitted agents, so removeAgentSession is
+      // required for the row to actually disappear.
+      await this.mutateSession(threadId, (s) => {
+        if (s.agentSessions?.[agentName]) {
+          delete s.agentSessions[agentName];
+        }
+      });
+      await this.store.removeAgentSession(threadId, agentName);
       touched = true;
     }
 
-    await this.store.set(threadId, session);
     return touched;
   }
 

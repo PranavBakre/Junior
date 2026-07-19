@@ -195,6 +195,11 @@ export class AgentDispatcher {
       : null;
 
     if (directives.length === 0) {
+      // Explicit !debug is not a persistent-agent directive, so it lands here
+      // with zero directives. Create a BugRun when flags allow, then continue
+      // to the lead (support) so the orchestrator receives the investigation ask.
+      await this.tryCreateBugRunOnExplicitStart(event, []);
+
       // Drop self-bot loops: an orchestrator (lead, default Junior) reading
       // its own no-directive post would spawn a redundant turn. Unknown
       // self-bots (sourceAgent === null) drop too — they shouldn't trigger
@@ -626,6 +631,8 @@ export class AgentDispatcher {
       }
 
       try {
+        // One durable job per (assignment, repo). requestDevServerJob is
+        // idempotent on that pair so multi-repo !devserver cannot clobber.
         const job = await requestDevServerJob(pipeline.store, {
           runId,
           assignmentId: waitingAssignmentId,
@@ -635,6 +642,7 @@ export class AgentDispatcher {
           branch,
           deadlineMs: slotTimeoutMs,
         });
+
         await markDevServerJobAcquiring(
           pipeline.store,
           job.id,
@@ -673,16 +681,33 @@ export class AgentDispatcher {
           { jobId: job.id, readyUrl, pid: info.pid ?? null },
         );
 
-        // Do not sleep: validation completion/failure/cancel releases the job.
-        // Keep the lock until validation releases; schedule deadline release.
+        // Do not sleep: validation completion/failure/cancel releases the job
+        // via releaseDevServerJobOnce → invokeDevServerSlotRelease. Deadline is
+        // only a backstop if validation never completes.
+        const { registerDevServerSlotRelease } = await import(
+          "../pipelines/dev-server-slot-releases.ts"
+        );
         const releaseOnce = async (reason: string) => {
           try {
             await release();
           } catch {
             // non-fatal
           }
+          // releaseDevServerJobOnce also invokes the slot release registry;
+          // clear registry first so we don't double-call release().
+          const { clearDevServerSlotRelease } = await import(
+            "../pipelines/dev-server-slot-releases.ts"
+          );
+          clearDevServerSlotRelease(job.id);
           await releaseDevServerJobOnce(pipeline.store, job.id, reason);
         };
+        registerDevServerSlotRelease(job.id, async () => {
+          try {
+            await release();
+          } catch {
+            // non-fatal
+          }
+        });
         setTimeout(() => {
           void releaseOnce("deadline");
         }, slotTimeoutMs).unref?.();

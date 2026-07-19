@@ -150,7 +150,30 @@ export async function createProductRun(
     updatedAt: now,
   };
 
-  await store.createRun(run);
+  try {
+    await store.createRun(run);
+  } catch (err) {
+    const raced = await store.getRunByThread(input.threadId);
+    if (raced && raced.kind === "product" && raced.status !== "terminal") {
+      const assignments = await store.listAssignments(raced.id);
+      const open =
+        assignments.find(
+          (a) =>
+            a.status === "pending" ||
+            a.status === "leased" ||
+            a.status === "waiting",
+        ) ?? assignments[assignments.length - 1];
+      if (open) {
+        return {
+          run: raced,
+          assignment: open,
+          skipReasons: start.skipReasons,
+          created: false,
+        };
+      }
+    }
+    throw err;
+  }
 
   const mutationScope =
     targetAgent === "build" || targetAgent === "frontend"
@@ -159,29 +182,54 @@ export async function createProductRun(
         ? ["pipeline-artifact"]
         : [];
 
-  const assignment = await store.createAssignment({
-    id: crypto.randomUUID(),
-    runId,
-    parentAssignmentId: null,
-    sourceAgent: "system",
-    targetAgent,
-    objective: input.objective,
-    contextRefs: [
-      `start:${input.startKind}`,
-      `phase:${start.phase}`,
-      ...(fullStack ? ["fullstack:true"] : []),
-      ...start.skipReasons.map((s) => `skip:${s.stage}`),
-    ],
-    artifactRefs: [],
-    acceptanceCriteria: input.acceptanceCriteria ?? [],
-    mutationScope,
-    dependsOn: [],
-    attempt: 1,
-    attemptId: null,
-    candidateRevisionDigest: null,
-    deadlineAt: input.deadlineAt ?? null,
-    idempotencyKey: `product-start:${input.threadId}:${input.messageTs}:${input.startKind}`,
-  });
+  let assignment: Assignment;
+  try {
+    assignment = await store.createAssignment({
+      id: crypto.randomUUID(),
+      runId,
+      parentAssignmentId: null,
+      sourceAgent: "system",
+      targetAgent,
+      objective: input.objective,
+      contextRefs: [
+        `start:${input.startKind}`,
+        `phase:${start.phase}`,
+        ...(fullStack ? ["fullstack:true"] : []),
+        ...start.skipReasons.map((s) => `skip:${s.stage}`),
+      ],
+      artifactRefs: [],
+      acceptanceCriteria: input.acceptanceCriteria ?? [],
+      mutationScope,
+      dependsOn: [],
+      attempt: 1,
+      attemptId: null,
+      candidateRevisionDigest: null,
+      deadlineAt: input.deadlineAt ?? null,
+      idempotencyKey: `product-start:${input.threadId}:${input.messageTs}:${input.startKind}`,
+    });
+  } catch (err) {
+    await store
+      .appendEvent({
+        id: crypto.randomUUID(),
+        runId,
+        eventType: "product.create_failed",
+        actorType: "system",
+        actorId: "product-controller",
+        assignmentId: null,
+        outcomeId: null,
+        fromPhase: start.phase,
+        toPhase: "abandoned",
+        payloadVersion: 1,
+        payload: {
+          error: err instanceof Error ? err.message : String(err),
+        },
+        idempotencyKey: `product.create_failed:${runId}`,
+        occurredAt: now,
+        observedAt: now,
+      })
+      .catch(() => undefined);
+    throw err;
+  }
 
   if (start.skipReasons.length > 0) {
     await store.appendEvent({
@@ -616,6 +664,14 @@ export async function fanOutBuilders(
     actorId: input.sourceAgent,
     idempotencyKey: input.idempotencyKey,
   });
+
+  // Never spawn siblings when the parent handoff did not commit.
+  if (
+    receipt.status === "rejected" ||
+    receipt.status === "escalated"
+  ) {
+    return { assignments: [], receipt };
+  }
 
   const assignments: Assignment[] = [];
   const firstAsg = await store.getAssignment(firstId);

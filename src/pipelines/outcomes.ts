@@ -553,22 +553,23 @@ async function findPriorLoopFingerprint(
     const digest =
       typeof payload.candidateRevisionDigest === "string"
         ? payload.candidateRevisionDigest
-        : null;
+        : payload.candidateRevisionDigest === null
+          ? null
+          : undefined;
     if (!fp) continue;
+    // When either side carries a digest, require exact digest equality so a
+    // new revision rework is not treated as a no-progress loop.
     const prior = loopPolicyKey({
       runId,
       sourceAgent: source,
       targetAgent: target,
       progressFingerprint: fp,
-      candidateRevisionDigest: digest,
+      candidateRevisionDigest: digest === undefined ? null : digest,
     });
-    // Compare fingerprint + target portion (source may be actor not assignment target)
-    if (
-      prior.endsWith(
-        `|${target}|${fp}|${digest ?? ""}`,
-      ) &&
-      loopKey.endsWith(`|${target}|${fp}|${digest ?? ""}`)
-    ) {
+    if (prior === loopKey) return true;
+    // Compare fingerprint + target + digest (source may be actor not assignment target)
+    const priorSuffix = `|${target}|${fp}|${digest === undefined ? "" : (digest ?? "")}`;
+    if (loopKey.endsWith(priorSuffix) && prior.endsWith(priorSuffix)) {
       return true;
     }
   }

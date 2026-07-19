@@ -435,7 +435,7 @@ export class SqliteSessionStore implements SessionStore {
   }
 
   /** Explicit agent removal (reset paths). Safe: named delete only. */
-  removeAgentSession(threadId: string, agentName: string): void {
+  async removeAgentSession(threadId: string, agentName: string): Promise<void> {
     this.db
       .query(
         "DELETE FROM agent_sessions WHERE thread_id = ? AND agent_name = ?",

@@ -543,10 +543,19 @@ export class SqlitePipelineStore implements PipelineStore {
         release_reason TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        UNIQUE (assignment_id),
+        UNIQUE (assignment_id, repo),
         FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
       )
     `);
+    // Migrate older installs that only had UNIQUE(assignment_id).
+    try {
+      this.db.run(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_dev_server_jobs_assignment_repo
+         ON dev_server_jobs (assignment_id, repo)`,
+      );
+    } catch {
+      // Index may already exist under the table UNIQUE; ignore.
+    }
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_dev_server_jobs_run
       ON dev_server_jobs (run_id, status)
@@ -1839,10 +1848,10 @@ export class SqlitePipelineStore implements PipelineStore {
 
   async createDevServerJob(job: DevServerJobCreate): Promise<DevServerJob> {
     const existing = this.db
-      .query<DevServerJobRow, [string]>(
-        "SELECT * FROM dev_server_jobs WHERE assignment_id = ?",
+      .query<DevServerJobRow, [string, string]>(
+        "SELECT * FROM dev_server_jobs WHERE assignment_id = ? AND repo = ?",
       )
-      .get(job.assignmentId);
+      .get(job.assignmentId, job.repo);
     if (existing) return devServerJobFromRow(existing);
 
     const now = this.clock.now();

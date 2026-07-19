@@ -90,17 +90,44 @@ export function decideOutcomeTransaction(
     now,
   });
 
+  // Policy failures that demand escalation must still commit a durable
+  // escalate → needs-human transition. Returning receipt-only leaves the run
+  // active and spinning forever (not terminal, not needs-human).
+  let effectiveOutcome = outcome;
+  let forcedEscalate = false;
   if (!policy.ok) {
-    return receiptOnly({
-      status: policy.receiptStatus,
-      runVersion: run.stateVersion,
-      assignmentId: assignment.id,
-      reason: policy.reason,
-    });
+    if (policy.receiptStatus === "escalated") {
+      forcedEscalate = true;
+      effectiveOutcome = {
+        ...outcome,
+        action: "escalate",
+        status: "blocked",
+        targetAgent: undefined,
+        nextAssignment: undefined,
+        reason: policy.reason,
+        blockers: [
+          ...outcome.blockers,
+          { kind: "no_progress", detail: policy.reason },
+        ],
+      };
+    } else {
+      return receiptOnly({
+        status: policy.receiptStatus,
+        runVersion: run.stateVersion,
+        assignmentId: assignment.id,
+        reason: policy.reason,
+      });
+    }
   }
 
-  const toPhase = (input.toPhase ?? run.phase) as string;
-  if (toPhase !== run.phase && !canTransition(run.kind, run.phase, toPhase)) {
+  const toPhase = forcedEscalate
+    ? "needs-human"
+    : ((input.toPhase ?? run.phase) as string);
+  if (
+    !forcedEscalate &&
+    toPhase !== run.phase &&
+    !canTransition(run.kind, run.phase, toPhase)
+  ) {
     return receiptOnly({
       status: "rejected",
       runVersion: run.stateVersion,
@@ -108,6 +135,12 @@ export function decideOutcomeTransaction(
       reason: `illegal phase transition: ${run.phase} → ${toPhase}`,
     });
   }
+  // Forced escalate may always move to needs-human when that edge is legal;
+  // if not, still complete the assignment with escalate action on current phase.
+  const resolvedToPhase =
+    forcedEscalate && !canTransition(run.kind, run.phase, "needs-human")
+      ? run.phase
+      : toPhase;
 
   const outcomeId = generateId();
   const eventId = generateId();
@@ -116,22 +149,22 @@ export function decideOutcomeTransaction(
   const storedOutcome: StoredOutcome = {
     id: outcomeId,
     assignmentId: assignment.id,
-    action: outcome.action,
-    status: outcome.status,
-    reason: outcome.reason,
-    evidenceRefs: [...outcome.evidenceRefs],
-    artifactRefs: [...outcome.artifactRefs],
-    blockers: outcome.blockers.map((b) => ({ ...b })),
-    checks: outcome.checks.map((c) => ({ ...c })),
-    confidence: outcome.confidence ?? null,
-    progressFingerprint: outcome.progressFingerprint,
+    action: effectiveOutcome.action,
+    status: effectiveOutcome.status,
+    reason: effectiveOutcome.reason,
+    evidenceRefs: [...effectiveOutcome.evidenceRefs],
+    artifactRefs: [...effectiveOutcome.artifactRefs],
+    blockers: effectiveOutcome.blockers.map((b) => ({ ...b })),
+    checks: effectiveOutcome.checks.map((c) => ({ ...c })),
+    confidence: effectiveOutcome.confidence ?? null,
+    progressFingerprint: effectiveOutcome.progressFingerprint,
     createdAt: now,
   };
 
   const assignmentStatus =
-    outcome.action === "wait"
+    effectiveOutcome.action === "wait"
       ? ("waiting" as const)
-      : outcome.action === "continue_self"
+      : effectiveOutcome.action === "continue_self"
         ? assignment.status === "pending"
           ? ("leased" as const)
           : assignment.status
@@ -142,36 +175,40 @@ export function decideOutcomeTransaction(
     status: assignmentStatus,
     updatedAt: now,
     deadlineAt:
-      outcome.action === "wait" && outcome.wait
-        ? outcome.wait.deadlineAt
+      effectiveOutcome.action === "wait" && effectiveOutcome.wait
+        ? effectiveOutcome.wait.deadlineAt
         : assignment.deadlineAt,
   };
 
-  const runStatus = deriveRunStatus(run, outcome, toPhase);
-  const terminalOutcome = deriveTerminalOutcome(outcome, toPhase);
+  const runStatus = deriveRunStatus(run, effectiveOutcome, resolvedToPhase);
+  const terminalOutcome = deriveTerminalOutcome(
+    effectiveOutcome,
+    resolvedToPhase,
+  );
   const updatedRun: PipelineRun = {
     ...run,
-    phase: toPhase as PipelinePhase,
+    phase: resolvedToPhase as PipelinePhase,
     status: runStatus,
     stateVersion: newVersion,
     terminalOutcome:
       runStatus === "terminal" ? terminalOutcome : run.terminalOutcome,
     terminalReason:
-      runStatus === "terminal" ? outcome.reason : run.terminalReason,
+      runStatus === "terminal" ? effectiveOutcome.reason : run.terminalReason,
     artifactRefs: uniqueStrings([
       ...run.artifactRefs,
-      ...outcome.artifactRefs,
+      ...effectiveOutcome.artifactRefs,
     ]),
     blockerRefs:
-      outcome.action === "escalate" || outcome.blockers.length > 0
+      effectiveOutcome.action === "escalate" ||
+      effectiveOutcome.blockers.length > 0
         ? uniqueStrings([
             ...run.blockerRefs,
-            ...outcome.blockers.map((b) => `${b.kind}:${b.detail}`),
+            ...effectiveOutcome.blockers.map((b) => `${b.kind}:${b.detail}`),
           ])
         : run.blockerRefs,
     deadlineAt:
-      outcome.action === "wait" && outcome.wait
-        ? outcome.wait.deadlineAt
+      effectiveOutcome.action === "wait" && effectiveOutcome.wait
+        ? effectiveOutcome.wait.deadlineAt
         : run.deadlineAt,
     updatedAt: now,
   } as PipelineRun;
@@ -179,9 +216,12 @@ export function decideOutcomeTransaction(
   let nextAssignment: Assignment | null = null;
   let outbox: PipelineOutboxRecord | null = null;
 
-  if (outcome.action === "handoff" && outcome.nextAssignment) {
-    const nextId = outcome.nextAssignment.id ?? generateId();
-    const create = outcome.nextAssignment;
+  if (
+    effectiveOutcome.action === "handoff" &&
+    effectiveOutcome.nextAssignment
+  ) {
+    const nextId = effectiveOutcome.nextAssignment.id ?? generateId();
+    const create = effectiveOutcome.nextAssignment;
     nextAssignment = materializeNextAssignment(
       create,
       nextId,
@@ -212,7 +252,7 @@ export function decideOutcomeTransaction(
       deliveredAt: null,
       lastError: null,
     };
-  } else if (outcome.action === "continue_self") {
+  } else if (effectiveOutcome.action === "continue_self") {
     outbox = {
       id: generateId(),
       runId: run.id,
@@ -232,7 +272,7 @@ export function decideOutcomeTransaction(
       deliveredAt: null,
       lastError: null,
     };
-  } else if (outcome.action === "wait") {
+  } else if (effectiveOutcome.action === "wait") {
     outbox = {
       id: generateId(),
       runId: run.id,
@@ -240,23 +280,23 @@ export function decideOutcomeTransaction(
       eventType: "assignment.wait",
       payload: {
         assignmentId: assignment.id,
-        conditionName: outcome.wait?.conditionName,
-        deadlineAt: outcome.wait?.deadlineAt,
+        conditionName: effectiveOutcome.wait?.conditionName,
+        deadlineAt: effectiveOutcome.wait?.deadlineAt,
       },
       status: "pending",
       attempts: 0,
-      availableAt: outcome.wait?.deadlineAt ?? now,
+      availableAt: effectiveOutcome.wait?.deadlineAt ?? now,
       leaseOwner: null,
       leaseExpiresAt: null,
       idempotencyKey:
         input.idempotencyKey != null
           ? `wait:${input.idempotencyKey}`
-          : `wait:${assignment.id}:${outcome.wait?.conditionName ?? "unnamed"}`,
+          : `wait:${assignment.id}:${effectiveOutcome.wait?.conditionName ?? "unnamed"}`,
       createdAt: now,
       deliveredAt: null,
       lastError: null,
     };
-  } else if (outcome.action === "escalate") {
+  } else if (effectiveOutcome.action === "escalate") {
     outbox = {
       id: generateId(),
       runId: run.id,
@@ -264,8 +304,8 @@ export function decideOutcomeTransaction(
       eventType: "assignment.escalate",
       payload: {
         assignmentId: assignment.id,
-        reason: outcome.reason,
-        blockers: outcome.blockers,
+        reason: effectiveOutcome.reason,
+        blockers: effectiveOutcome.blockers,
       },
       status: "pending",
       attempts: 0,
@@ -286,28 +326,38 @@ export function decideOutcomeTransaction(
     id: eventId,
     runId: run.id,
     sequence: nextEventSequence,
-    eventType: `outcome.${outcome.action}`,
+    eventType: `outcome.${effectiveOutcome.action}`,
     actorType: input.actorType,
     actorId: input.actorId,
     assignmentId: assignment.id,
     outcomeId,
     fromPhase: run.phase,
-    toPhase,
+    toPhase: resolvedToPhase,
     payloadVersion: 1,
     payload: {
-      action: outcome.action,
-      status: outcome.status,
-      reason: outcome.reason,
-      progressFingerprint: outcome.progressFingerprint,
-      wait: outcome.wait ?? null,
-      targetAgent: outcome.targetAgent ?? null,
+      action: effectiveOutcome.action,
+      status: effectiveOutcome.status,
+      reason: effectiveOutcome.reason,
+      progressFingerprint: effectiveOutcome.progressFingerprint,
+      wait: effectiveOutcome.wait ?? null,
+      targetAgent: effectiveOutcome.targetAgent ?? null,
+      // Include revision digest so loop policy can distinguish rework on a
+      // new candidate from a pure no-progress spin.
+      candidateRevisionDigest:
+        effectiveOutcome.nextAssignment?.candidateRevisionDigest ??
+        assignment.candidateRevisionDigest ??
+        null,
     },
     idempotencyKey: input.idempotencyKey ?? null,
     occurredAt: now,
     observedAt: now,
   };
 
-  const receiptStatus = policy.receiptStatus;
+  const receiptStatus = forcedEscalate
+    ? ("escalated" as const)
+    : policy.ok
+      ? policy.receiptStatus
+      : ("escalated" as const);
   return {
     kind: "commit",
     receipt: {

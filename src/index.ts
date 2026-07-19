@@ -373,6 +373,9 @@ const pipelineBoot = (async () => {
         (config.github.eventWakeEnabled ?? false) &&
         pipelineRuntimeMode === "active";
 
+      // Track last successful tick so wake-gap detection does not treat every
+      // interval pass as a cold startup (which would force-poll everything).
+      let lastTickAt: number | null = null;
       const runReconcile = async () => {
         try {
           const pass = await reconcileTrackedResources({
@@ -381,6 +384,7 @@ const pipelineBoot = (async () => {
             shadowMode,
             eventWakeEnabled,
             intervalMs: config.github?.reconcileIntervalMs,
+            lastTickAt,
             onEventsPersisted: eventWakeEnabled
               ? async (persistResult) => {
                   // Lazy import to avoid loading bug controller when wakes off.
@@ -416,6 +420,7 @@ const pipelineBoot = (async () => {
                 }
               : undefined,
           });
+          lastTickAt = Date.now();
           if (pass.updated > 0 || pass.eventsEmitted > 0 || pass.failures > 0) {
             log.info(
               "github",

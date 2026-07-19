@@ -49,4 +49,11 @@ export interface SessionStore {
       session: ThreadSession,
     ) => AgentSession | void | Promise<AgentSession | void>,
   ): Promise<ThreadSession>;
+
+  /**
+   * Explicit per-agent row removal. Required because dual-write UPSERT no
+   * longer deletes agents missing from a snapshot (concurrent-safe). Callers
+   * that intend to drop an agent (e.g. !reset <agent>) must use this.
+   */
+  removeAgentSession(threadId: string, agentName: string): Promise<void>;
 }

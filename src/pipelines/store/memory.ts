@@ -941,7 +941,8 @@ export class InMemoryPipelineStore implements PipelineStore {
   // -------------------------------------------------------------------------
 
   async createDevServerJob(job: DevServerJobCreate): Promise<DevServerJob> {
-    const existingId = this.devServerJobsByAssignment.get(job.assignmentId);
+    const key = `${job.assignmentId}#${job.repo}`;
+    const existingId = this.devServerJobsByAssignment.get(key);
     if (existingId) {
       const existing = this.devServerJobs.get(existingId);
       if (existing) return { ...existing };
@@ -971,6 +972,8 @@ export class InMemoryPipelineStore implements PipelineStore {
       updatedAt: now,
     };
     this.devServerJobs.set(full.id, full);
+    this.devServerJobsByAssignment.set(key, full.id);
+    // Also index bare assignment for single-repo getByAssignment callers.
     this.devServerJobsByAssignment.set(full.assignmentId, full.id);
     return { ...full };
   }

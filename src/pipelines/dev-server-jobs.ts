@@ -74,17 +74,33 @@ export type RequestDevServerJobInput = {
 };
 
 /**
- * Persist a requested job. Idempotent on assignmentId — a second request for
- * the same waiting assignment returns the existing job.
+ * Persist a requested job. Idempotent on (assignmentId, repo) so multi-repo
+ * !devserver creates one job per repo without overwriting siblings.
  */
 export async function requestDevServerJob(
   store: DevServerJobStore,
   input: RequestDevServerJobInput,
   clock: Clock = systemClock,
 ): Promise<DevServerJob> {
-  const existing = await store.getDevServerJobByAssignment(input.assignmentId);
+  // Prefer assignment+repo lookup when the store supports listing.
+  const existingList = await store.listDevServerJobs({
+    runId: input.runId,
+  });
+  const existing = existingList.find(
+    (j) =>
+      j.assignmentId === input.assignmentId &&
+      j.repo === input.repo &&
+      !isTerminalDevServerStatus(j.status),
+  );
   if (existing) {
     return existing;
+  }
+  // Legacy single-assignment unique lookup (pre multi-repo).
+  const byAssignment = await store.getDevServerJobByAssignment(
+    input.assignmentId,
+  );
+  if (byAssignment && byAssignment.repo === input.repo) {
+    return byAssignment;
   }
   const now = clock.now();
   const deadlineAt =
@@ -152,6 +168,15 @@ export async function releaseDevServerJobOnce(
 ): Promise<{ released: boolean; job: DevServerJob | undefined }> {
   const released = await store.releaseDevServerJob(jobId, reason, error);
   const job = await store.getDevServerJob(jobId);
+  // Free the filesystem lock if the router registered one for this job.
+  try {
+    const { invokeDevServerSlotRelease } = await import(
+      "./dev-server-slot-releases.ts"
+    );
+    await invokeDevServerSlotRelease(jobId);
+  } catch {
+    // non-fatal
+  }
   return { released, job };
 }
 
