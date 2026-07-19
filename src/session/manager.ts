@@ -646,14 +646,7 @@ export class SessionManager {
         const tmux = this.driverFor("tmux");
         await tmux.close(threadId, agentName).catch(() => undefined);
       }
-      // Drop from the map via CAS, then delete the dual-write agent row.
-      // UPSERT no longer deletes omitted agents, so removeAgentSession is
-      // required for the row to actually disappear.
-      await this.mutateSession(threadId, (s) => {
-        if (s.agentSessions?.[agentName]) {
-          delete s.agentSessions[agentName];
-        }
-      });
+      // Atomic map + dual-write row delete (no resurrection window).
       await this.store.removeAgentSession(threadId, agentName);
       touched = true;
     }

@@ -150,31 +150,6 @@ export async function createProductRun(
     updatedAt: now,
   };
 
-  try {
-    await store.createRun(run);
-  } catch (err) {
-    const raced = await store.getRunByThread(input.threadId);
-    if (raced && raced.kind === "product" && raced.status !== "terminal") {
-      const assignments = await store.listAssignments(raced.id);
-      const open =
-        assignments.find(
-          (a) =>
-            a.status === "pending" ||
-            a.status === "leased" ||
-            a.status === "waiting",
-        ) ?? assignments[assignments.length - 1];
-      if (open) {
-        return {
-          run: raced,
-          assignment: open,
-          skipReasons: start.skipReasons,
-          created: false,
-        };
-      }
-    }
-    throw err;
-  }
-
   const mutationScope =
     targetAgent === "build" || targetAgent === "frontend"
       ? ["worktree-code"]
@@ -182,72 +157,84 @@ export async function createProductRun(
         ? ["pipeline-artifact"]
         : [];
 
+  const assignmentId = crypto.randomUUID();
   let assignment: Assignment;
   try {
-    assignment = await store.createAssignment({
-      id: crypto.randomUUID(),
-      runId,
-      parentAssignmentId: null,
-      sourceAgent: "system",
-      targetAgent,
-      objective: input.objective,
-      contextRefs: [
-        `start:${input.startKind}`,
-        `phase:${start.phase}`,
-        ...(fullStack ? ["fullstack:true"] : []),
-        ...start.skipReasons.map((s) => `skip:${s.stage}`),
-      ],
-      artifactRefs: [],
-      acceptanceCriteria: input.acceptanceCriteria ?? [],
-      mutationScope,
-      dependsOn: [],
-      attempt: 1,
-      attemptId: null,
-      candidateRevisionDigest: null,
-      deadlineAt: input.deadlineAt ?? null,
-      idempotencyKey: `product-start:${input.threadId}:${input.messageTs}:${input.startKind}`,
+    assignment = await store.createRunWithAssignment({
+      run,
+      assignment: {
+        id: assignmentId,
+        runId,
+        parentAssignmentId: null,
+        sourceAgent: "system",
+        targetAgent,
+        objective: input.objective,
+        contextRefs: [
+          `start:${input.startKind}`,
+          `phase:${start.phase}`,
+          ...(fullStack ? ["fullstack:true"] : []),
+          ...start.skipReasons.map((s) => `skip:${s.stage}`),
+        ],
+        artifactRefs: [],
+        acceptanceCriteria: input.acceptanceCriteria ?? [],
+        mutationScope,
+        dependsOn: [],
+        attempt: 1,
+        attemptId: null,
+        candidateRevisionDigest: null,
+        deadlineAt: input.deadlineAt ?? null,
+        idempotencyKey: `product-start:${input.threadId}:${input.messageTs}:${input.startKind}`,
+      },
+      events:
+        start.skipReasons.length > 0
+          ? [
+              {
+                id: crypto.randomUUID(),
+                runId,
+                eventType: SKIP_EVENT,
+                actorType: "system",
+                actorId: "product-controller",
+                assignmentId,
+                outcomeId: null,
+                fromPhase: null,
+                toPhase: start.phase,
+                payloadVersion: 1,
+                payload: { reasons: start.skipReasons },
+                idempotencyKey: `product.skip:${runId}`,
+                occurredAt: now,
+                observedAt: now,
+              },
+            ]
+          : [],
     });
   } catch (err) {
-    await store
-      .appendEvent({
-        id: crypto.randomUUID(),
-        runId,
-        eventType: "product.create_failed",
-        actorType: "system",
-        actorId: "product-controller",
-        assignmentId: null,
-        outcomeId: null,
-        fromPhase: start.phase,
-        toPhase: "abandoned",
-        payloadVersion: 1,
-        payload: {
-          error: err instanceof Error ? err.message : String(err),
-        },
-        idempotencyKey: `product.create_failed:${runId}`,
-        occurredAt: now,
-        observedAt: now,
-      })
-      .catch(() => undefined);
+    const msg = err instanceof Error ? err.message : String(err);
+    const isRace =
+      /active pipeline run already exists|UNIQUE constraint failed.*thread_id|idx_pipeline_runs_active_thread/i.test(
+        msg,
+      );
+    if (isRace) {
+      const raced = await store.getRunByThread(input.threadId);
+      if (raced && raced.kind === "product" && raced.status !== "terminal") {
+        const assignments = await store.listAssignments(raced.id);
+        const open =
+          assignments.find(
+            (a) =>
+              a.status === "pending" ||
+              a.status === "leased" ||
+              a.status === "waiting",
+          ) ?? assignments[assignments.length - 1];
+        if (open) {
+          return {
+            run: raced,
+            assignment: open,
+            skipReasons: start.skipReasons,
+            created: false,
+          };
+        }
+      }
+    }
     throw err;
-  }
-
-  if (start.skipReasons.length > 0) {
-    await store.appendEvent({
-      id: crypto.randomUUID(),
-      runId,
-      eventType: SKIP_EVENT,
-      actorType: "system",
-      actorId: "product-controller",
-      assignmentId: assignment.id,
-      outcomeId: null,
-      fromPhase: null,
-      toPhase: start.phase,
-      payloadVersion: 1,
-      payload: { reasons: start.skipReasons },
-      idempotencyKey: `product.skip:${runId}`,
-      occurredAt: now,
-      observedAt: now,
-    });
   }
 
   if (workstreams.length > 0) {

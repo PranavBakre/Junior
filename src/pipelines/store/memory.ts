@@ -69,17 +69,46 @@ export class InMemoryPipelineStore implements PipelineStore {
     if (this.runs.has(run.id)) {
       throw new Error(`pipeline run already exists: ${run.id}`);
     }
-    const existingThread = this.runsByThread.get(run.threadId);
-    if (existingThread) {
-      const existing = this.runs.get(existingThread);
-      if (existing && existing.status !== "terminal") {
-        throw new Error(
-          `active pipeline run already exists for thread ${run.threadId}`,
-        );
+    if (run.status !== "terminal") {
+      for (const existing of this.runs.values()) {
+        if (
+          existing.threadId === run.threadId &&
+          existing.status !== "terminal"
+        ) {
+          throw new Error(
+            `active pipeline run already exists for thread ${run.threadId}`,
+          );
+        }
       }
     }
     this.runs.set(run.id, cloneRun(run));
     this.runsByThread.set(run.threadId, run.id);
+  }
+
+  async createRunWithAssignment(input: {
+    run: PipelineRun;
+    assignment: AssignmentCreate;
+    events?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
+  }): Promise<Assignment> {
+    // Memory store is single-threaded; still apply all-or-nothing semantics.
+    await this.createRun(input.run);
+    try {
+      const assignment = await this.createAssignment(input.assignment);
+      for (const event of input.events ?? []) {
+        await this.appendEvent(event);
+      }
+      return assignment;
+    } catch (err) {
+      // Roll back run + any partial state.
+      this.runs.delete(input.run.id);
+      if (this.runsByThread.get(input.run.threadId) === input.run.id) {
+        this.runsByThread.delete(input.run.threadId);
+      }
+      this.assignments.delete(input.assignment.id);
+      this.assignmentByIdempotency.delete(input.assignment.idempotencyKey);
+      this.events.delete(input.run.id);
+      throw err;
+    }
   }
 
   async getRun(id: string): Promise<PipelineRun | undefined> {

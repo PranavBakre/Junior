@@ -164,113 +164,102 @@ export async function createBugRun(
     updatedAt: now,
   };
 
-  // Create run + assignment as tightly as possible. If assignment fails after
-  // createRun, abandon the run so it cannot become a permanent zombie.
+  const assignmentId = crypto.randomUUID();
+  let assignment: Assignment;
   try {
-    await store.createRun(run);
+    assignment = await store.createRunWithAssignment({
+      run,
+      assignment: {
+        id: assignmentId,
+        runId,
+        parentAssignmentId: null,
+        sourceAgent: "system",
+        targetAgent,
+        objective: input.objective,
+        contextRefs: [`mode:${mode}`, `start:${input.startKind}`],
+        artifactRefs: [],
+        acceptanceCriteria: [],
+        mutationScope: mode === "expected-behavior" ? [] : ["worktree-code"],
+        dependsOn: [],
+        attempt: 1,
+        attemptId: null,
+        candidateRevisionDigest: null,
+        deadlineAt: input.deadlineAt ?? null,
+        idempotencyKey: `bug-start:${input.threadId}:${input.messageTs}:${input.startKind}`,
+      },
+      events: [
+        {
+          id: crypto.randomUUID(),
+          runId,
+          eventType: MODE_EVENT,
+          actorType: "system",
+          actorId: "bug-controller",
+          assignmentId,
+          outcomeId: null,
+          fromPhase: null,
+          toPhase: "intake",
+          payloadVersion: 1,
+          payload: {
+            mode,
+            startKind: input.startKind,
+            riskClass: input.riskClass ?? null,
+          },
+          idempotencyKey: `bug.mode:${runId}`,
+          occurredAt: now,
+          observedAt: now,
+        },
+        ...(input.riskClass
+          ? [
+              {
+                id: crypto.randomUUID(),
+                runId,
+                eventType: RISK_EVENT,
+                actorType: "system" as const,
+                actorId: "bug-controller",
+                assignmentId,
+                outcomeId: null,
+                fromPhase: null,
+                toPhase: null,
+                payloadVersion: 1,
+                payload: { riskClass: input.riskClass },
+                idempotencyKey: `bug.risk:${runId}`,
+                occurredAt: now,
+                observedAt: now,
+              },
+            ]
+          : []),
+      ],
+    });
   } catch (err) {
-    // Concurrent start may have won; re-read.
-    const raced = await store.getRunByThread(input.threadId);
-    if (raced && raced.kind === "bug" && raced.status !== "terminal") {
-      const modeRaced = await loadBugMode(store, raced.id);
-      const assignments = await store.listAssignments(raced.id);
-      const open =
-        assignments.find(
-          (a) =>
-            a.status === "pending" ||
-            a.status === "leased" ||
-            a.status === "waiting",
-        ) ?? assignments[assignments.length - 1];
-      if (open) {
-        return { run: raced, assignment: open, mode: modeRaced, created: false };
+    // Only treat uniqueness / active-thread races as "reuse existing".
+    const msg = err instanceof Error ? err.message : String(err);
+    const isRace =
+      /active pipeline run already exists|UNIQUE constraint failed.*thread_id|idx_pipeline_runs_active_thread/i.test(
+        msg,
+      );
+    if (isRace) {
+      const raced = await store.getRunByThread(input.threadId);
+      if (raced && raced.kind === "bug" && raced.status !== "terminal") {
+        const modeRaced = await loadBugMode(store, raced.id);
+        const assignments = await store.listAssignments(raced.id);
+        const open =
+          assignments.find(
+            (a) =>
+              a.status === "pending" ||
+              a.status === "leased" ||
+              a.status === "waiting",
+          ) ?? assignments[assignments.length - 1];
+        if (open) {
+          return {
+            run: raced,
+            assignment: open,
+            mode: modeRaced,
+            created: false,
+          };
+        }
       }
     }
     throw err;
-  }
-
-  let assignment: Assignment;
-  try {
-    assignment = await store.createAssignment({
-      id: crypto.randomUUID(),
-      runId,
-      parentAssignmentId: null,
-      sourceAgent: "system",
-      targetAgent,
-      objective: input.objective,
-      contextRefs: [`mode:${mode}`, `start:${input.startKind}`],
-      artifactRefs: [],
-      acceptanceCriteria: [],
-      mutationScope: mode === "expected-behavior" ? [] : ["worktree-code"],
-      dependsOn: [],
-      attempt: 1,
-      attemptId: null,
-      candidateRevisionDigest: null,
-      deadlineAt: input.deadlineAt ?? null,
-      idempotencyKey: `bug-start:${input.threadId}:${input.messageTs}:${input.startKind}`,
-    });
-  } catch (err) {
-    // Best-effort diagnostic event if assignment creation fails after createRun.
-    await store
-      .appendEvent({
-        id: crypto.randomUUID(),
-        runId,
-        eventType: "bug.create_failed",
-        actorType: "system",
-        actorId: "bug-controller",
-        assignmentId: null,
-        outcomeId: null,
-        fromPhase: "intake",
-        toPhase: "abandoned",
-        payloadVersion: 1,
-        payload: {
-          error: err instanceof Error ? err.message : String(err),
-        },
-        idempotencyKey: `bug.create_failed:${runId}`,
-        occurredAt: now,
-        observedAt: now,
-      })
-      .catch(() => undefined);
-    throw err;
-  }
-
-  await store.appendEvent({
-    id: crypto.randomUUID(),
-    runId,
-    eventType: MODE_EVENT,
-    actorType: "system",
-    actorId: "bug-controller",
-    assignmentId: assignment.id,
-    outcomeId: null,
-    fromPhase: null,
-    toPhase: "intake",
-    payloadVersion: 1,
-    payload: {
-      mode,
-      startKind: input.startKind,
-      riskClass: input.riskClass ?? null,
-    },
-    idempotencyKey: `bug.mode:${runId}`,
-    occurredAt: now,
-    observedAt: now,
-  });
-
-  if (input.riskClass) {
-    await store.appendEvent({
-      id: crypto.randomUUID(),
-      runId,
-      eventType: RISK_EVENT,
-      actorType: "system",
-      actorId: "bug-controller",
-      assignmentId: assignment.id,
-      outcomeId: null,
-      fromPhase: null,
-      toPhase: null,
-      payloadVersion: 1,
-      payload: { riskClass: input.riskClass },
-      idempotencyKey: `bug.risk:${runId}`,
-      occurredAt: now,
-      observedAt: now,
-    });
   }
 
   // Enqueue initial dispatch.
@@ -453,9 +442,19 @@ export async function reduceBugOutcome(
     };
   }
 
-  // Commit the outcome CAS first. Side effects (evidence, dev-server jobs,
-  // gate invalidation) only run after the transaction is accepted so a
-  // rejected CAS cannot leave orphan mutations.
+  // Release dev-server slots whenever validation is finishing — even if the
+  // subsequent outcome CAS is rejected (stale version). Otherwise a CAS
+  // conflict leaves the FS lock held until a process-local deadline timer
+  // that does not survive restart.
+  const shouldReleaseDevServer =
+    config.jobStore &&
+    (run.phase === "validating" ||
+      input.outcome.wait?.conditionName === DEVSERVER_READY_CONDITION) &&
+    (input.outcome.action === "complete" ||
+      input.outcome.status === "failed" ||
+      input.outcome.action === "escalate");
+
+  // Commit the outcome CAS first for evidence/devserver-job side effects.
   const receipt = await store.recordOutcomeTransaction({
     outcome: input.outcome,
     toPhase: suggested,
@@ -463,6 +462,22 @@ export async function reduceBugOutcome(
     actorId: input.actorId,
     idempotencyKey: input.idempotencyKey,
   });
+
+  // Always free slots on terminal validation attempts (accept or reject).
+  if (shouldReleaseDevServer && config.jobStore) {
+    const jobs = await config.jobStore.listDevServerJobs({ runId: run.id });
+    const forAssignment = jobs.filter((j) => j.assignmentId === assignment.id);
+    for (const job of forAssignment) {
+      const reason =
+        input.outcome.status === "failed"
+          ? "fail"
+          : input.outcome.action === "escalate"
+            ? "cancel"
+            : "complete";
+      await releaseDevServerJobOnce(config.jobStore, job.id, reason);
+      await invokeDevServerSlotRelease(job.id);
+    }
+  }
 
   if (
     receipt.status !== "accepted" &&
@@ -538,29 +553,6 @@ export async function reduceBugOutcome(
       "validation or review failed; rework required",
       clock.now(),
     );
-  }
-
-  // Release dev-server lease + filesystem slot on validation terminal outcomes.
-  if (
-    config.jobStore &&
-    (run.phase === "validating" ||
-      input.outcome.wait?.conditionName === DEVSERVER_READY_CONDITION) &&
-    (input.outcome.action === "complete" ||
-      input.outcome.status === "failed" ||
-      input.outcome.action === "escalate")
-  ) {
-    const jobs = await config.jobStore.listDevServerJobs({ runId: run.id });
-    const forAssignment = jobs.filter((j) => j.assignmentId === assignment.id);
-    for (const job of forAssignment) {
-      const reason =
-        input.outcome.status === "failed"
-          ? "fail"
-          : input.outcome.action === "escalate"
-            ? "cancel"
-            : "complete";
-      await releaseDevServerJobOnce(config.jobStore, job.id, reason);
-      await invokeDevServerSlotRelease(job.id);
-    }
   }
 
   const updated = await store.getRun(run.id);

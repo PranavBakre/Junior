@@ -522,7 +522,7 @@ export class SqlitePipelineStore implements PipelineStore {
       ON pipeline_github_resources (run_id, active)
     `);
 
-    // Phase 6: durable dev-server jobs
+    // Phase 6: durable dev-server jobs (UNIQUE assignment_id+repo for multi-repo)
     this.db.run(`
       CREATE TABLE IF NOT EXISTS dev_server_jobs (
         id TEXT PRIMARY KEY,
@@ -547,15 +547,7 @@ export class SqlitePipelineStore implements PipelineStore {
         FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
       )
     `);
-    // Migrate older installs that only had UNIQUE(assignment_id).
-    try {
-      this.db.run(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_dev_server_jobs_assignment_repo
-         ON dev_server_jobs (assignment_id, repo)`,
-      );
-    } catch {
-      // Index may already exist under the table UNIQUE; ignore.
-    }
+    this.migrateDevServerJobsAssignmentRepoUnique();
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_dev_server_jobs_run
       ON dev_server_jobs (run_id, status)
@@ -563,6 +555,13 @@ export class SqlitePipelineStore implements PipelineStore {
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_dev_server_jobs_status
       ON dev_server_jobs (status, deadline_at)
+    `);
+
+    // At most one non-terminal pipeline run per Slack thread.
+    this.db.run(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_runs_active_thread
+      ON pipeline_runs (thread_id)
+      WHERE status != 'terminal'
     `);
 
     // Phase 6: Slack thread catch-up cursors for waiting runs
@@ -583,24 +582,76 @@ export class SqlitePipelineStore implements PipelineStore {
     `);
   }
 
+  /**
+   * Rebuild dev_server_jobs when the legacy UNIQUE(assignment_id) is still
+   * present. CREATE TABLE IF NOT EXISTS never alters an existing table, so
+   * upgraded installs keep the old constraint unless we recreate.
+   */
+  private migrateDevServerJobsAssignmentRepoUnique(): void {
+    const indexes = this.db
+      .query<{ name: string; sql: string | null }, []>(
+        `SELECT name, sql FROM sqlite_master
+         WHERE type IN ('index', 'table') AND tbl_name = 'dev_server_jobs'`,
+      )
+      .all();
+    // Detect table-level UNIQUE(assignment_id) only (not assignment_id, repo).
+    const tableSql =
+      indexes.find((r) => r.name === "dev_server_jobs")?.sql?.toLowerCase() ??
+      "";
+    const hasLegacyTableUnique =
+      /unique\s*\(\s*assignment_id\s*\)/.test(tableSql) &&
+      !/unique\s*\(\s*assignment_id\s*,\s*repo\s*\)/.test(tableSql);
+    if (!hasLegacyTableUnique) return;
+
+    const migrate = this.db.transaction(() => {
+      this.db.run(`
+        CREATE TABLE dev_server_jobs_new (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          assignment_id TEXT NOT NULL,
+          channel_id TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          repo TEXT NOT NULL,
+          branch TEXT NOT NULL,
+          status TEXT NOT NULL,
+          ready_url TEXT,
+          lease_owner TEXT,
+          lease_expires_at INTEGER,
+          deadline_at INTEGER NOT NULL,
+          pid INTEGER,
+          error TEXT,
+          released_at INTEGER,
+          release_reason TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE (assignment_id, repo),
+          FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+        )
+      `);
+      this.db.run(`
+        INSERT INTO dev_server_jobs_new (
+          id, run_id, assignment_id, channel_id, thread_id,
+          repo, branch, status, ready_url, lease_owner, lease_expires_at,
+          deadline_at, pid, error, released_at, release_reason,
+          created_at, updated_at
+        )
+        SELECT
+          id, run_id, assignment_id, channel_id, thread_id,
+          repo, branch, status, ready_url, lease_owner, lease_expires_at,
+          deadline_at, pid, error, released_at, release_reason,
+          created_at, updated_at
+        FROM dev_server_jobs
+      `);
+      this.db.run("DROP TABLE dev_server_jobs");
+      this.db.run("ALTER TABLE dev_server_jobs_new RENAME TO dev_server_jobs");
+    });
+    migrate();
+  }
+
   async createRun(run: PipelineRun): Promise<void> {
-    // Enforce at most one non-terminal run per thread (matches memory store).
-    // Single transaction so concurrent product/debug starts cannot both insert.
-    const insert = this.db.transaction(() => {
-      if (run.status !== "terminal") {
-        const existing = this.db
-          .query<{ id: string }, [string]>(
-            `SELECT id FROM pipeline_runs
-             WHERE thread_id = ? AND status != 'terminal'
-             LIMIT 1`,
-          )
-          .get(run.threadId);
-        if (existing) {
-          throw new Error(
-            `active pipeline run already exists for thread ${run.threadId}`,
-          );
-        }
-      }
+    // UNIQUE partial index on active thread_id. Concurrent inserts fail rather
+    // than both succeeding.
+    try {
       this.db
         .query(
           `INSERT INTO pipeline_runs (
@@ -632,8 +683,112 @@ export class SqlitePipelineStore implements PipelineStore {
           run.createdAt,
           run.updatedAt,
         );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/UNIQUE constraint failed.*thread_id|idx_pipeline_runs_active_thread/i.test(msg)) {
+        throw new Error(
+          `active pipeline run already exists for thread ${run.threadId}`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Atomically create a run + initial assignment (+ optional seed events).
+   * On any failure the whole transaction rolls back — no zombie active runs.
+   */
+  async createRunWithAssignment(input: {
+    run: PipelineRun;
+    assignment: AssignmentCreate;
+    events?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
+  }): Promise<Assignment> {
+    const create = this.db.transaction(() => {
+      try {
+        this.db
+          .query(
+            `INSERT INTO pipeline_runs (
+              id, kind, definition_version, channel_id, thread_id,
+              phase, status, owner_agent, repo_refs_json, acceptance_json,
+              artifact_refs_json, blocker_refs_json, active_attempt_id,
+              state_version, deadline_at, terminal_outcome, terminal_reason,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            input.run.id,
+            input.run.kind,
+            input.run.definitionVersion,
+            input.run.channelId,
+            input.run.threadId,
+            input.run.phase,
+            input.run.status,
+            input.run.ownerAgent,
+            JSON.stringify(input.run.repoRefs),
+            JSON.stringify(input.run.acceptanceCriteria),
+            JSON.stringify(input.run.artifactRefs),
+            JSON.stringify(input.run.blockerRefs),
+            input.run.activeAttemptId,
+            input.run.stateVersion,
+            input.run.deadlineAt,
+            input.run.terminalOutcome,
+            input.run.terminalReason,
+            input.run.createdAt,
+            input.run.updatedAt,
+          );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (
+          /UNIQUE constraint failed.*thread_id|idx_pipeline_runs_active_thread/i.test(
+            msg,
+          )
+        ) {
+          throw new Error(
+            `active pipeline run already exists for thread ${input.run.threadId}`,
+          );
+        }
+        throw err;
+      }
+
+      // Inline assignment insert (createAssignment is async; stay in TX).
+      const now = this.clock.now();
+      const assignment: Assignment = {
+        id: input.assignment.id,
+        runId: input.assignment.runId,
+        parentAssignmentId: input.assignment.parentAssignmentId,
+        sourceAgent: input.assignment.sourceAgent,
+        targetAgent: input.assignment.targetAgent,
+        status: input.assignment.status ?? "pending",
+        objective: input.assignment.objective,
+        contextRefs: [...input.assignment.contextRefs],
+        artifactRefs: [...input.assignment.artifactRefs],
+        acceptanceCriteria: [...input.assignment.acceptanceCriteria],
+        mutationScope: [...input.assignment.mutationScope],
+        dependsOn: [...input.assignment.dependsOn],
+        attempt: input.assignment.attempt,
+        attemptId: input.assignment.attemptId,
+        candidateRevisionDigest: input.assignment.candidateRevisionDigest,
+        deadlineAt: input.assignment.deadlineAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        idempotencyKey: input.assignment.idempotencyKey,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.insertAssignment(assignment);
+
+      let seq = 0;
+      for (const event of input.events ?? []) {
+        seq += 1;
+        this.insertEventRow({
+          ...event,
+          sequence: event.sequence ?? seq,
+          payload: { ...event.payload },
+        });
+      }
+      return assignment;
     });
-    insert();
+    return create();
   }
 
   async getRun(id: string): Promise<PipelineRun | undefined> {

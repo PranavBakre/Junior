@@ -195,17 +195,16 @@ export class AgentDispatcher {
       : null;
 
     if (directives.length === 0) {
-      // Explicit !debug is not a persistent-agent directive, so it lands here
-      // with zero directives. Create a BugRun when flags allow, then continue
-      // to the lead (support) so the orchestrator receives the investigation ask.
-      await this.tryCreateBugRunOnExplicitStart(event, []);
-
-      // Drop self-bot loops: an orchestrator (lead, default Junior) reading
-      // its own no-directive post would spawn a redundant turn. Unknown
-      // self-bots (sourceAgent === null) drop too — they shouldn't trigger
-      // new turns on their own posts regardless of channel.
+      // Drop self-bot loops first — never create a BugRun from a bot quoting
+      // a user's !debug line (would rebind activePipelineRunId as a phantom).
       if (event.isSelfBot && (isOrchestratorAgent(sourceAgent) || sourceAgent === null)) {
         return;
+      }
+
+      // Explicit !debug is not a persistent-agent directive, so it lands here
+      // with zero directives. Humans only: create a BugRun when flags allow.
+      if (!event.isSelfBot) {
+        await this.tryCreateBugRunOnExplicitStart(event, []);
       }
       // Worker self-bot (non-orchestrator) without directives: forward to lead
       // in support channels so it can decide next step. In non-support
@@ -729,11 +728,25 @@ export class AgentDispatcher {
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await this.postSlack(event, `dev-server \`${repoName}\`: failed — ${reason}`);
-        const job = await pipeline.store.getDevServerJobByAssignment(
-          waitingAssignmentId,
+        // Release only the job for *this* repo — never the sibling that may
+        // already be ready and validating (repo-blind lookup used to free it).
+        const jobs = await pipeline.store.listDevServerJobs({ runId });
+        const failedJob = jobs.find(
+          (j) =>
+            j.assignmentId === waitingAssignmentId &&
+            j.repo === repoName &&
+            j.status !== "released" &&
+            j.status !== "failed" &&
+            j.status !== "cancelled" &&
+            j.status !== "deadline",
         );
-        if (job) {
-          await releaseDevServerJobOnce(pipeline.store, job.id, "fail", reason);
+        if (failedJob) {
+          await releaseDevServerJobOnce(
+            pipeline.store,
+            failedJob.id,
+            "fail",
+            reason,
+          );
         }
       }
     }

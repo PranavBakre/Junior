@@ -348,6 +348,104 @@ describe("SqlitePipelineStore", () => {
     expect(active?.id).toBe("run-after-term");
   });
 
+  it("migrates legacy UNIQUE(assignment_id) so multi-repo jobs can coexist", async () => {
+    // Simulate a pre-migration DB: table with UNIQUE(assignment_id) only.
+    const legacyPath = join(tmpDir, "legacy-devserver.db");
+    const { Database } = await import("bun:sqlite");
+    const legacy = new Database(legacyPath);
+    legacy.run("PRAGMA foreign_keys = ON");
+    legacy.run(`
+      CREATE TABLE pipeline_runs (
+        id TEXT PRIMARY KEY,
+        kind TEXT, definition_version INTEGER, channel_id TEXT, thread_id TEXT,
+        phase TEXT, status TEXT, owner_agent TEXT, repo_refs_json TEXT,
+        acceptance_json TEXT, artifact_refs_json TEXT, blocker_refs_json TEXT,
+        active_attempt_id TEXT, state_version INTEGER, deadline_at INTEGER,
+        terminal_outcome TEXT, terminal_reason TEXT, created_at INTEGER, updated_at INTEGER
+      )
+    `);
+    legacy.run(`
+      CREATE TABLE dev_server_jobs (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        assignment_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        status TEXT NOT NULL,
+        ready_url TEXT,
+        lease_owner TEXT,
+        lease_expires_at INTEGER,
+        deadline_at INTEGER NOT NULL,
+        pid INTEGER,
+        error TEXT,
+        released_at INTEGER,
+        release_reason TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (assignment_id)
+      )
+    `);
+    legacy.close();
+
+    const migrated = new SqlitePipelineStore(legacyPath, clock);
+    await migrated.createRun(makeProductRun({ id: "run-m", threadId: "T-m" }));
+    const j1 = await migrated.createDevServerJob({
+      id: "job-a",
+      runId: "run-m",
+      assignmentId: "asg-shared",
+      channelId: "C",
+      threadId: "T-m",
+      repo: "backend",
+      branch: "main",
+      status: "ready",
+      deadlineAt: 10_000,
+    });
+    const j2 = await migrated.createDevServerJob({
+      id: "job-b",
+      runId: "run-m",
+      assignmentId: "asg-shared",
+      channelId: "C",
+      threadId: "T-m",
+      repo: "frontend",
+      branch: "main",
+      status: "ready",
+      deadlineAt: 10_000,
+    });
+    expect(j1.id).toBe("job-a");
+    expect(j2.id).toBe("job-b");
+    const listed = await migrated.listDevServerJobs({ runId: "run-m" });
+    expect(listed).toHaveLength(2);
+    migrated.close();
+  });
+
+  it("createRunWithAssignment is all-or-nothing", async () => {
+    const assignment = await store.createRunWithAssignment({
+      run: makeProductRun({ id: "run-atomic", threadId: "T-atomic" }),
+      assignment: makeAssignmentCreate({
+        id: "asg-atomic",
+        runId: "run-atomic",
+        idempotencyKey: "atomic-1",
+      }),
+    });
+    expect(assignment.id).toBe("asg-atomic");
+    expect((await store.getRun("run-atomic"))?.id).toBe("run-atomic");
+
+    // Second concurrent-style create on same thread must not leave a half-run.
+    await expect(
+      store.createRunWithAssignment({
+        run: makeProductRun({ id: "run-atomic-2", threadId: "T-atomic" }),
+        assignment: makeAssignmentCreate({
+          id: "asg-atomic-2",
+          runId: "run-atomic-2",
+          idempotencyKey: "atomic-2",
+        }),
+      }),
+    ).rejects.toThrow(/active pipeline run already exists/);
+    expect(await store.getRun("run-atomic-2")).toBeUndefined();
+  });
+
   it("atomically persists GitHub snapshots and multi-PR semantic events without wakes", async () => {
     await store.createRun(makeProductRun({ id: "run-1", threadId: "T1" }));
     await store.createRun(

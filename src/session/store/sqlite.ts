@@ -434,13 +434,47 @@ export class SqliteSessionStore implements SessionStore {
     // through delete() / removeAgentSession.
   }
 
-  /** Explicit agent removal (reset paths). Safe: named delete only. */
+  /**
+   * Atomically drop an agent from parent session JSON and the agent_sessions
+   * row in one BEGIN IMMEDIATE transaction (no resurrection window).
+   */
   async removeAgentSession(threadId: string, agentName: string): Promise<void> {
-    this.db
-      .query(
-        "DELETE FROM agent_sessions WHERE thread_id = ? AND agent_name = ?",
-      )
-      .run(threadId, agentName);
+    for (let attempt = 0; attempt < MUTATE_MAX_ATTEMPTS; attempt++) {
+      const current = await this.get(threadId);
+      if (!current) return;
+      if (!current.agentSessions?.[agentName]) {
+        // Map already clean — still delete any orphan dual-write row.
+        this.db
+          .query(
+            "DELETE FROM agent_sessions WHERE thread_id = ? AND agent_name = ?",
+          )
+          .run(threadId, agentName);
+        return;
+      }
+      const expectedVersion = current.stateVersion ?? 0;
+      const next = normalizeSession(
+        JSON.parse(JSON.stringify(current)) as ThreadSession,
+      );
+      delete next.agentSessions[agentName];
+      next.stateVersion = expectedVersion + 1;
+      try {
+        this.withImmediateTransaction(() => {
+          this.writeSessionRow(threadId, next, expectedVersion);
+          // UPSERT remaining agents only — do not delete-all-missing.
+          this.syncAgentSessionsUpsert(threadId, next.agentSessions);
+          this.db
+            .query(
+              "DELETE FROM agent_sessions WHERE thread_id = ? AND agent_name = ?",
+            )
+            .run(threadId, agentName);
+        });
+        return;
+      } catch (err) {
+        if (err instanceof SessionVersionConflictError) continue;
+        throw err;
+      }
+    }
+    throw new SessionVersionConflictError(threadId);
   }
 
   private readStateVersion(threadId: string): number | null {

@@ -32,6 +32,16 @@ export interface PipelineStore {
   getRun(id: string): Promise<PipelineRun | undefined>;
   getRunByThread(threadId: string): Promise<PipelineRun | undefined>;
 
+  /**
+   * Atomically create a run + initial assignment (and optional seed events).
+   * Rolls back entirely on failure so no assignment-less active run remains.
+   */
+  createRunWithAssignment(input: {
+    run: PipelineRun;
+    assignment: AssignmentCreate;
+    events?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
+  }): Promise<Assignment>;
+
   createAssignment(assignment: AssignmentCreate): Promise<Assignment>;
   getAssignment(id: string): Promise<Assignment | undefined>;
   listAssignments(runId: string): Promise<Assignment[]>;
