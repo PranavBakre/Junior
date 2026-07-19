@@ -62,6 +62,8 @@ export interface AgentSession {
    * (thread-level decision); only the unique tmux session name is per-agent.
    */
   tmuxSessionName?: string | null;
+  /** Compare-and-set version for concurrent agent-row updates. Missing → 0. */
+  stateVersion?: number;
 }
 
 export interface AgentIdentity {
@@ -169,6 +171,11 @@ export interface ThreadSession {
   idleInterruptCount: number;
   /** Number of automatic lead-pipeline guard continuations attempted for the current turn. */
   pipelineGuardRetryCount?: number;
+  /**
+   * Compare-and-set version for concurrent thread-session updates. Incremented
+   * on every successful store write. Missing / legacy rows normalize to 0.
+   */
+  stateVersion?: number;
 }
 
 export function createSession(
@@ -217,6 +224,7 @@ export function createSession(
     topLevelTmuxAgent: null,
     idleInterruptCount: 0,
     pipelineGuardRetryCount: 0,
+    stateVersion: 0,
   };
 }
 

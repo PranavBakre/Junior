@@ -130,6 +130,7 @@ describe("createSession", () => {
       "pipelineGuardRetryCount",
       "provider",
       "sessionId",
+      "stateVersion",
       "status",
       "systemPrompt",
       "targetRepo",
@@ -140,6 +141,11 @@ describe("createSession", () => {
       "worktreePath",
       "worktreePaths",
     ]);
+  });
+
+  it("has stateVersion set to 0 by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.stateVersion).toBe(0);
   });
 
   it("has dormant set to false by default", () => {

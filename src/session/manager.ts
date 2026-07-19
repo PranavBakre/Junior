@@ -262,25 +262,37 @@ export class SessionManager {
     if (this.seenMessages.has(dedupeKey)) return;
     this.rememberSeenMessage(dedupeKey);
 
-    const session = await this.getOrCreateSession(event);
+    // Ensure the parent row exists before the concurrent-safe mutation.
+    await this.getOrCreateSession(event);
     await this.captureSlackMemory(event, agentName, "persistent-agent");
 
-    if (session.muted) return;
+    // Object wrapper so TS doesn't narrow the flag past the mutator closure.
+    const outcome: { action: "muted" | "buffer" | "run" } = { action: "run" };
+    const session = await this.mutateSession(event.threadId, (s) => {
+      if (s.muted) {
+        outcome.action = "muted";
+        return;
+      }
+      const agentSession = this.getOrCreateAgentSession(s, agentName);
+      if (agentSession.status === "busy") {
+        agentSession.pendingMessages.push(this.toPendingMessage(event));
+        outcome.action = "buffer";
+        return;
+      }
+      agentSession.status = "busy";
+      agentSession.lastActivity = Date.now();
+      s.lastActivity = agentSession.lastActivity;
+      outcome.action = "run";
+    });
 
-    const agentSession = this.getOrCreateAgentSession(session, agentName);
+    if (outcome.action === "muted") return;
+
     await this.onAgentDispatched?.(session, agentName);
 
-    if (agentSession.status === "busy") {
-      agentSession.pendingMessages.push(this.toPendingMessage(event));
-      await this.store.set(session.threadId, session);
+    if (outcome.action === "buffer") {
       this.onMessageBuffered?.(event);
       return;
     }
-
-    agentSession.status = "busy";
-    agentSession.lastActivity = Date.now();
-    session.lastActivity = agentSession.lastActivity;
-    await this.store.set(session.threadId, session);
 
     this.runRunnerWithAgent(session, event.text, event.ts, event.files, agentName);
   }
@@ -300,32 +312,40 @@ export class SessionManager {
     if (this.seenMessages.has(dedupeKey)) return;
     this.rememberSeenMessage(dedupeKey);
 
-    const session = await this.getOrCreateSession(event);
+    let session = await this.getOrCreateSession(event);
     await this.captureSlackMemory(event, agentName, "single-session");
 
     if (event.command) {
       const handled = await this.handleCommand(session, event);
       if (handled) return;
+      // Commands may have rewritten the row; re-read before the busy gate.
+      session = (await this.store.get(event.threadId)) ?? session;
     }
 
     if (session.muted) return;
 
     await this.onAgentDispatched?.(session, agentName);
 
-    if (session.status === "busy") {
-      session.pendingMessages.push({
-        ...this.toPendingMessage(event),
-      });
-      await this.store.set(session.threadId, session);
+    const outcome: { action: "buffer" | "run" } = { action: "run" };
+    session = await this.mutateSession(event.threadId, (s) => {
+      if (s.status === "busy") {
+        s.pendingMessages.push({
+          ...this.toPendingMessage(event),
+        });
+        outcome.action = "buffer";
+        return;
+      }
+      s.status = "busy";
+      s.activeAgentName = agentName;
+      s.slackIdentity = identityForAgent(agentName);
+      s.lastActivity = Date.now();
+      outcome.action = "run";
+    });
+
+    if (outcome.action === "buffer") {
       this.onMessageBuffered?.(event);
       return;
     }
-
-    session.status = "busy";
-    session.activeAgentName = agentName;
-    session.slackIdentity = identityForAgent(agentName);
-    session.lastActivity = Date.now();
-    await this.store.set(session.threadId, session);
 
     this.runRunnerWithAgent(session, event.text, event.ts, event.files, agentName);
   }
@@ -336,6 +356,20 @@ export class SessionManager {
 
   async updateSession(threadId: string, session: ThreadSession): Promise<void> {
     await this.store.set(threadId, session);
+  }
+
+  /**
+   * Concurrent-safe session mutation. Prefer this over get→mutate→set for any
+   * path that can race with parallel agent dispatch (fan-out, session-id
+   * persist, pending-message append, settle).
+   */
+  async mutateSession(
+    threadId: string,
+    mutator: (
+      session: ThreadSession,
+    ) => void | ThreadSession | Promise<void | ThreadSession>,
+  ): Promise<ThreadSession> {
+    return this.store.mutateThread(threadId, mutator);
   }
 
   async resetSession(threadId: string): Promise<void> {
@@ -1470,21 +1504,25 @@ export class SessionManager {
     agentName: string,
     pid: number | null,
   ): Promise<void> {
-    const fresh = await this.store.get(threadId);
-    if (!fresh) return;
-
-    if (agentName === "lead" || agentName === "default") {
-      if (fresh.status === "busy") {
-        fresh.pid = pid;
+    try {
+      await this.mutateSession(threadId, (fresh) => {
+        if (agentName === "lead" || agentName === "default") {
+          if (fresh.status === "busy") {
+            fresh.pid = pid;
+          }
+        } else {
+          const agentSession = fresh.agentSessions?.[agentName];
+          if (agentSession?.status === "busy") {
+            agentSession.pid = pid;
+          }
+        }
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("session not found:")) {
+        return;
       }
-    } else {
-      const agentSession = fresh.agentSessions?.[agentName];
-      if (agentSession?.status === "busy") {
-        agentSession.pid = pid;
-      }
+      throw err;
     }
-
-    await this.store.set(threadId, fresh);
   }
 
   private async persistRunSessionId(
@@ -1493,24 +1531,28 @@ export class SessionManager {
     provider: RunnerProvider,
     sessionId: string,
   ): Promise<void> {
-    const fresh = await this.store.get(threadId);
-    if (!fresh) return;
-
-    if (agentName === "lead" || agentName === "default") {
-      if (fresh.status === "busy" || fresh.status === "draining") {
-        fresh.sessionId = sessionId;
-        fresh.leadSessionId = sessionId;
-        fresh.provider = provider;
+    try {
+      await this.mutateSession(threadId, (fresh) => {
+        if (agentName === "lead" || agentName === "default") {
+          if (fresh.status === "busy" || fresh.status === "draining") {
+            fresh.sessionId = sessionId;
+            fresh.leadSessionId = sessionId;
+            fresh.provider = provider;
+          }
+        } else {
+          const agentSession = fresh.agentSessions?.[agentName];
+          if (agentSession?.status === "busy") {
+            agentSession.sessionId = sessionId;
+            agentSession.provider = provider;
+          }
+        }
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("session not found:")) {
+        return;
       }
-    } else {
-      const agentSession = fresh.agentSessions?.[agentName];
-      if (agentSession?.status === "busy") {
-        agentSession.sessionId = sessionId;
-        agentSession.provider = provider;
-      }
+      throw err;
     }
-
-    await this.store.set(threadId, fresh);
   }
 
   private async onRunComplete(
@@ -1533,44 +1575,17 @@ export class SessionManager {
     }
     this.handles.delete(handleKey);
 
-    // Refetch the authoritative session before mutating. The `session` we hold
-    // is a snapshot from spawn time — long-running agents can be minutes stale.
-    // Persisting it whole would clobber writes made by other agents on the same
-    // thread while this one was running. Fall back to the snapshot only if the
-    // row was deleted (e.g. !reset during the run).
-    const fresh = (await this.store.get(session.threadId)) ?? session;
-    await this.captureRunnerMemory(fresh.threadId, agentName, result);
-    const agentSession = isTopLevel
-      ? null
-      : this.getOrCreateAgentSession(fresh, agentName);
+    // Snapshot for read-only side effects (validation, onResponse). All
+    // durable mutations go through mutateSession so parallel agents cannot
+    // clobber each other via a stale full-row write.
+    const snapshot = (await this.store.get(session.threadId)) ?? session;
+    await this.captureRunnerMemory(snapshot.threadId, agentName, result);
     let internalDispatchDirectives: AgentDirective[] = [];
-
-    if (isTopLevel) {
-      fresh.pid = null;
-    } else if (agentSession) {
-      agentSession.pid = null;
-    }
-
-    if (result.sessionId) {
-      if (isTopLevel) {
-        fresh.sessionId = result.sessionId;
-        fresh.leadSessionId = result.sessionId;
-        fresh.provider = result.provider;
-      } else if (agentSession) {
-        agentSession.sessionId = result.sessionId;
-        agentSession.provider = result.provider;
-      }
-    }
+    let pipelineGuardRetryReset = false;
 
     if (result.error) {
-      fresh.lastError = {
-        type: "spawn",
-        message: result.error,
-        timestamp: Date.now(),
-      };
-      if (agentSession) agentSession.status = "failed";
       this.onError?.(
-        this.buildRunSession(fresh, agentName, agentIdentity),
+        this.buildRunSession(snapshot, agentName, agentIdentity),
         result.error,
       );
     }
@@ -1582,22 +1597,39 @@ export class SessionManager {
           .map(([channel]) => channel),
       );
       const validation = validateLeadPipelineResponse(
-        this.buildRunSession(fresh, agentName, agentIdentity),
+        this.buildRunSession(snapshot, agentName, agentIdentity),
         result.response,
         supportChannels,
-        fresh.pipelineGuardRetryCount ?? 0,
+        snapshot.pipelineGuardRetryCount ?? 0,
       );
       if (validation.action === "continue") {
-        fresh.pipelineGuardRetryCount = (fresh.pipelineGuardRetryCount ?? 0) + 1;
-        fresh.status = "busy";
-        fresh.pid = null;
-        await this.store.set(fresh.threadId, fresh);
+        let continued: ThreadSession;
+        try {
+          continued = await this.mutateSession(snapshot.threadId, (s) => {
+            if (result.sessionId) {
+              s.sessionId = result.sessionId;
+              s.leadSessionId = result.sessionId;
+              s.provider = result.provider;
+            }
+            s.pipelineGuardRetryCount = (s.pipelineGuardRetryCount ?? 0) + 1;
+            s.status = "busy";
+            s.pid = null;
+          });
+        } catch (err) {
+          if (
+            err instanceof Error &&
+            err.message.startsWith("session not found:")
+          ) {
+            return;
+          }
+          throw err;
+        }
         _log.warn(
           "pipeline",
-          `guard.continue thread=${fresh.threadId} bug=${validation.state.bugId ?? "-"} reason=${validation.reason}`,
+          `guard.continue thread=${continued.threadId} bug=${validation.state.bugId ?? "-"} reason=${validation.reason}`,
         );
         this.runRunnerWithAgent(
-          fresh,
+          continued,
           validation.prompt,
           undefined,
           undefined,
@@ -1605,25 +1637,27 @@ export class SessionManager {
         ).catch(async (err) => {
           _log.error(
             "pipeline",
-            `guard.continue.fail thread=${fresh.threadId} err=${err instanceof Error ? err.message : String(err)}`,
+            `guard.continue.fail thread=${continued.threadId} err=${err instanceof Error ? err.message : String(err)}`,
           );
-          const guardFresh = (await this.store.get(fresh.threadId)) ?? fresh;
-          guardFresh.status = "idle";
-          guardFresh.pid = null;
-          await this.store.set(guardFresh.threadId, guardFresh);
+          try {
+            await this.mutateSession(continued.threadId, (s) => {
+              s.status = "idle";
+              s.pid = null;
+            });
+          } catch {
+            // Session may have been reset mid-guard.
+          }
         });
         return;
       }
       if (validation.action === "blocker") {
         _log.warn(
           "pipeline",
-          `guard.blocker thread=${fresh.threadId} bug=${validation.state.bugId ?? "-"} reason=${validation.reason}`,
+          `guard.blocker thread=${snapshot.threadId} bug=${validation.state.bugId ?? "-"} reason=${validation.reason}`,
         );
         result = { ...result, response: validation.message };
-        fresh.pipelineGuardRetryCount = 0;
-      } else {
-        fresh.pipelineGuardRetryCount = 0;
       }
+      pipelineGuardRetryReset = true;
     }
 
     if (result.response) {
@@ -1634,74 +1668,139 @@ export class SessionManager {
       if (internalDispatchDirectives.length > 0) {
         _log.info(
           "dispatch",
-          `thread=${fresh.threadId} agent=${agentName} internalized directives=${internalDispatchDirectives.map((d) => d.agentName).join(",")}`,
+          `thread=${snapshot.threadId} agent=${agentName} internalized directives=${internalDispatchDirectives.map((d) => d.agentName).join(",")}`,
         );
       } else if (isDuplicateSlackToolResponse(result.response, result.events)) {
         _log.info(
           "response",
-          `thread=${fresh.threadId} agent=${agentName} suppressed reason=duplicate-slack-tool-post`,
+          `thread=${snapshot.threadId} agent=${agentName} suppressed reason=duplicate-slack-tool-post`,
         );
       } else {
         await this.onResponse?.(
-          this.buildRunSession(fresh, agentName, agentIdentity),
+          this.buildRunSession(snapshot, agentName, agentIdentity),
           result.response,
         );
       }
     }
 
-    const pendingMessages = isTopLevel
-      ? fresh.pendingMessages
-      : (agentSession?.pendingMessages ?? []);
+    type SettleAction = "muted-discard" | "drain" | "settle";
+    const settle: { action: SettleAction; drainPrompt: string } = {
+      action: "settle",
+      drainPrompt: "",
+    };
 
-    if (pendingMessages.length > 0 && fresh.muted) {
-      // Thread was muted mid-turn — discard buffered messages, don't drain.
-      if (isTopLevel) {
-        fresh.pendingMessages = [];
-        fresh.status = "idle";
-      } else if (agentSession) {
-        agentSession.pendingMessages = [];
-        agentSession.status = "idle";
-      }
-      await this.store.set(fresh.threadId, fresh);
-    } else if (pendingMessages.length > 0) {
-      const combined = pendingMessages
-        .map((m) => `[${m.user}]: ${m.text}`)
-        .join("\n");
-      if (isTopLevel) {
-        fresh.pendingMessages = [];
-        fresh.status = "draining";
-      } else if (agentSession) {
-        agentSession.pendingMessages = [];
-        agentSession.status = "busy";
-      }
-      await this.store.set(fresh.threadId, fresh);
-      this.runRunnerWithAgent(fresh, combined, undefined, undefined, agentName).catch(async (err) => {
-        console.error("[manager] Drain failed:", err);
-        // Refetch again — the failed drain may have run minutes after the
-        // initial drain persist, and other agents may have updated the row.
-        const drainFresh = (await this.store.get(fresh.threadId)) ?? fresh;
-        if (isTopLevel) {
-          drainFresh.status = "idle";
-        } else {
-          const drainAgent = this.getOrCreateAgentSession(drainFresh, agentName);
-          drainAgent.status = "failed";
+    let settled: ThreadSession;
+    try {
+      settled = await this.mutateSession(snapshot.threadId, (s) => {
+        if (pipelineGuardRetryReset) {
+          s.pipelineGuardRetryCount = 0;
         }
-        await this.store.set(drainFresh.threadId, drainFresh);
+
+        if (isTopLevel) {
+          s.pid = null;
+          if (result.sessionId) {
+            s.sessionId = result.sessionId;
+            s.leadSessionId = result.sessionId;
+            s.provider = result.provider;
+          }
+          if (result.error) {
+            s.lastError = {
+              type: "spawn",
+              message: result.error,
+              timestamp: Date.now(),
+            };
+          }
+
+          const pendingMessages = s.pendingMessages;
+          if (pendingMessages.length > 0 && s.muted) {
+            s.pendingMessages = [];
+            s.status = "idle";
+            settle.action = "muted-discard";
+          } else if (pendingMessages.length > 0) {
+            settle.drainPrompt = pendingMessages
+              .map((m) => `[${m.user}]: ${m.text}`)
+              .join("\n");
+            s.pendingMessages = [];
+            s.status = "draining";
+            settle.action = "drain";
+          } else {
+            s.status = "idle";
+            settle.action = "settle";
+          }
+        } else {
+          const agentSession = this.getOrCreateAgentSession(s, agentName);
+          agentSession.pid = null;
+          if (result.sessionId) {
+            agentSession.sessionId = result.sessionId;
+            agentSession.provider = result.provider;
+          }
+          if (result.error) {
+            s.lastError = {
+              type: "spawn",
+              message: result.error,
+              timestamp: Date.now(),
+            };
+          }
+
+          const pendingMessages = agentSession.pendingMessages;
+          if (pendingMessages.length > 0 && s.muted) {
+            agentSession.pendingMessages = [];
+            agentSession.status = "idle";
+            settle.action = "muted-discard";
+          } else if (pendingMessages.length > 0) {
+            settle.drainPrompt = pendingMessages
+              .map((m) => `[${m.user}]: ${m.text}`)
+              .join("\n");
+            agentSession.pendingMessages = [];
+            agentSession.status = "busy";
+            settle.action = "drain";
+          } else {
+            agentSession.status = result.error ? "failed" : "done";
+            agentSession.lastActivity = Date.now();
+            settle.action = "settle";
+          }
+        }
       });
-    } else {
-      if (isTopLevel) {
-        fresh.status = "idle";
-      } else if (agentSession) {
-        agentSession.status = result.error ? "failed" : "done";
-        agentSession.lastActivity = Date.now();
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        err.message.startsWith("session not found:")
+      ) {
+        // Row deleted (e.g. !reset) — nothing left to settle.
+        return;
       }
-      await this.store.set(fresh.threadId, fresh);
-      await this.onAgentSettled?.(fresh, agentName, result.response ?? null);
+      throw err;
+    }
+
+    if (settle.action === "drain") {
+      this.runRunnerWithAgent(
+        settled,
+        settle.drainPrompt,
+        undefined,
+        undefined,
+        agentName,
+      ).catch(async (err) => {
+        console.error("[manager] Drain failed:", err);
+        try {
+          await this.mutateSession(settled.threadId, (s) => {
+            if (isTopLevel) {
+              s.status = "idle";
+            } else {
+              const drainAgent = this.getOrCreateAgentSession(s, agentName);
+              drainAgent.status = "failed";
+            }
+          });
+        } catch {
+          // Session may have been reset during the failed drain.
+        }
+      });
+    } else if (settle.action === "settle") {
+      await this.onAgentSettled?.(settled, agentName, result.response ?? null);
     }
 
     if (internalDispatchDirectives.length > 0) {
       await this.dispatchInternalAgentDirectives(
-        fresh.threadId,
+        settled.threadId,
         agentName,
         internalDispatchDirectives,
       );
