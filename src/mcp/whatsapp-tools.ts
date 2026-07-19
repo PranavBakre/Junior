@@ -33,25 +33,40 @@ export interface WhatsAppToolAuth {
   runContext: SlackMcpRunContext | null;
   /** Admin check backed by ADMIN_SLACK_USER_ID + the admins table. */
   isAdmin: (userId: string) => Promise<boolean>;
+  /**
+   * Resolve the CURRENT human participants of a thread from the live session
+   * store at call time — never from a snapshot taken when the runner spawned,
+   * which goes stale the moment another human posts mid-run (long tmux
+   * sessions especially). Null when the session is unknown (deny).
+   */
+  getParticipants: (threadId: string) => Promise<string[] | null>;
 }
 
 const NOT_ENABLED =
   "WhatsApp integration is not enabled (WHATSAPP_ENABLED is off or the socket has not started).";
 
 const NOT_AUTHORIZED =
-  "WhatsApp archive access denied: this thread includes non-admin participants (or none attributable). The archive is personal data and is only readable in admin-only threads.";
+  "WhatsApp archive access denied: the archive is personal data and is only readable from a direct message with the bot where every participant is an admin. Ask in a DM instead.";
 
 /**
- * The archive is the operator's personal WhatsApp history, so a Slack-initiated
- * turn may read it only when EVERY human in the originating thread passes the
- * admin check — the tool output lands in that thread, visible to all of them.
+ * The archive is the operator's personal WhatsApp history. A Slack-initiated
+ * turn may read it only when the output cannot reach non-admins:
+ *
+ * - The destination must be a DM (`D…` channel id). Channel threads have no
+ *   participant-level visibility — every channel member can read the replies,
+ *   posters or not — so no poster-based check is sound there.
+ * - Every human currently in the session (resolved live, not from a spawn-time
+ *   snapshot) must pass the admin check. Unknown session → deny.
+ *
  * A null run context means a direct local connection (loopback-only listener),
  * which is the operator's own machine access and is allowed.
  */
 async function isAuthorized(auth: WhatsAppToolAuth): Promise<boolean> {
   if (auth.runContext === null) return true;
-  const { users } = auth.runContext;
-  if (users.length === 0) return false;
+  const { channel, threadId } = auth.runContext;
+  if (!channel.startsWith("D")) return false;
+  const users = await auth.getParticipants(threadId);
+  if (!users || users.length === 0) return false;
   for (const user of users) {
     if (!(await auth.isAdmin(user))) return false;
   }

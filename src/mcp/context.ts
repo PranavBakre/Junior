@@ -8,13 +8,6 @@ export interface SlackMcpRunContext {
   agent: string;
   channel: string;
   threadId: string;
-  /**
-   * Slack user IDs of the humans who have posted in the originating thread
-   * (`session.humanParticipants`). Sensitive tools (the WhatsApp archive) are
-   * gated on every listed user passing the admin check; an empty list on a
-   * runner turn means "no human attributable" and those tools deny.
-   */
-  users: string[];
 }
 
 export function slackMcpAgentForSession(session: ThreadSession): string {
@@ -26,7 +19,6 @@ export function buildSlackMcpUrl(session: ThreadSession): string {
   url.searchParams.set("agent", slackMcpAgentForSession(session));
   url.searchParams.set("channel", session.channel);
   url.searchParams.set("thread", session.threadId);
-  url.searchParams.set("users", session.humanParticipants.join(","));
   return url.toString();
 }
 
@@ -45,11 +37,7 @@ export function parseSlackMcpRunContext(requestUrl: string | undefined): SlackMc
   const channel = url.searchParams.get("channel")?.trim();
   const threadId = url.searchParams.get("thread")?.trim();
   if (!agent || !channel || !threadId) return null;
-  const users = (url.searchParams.get("users") ?? "")
-    .split(",")
-    .map((u) => u.trim())
-    .filter((u) => u.length > 0);
-  return { agent, channel, threadId, users };
+  return { agent, channel, threadId };
 }
 
 function topLevelAgentForSession(session: ThreadSession): "lead" | "default" {

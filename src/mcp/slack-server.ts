@@ -99,9 +99,14 @@ let slackActionStore: SlackActionStore | undefined;
 function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
   registerWhatsAppTools(server, {
     runContext,
-    // Deny-by-default until the SessionManager is wired in: without it the
-    // admin roster can't be consulted, and the archive is personal data.
+    // Deny-by-default until the SessionManager/SessionStore are wired in:
+    // without them neither the admin roster nor the live participant list can
+    // be consulted, and the archive is personal data.
     isAdmin: (userId) => sessionManager?.isAdmin(userId) ?? Promise.resolve(false),
+    getParticipants: async (threadId) => {
+      const session = await sessionStore?.get(threadId);
+      return session ? session.humanParticipants : null;
+    },
   });
   server.registerTool(
     "slack_send_message",

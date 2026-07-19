@@ -60,6 +60,7 @@ function seedStore(store: WhatsAppStore): void {
 const LOCAL_AUTH: WhatsAppToolAuth = {
   runContext: null,
   isAdmin: async () => false,
+  getParticipants: async () => null,
 };
 
 describe("whatsapp MCP tools", () => {
@@ -238,12 +239,8 @@ describe("whatsapp MCP tool authorization", () => {
     return captured.tools;
   }
 
-  const runContext = (users: string[]) => ({
-    agent: "default",
-    channel: "C1",
-    threadId: "171.001",
-    users,
-  });
+  const dmContext = { agent: "default", channel: "D_ADMIN_DM", threadId: "171.001" };
+  const channelContext = { agent: "default", channel: "C_GENERAL", threadId: "171.001" };
 
   async function callAll(tools: Map<string, ToolHandler>): Promise<string[]> {
     const out: string[] = [];
@@ -253,33 +250,50 @@ describe("whatsapp MCP tool authorization", () => {
     return out;
   }
 
-  test("runner turns where every participant is admin are allowed", async () => {
+  test("a DM where every live participant is admin is allowed", async () => {
     const tools = toolsWith({
-      runContext: runContext(["U_ADMIN", "U_ADMIN2"]),
+      runContext: dmContext,
       isAdmin: async (u) => u.startsWith("U_ADMIN"),
+      getParticipants: async () => ["U_ADMIN"],
     });
     for (const text of await callAll(tools)) {
       expect(text).not.toContain("denied");
     }
   });
 
-  test("a single non-admin participant denies every tool", async () => {
+  test("a channel thread is denied even when every poster is admin", async () => {
+    // Channel replies are visible to ALL channel members, posters or not.
     const tools = toolsWith({
-      runContext: runContext(["U_ADMIN", "U_RANDO"]),
-      isAdmin: async (u) => u === "U_ADMIN",
+      runContext: channelContext,
+      isAdmin: async () => true,
+      getParticipants: async () => ["U_ADMIN"],
     });
     for (const text of await callAll(tools)) {
       expect(text).toContain("denied");
     }
   });
 
-  test("a runner turn with no attributable humans is denied", async () => {
+  test("a non-admin participant resolved live denies every tool", async () => {
     const tools = toolsWith({
-      runContext: runContext([]),
-      isAdmin: async () => true,
+      runContext: dmContext,
+      isAdmin: async (u) => u === "U_ADMIN",
+      getParticipants: async () => ["U_ADMIN", "U_RANDO"],
     });
     for (const text of await callAll(tools)) {
       expect(text).toContain("denied");
+    }
+  });
+
+  test("an unknown session or empty participant list is denied", async () => {
+    for (const participants of [null, []] as const) {
+      const tools = toolsWith({
+        runContext: dmContext,
+        isAdmin: async () => true,
+        getParticipants: async () => (participants === null ? null : [...participants]),
+      });
+      for (const text of await callAll(tools)) {
+        expect(text).toContain("denied");
+      }
     }
   });
 

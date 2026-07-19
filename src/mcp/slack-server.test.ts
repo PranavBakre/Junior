@@ -214,7 +214,7 @@ describe("MCP Slack agent directive interception", () => {
         text: "normal update",
         channelId: "C123",
         threadTs: "111.222",
-        runContext: { agent: "default", channel: "C123", threadId: "111.222", users: ["U1"] },
+        runContext: { agent: "default", channel: "C123", threadId: "111.222" },
         manager: { handleAgentMessage: async () => undefined },
       }),
     ).resolves.toBeNull();
@@ -227,7 +227,7 @@ describe("MCP Slack agent directive interception", () => {
       text: "!review review https://github.com/GrowthX-Club/gx-backend/pull/3199 again",
       channelId: "C123",
       threadTs: "111.222",
-      runContext: { agent: "default", channel: "C123", threadId: "111.222", users: ["U1"] },
+      runContext: { agent: "default", channel: "C123", threadId: "111.222" },
       manager: {
         handleAgentMessage: async (event, agentName) => {
           calls.push({ event, agentName });

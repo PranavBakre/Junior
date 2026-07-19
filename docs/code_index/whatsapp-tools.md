@@ -15,12 +15,19 @@ Feature doc: [../features/whatsapp-tools.md](../features/whatsapp-tools.md)
 
 ## src/mcp/whatsapp-tools.ts
 
-`registerWhatsAppTools(server)` registers `whatsapp_list_groups`,
+`registerWhatsAppTools(server, auth)` registers `whatsapp_list_groups`,
 `whatsapp_read_messages`, `whatsapp_search_messages` on the slack-bot MCP
 server (called from `registerTools` in `slack-server.ts`). `setWhatsAppHandle`
 injects the live handle from the async bootstrap in `src/index.ts`; tools
 answer "not enabled" until it's set. `resolveGroup` accepts an exact JID or a
 subject substring and refuses ambiguous matches.
+
+Authorization (`WhatsAppToolAuth`): Slack runner turns must originate from a
+DM (`D…` channel) whose current human participants — resolved live via
+`auth.getParticipants(threadId)` from the session store — all pass
+`auth.isAdmin`. Channel threads always deny (replies visible to all members).
+Null run context (direct local connection over the loopback-only listener) is
+allowed.
 
 ## Data flow
 
