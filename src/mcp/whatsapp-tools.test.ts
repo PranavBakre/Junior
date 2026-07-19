@@ -111,7 +111,7 @@ describe("whatsapp MCP tools", () => {
 
   test("whatsapp_list_groups summarises groups newest-activity first", async () => {
     const text = await call("whatsapp_list_groups");
-    const lines = text.split("\n");
+    const lines = text.split("\n").filter((l) => l.startsWith("- "));
     expect(lines[0]).toContain("Hermes Mentors");
     expect(lines[0]).toContain("g2@g.us");
     expect(lines[1]).toContain("Hermes Buildathon");
@@ -157,6 +157,18 @@ describe("whatsapp MCP tools", () => {
   test("whatsapp_search_messages reports empty results", async () => {
     const text = await call("whatsapp_search_messages", { query: "zzz" });
     expect(text).toBe("No messages matched.");
+  });
+
+  test("message-bearing responses carry the untrusted-content boundary", async () => {
+    for (const [tool, args] of [
+      ["whatsapp_list_groups", {}],
+      ["whatsapp_read_messages", { group: "g1@g.us" }],
+      ["whatsapp_search_messages", { query: "deploy" }],
+    ] as const) {
+      const text = await call(tool, args);
+      expect(text).toContain("UNTRUSTED third-party WhatsApp content");
+      expect(text).toContain("--- END UNTRUSTED WHATSAPP MESSAGES ---");
+    }
   });
 
   test("long message bodies are truncated per message", async () => {

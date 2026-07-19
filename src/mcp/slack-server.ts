@@ -101,8 +101,10 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     runContext,
     // Deny-by-default until the SessionManager/SessionStore are wired in:
     // without them neither the admin roster nor the live participant list can
-    // be consulted, and the archive is personal data.
-    isAdmin: (userId) => sessionManager?.isAdmin(userId) ?? Promise.resolve(false),
+    // be consulted, and the archive is personal data. isExplicitAdmin (not
+    // isAdmin) so the dev open-mode fallback — no roster configured promotes
+    // everyone — can never unlock the archive.
+    isAdmin: (userId) => sessionManager?.isExplicitAdmin(userId) ?? Promise.resolve(false),
     getParticipants: async (threadId) => {
       const session = await sessionStore?.get(threadId);
       return session ? session.humanParticipants : null;

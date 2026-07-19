@@ -475,14 +475,26 @@ export class SessionManager {
   }
 
   async isAdmin(userId: string): Promise<boolean> {
+    if (await this.isExplicitAdmin(userId)) return true;
     const envAdmin = this.config.adminSlackUserId;
-    if (envAdmin && userId === envAdmin) return true;
     const extras = await this.store.extraAdmins();
-    if (extras.has(userId)) return true;
     // Open-mode (local dev) only when NEITHER tier is configured. Without
     // this guard, an env-var misfire in prod that unsets ADMIN_SLACK_USER_ID
     // would silently promote everyone AND ignore the populated admins table.
     return !envAdmin && extras.size === 0;
+  }
+
+  /**
+   * Like `isAdmin` but WITHOUT the open-mode fallback: true only when the user
+   * is explicitly listed (env var or admins table). Sensitive gates — the
+   * WhatsApp archive — use this so an unconfigured admin roster fails closed
+   * instead of promoting every workspace user.
+   */
+  async isExplicitAdmin(userId: string): Promise<boolean> {
+    const envAdmin = this.config.adminSlackUserId;
+    if (envAdmin && userId === envAdmin) return true;
+    const extras = await this.store.extraAdmins();
+    return extras.has(userId);
   }
 
   /**
