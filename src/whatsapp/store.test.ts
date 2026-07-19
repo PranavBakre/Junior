@@ -145,6 +145,15 @@ describe("WhatsAppStore.listGroups", () => {
     store.upsertMessage(msg({ id: "c", ts: 300, groupName: null }));
     expect(store.listGroups()[0]?.groupName).toBe("New Name");
   });
+
+  test("same-second rename resolves deterministically to the later-ingested subject", () => {
+    // WhatsApp timestamps are whole seconds — a rename adjacent to activity
+    // produces different subjects on the same ts. Insertion order breaks the
+    // tie so the last-captured subject wins instead of an arbitrary row.
+    store.upsertMessage(msg({ id: "z-first", ts: 100, groupName: "Before Rename" }));
+    store.upsertMessage(msg({ id: "a-second", ts: 100, groupName: "After Rename" }));
+    expect(store.listGroups()[0]?.groupName).toBe("After Rename");
+  });
 });
 
 describe("WhatsAppStore.searchMessages", () => {

@@ -56,8 +56,15 @@ export class WhatsAppStore {
     this.db.run(
       "CREATE INDEX IF NOT EXISTS idx_wa_messages_group_jid ON wa_messages(group_jid)",
     );
+    // Composite DESC indexes matching the (ts DESC, id DESC) keyset ordering,
+    // so paged reads/search batches are index seeks — without them each batch
+    // re-walks and re-sorts everything newer than the cursor, and the whole
+    // scan goes quadratic on a synchronous connection.
     this.db.run(
-      "CREATE INDEX IF NOT EXISTS idx_wa_messages_ts ON wa_messages(ts)",
+      "CREATE INDEX IF NOT EXISTS idx_wa_messages_ts_id ON wa_messages(ts DESC, id DESC)",
+    );
+    this.db.run(
+      "CREATE INDEX IF NOT EXISTS idx_wa_messages_group_ts_id ON wa_messages(group_jid, ts DESC, id DESC)",
     );
   }
 
@@ -119,7 +126,7 @@ export class WhatsAppStore {
         `SELECT group_jid,
                 (SELECT m2.group_name FROM wa_messages m2
                    WHERE m2.group_jid = m.group_jid AND m2.group_name IS NOT NULL
-                   ORDER BY m2.ts DESC LIMIT 1) AS group_name,
+                   ORDER BY m2.ts DESC, m2.rowid DESC LIMIT 1) AS group_name,
                 COUNT(*) AS message_count,
                 MIN(ts) AS first_ts,
                 MAX(ts) AS last_ts
@@ -154,8 +161,10 @@ export class WhatsAppStore {
     }
     if (query.beforeTs !== undefined) {
       if (query.beforeId !== undefined) {
-        where.push("(ts < ? OR (ts = ? AND id < ?))");
-        params.push(query.beforeTs, query.beforeTs, query.beforeId);
+        // Row-value comparison (not an OR chain) so SQLite can seek the
+        // composite (ts DESC, id DESC) index instead of scanning.
+        where.push("(ts, id) < (?, ?)");
+        params.push(query.beforeTs, query.beforeId);
       } else {
         where.push("ts < ?");
         params.push(query.beforeTs);
@@ -195,11 +204,14 @@ export class WhatsAppStore {
       scanWhere.push("group_jid = ?");
       scanParams.push(query.groupJid);
     }
+    // Row-value cursor predicate: seekable via the composite (ts DESC, id
+    // DESC) indexes, so each batch resumes where the last ended and the whole
+    // scan stays linear.
     const stmt = this.db.query<Omit<MessageRow, "raw">, (string | number)[]>(
       `SELECT id, group_jid, group_name, sender_jid, sender_name, ts, text, reply_to_id
          FROM wa_messages
         WHERE ${scanWhere.join(" AND ")}
-          AND (ts < ? OR (ts = ? AND id < ?))
+          AND (ts, id) < (?, ?)
         ORDER BY ts DESC, id DESC LIMIT ?`,
     );
 
@@ -211,7 +223,7 @@ export class WhatsAppStore {
     let cursorTs = Number.MAX_SAFE_INTEGER;
     let cursorId = "￿";
     while (matches.length < query.limit) {
-      const rows = stmt.all(...scanParams, cursorTs, cursorTs, cursorId, BATCH);
+      const rows = stmt.all(...scanParams, cursorTs, cursorId, BATCH);
       for (const row of rows) {
         if (!row.text!.toLowerCase().includes(needle)) continue;
         if (
