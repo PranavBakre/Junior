@@ -1,6 +1,16 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import type {
+  GitHubPollClass,
+  GitHubResource,
+  GitHubSemanticEvent,
+  PipelineGitHubResource,
+  PipelineGitHubResourceRole,
+  PrSnapshot,
+  ProposedReduction,
+  ShadowPersistResult,
+} from "../../github/types.ts";
 import type { Clock } from "../../time/clock.ts";
 import { systemClock } from "../../time/clock.ts";
 import {
@@ -164,6 +174,40 @@ type GateRow = {
   provider: string | null;
   model: string | null;
   agent_name: string | null;
+  updated_at: number;
+};
+
+type GitHubResourceRow = {
+  id: string;
+  kind: string;
+  owner: string;
+  repo: string;
+  number: number;
+  node_id: string | null;
+  snapshot_json: string | null;
+  last_polled_at: number | null;
+  next_poll_at: number;
+  poll_class: string;
+  consecutive_failures: number;
+  last_error: string | null;
+  lease_owner: string | null;
+  lease_until: number | null;
+  terminal_at: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
+type PipelineGitHubResourceRow = {
+  id: string;
+  run_id: string;
+  resource_id: string;
+  role: string;
+  workstream_key: string;
+  attempt_id: string | null;
+  registered_by_assignment_id: string | null;
+  expected_head_sha: string | null;
+  active: number;
+  created_at: number;
   updated_at: number;
 };
 
@@ -383,6 +427,61 @@ export class SqlitePipelineStore implements PipelineStore {
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_pipeline_outbox_ready
       ON pipeline_outbox (status, available_at)
+    `);
+
+    // Phase 5: GitHub resource tracking (shadow reconciler)
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS github_resources (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT 'pull_request',
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        node_id TEXT,
+        snapshot_json TEXT,
+        last_polled_at INTEGER,
+        next_poll_at INTEGER NOT NULL,
+        poll_class TEXT NOT NULL DEFAULT 'hot',
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        lease_owner TEXT,
+        lease_until INTEGER,
+        terminal_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (owner, repo, number)
+      )
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_github_resources_next_poll
+      ON github_resources (next_poll_at)
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS pipeline_github_resources (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        resource_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        workstream_key TEXT NOT NULL,
+        attempt_id TEXT,
+        registered_by_assignment_id TEXT,
+        expected_head_sha TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (run_id, resource_id, role),
+        FOREIGN KEY (run_id) REFERENCES pipeline_runs(id),
+        FOREIGN KEY (resource_id) REFERENCES github_resources(id)
+      )
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_github_resources_resource
+      ON pipeline_github_resources (resource_id, active)
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_github_resources_run
+      ON pipeline_github_resources (run_id, active)
     `);
   }
 
@@ -986,6 +1085,405 @@ export class SqlitePipelineStore implements PipelineStore {
       .map(outcomeFromRow);
   }
 
+  // -------------------------------------------------------------------------
+  // GitHub resource tracking (Phase 5 shadow)
+  // -------------------------------------------------------------------------
+
+  async upsertGitHubResource(resource: GitHubResource): Promise<void> {
+    this.db
+      .query(
+        `INSERT INTO github_resources (
+          id, kind, owner, repo, number, node_id, snapshot_json,
+          last_polled_at, next_poll_at, poll_class, consecutive_failures,
+          last_error, lease_owner, lease_until, terminal_at,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner, repo, number) DO UPDATE SET
+          kind = excluded.kind,
+          node_id = excluded.node_id,
+          snapshot_json = excluded.snapshot_json,
+          last_polled_at = excluded.last_polled_at,
+          next_poll_at = excluded.next_poll_at,
+          poll_class = excluded.poll_class,
+          consecutive_failures = excluded.consecutive_failures,
+          last_error = excluded.last_error,
+          lease_owner = excluded.lease_owner,
+          lease_until = excluded.lease_until,
+          terminal_at = excluded.terminal_at,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        resource.id,
+        resource.kind,
+        resource.owner,
+        resource.repo,
+        resource.number,
+        resource.nodeId,
+        resource.snapshot ? JSON.stringify(resource.snapshot) : null,
+        resource.lastPolledAt,
+        resource.nextPollAt,
+        resource.pollClass,
+        resource.consecutiveFailures,
+        resource.lastError,
+        resource.leaseOwner,
+        resource.leaseUntil,
+        resource.terminalAt,
+        resource.createdAt,
+        resource.updatedAt,
+      );
+  }
+
+  async getGitHubResource(id: string): Promise<GitHubResource | undefined> {
+    const row = this.db
+      .query<GitHubResourceRow, [string]>(
+        "SELECT * FROM github_resources WHERE id = ?",
+      )
+      .get(id);
+    return row ? githubResourceFromRow(row) : undefined;
+  }
+
+  async getGitHubResourceByCoords(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubResource | undefined> {
+    const row = this.db
+      .query<GitHubResourceRow, [string, string, number]>(
+        `SELECT * FROM github_resources
+         WHERE owner = ? AND repo = ? AND number = ?`,
+      )
+      .get(owner, repo, number);
+    return row ? githubResourceFromRow(row) : undefined;
+  }
+
+  async listActiveTrackedResources(): Promise<GitHubResource[]> {
+    return this.db
+      .query<GitHubResourceRow, []>(
+        `SELECT DISTINCT g.*
+         FROM github_resources g
+         INNER JOIN pipeline_github_resources p
+           ON p.resource_id = g.id AND p.active = 1
+         ORDER BY g.next_poll_at ASC`,
+      )
+      .all()
+      .map(githubResourceFromRow);
+  }
+
+  async listDueGitHubResources(
+    now: number,
+    limit = 50,
+  ): Promise<GitHubResource[]> {
+    return this.db
+      .query<GitHubResourceRow, [number, number, number]>(
+        `SELECT DISTINCT g.*
+         FROM github_resources g
+         INNER JOIN pipeline_github_resources p
+           ON p.resource_id = g.id AND p.active = 1
+         WHERE g.next_poll_at <= ?
+           AND (g.lease_owner IS NULL OR g.lease_until IS NULL OR g.lease_until <= ?)
+         ORDER BY g.next_poll_at ASC
+         LIMIT ?`,
+      )
+      .all(now, now, Math.max(0, limit))
+      .map(githubResourceFromRow);
+  }
+
+  async claimGitHubResourceLease(
+    id: string,
+    owner: string,
+    leaseMs: number,
+    now = this.clock.now(),
+  ): Promise<boolean> {
+    const result = this.db
+      .query(
+        `UPDATE github_resources SET
+          lease_owner = ?,
+          lease_until = ?,
+          updated_at = ?
+         WHERE id = ?
+           AND (lease_owner IS NULL OR lease_until IS NULL OR lease_until <= ? OR lease_owner = ?)`,
+      )
+      .run(owner, now + leaseMs, now, id, now, owner);
+    return result.changes > 0;
+  }
+
+  async releaseGitHubResourceLease(id: string): Promise<void> {
+    this.db
+      .query(
+        `UPDATE github_resources SET
+          lease_owner = NULL,
+          lease_until = NULL,
+          updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(this.clock.now(), id);
+  }
+
+  async recordGitHubPollFailure(
+    resourceId: string,
+    error: string,
+    nextPollAt: number,
+  ): Promise<void> {
+    const now = this.clock.now();
+    this.db
+      .query(
+        `UPDATE github_resources SET
+          consecutive_failures = consecutive_failures + 1,
+          last_error = ?,
+          last_polled_at = ?,
+          next_poll_at = ?,
+          lease_owner = NULL,
+          lease_until = NULL,
+          updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(error, now, nextPollAt, now, resourceId);
+  }
+
+  async registerPipelineGitHubResource(
+    assoc: Omit<PipelineGitHubResource, "createdAt" | "updatedAt"> & {
+      createdAt?: number;
+      updatedAt?: number;
+    },
+  ): Promise<PipelineGitHubResource> {
+    const now = this.clock.now();
+    const createdAt = assoc.createdAt ?? now;
+    const updatedAt = assoc.updatedAt ?? now;
+    this.db
+      .query(
+        `INSERT INTO pipeline_github_resources (
+          id, run_id, resource_id, role, workstream_key, attempt_id,
+          registered_by_assignment_id, expected_head_sha, active,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, resource_id, role) DO UPDATE SET
+          workstream_key = excluded.workstream_key,
+          attempt_id = excluded.attempt_id,
+          registered_by_assignment_id = excluded.registered_by_assignment_id,
+          expected_head_sha = excluded.expected_head_sha,
+          active = excluded.active,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        assoc.id,
+        assoc.runId,
+        assoc.resourceId,
+        assoc.role,
+        assoc.workstreamKey,
+        assoc.attemptId,
+        assoc.registeredByAssignmentId,
+        assoc.expectedHeadSha,
+        assoc.active ? 1 : 0,
+        createdAt,
+        updatedAt,
+      );
+    const row = this.db
+      .query<PipelineGitHubResourceRow, [string, string, string]>(
+        `SELECT * FROM pipeline_github_resources
+         WHERE run_id = ? AND resource_id = ? AND role = ?`,
+      )
+      .get(assoc.runId, assoc.resourceId, assoc.role);
+    if (!row) {
+      throw new Error("failed to register pipeline_github_resources row");
+    }
+    return pipelineGitHubResourceFromRow(row);
+  }
+
+  async listPipelineGitHubResources(
+    runId: string,
+    activeOnly = false,
+  ): Promise<PipelineGitHubResource[]> {
+    if (activeOnly) {
+      return this.db
+        .query<PipelineGitHubResourceRow, [string]>(
+          `SELECT * FROM pipeline_github_resources
+           WHERE run_id = ? AND active = 1
+           ORDER BY created_at ASC`,
+        )
+        .all(runId)
+        .map(pipelineGitHubResourceFromRow);
+    }
+    return this.db
+      .query<PipelineGitHubResourceRow, [string]>(
+        `SELECT * FROM pipeline_github_resources
+         WHERE run_id = ?
+         ORDER BY created_at ASC`,
+      )
+      .all(runId)
+      .map(pipelineGitHubResourceFromRow);
+  }
+
+  async listAssociationsForResource(
+    resourceId: string,
+    activeOnly = false,
+  ): Promise<PipelineGitHubResource[]> {
+    if (activeOnly) {
+      return this.db
+        .query<PipelineGitHubResourceRow, [string]>(
+          `SELECT * FROM pipeline_github_resources
+           WHERE resource_id = ? AND active = 1
+           ORDER BY created_at ASC`,
+        )
+        .all(resourceId)
+        .map(pipelineGitHubResourceFromRow);
+    }
+    return this.db
+      .query<PipelineGitHubResourceRow, [string]>(
+        `SELECT * FROM pipeline_github_resources
+         WHERE resource_id = ?
+         ORDER BY created_at ASC`,
+      )
+      .all(resourceId)
+      .map(pipelineGitHubResourceFromRow);
+  }
+
+  async deactivatePipelineGitHubResource(id: string): Promise<void> {
+    this.db
+      .query(
+        `UPDATE pipeline_github_resources SET
+          active = 0,
+          updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(this.clock.now(), id);
+  }
+
+  async applyGitHubSnapshotShadow(input: {
+    resourceId: string;
+    snapshot: PrSnapshot;
+    nodeId?: string | null;
+    events: GitHubSemanticEvent[];
+    proposedReductions: ProposedReduction[];
+    nextPollAt: number;
+    pollClass?: GitHubPollClass;
+    terminalAt?: number | null;
+  }): Promise<ShadowPersistResult> {
+    const now = this.clock.now();
+    const apply = this.db.transaction(() => {
+      const resource = this.db
+        .query<GitHubResourceRow, [string]>(
+          "SELECT * FROM github_resources WHERE id = ?",
+        )
+        .get(input.resourceId);
+      if (!resource) {
+        throw new Error(`github resource not found: ${input.resourceId}`);
+      }
+
+      this.db
+        .query(
+          `UPDATE github_resources SET
+            node_id = COALESCE(?, node_id),
+            snapshot_json = ?,
+            last_polled_at = ?,
+            next_poll_at = ?,
+            poll_class = COALESCE(?, poll_class),
+            consecutive_failures = 0,
+            last_error = NULL,
+            lease_owner = NULL,
+            lease_until = NULL,
+            terminal_at = COALESCE(?, terminal_at),
+            updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(
+          input.nodeId ?? null,
+          JSON.stringify(input.snapshot),
+          now,
+          input.nextPollAt,
+          input.pollClass ?? null,
+          input.terminalAt ?? null,
+          now,
+          input.resourceId,
+        );
+
+      // When terminalAt is explicitly null (non-terminal), clear it.
+      if (input.terminalAt === null) {
+        this.db
+          .query(
+            `UPDATE github_resources SET terminal_at = NULL WHERE id = ?`,
+          )
+          .run(input.resourceId);
+      }
+
+      const associations = this.db
+        .query<PipelineGitHubResourceRow, [string]>(
+          `SELECT * FROM pipeline_github_resources
+           WHERE resource_id = ? AND active = 1
+           ORDER BY created_at ASC`,
+        )
+        .all(input.resourceId)
+        .map(pipelineGitHubResourceFromRow);
+
+      for (const event of input.events) {
+        for (const assoc of associations) {
+          const idempotencyKey = `${event.fingerprint}:run:${assoc.runId}:role:${assoc.role}`;
+          const existing = this.db
+            .query<EventRow, [string]>(
+              "SELECT * FROM pipeline_events WHERE idempotency_key = ?",
+            )
+            .get(idempotencyKey);
+          if (existing) continue;
+
+          const maxSeq = this.db
+            .query<{ m: number | null }, [string]>(
+              "SELECT MAX(sequence) as m FROM pipeline_events WHERE run_id = ?",
+            )
+            .get(assoc.runId);
+          const sequence = (maxSeq?.m ?? 0) + 1;
+          const reductions = input.proposedReductions.filter(
+            (r) =>
+              r.kind === "checks_apply_to_sha" ||
+              (r.kind === "invalidate_aggregate_gates" &&
+                r.workstreamKey === assoc.workstreamKey) ||
+              (r.kind === "role_specific_merge" && r.role === assoc.role),
+          );
+          const full: PipelineEvent = {
+            id: crypto.randomUUID(),
+            runId: assoc.runId,
+            sequence,
+            eventType: event.type,
+            actorType: "system",
+            actorId: "github-reconciler",
+            assignmentId: assoc.registeredByAssignmentId,
+            outcomeId: null,
+            fromPhase: null,
+            toPhase: null,
+            payloadVersion: 1,
+            payload: {
+              resourceId: event.resourceId,
+              owner: event.owner,
+              repo: event.repo,
+              number: event.number,
+              role: assoc.role,
+              workstreamKey: assoc.workstreamKey,
+              attemptId: assoc.attemptId,
+              previous: event.previous,
+              next: event.next,
+              fingerprint: event.fingerprint,
+              proposedReductions: reductions,
+              shadow: true,
+              wakesDelivered: false,
+            },
+            idempotencyKey,
+            occurredAt: event.observedAt,
+            observedAt: now,
+          };
+          this.insertEventRow(full);
+        }
+      }
+
+      return {
+        resourceId: input.resourceId,
+        events: input.events.map((e) => ({ ...e })),
+        proposedReductions: input.proposedReductions.map((r) => ({ ...r })),
+        wakesDelivered: false as const,
+        associationsTouched: associations.length,
+      } satisfies ShadowPersistResult;
+    });
+
+    return apply();
+  }
+
   private insertAssignment(assignment: Assignment): void {
     this.db
       .query(
@@ -1245,5 +1743,53 @@ function parseJsonArray(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+function githubResourceFromRow(row: GitHubResourceRow): GitHubResource {
+  let snapshot: PrSnapshot | null = null;
+  if (row.snapshot_json) {
+    try {
+      snapshot = JSON.parse(row.snapshot_json) as PrSnapshot;
+    } catch {
+      snapshot = null;
+    }
+  }
+  return {
+    id: row.id,
+    kind: "pull_request",
+    owner: row.owner,
+    repo: row.repo,
+    number: row.number,
+    nodeId: row.node_id,
+    snapshot,
+    lastPolledAt: row.last_polled_at,
+    nextPollAt: row.next_poll_at,
+    pollClass: row.poll_class as GitHubPollClass,
+    consecutiveFailures: row.consecutive_failures,
+    lastError: row.last_error,
+    leaseOwner: row.lease_owner,
+    leaseUntil: row.lease_until,
+    terminalAt: row.terminal_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function pipelineGitHubResourceFromRow(
+  row: PipelineGitHubResourceRow,
+): PipelineGitHubResource {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    resourceId: row.resource_id,
+    role: row.role as PipelineGitHubResourceRole,
+    workstreamKey: row.workstream_key,
+    attemptId: row.attempt_id,
+    registeredByAssignmentId: row.registered_by_assignment_id,
+    expectedHeadSha: row.expected_head_sha,
+    active: row.active === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 

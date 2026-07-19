@@ -1,4 +1,13 @@
 import type {
+  GitHubResource,
+  GitHubSemanticEvent,
+  PipelineGitHubResource,
+  PrSnapshot,
+  ProposedReduction,
+  ShadowPersistResult,
+  GitHubPollClass,
+} from "../../github/types.ts";
+import type {
   Assignment,
   AssignmentCreate,
   AttemptRevisionMember,
@@ -57,6 +66,63 @@ export interface PipelineStore {
   listGates(attemptId: string): Promise<PipelineGate[]>;
 
   listOutcomes(assignmentId: string): Promise<StoredOutcome[]>;
+
+  // -------------------------------------------------------------------------
+  // GitHub resource tracking (Phase 5 shadow — no wakes)
+  // -------------------------------------------------------------------------
+
+  upsertGitHubResource(resource: GitHubResource): Promise<void>;
+  getGitHubResource(id: string): Promise<GitHubResource | undefined>;
+  getGitHubResourceByCoords(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubResource | undefined>;
+  listActiveTrackedResources(): Promise<GitHubResource[]>;
+  listDueGitHubResources(now: number, limit?: number): Promise<GitHubResource[]>;
+  claimGitHubResourceLease(
+    id: string,
+    owner: string,
+    leaseMs: number,
+    now?: number,
+  ): Promise<boolean>;
+  releaseGitHubResourceLease(id: string): Promise<void>;
+  recordGitHubPollFailure(
+    resourceId: string,
+    error: string,
+    nextPollAt: number,
+  ): Promise<void>;
+
+  registerPipelineGitHubResource(
+    assoc: Omit<PipelineGitHubResource, "createdAt" | "updatedAt"> & {
+      createdAt?: number;
+      updatedAt?: number;
+    },
+  ): Promise<PipelineGitHubResource>;
+  listPipelineGitHubResources(
+    runId: string,
+    activeOnly?: boolean,
+  ): Promise<PipelineGitHubResource[]>;
+  listAssociationsForResource(
+    resourceId: string,
+    activeOnly?: boolean,
+  ): Promise<PipelineGitHubResource[]>;
+  deactivatePipelineGitHubResource(id: string): Promise<void>;
+
+  /**
+   * Atomically persist snapshot + semantic events for active run associations.
+   * Never enqueues wake outbox items (Phase 5 shadow contract).
+   */
+  applyGitHubSnapshotShadow(input: {
+    resourceId: string;
+    snapshot: PrSnapshot;
+    nodeId?: string | null;
+    events: GitHubSemanticEvent[];
+    proposedReductions: ProposedReduction[];
+    nextPollAt: number;
+    pollClass?: GitHubPollClass;
+    terminalAt?: number | null;
+  }): Promise<ShadowPersistResult>;
 
   close?(): void;
 }

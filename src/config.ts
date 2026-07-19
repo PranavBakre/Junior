@@ -195,6 +195,21 @@ export interface Config {
   pipeline?: {
     runtimeMode: PipelineRuntimeMode;
   };
+  /**
+   * Outbound GitHub PR reconciliation (Phase 5). Default OFF. Observation is
+   * independent of wake delivery — wakes require reconcile and stay disabled
+   * until Phase 6.
+   */
+  github?: {
+    reconcileEnabled: boolean;
+    /** Must stay false in Phase 5. Rejected at parse if true without reconcile. */
+    eventWakeEnabled: boolean;
+    /** Read-only fine-grained token. Optional when useCli is true. */
+    reconcileToken: string | null;
+    /** Explicit opt-in for `gh` CLI auth fallback (dev only). */
+    reconcileUseCli: boolean;
+    reconcileIntervalMs: number;
+  };
 }
 
 export type PipelineRuntimeMode = "off" | "shadow" | "active";
@@ -337,6 +352,27 @@ export function loadConfig(): Config {
         optional("PIPELINE_RUNTIME_MODE", "off"),
       ),
     },
+    github: parseGitHubConfig(),
+  };
+}
+
+function parseGitHubConfig(): NonNullable<Config["github"]> {
+  const reconcileEnabled = parseBooleanEnv("GITHUB_RECONCILE_ENABLED", false);
+  const eventWakeEnabled = parseBooleanEnv("GITHUB_EVENT_WAKE_ENABLED", false);
+  if (eventWakeEnabled && !reconcileEnabled) {
+    throw new Error(
+      "Invalid GitHub config: GITHUB_EVENT_WAKE_ENABLED=true requires GITHUB_RECONCILE_ENABLED=true",
+    );
+  }
+  return {
+    reconcileEnabled,
+    eventWakeEnabled,
+    reconcileToken: process.env.GITHUB_RECONCILE_TOKEN?.trim() || null,
+    reconcileUseCli: parseBooleanEnv("GITHUB_RECONCILE_USE_CLI", false),
+    reconcileIntervalMs: parsePositiveIntEnv(
+      "GITHUB_RECONCILE_INTERVAL_MS",
+      optional("GITHUB_RECONCILE_INTERVAL_MS", "30000"),
+    ),
   };
 }
 

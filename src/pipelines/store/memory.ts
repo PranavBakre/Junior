@@ -1,5 +1,14 @@
 import type { Clock } from "../../time/clock.ts";
 import { systemClock } from "../../time/clock.ts";
+import type {
+  GitHubPollClass,
+  GitHubResource,
+  GitHubSemanticEvent,
+  PipelineGitHubResource,
+  PrSnapshot,
+  ProposedReduction,
+  ShadowPersistResult,
+} from "../../github/types.ts";
 import {
   computeRevisionDigest,
   canonicalizeRevisionMembers,
@@ -35,6 +44,9 @@ export class InMemoryPipelineStore implements PipelineStore {
   private attempts = new Map<string, PipelineAttempt>();
   private revisions = new Map<string, AttemptRevisionMember[]>();
   private gates = new Map<string, PipelineGate[]>();
+  private githubResources = new Map<string, GitHubResource>();
+  private githubByCoords = new Map<string, string>();
+  private pipelineGithub = new Map<string, PipelineGitHubResource>();
   private clock: Clock;
 
   constructor(clock: Clock = systemClock) {
@@ -429,6 +441,307 @@ export class InMemoryPipelineStore implements PipelineStore {
   async listOutcomes(assignmentId: string): Promise<StoredOutcome[]> {
     return (this.outcomes.get(assignmentId) ?? []).map((o) => ({ ...o }));
   }
+
+  // -------------------------------------------------------------------------
+  // GitHub resource tracking (Phase 5 shadow)
+  // -------------------------------------------------------------------------
+
+  async upsertGitHubResource(resource: GitHubResource): Promise<void> {
+    const coords = coordsKey(resource.owner, resource.repo, resource.number);
+    const existingId = this.githubByCoords.get(coords);
+    if (existingId && existingId !== resource.id) {
+      throw new Error(
+        `github resource already exists for ${coords}: ${existingId}`,
+      );
+    }
+    this.githubResources.set(resource.id, cloneGitHubResource(resource));
+    this.githubByCoords.set(coords, resource.id);
+  }
+
+  async getGitHubResource(id: string): Promise<GitHubResource | undefined> {
+    const r = this.githubResources.get(id);
+    return r ? cloneGitHubResource(r) : undefined;
+  }
+
+  async getGitHubResourceByCoords(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubResource | undefined> {
+    const id = this.githubByCoords.get(coordsKey(owner, repo, number));
+    if (!id) return undefined;
+    return this.getGitHubResource(id);
+  }
+
+  async listActiveTrackedResources(): Promise<GitHubResource[]> {
+    const activeResourceIds = new Set(
+      [...this.pipelineGithub.values()]
+        .filter((a) => a.active)
+        .map((a) => a.resourceId),
+    );
+    return [...this.githubResources.values()]
+      .filter((r) => activeResourceIds.has(r.id))
+      .map(cloneGitHubResource);
+  }
+
+  async listDueGitHubResources(
+    now: number,
+    limit = 50,
+  ): Promise<GitHubResource[]> {
+    const active = await this.listActiveTrackedResources();
+    return active
+      .filter(
+        (r) =>
+          r.nextPollAt <= now &&
+          (r.leaseOwner == null ||
+            r.leaseUntil == null ||
+            r.leaseUntil <= now),
+      )
+      .sort((a, b) => a.nextPollAt - b.nextPollAt)
+      .slice(0, Math.max(0, limit))
+      .map(cloneGitHubResource);
+  }
+
+  async claimGitHubResourceLease(
+    id: string,
+    owner: string,
+    leaseMs: number,
+    now = this.clock.now(),
+  ): Promise<boolean> {
+    const r = this.githubResources.get(id);
+    if (!r) return false;
+    if (
+      r.leaseOwner != null &&
+      r.leaseUntil != null &&
+      r.leaseUntil > now &&
+      r.leaseOwner !== owner
+    ) {
+      return false;
+    }
+    this.githubResources.set(id, {
+      ...r,
+      leaseOwner: owner,
+      leaseUntil: now + leaseMs,
+      updatedAt: now,
+    });
+    return true;
+  }
+
+  async releaseGitHubResourceLease(id: string): Promise<void> {
+    const r = this.githubResources.get(id);
+    if (!r) return;
+    this.githubResources.set(id, {
+      ...r,
+      leaseOwner: null,
+      leaseUntil: null,
+      updatedAt: this.clock.now(),
+    });
+  }
+
+  async recordGitHubPollFailure(
+    resourceId: string,
+    error: string,
+    nextPollAt: number,
+  ): Promise<void> {
+    const r = this.githubResources.get(resourceId);
+    if (!r) return;
+    const now = this.clock.now();
+    this.githubResources.set(resourceId, {
+      ...r,
+      consecutiveFailures: r.consecutiveFailures + 1,
+      lastError: error,
+      lastPolledAt: now,
+      nextPollAt,
+      leaseOwner: null,
+      leaseUntil: null,
+      updatedAt: now,
+    });
+  }
+
+  async registerPipelineGitHubResource(
+    assoc: Omit<PipelineGitHubResource, "createdAt" | "updatedAt"> & {
+      createdAt?: number;
+      updatedAt?: number;
+    },
+  ): Promise<PipelineGitHubResource> {
+    const now = this.clock.now();
+    // UNIQUE(run_id, resource_id, role)
+    for (const existing of this.pipelineGithub.values()) {
+      if (
+        existing.runId === assoc.runId &&
+        existing.resourceId === assoc.resourceId &&
+        existing.role === assoc.role
+      ) {
+        const updated: PipelineGitHubResource = {
+          ...existing,
+          workstreamKey: assoc.workstreamKey,
+          attemptId: assoc.attemptId,
+          registeredByAssignmentId: assoc.registeredByAssignmentId,
+          expectedHeadSha: assoc.expectedHeadSha,
+          active: assoc.active,
+          updatedAt: now,
+        };
+        this.pipelineGithub.set(existing.id, updated);
+        return { ...updated };
+      }
+    }
+    const full: PipelineGitHubResource = {
+      id: assoc.id,
+      runId: assoc.runId,
+      resourceId: assoc.resourceId,
+      role: assoc.role,
+      workstreamKey: assoc.workstreamKey,
+      attemptId: assoc.attemptId,
+      registeredByAssignmentId: assoc.registeredByAssignmentId,
+      expectedHeadSha: assoc.expectedHeadSha,
+      active: assoc.active,
+      createdAt: assoc.createdAt ?? now,
+      updatedAt: assoc.updatedAt ?? now,
+    };
+    this.pipelineGithub.set(full.id, full);
+    return { ...full };
+  }
+
+  async listPipelineGitHubResources(
+    runId: string,
+    activeOnly = false,
+  ): Promise<PipelineGitHubResource[]> {
+    return [...this.pipelineGithub.values()]
+      .filter((a) => a.runId === runId && (!activeOnly || a.active))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((a) => ({ ...a }));
+  }
+
+  async listAssociationsForResource(
+    resourceId: string,
+    activeOnly = false,
+  ): Promise<PipelineGitHubResource[]> {
+    return [...this.pipelineGithub.values()]
+      .filter((a) => a.resourceId === resourceId && (!activeOnly || a.active))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((a) => ({ ...a }));
+  }
+
+  async deactivatePipelineGitHubResource(id: string): Promise<void> {
+    const a = this.pipelineGithub.get(id);
+    if (!a) return;
+    this.pipelineGithub.set(id, {
+      ...a,
+      active: false,
+      updatedAt: this.clock.now(),
+    });
+  }
+
+  async applyGitHubSnapshotShadow(input: {
+    resourceId: string;
+    snapshot: PrSnapshot;
+    nodeId?: string | null;
+    events: GitHubSemanticEvent[];
+    proposedReductions: ProposedReduction[];
+    nextPollAt: number;
+    pollClass?: GitHubPollClass;
+    terminalAt?: number | null;
+  }): Promise<ShadowPersistResult> {
+    const resource = this.githubResources.get(input.resourceId);
+    if (!resource) {
+      throw new Error(`github resource not found: ${input.resourceId}`);
+    }
+    const now = this.clock.now();
+    const associations = [...this.pipelineGithub.values()].filter(
+      (a) => a.resourceId === input.resourceId && a.active,
+    );
+
+    this.githubResources.set(input.resourceId, {
+      ...resource,
+      nodeId:
+        input.nodeId !== undefined
+          ? input.nodeId
+          : resource.nodeId,
+      snapshot: { ...input.snapshot },
+      lastPolledAt: now,
+      nextPollAt: input.nextPollAt,
+      pollClass: input.pollClass ?? resource.pollClass,
+      consecutiveFailures: 0,
+      lastError: null,
+      leaseOwner: null,
+      leaseUntil: null,
+      terminalAt:
+        input.terminalAt !== undefined
+          ? input.terminalAt
+          : resource.terminalAt,
+      updatedAt: now,
+    });
+
+    // Persist semantic events onto each active run association.
+    // Never enqueue wake outbox items in Phase 5.
+    for (const event of input.events) {
+      for (const assoc of associations) {
+        const idempotencyKey = `${event.fingerprint}:run:${assoc.runId}:role:${assoc.role}`;
+        if (this.eventByIdempotency.has(idempotencyKey)) continue;
+        const runEvents = this.events.get(assoc.runId) ?? [];
+        const sequence = runEvents.length + 1;
+        const full: PipelineEvent = {
+          id: crypto.randomUUID(),
+          runId: assoc.runId,
+          sequence,
+          eventType: event.type,
+          actorType: "system",
+          actorId: "github-reconciler",
+          assignmentId: assoc.registeredByAssignmentId,
+          outcomeId: null,
+          fromPhase: null,
+          toPhase: null,
+          payloadVersion: 1,
+          payload: {
+            resourceId: event.resourceId,
+            owner: event.owner,
+            repo: event.repo,
+            number: event.number,
+            role: assoc.role,
+            workstreamKey: assoc.workstreamKey,
+            attemptId: assoc.attemptId,
+            previous: event.previous,
+            next: event.next,
+            fingerprint: event.fingerprint,
+            proposedReductions: input.proposedReductions.filter(
+              (r) =>
+                r.kind === "checks_apply_to_sha" ||
+                (r.kind === "invalidate_aggregate_gates" &&
+                  r.workstreamKey === assoc.workstreamKey) ||
+                (r.kind === "role_specific_merge" && r.role === assoc.role),
+            ),
+            shadow: true,
+            wakesDelivered: false,
+          },
+          idempotencyKey,
+          occurredAt: event.observedAt,
+          observedAt: now,
+        };
+        runEvents.push(full);
+        this.events.set(assoc.runId, runEvents);
+        this.eventByIdempotency.set(idempotencyKey, full.id);
+      }
+    }
+
+    return {
+      resourceId: input.resourceId,
+      events: input.events.map((e) => ({ ...e })),
+      proposedReductions: input.proposedReductions.map((r) => ({ ...r })),
+      wakesDelivered: false,
+      associationsTouched: associations.length,
+    };
+  }
+}
+
+function coordsKey(owner: string, repo: string, number: number): string {
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
+}
+
+function cloneGitHubResource(r: GitHubResource): GitHubResource {
+  return {
+    ...r,
+    snapshot: r.snapshot ? { ...r.snapshot } : null,
+  };
 }
 
 function cloneRun(run: PipelineRun): PipelineRun {

@@ -48,6 +48,11 @@ const ENV_KEYS = [
   "HTTP_DASHBOARD_PORT",
   "WHATSAPP_EXTRACTION_INTERVAL_MS",
   "PIPELINE_RUNTIME_MODE",
+  "GITHUB_RECONCILE_ENABLED",
+  "GITHUB_EVENT_WAKE_ENABLED",
+  "GITHUB_RECONCILE_TOKEN",
+  "GITHUB_RECONCILE_USE_CLI",
+  "GITHUB_RECONCILE_INTERVAL_MS",
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -175,6 +180,36 @@ describe("loadConfig runner providers", () => {
   it("rejects invalid PIPELINE_RUNTIME_MODE", () => {
     process.env.PIPELINE_RUNTIME_MODE = "maybe";
     expect(() => loadConfig()).toThrow("Invalid PIPELINE_RUNTIME_MODE");
+  });
+
+  it("defaults GitHub reconcile OFF and wakes OFF", () => {
+    const config = loadConfig();
+    expect(config.github).toEqual({
+      reconcileEnabled: false,
+      eventWakeEnabled: false,
+      reconcileToken: null,
+      reconcileUseCli: false,
+      reconcileIntervalMs: 30000,
+    });
+  });
+
+  it("parses GitHub reconcile settings", () => {
+    process.env.GITHUB_RECONCILE_ENABLED = "true";
+    process.env.GITHUB_RECONCILE_TOKEN = " ghp_readonly ";
+    process.env.GITHUB_RECONCILE_INTERVAL_MS = "45000";
+    const config = loadConfig();
+    expect(config.github?.reconcileEnabled).toBe(true);
+    expect(config.github?.eventWakeEnabled).toBe(false);
+    expect(config.github?.reconcileToken).toBe("ghp_readonly");
+    expect(config.github?.reconcileIntervalMs).toBe(45000);
+  });
+
+  it("rejects wakes without reconcile", () => {
+    process.env.GITHUB_EVENT_WAKE_ENABLED = "true";
+    process.env.GITHUB_RECONCILE_ENABLED = "false";
+    expect(() => loadConfig()).toThrow(
+      "GITHUB_EVENT_WAKE_ENABLED=true requires GITHUB_RECONCILE_ENABLED=true",
+    );
   });
 
   it("defaults WHATSAPP_EXTRACTION_INTERVAL_MS to 600000", () => {

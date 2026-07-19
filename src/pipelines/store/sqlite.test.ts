@@ -316,4 +316,153 @@ describe("SqlitePipelineStore", () => {
     await store.markOutboxDelivered(again[0]!.id);
     expect((await store.listOutbox("run-1"))[0]!.status).toBe("delivered");
   });
+
+  it("atomically persists GitHub snapshots and multi-PR semantic events without wakes", async () => {
+    await store.createRun(makeProductRun({ id: "run-1", threadId: "T1" }));
+    await store.createRun(
+      makeProductRun({ id: "run-2", threadId: "T2", phase: "reviewing" }),
+    );
+
+    const snapshot = {
+      state: "OPEN" as const,
+      isDraft: false,
+      baseRefName: "main",
+      headRefName: "feat",
+      headRefOid: "sha-a",
+      reviewDecision: null,
+      mergeable: "MERGEABLE" as const,
+      mergedAt: null,
+      closedAt: null,
+      checkRollup: "PENDING" as const,
+      checkRollupSha: "sha-a",
+      updatedAt: "t0",
+    };
+
+    await store.upsertGitHubResource({
+      id: "res-1",
+      kind: "pull_request",
+      owner: "acme",
+      repo: "backend",
+      number: 1,
+      nodeId: "PR_1",
+      snapshot,
+      lastPolledAt: 1_000,
+      nextPollAt: 1_000,
+      pollClass: "hot",
+      consecutiveFailures: 0,
+      lastError: null,
+      leaseOwner: null,
+      leaseUntil: null,
+      terminalAt: null,
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    });
+    await store.upsertGitHubResource({
+      id: "res-2",
+      kind: "pull_request",
+      owner: "acme",
+      repo: "backend",
+      number: 2,
+      nodeId: "PR_2",
+      snapshot: { ...snapshot, headRefOid: "sha-b", checkRollupSha: "sha-b" },
+      lastPolledAt: 1_000,
+      nextPollAt: 1_000,
+      pollClass: "warm",
+      consecutiveFailures: 0,
+      lastError: null,
+      leaseOwner: null,
+      leaseUntil: null,
+      terminalAt: null,
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    });
+
+    await store.registerPipelineGitHubResource({
+      id: "pg-1",
+      runId: "run-1",
+      resourceId: "res-1",
+      role: "dev-pr",
+      workstreamKey: "backend",
+      attemptId: "att-1",
+      registeredByAssignmentId: null,
+      expectedHeadSha: "sha-a",
+      active: true,
+    });
+    await store.registerPipelineGitHubResource({
+      id: "pg-2",
+      runId: "run-1",
+      resourceId: "res-2",
+      role: "main-pr",
+      workstreamKey: "backend",
+      attemptId: "att-1",
+      registeredByAssignmentId: null,
+      expectedHeadSha: "sha-b",
+      active: true,
+    });
+    await store.registerPipelineGitHubResource({
+      id: "pg-3",
+      runId: "run-2",
+      resourceId: "res-1",
+      role: "review-target",
+      workstreamKey: "backend",
+      attemptId: "att-2",
+      registeredByAssignmentId: null,
+      expectedHeadSha: "sha-a",
+      active: true,
+    });
+
+    const result = await store.applyGitHubSnapshotShadow({
+      resourceId: "res-1",
+      snapshot: { ...snapshot, headRefOid: "sha-a2", checkRollupSha: "sha-a2" },
+      nodeId: "PR_1",
+      events: [
+        {
+          type: "github.pr.head_changed",
+          resourceId: "res-1",
+          owner: "acme",
+          repo: "backend",
+          number: 1,
+          observedAt: 1_000,
+          previous: { headRefOid: "sha-a" },
+          next: { headRefOid: "sha-a2" },
+          fingerprint: "res-1:github.pr.head_changed:sha-a->sha-a2",
+        },
+      ],
+      proposedReductions: [
+        {
+          kind: "invalidate_aggregate_gates",
+          reason: "head_changed",
+          resourceId: "res-1",
+          attemptId: "att-1",
+          workstreamKey: "backend",
+          previousHeadSha: "sha-a",
+          nextHeadSha: "sha-a2",
+        },
+      ],
+      nextPollAt: 31_000,
+    });
+
+    expect(result.wakesDelivered).toBe(false);
+    expect(result.associationsTouched).toBe(2);
+
+    const updated = await store.getGitHubResource("res-1");
+    expect(updated?.snapshot?.headRefOid).toBe("sha-a2");
+
+    const events1 = await store.listEvents("run-1");
+    const events2 = await store.listEvents("run-2");
+    expect(events1.some((e) => e.eventType === "github.pr.head_changed")).toBe(
+      true,
+    );
+    expect(events2.some((e) => e.eventType === "github.pr.head_changed")).toBe(
+      true,
+    );
+    expect(await store.listOutbox("run-1")).toEqual([]);
+    expect(await store.listOutbox("run-2")).toEqual([]);
+
+    // Same-repo multi-PR associations remain distinct.
+    const assocs = await store.listPipelineGitHubResources("run-1", true);
+    expect(assocs).toHaveLength(2);
+    expect(new Set(assocs.map((a) => a.resourceId)).size).toBe(2);
+    expect(assocs.map((a) => a.role).sort()).toEqual(["dev-pr", "main-pr"]);
+  });
 });
