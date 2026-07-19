@@ -105,9 +105,11 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     // isAdmin) so the dev open-mode fallback — no roster configured promotes
     // everyone — can never unlock the archive.
     isAdmin: (userId) => sessionManager?.isExplicitAdmin(userId) ?? Promise.resolve(false),
-    getParticipants: async (threadId) => {
+    getSession: async (threadId) => {
       const session = await sessionStore?.get(threadId);
-      return session ? session.humanParticipants : null;
+      return session
+        ? { channel: session.channel, humanParticipants: session.humanParticipants }
+        : null;
     },
   });
   server.registerTool(

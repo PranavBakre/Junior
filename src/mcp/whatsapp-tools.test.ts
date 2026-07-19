@@ -56,11 +56,11 @@ function seedStore(store: WhatsAppStore): void {
   });
 }
 
-/** Authorized baseline: admin-only DM with a live participant lookup. */
+/** Authorized baseline: admin-only DM with a live session lookup. */
 const ADMIN_DM_AUTH: WhatsAppToolAuth = {
   runContext: { agent: "default", channel: "D_ADMIN_DM", threadId: "171.001" },
   isAdmin: async (u) => u === "U_ADMIN",
-  getParticipants: async () => ["U_ADMIN"],
+  getSession: async () => ({ channel: "D_ADMIN_DM", humanParticipants: ["U_ADMIN"] }),
 };
 
 describe("whatsapp MCP tools", () => {
@@ -266,7 +266,7 @@ describe("whatsapp MCP tool authorization", () => {
     const tools = toolsWith({
       runContext: dmContext,
       isAdmin: async (u) => u.startsWith("U_ADMIN"),
-      getParticipants: async () => ["U_ADMIN"],
+      getSession: async () => ({ channel: "D_ADMIN_DM", humanParticipants: ["U_ADMIN"] }),
     });
     for (const text of await callAll(tools)) {
       expect(text).not.toContain("denied");
@@ -278,7 +278,20 @@ describe("whatsapp MCP tool authorization", () => {
     const tools = toolsWith({
       runContext: channelContext,
       isAdmin: async () => true,
-      getParticipants: async () => ["U_ADMIN"],
+      getSession: async () => ({ channel: "C_GENERAL", humanParticipants: ["U_ADMIN"] }),
+    });
+    for (const text of await callAll(tools)) {
+      expect(text).toContain("denied");
+    }
+  });
+
+  test("the DM check runs on the STORED channel, not the forgeable query param", async () => {
+    // A caller claiming channel=D… in the URL while the session actually
+    // lives in a channel must still be denied.
+    const tools = toolsWith({
+      runContext: dmContext, // query params claim a DM
+      isAdmin: async () => true,
+      getSession: async () => ({ channel: "C_GENERAL", humanParticipants: ["U_ADMIN"] }),
     });
     for (const text of await callAll(tools)) {
       expect(text).toContain("denied");
@@ -289,7 +302,10 @@ describe("whatsapp MCP tool authorization", () => {
     const tools = toolsWith({
       runContext: dmContext,
       isAdmin: async (u) => u === "U_ADMIN",
-      getParticipants: async () => ["U_ADMIN", "U_RANDO"],
+      getSession: async () => ({
+        channel: "D_ADMIN_DM",
+        humanParticipants: ["U_ADMIN", "U_RANDO"],
+      }),
     });
     for (const text of await callAll(tools)) {
       expect(text).toContain("denied");
@@ -297,11 +313,11 @@ describe("whatsapp MCP tool authorization", () => {
   });
 
   test("an unknown session or empty participant list is denied", async () => {
-    for (const participants of [null, []] as const) {
+    for (const session of [null, { channel: "D_ADMIN_DM", humanParticipants: [] }]) {
       const tools = toolsWith({
         runContext: dmContext,
         isAdmin: async () => true,
-        getParticipants: async () => (participants === null ? null : [...participants]),
+        getSession: async () => session,
       });
       for (const text of await callAll(tools)) {
         expect(text).toContain("denied");
@@ -315,7 +331,7 @@ describe("whatsapp MCP tool authorization", () => {
     const tools = toolsWith({
       runContext: null,
       isAdmin: async () => true,
-      getParticipants: async () => ["U_ADMIN"],
+      getSession: async () => ({ channel: "D_ADMIN_DM", humanParticipants: ["U_ADMIN"] }),
     });
     for (const text of await callAll(tools)) {
       expect(text).toContain("denied");

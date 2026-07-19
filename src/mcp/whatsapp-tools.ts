@@ -35,12 +35,17 @@ export interface WhatsAppToolAuth {
   /** Admin check backed by ADMIN_SLACK_USER_ID + the admins table. */
   isAdmin: (userId: string) => Promise<boolean>;
   /**
-   * Resolve the CURRENT human participants of a thread from the live session
-   * store at call time — never from a snapshot taken when the runner spawned,
-   * which goes stale the moment another human posts mid-run (long tmux
-   * sessions especially). Null when the session is unknown (deny).
+   * Resolve the thread's STORED channel and CURRENT human participants from
+   * the live session store at call time — never from the caller's query
+   * params or a snapshot taken when the runner spawned. The stored channel is
+   * what the DM check runs against (the query-param channel is
+   * caller-controlled and forgeable); the live participants defeat the
+   * stale-snapshot problem (another human posting mid-run, long tmux
+   * sessions). Null when the session is unknown (deny).
    */
-  getParticipants: (threadId: string) => Promise<string[] | null>;
+  getSession: (
+    threadId: string,
+  ) => Promise<{ channel: string; humanParticipants: string[] } | null>;
 }
 
 const NOT_ENABLED =
@@ -58,18 +63,20 @@ const NOT_AUTHORIZED =
  *   a non-admin turn — so a missing context denies rather than trusting
  *   "local means operator". (Operator inspection can query WhatsAppStore
  *   directly; it doesn't need this endpoint.)
- * - The destination must be a DM (`D…` channel id). Channel threads have no
- *   participant-level visibility — every channel member can read the replies,
- *   posters or not — so no poster-based check is sound there.
+ * - The destination must be a DM (`D…` channel id), judged from the STORED
+ *   session's channel — the query-param channel is caller-controlled. Channel
+ *   threads have no participant-level visibility — every channel member can
+ *   read the replies, posters or not — so no poster-based check is sound there.
  * - Every human currently in the session (resolved live, not from a spawn-time
  *   snapshot) must pass the admin check. Unknown session → deny.
  */
 async function isAuthorized(auth: WhatsAppToolAuth): Promise<boolean> {
   if (auth.runContext === null) return false;
-  const { channel, threadId } = auth.runContext;
-  if (!channel.startsWith("D")) return false;
-  const users = await auth.getParticipants(threadId);
-  if (!users || users.length === 0) return false;
+  const session = await auth.getSession(auth.runContext.threadId);
+  if (!session) return false;
+  if (!session.channel.startsWith("D")) return false;
+  const users = session.humanParticipants;
+  if (users.length === 0) return false;
   for (const user of users) {
     if (!(await auth.isAdmin(user))) return false;
   }

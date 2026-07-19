@@ -121,17 +121,23 @@ substrings return the candidate list instead of guessing.
 The archive is the operator's personal WhatsApp history, so access is gated:
 a run context is required (the bare loopback URL with no query params is
 callable by any local process — including agents spawned for non-admin turns —
-so it denies), the destination must be a DM (`D…` channel — channel-thread
-replies are visible to every channel member, so no poster-based check is sound
-there), and every human participant of the session — resolved live from the
-session store at each tool call, never from a spawn-time snapshot — must pass
-the explicit admin check (`ADMIN_SLACK_USER_ID` + admins table; the local-dev
+so it denies), the session's STORED channel must be a DM (`D…` — the
+query-param channel is caller-controlled and ignored; channel-thread replies
+are visible to every channel member, so no poster-based check is sound there),
+and every human participant of the session — resolved live from the session
+store at each tool call, never from a spawn-time snapshot — must pass the
+explicit admin check (`ADMIN_SLACK_USER_ID` + admins table; the local-dev
 open-admin fallback never unlocks the archive). Unknown sessions deny. All
 message-bearing responses (including group subjects) are wrapped in an
 UNTRUSTED-content boundary before entering a tool-capable agent's context.
-Known residual: run-context query params are unsigned, so a Bash-capable agent
-could forge a valid-looking context; signing the context is a follow-up that
-would harden every slack-bot tool, not just these.
+
+Known residual: the `thread` query param is unsigned, so a caller that learns
+a real admin-DM thread id could still impersonate that session; signing the
+run context (a per-spawn credential) is the follow-up that would harden every
+slack-bot tool. Note the honest ceiling: agents with unrestricted Bash on this
+machine can read `data/whatsapp.db` directly, so the MCP gate can never exceed
+filesystem-level protection — restricting which agents get Bash (or moving the
+archive off-box) is the stronger lever.
 
 ### Memory tools
 

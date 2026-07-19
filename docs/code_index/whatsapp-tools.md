@@ -25,7 +25,7 @@ subject substring and refuses ambiguous matches.
 Authorization (`WhatsAppToolAuth`): a run context is required (null — the bare
 loopback URL — denies, since any local process can forge that call); the turn
 must originate from a DM (`D…` channel) whose current human participants —
-resolved live via `auth.getParticipants(threadId)` from the session store —
+resolved live via `auth.getSession(threadId)` from the session store (stored channel + live participants; the query-param channel is ignored) —
 all pass `auth.isAdmin` (wired to `SessionManager.isExplicitAdmin`, which has
 no open-mode fallback). Channel threads always deny (replies visible to all
 members). All message-bearing output is wrapped in an untrusted-content
