@@ -22,12 +22,14 @@ injects the live handle from the async bootstrap in `src/index.ts`; tools
 answer "not enabled" until it's set. `resolveGroup` accepts an exact JID or a
 subject substring and refuses ambiguous matches.
 
-Authorization (`WhatsAppToolAuth`): Slack runner turns must originate from a
-DM (`D…` channel) whose current human participants — resolved live via
-`auth.getParticipants(threadId)` from the session store — all pass
-`auth.isAdmin`. Channel threads always deny (replies visible to all members).
-Null run context (direct local connection over the loopback-only listener) is
-allowed.
+Authorization (`WhatsAppToolAuth`): a run context is required (null — the bare
+loopback URL — denies, since any local process can forge that call); the turn
+must originate from a DM (`D…` channel) whose current human participants —
+resolved live via `auth.getParticipants(threadId)` from the session store —
+all pass `auth.isAdmin` (wired to `SessionManager.isExplicitAdmin`, which has
+no open-mode fallback). Channel threads always deny (replies visible to all
+members). All message-bearing output is wrapped in an untrusted-content
+boundary.
 
 ## Data flow
 

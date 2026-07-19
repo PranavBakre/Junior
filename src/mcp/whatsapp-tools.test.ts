@@ -56,11 +56,11 @@ function seedStore(store: WhatsAppStore): void {
   });
 }
 
-/** Direct local connection (no run context) — always authorized. */
-const LOCAL_AUTH: WhatsAppToolAuth = {
-  runContext: null,
-  isAdmin: async () => false,
-  getParticipants: async () => null,
+/** Authorized baseline: admin-only DM with a live participant lookup. */
+const ADMIN_DM_AUTH: WhatsAppToolAuth = {
+  runContext: { agent: "default", channel: "D_ADMIN_DM", threadId: "171.001" },
+  isAdmin: async (u) => u === "U_ADMIN",
+  getParticipants: async () => ["U_ADMIN"],
 };
 
 describe("whatsapp MCP tools", () => {
@@ -78,7 +78,7 @@ describe("whatsapp MCP tools", () => {
     setWhatsAppHandle(handle);
     const captured = captureTools();
     tools = captured.tools;
-    registerWhatsAppTools(captured.server, LOCAL_AUTH);
+    registerWhatsAppTools(captured.server, ADMIN_DM_AUTH);
   });
 
   afterEach(() => {
@@ -309,10 +309,16 @@ describe("whatsapp MCP tool authorization", () => {
     }
   });
 
-  test("a direct local connection (null run context) is allowed", async () => {
-    const tools = toolsWith(LOCAL_AUTH);
+  test("a missing run context (bare loopback URL) is denied", async () => {
+    // Any local process — including agents spawned for non-admin turns — can
+    // call the bare URL, so null context must not be treated as the operator.
+    const tools = toolsWith({
+      runContext: null,
+      isAdmin: async () => true,
+      getParticipants: async () => ["U_ADMIN"],
+    });
     for (const text of await callAll(tools)) {
-      expect(text).not.toContain("denied");
+      expect(text).toContain("denied");
     }
   });
 });

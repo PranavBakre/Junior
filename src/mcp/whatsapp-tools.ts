@@ -26,9 +26,10 @@ export function setWhatsAppHandle(h: WhatsAppHandle | null): void {
 
 export interface WhatsAppToolAuth {
   /**
-   * The Slack run context of the requesting runner turn, or null for a direct
-   * local connection (no query params — e.g. a developer session using the
-   * bare `.mcp.json` URL on this machine).
+   * The Slack run context of the requesting runner turn. Null when the caller
+   * connected via the bare URL with no query params — denied, because any
+   * local process (including agents spawned for non-admin turns) can forge
+   * that call.
    */
   runContext: SlackMcpRunContext | null;
   /** Admin check backed by ADMIN_SLACK_USER_ID + the admins table. */
@@ -49,20 +50,22 @@ const NOT_AUTHORIZED =
   "WhatsApp archive access denied: the archive is personal data and is only readable from a direct message with the bot where every participant is an admin. Ask in a DM instead.";
 
 /**
- * The archive is the operator's personal WhatsApp history. A Slack-initiated
- * turn may read it only when the output cannot reach non-admins:
+ * The archive is the operator's personal WhatsApp history. A turn may read it
+ * only when the output cannot reach non-admins:
  *
+ * - A run context is REQUIRED. The bare loopback URL (no query params) is
+ *   callable by any local process — including a Bash-capable agent spawned for
+ *   a non-admin turn — so a missing context denies rather than trusting
+ *   "local means operator". (Operator inspection can query WhatsAppStore
+ *   directly; it doesn't need this endpoint.)
  * - The destination must be a DM (`D…` channel id). Channel threads have no
  *   participant-level visibility — every channel member can read the replies,
  *   posters or not — so no poster-based check is sound there.
  * - Every human currently in the session (resolved live, not from a spawn-time
  *   snapshot) must pass the admin check. Unknown session → deny.
- *
- * A null run context means a direct local connection (loopback-only listener),
- * which is the operator's own machine access and is allowed.
  */
 async function isAuthorized(auth: WhatsAppToolAuth): Promise<boolean> {
-  if (auth.runContext === null) return true;
+  if (auth.runContext === null) return false;
   const { channel, threadId } = auth.runContext;
   if (!channel.startsWith("D")) return false;
   const users = await auth.getParticipants(threadId);
@@ -115,10 +118,13 @@ function resolveGroup(
       error: `No stored group matches "${group}". Use whatsapp_list_groups to see what's available.`,
     };
   }
+  // Wrap: candidate subjects are third-party text, same as message bodies.
   return {
-    error: `"${group}" matches ${matches.length} groups: ${matches
-      .map((g) => `${g.groupName} (${g.groupJid})`)
-      .join(", ")}. Pass the JID to disambiguate.`,
+    error: untrusted(
+      `"${group}" matches ${matches.length} groups: ${matches
+        .map((g) => `${g.groupName} (${g.groupJid})`)
+        .join(", ")}. Pass the JID to disambiguate.`,
+    ),
   };
 }
 
