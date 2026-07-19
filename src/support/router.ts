@@ -8,6 +8,18 @@ import type { PipelineStore } from "../pipelines/store/interface.ts";
 import { convertLegacyDirectivesToHandoffs } from "../pipelines/legacy-directives.ts";
 import { pumpOutbox } from "../pipelines/pump.ts";
 import {
+  createBugRun,
+  shouldCreateBugRun,
+  shouldUseDurableDevServer,
+} from "../pipelines/bug/controller.ts";
+import {
+  markDevServerJobAcquiring,
+  markDevServerJobReady,
+  requestDevServerJob,
+  releaseDevServerJobOnce,
+  DEFAULT_DEVSERVER_DEADLINE_MS,
+} from "../pipelines/dev-server-jobs.ts";
+import {
   agentForUsername,
   isOrchestratorAgent,
   isPersistentAgent,
@@ -22,13 +34,20 @@ import { log } from "../logger.ts";
 
 export { parseAgentDirectives, type AgentDirective } from "./directives.ts";
 
-/** Optional pipeline control-plane wiring for Phase 4 soft integration. */
+/** Optional pipeline control-plane wiring for Phase 4+ soft integration. */
 export type PipelineRoutingOptions = {
   store: PipelineStore;
   runtimeMode: PipelineRuntimeMode;
   /** Default true — only applies when runtimeMode=active and thread has a run. */
   legacyDirectivesEnabled?: boolean;
   githubTrackingEnabled?: boolean;
+  /**
+   * When true and runtimeMode=active, explicit !debug / !reproducer starts
+   * create typed BugRuns. Default false.
+   */
+  bugPipelineEnabled?: boolean;
+  /** Workspace root for bug artifact projections. */
+  workspaceRoot?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -247,6 +266,10 @@ export class AgentDispatcher {
       dispatchableDirectives = allowed;
     }
 
+    // Phase 6: explicit !debug / !reproducer starts may create a BugRun when
+    // BUG_PIPELINE_ENABLED and PIPELINE_RUNTIME_MODE=active.
+    await this.tryCreateBugRunOnExplicitStart(event, dispatchableDirectives);
+
     // Soft typed path: when pipeline mode is active, the thread has an active
     // run, and legacy directives are enabled, convert directives into
     // structured handoffs with shared idempotency keys. When mode=off (default),
@@ -281,6 +304,85 @@ export class AgentDispatcher {
         }
       }),
     );
+  }
+
+  /**
+   * Create a BugRun for explicit !debug / !reproducer starts when flags allow.
+   * Soft integration: sets session.activePipelineRunId; does not block legacy
+   * dispatch when typed conversion is unavailable.
+   */
+  private async tryCreateBugRunOnExplicitStart(
+    event: SlackMessageEvent,
+    directives: AgentDirective[],
+  ): Promise<void> {
+    const pipeline = this.pipeline;
+    if (!pipeline) return;
+    if (
+      !shouldCreateBugRun({
+        bugPipelineEnabled: pipeline.bugPipelineEnabled === true,
+        runtimeMode: pipeline.runtimeMode,
+        explicitStart: true,
+      })
+    ) {
+      return;
+    }
+
+    const start = findBugPipelineStart(event, directives);
+    if (!start) return;
+
+    // Skip if thread already has an active pipeline run.
+    if (this.sessionStore) {
+      const session = await this.sessionStore.get(event.threadId);
+      if (session?.activePipelineRunId) {
+        const existing = await pipeline.store.getRun(
+          session.activePipelineRunId,
+        );
+        if (existing && existing.status !== "terminal") return;
+      }
+    }
+
+    try {
+      const result = await createBugRun(
+        {
+          store: pipeline.store,
+          jobStore: pipeline.store,
+          workspaceRoot: pipeline.workspaceRoot,
+        },
+        {
+          channelId: event.channel,
+          threadId: event.threadId,
+          objective: start.objective,
+          startKind: start.kind,
+          messageTs: event.ts,
+          modeHint: start.objective,
+        },
+      );
+
+      if (result.created && this.sessionStore) {
+        await this.sessionStore.mutateThread(event.threadId, (session) => {
+          session.activePipelineRunId = result.run.id;
+          session.activePipelineKind = "bug";
+        }).catch(async () => {
+          // Session may not exist yet — best-effort set after create path.
+          const session = await this.sessionStore?.get(event.threadId);
+          if (session) {
+            session.activePipelineRunId = result.run.id;
+            session.activePipelineKind = "bug";
+            await this.sessionStore?.set(event.threadId, session);
+          }
+        });
+      }
+
+      log.info(
+        "bug-pipeline",
+        `${result.created ? "created" : "reused"} BugRun ${result.run.id.slice(0, 8)} mode=${result.mode} via !${start.kind}`,
+      );
+    } catch (err) {
+      log.warn(
+        "bug-pipeline",
+        `failed to create BugRun (legacy path continues): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -442,6 +544,175 @@ export class AgentDispatcher {
     // threads acquire overlapping repo sets (e.g. full-stack bugs).
     const sortedRepos = [...targetRepoNames].sort();
 
+    // Phase 6 durable path: when bug pipeline owns the thread, persist jobs
+    // and resume the waiting assignment — no blind 10-minute sleep.
+    const durable = await this.tryDurableDevServerAcquire(
+      event,
+      branch,
+      sortedRepos,
+    );
+    if (durable) return;
+
+    // Legacy path: hold the slot for 10 minutes, then auto-release.
+    await this.legacyDevServerAcquire(event, branch, sortedRepos);
+  }
+
+  /**
+   * Durable dev-server acquire for active BugRuns. Returns true when handled.
+   */
+  private async tryDurableDevServerAcquire(
+    event: SlackMessageEvent,
+    branch: string,
+    sortedRepos: string[],
+  ): Promise<boolean> {
+    const pipeline = this.pipeline;
+    if (!pipeline || !this.devServerQueue) return false;
+
+    let hasActiveBugRun = false;
+    let runId: string | null = null;
+    let waitingAssignmentId: string | null = null;
+    if (this.sessionStore) {
+      const session = await this.sessionStore.get(event.threadId);
+      runId = session?.activePipelineRunId ?? null;
+      if (runId) {
+        const run = await pipeline.store.getRun(runId);
+        hasActiveBugRun =
+          run != null && run.kind === "bug" && run.status !== "terminal";
+        if (hasActiveBugRun && run) {
+          const assignments = await pipeline.store.listAssignments(run.id);
+          const waiting = assignments
+            .filter((a) => a.status === "waiting")
+            .sort((a, b) => b.createdAt - a.createdAt)[0];
+          waitingAssignmentId = waiting?.id ?? null;
+        }
+      }
+    }
+
+    if (
+      !shouldUseDurableDevServer({
+        bugPipelineEnabled: pipeline.bugPipelineEnabled === true,
+        runtimeMode: pipeline.runtimeMode,
+        hasActiveBugRun,
+      })
+    ) {
+      return false;
+    }
+
+    if (!runId || !waitingAssignmentId) {
+      // Active bug run but no waiting assignment — fall back to legacy hold
+      // so human-driven !devserver still works for exploratory use.
+      return false;
+    }
+
+    const slotTimeoutMs = DEFAULT_DEVSERVER_DEADLINE_MS;
+    const readyUrls: string[] = [];
+
+    for (const repoName of sortedRepos) {
+      const repo = this.repos.find((r) => r.name === repoName);
+      if (!repo?.devCommand) {
+        await this.postSlack(event, `\`${repoName}\`: no dev server configured — skipping.`);
+        continue;
+      }
+
+      try {
+        const job = await requestDevServerJob(pipeline.store, {
+          runId,
+          assignmentId: waitingAssignmentId,
+          channelId: event.channel,
+          threadId: event.threadId,
+          repo: repoName,
+          branch,
+          deadlineMs: slotTimeoutMs,
+        });
+        await markDevServerJobAcquiring(
+          pipeline.store,
+          job.id,
+          `router-${event.threadId}`,
+          slotTimeoutMs,
+        );
+
+        const { release, info } = await this.devServerQueue.acquire(
+          repoName,
+          branch,
+          event.threadId,
+          slotTimeoutMs,
+        );
+
+        const port = info.port > 0 ? info.port : repo.devPort ?? 0;
+        const readyUrl =
+          repo.readyUrl ??
+          (port ? `http://localhost:${port}` : `localhost:${port || "?"}`);
+        readyUrls.push(readyUrl);
+
+        await markDevServerJobReady(pipeline.store, job.id, readyUrl, info.pid ?? null);
+
+        // Informational Slack only — wake is via outbox resume.
+        await this.postSlack(
+          event,
+          `dev-server \`${repoName}\` on \`${branch}\`: ready @ ${readyUrl}`,
+        );
+
+        // Enqueue resume of the exact waiting assignment.
+        const { onDevServerReady } = await import("../pipelines/bug/controller.ts");
+        await onDevServerReady(
+          {
+            store: pipeline.store,
+            jobStore: pipeline.store,
+          },
+          { jobId: job.id, readyUrl, pid: info.pid ?? null },
+        );
+
+        // Do not sleep: validation completion/failure/cancel releases the job.
+        // Keep the lock until validation releases; schedule deadline release.
+        const releaseOnce = async (reason: string) => {
+          try {
+            await release();
+          } catch {
+            // non-fatal
+          }
+          await releaseDevServerJobOnce(pipeline.store, job.id, reason);
+        };
+        setTimeout(() => {
+          void releaseOnce("deadline");
+        }, slotTimeoutMs).unref?.();
+
+        // Pump outbox so resume wakes the reproducer immediately.
+        try {
+          await pumpOutbox({
+            store: pipeline.store,
+            dispatcher: this.manager,
+            sessionReader: this.sessionStore ?? undefined,
+            workspaceRoot: pipeline.workspaceRoot,
+          });
+        } catch (err) {
+          log.warn(
+            "devserver",
+            `outbox pump after ready failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await this.postSlack(event, `dev-server \`${repoName}\`: failed — ${reason}`);
+        const job = await pipeline.store.getDevServerJobByAssignment(
+          waitingAssignmentId,
+        );
+        if (job) {
+          await releaseDevServerJobOnce(pipeline.store, job.id, "fail", reason);
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /** Legacy 10-minute hold path (unchanged when bug pipeline is off). */
+  private async legacyDevServerAcquire(
+    event: SlackMessageEvent,
+    branch: string,
+    sortedRepos: string[],
+  ): Promise<void> {
+    if (!this.devServerQueue || !this.slackClient) return;
+
     // Post "queued" immediately so the thread sees it was picked up.
     const queuedParts: string[] = [];
     for (const repoName of sortedRepos) {
@@ -463,7 +734,6 @@ export class AgentDispatcher {
     const releaseHandles: Array<() => Promise<void>> = [];
 
     try {
-      // Acquire all repos sequentially (alphabetical order to prevent deadlock).
       for (const repoName of sortedRepos) {
         const repo = this.repos.find((r) => r.name === repoName);
         if (!repo?.devCommand) {
@@ -491,10 +761,8 @@ export class AgentDispatcher {
         }
       }
 
-      // Hold the slot for slotTimeoutMs, then auto-release.
       await sleep(slotTimeoutMs);
     } finally {
-      // Auto-release all acquired locks.
       for (const release of releaseHandles) {
         try {
           await release();
@@ -503,10 +771,6 @@ export class AgentDispatcher {
         }
       }
       if (releaseHandles.length > 0) {
-        // postSlack must not throw out of `finally`. handleMessage is fired
-        // and forgotten from index.ts, so any unhandled rejection past the
-        // 10-min sleep would surface as an `unhandledRejection` event with no
-        // catch site. Wrap defensively.
         try {
           await this.postSlack(
             event,
@@ -606,6 +870,34 @@ function findDevserverDirective(text: string): DevserverDirective | null {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Detect explicit bug-pipeline starts: !debug <prompt> or !reproducer <prompt>.
+ * !debug is not a persistent agent — parse from raw text. !reproducer is.
+ */
+function findBugPipelineStart(
+  event: SlackMessageEvent,
+  directives: AgentDirective[],
+): { kind: "debug" | "reproducer"; objective: string } | null {
+  for (const line of event.text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const debugMatch = trimmed.match(/^!debug(?:\s+(.*))?$/i);
+    if (debugMatch) {
+      return {
+        kind: "debug",
+        objective: (debugMatch[1] ?? "").trim() || "investigate bug",
+      };
+    }
+  }
+  const repro = directives.find((d) => d.agentName === "reproducer");
+  if (repro) {
+    return {
+      kind: "reproducer",
+      objective: repro.prompt || "reproduce the reported bug",
+    };
+  }
+  return null;
 }
 
 // Re-export for callers that import these from here.

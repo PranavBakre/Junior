@@ -1,4 +1,4 @@
-import type { AssignmentCreate, ProductRun } from "../types.ts";
+import type { AssignmentCreate, BugRun, ProductRun } from "../types.ts";
 import { PIPELINE_DEFINITION_VERSION } from "../types.ts";
 
 export function makeProductRun(
@@ -16,6 +16,32 @@ export function makeProductRun(
     ownerAgent: "build",
     repoRefs: ["example-backend"],
     acceptanceCriteria: ["works"],
+    artifactRefs: [],
+    blockerRefs: [],
+    activeAttemptId: null,
+    stateVersion: 0,
+    deadlineAt: null,
+    terminalOutcome: null,
+    terminalReason: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+}
+
+export function makeBugRun(overrides: Partial<BugRun> = {}): BugRun {
+  const now = overrides.createdAt ?? 1_000;
+  return {
+    id: "bug-run-1",
+    kind: "bug",
+    definitionVersion: PIPELINE_DEFINITION_VERSION,
+    channelId: "CBUGS",
+    threadId: "TBUG",
+    phase: "intake",
+    status: "active",
+    ownerAgent: "lead",
+    repoRefs: ["example-backend"],
+    acceptanceCriteria: [],
     artifactRefs: [],
     blockerRefs: [],
     activeAttemptId: null,

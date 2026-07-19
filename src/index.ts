@@ -132,6 +132,8 @@ const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
     runtimeMode: config.pipeline?.runtimeMode ?? "off",
     legacyDirectivesEnabled: config.pipeline?.legacyDirectivesEnabled ?? true,
     githubTrackingEnabled: config.github?.reconcileEnabled ?? false,
+    bugPipelineEnabled: config.pipeline?.bugPipelineEnabled ?? false,
+    workspaceRoot: process.cwd(),
   },
 });
 const workflowRegistry = new WorkflowRegistry({

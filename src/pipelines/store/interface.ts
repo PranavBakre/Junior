@@ -11,11 +11,15 @@ import type {
   Assignment,
   AssignmentCreate,
   AttemptRevisionMember,
+  DevServerJob,
+  DevServerJobCreate,
+  DevServerJobStatus,
   PipelineAttempt,
   PipelineEvent,
   PipelineGate,
   PipelineOutboxRecord,
   PipelineRun,
+  PipelineThreadCursor,
   RecordOutcomeInput,
   StoredOutcome,
   TransitionReceipt,
@@ -111,7 +115,9 @@ export interface PipelineStore {
 
   /**
    * Atomically persist snapshot + semantic events for active run associations.
-   * Never enqueues wake outbox items (Phase 5 shadow contract).
+   * When wakeEnabled is false (default / Phase 5), never enqueues wake outbox
+   * items. When true (Phase 6 + flags), still only persists events — the bug
+   * controller reduces them into wakes via reduceGitHubEventsForWakes.
    */
   applyGitHubSnapshotShadow(input: {
     resourceId: string;
@@ -122,7 +128,60 @@ export interface PipelineStore {
     nextPollAt: number;
     pollClass?: GitHubPollClass;
     terminalAt?: number | null;
+    /** Reserved: controller owns wake delivery. Always persisted as shadow. */
+    wakeEnabled?: boolean;
   }): Promise<ShadowPersistResult>;
+
+  // -------------------------------------------------------------------------
+  // Dev-server jobs (Phase 6 durable readiness)
+  // -------------------------------------------------------------------------
+
+  createDevServerJob(job: DevServerJobCreate): Promise<DevServerJob>;
+  getDevServerJob(id: string): Promise<DevServerJob | undefined>;
+  getDevServerJobByAssignment(
+    assignmentId: string,
+  ): Promise<DevServerJob | undefined>;
+  listDevServerJobs(filter?: {
+    runId?: string;
+    status?: DevServerJobStatus | DevServerJobStatus[];
+  }): Promise<DevServerJob[]>;
+  updateDevServerJob(
+    id: string,
+    patch: Partial<
+      Pick<
+        DevServerJob,
+        | "status"
+        | "readyUrl"
+        | "leaseOwner"
+        | "leaseExpiresAt"
+        | "pid"
+        | "error"
+        | "releasedAt"
+        | "releaseReason"
+        | "deadlineAt"
+      >
+    >,
+  ): Promise<DevServerJob | undefined>;
+  /**
+   * Idempotent release. Returns true when this call transitioned the job to a
+   * terminal status; false when already terminal.
+   */
+  releaseDevServerJob(
+    id: string,
+    reason: string,
+    error?: string | null,
+  ): Promise<boolean>;
+  reclaimExpiredDevServerJobs(now?: number): Promise<number>;
+
+  // -------------------------------------------------------------------------
+  // Slack thread catch-up cursors (waiting runs)
+  // -------------------------------------------------------------------------
+
+  getThreadCursor(runId: string): Promise<PipelineThreadCursor | undefined>;
+  upsertThreadCursor(cursor: PipelineThreadCursor): Promise<void>;
+  listThreadCursors(filter?: {
+    waitingRunsOnly?: boolean;
+  }): Promise<PipelineThreadCursor[]>;
 
   close?(): void;
 }

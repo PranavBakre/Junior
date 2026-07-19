@@ -24,6 +24,9 @@ import type {
   AttemptRevisionMember,
   BugPhase,
   BugRun,
+  DevServerJob,
+  DevServerJobCreate,
+  DevServerJobStatus,
   OutboxCreate,
   PipelineAttempt,
   PipelineEvent,
@@ -31,6 +34,7 @@ import type {
   PipelineOutboxRecord,
   PipelineRun,
   PipelineRunStatus,
+  PipelineThreadCursor,
   ProductPhase,
   ProductRun,
   RecordOutcomeInput,
@@ -40,6 +44,10 @@ import type {
 } from "../types.ts";
 import type { PipelineStore } from "./interface.ts";
 import { decideOutcomeTransaction } from "./outcome-tx.ts";
+import {
+  isTerminalDevServerStatus,
+  releaseStatusForReason,
+} from "../dev-server-jobs.ts";
 
 type RunRow = {
   id: string;
@@ -208,6 +216,36 @@ type PipelineGitHubResourceRow = {
   expected_head_sha: string | null;
   active: number;
   created_at: number;
+  updated_at: number;
+};
+
+type DevServerJobRow = {
+  id: string;
+  run_id: string;
+  assignment_id: string;
+  channel_id: string;
+  thread_id: string;
+  repo: string;
+  branch: string;
+  status: string;
+  ready_url: string | null;
+  lease_owner: string | null;
+  lease_expires_at: number | null;
+  deadline_at: number;
+  pid: number | null;
+  error: string | null;
+  released_at: number | null;
+  release_reason: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+type ThreadCursorRow = {
+  run_id: string;
+  channel_id: string;
+  thread_id: string;
+  last_observed_ts: string;
+  last_catchup_at: number | null;
   updated_at: number;
 };
 
@@ -482,6 +520,57 @@ export class SqlitePipelineStore implements PipelineStore {
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_pipeline_github_resources_run
       ON pipeline_github_resources (run_id, active)
+    `);
+
+    // Phase 6: durable dev-server jobs
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS dev_server_jobs (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        assignment_id TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        status TEXT NOT NULL,
+        ready_url TEXT,
+        lease_owner TEXT,
+        lease_expires_at INTEGER,
+        deadline_at INTEGER NOT NULL,
+        pid INTEGER,
+        error TEXT,
+        released_at INTEGER,
+        release_reason TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (assignment_id),
+        FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+      )
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_dev_server_jobs_run
+      ON dev_server_jobs (run_id, status)
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_dev_server_jobs_status
+      ON dev_server_jobs (status, deadline_at)
+    `);
+
+    // Phase 6: Slack thread catch-up cursors for waiting runs
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS pipeline_thread_cursors (
+        run_id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        last_observed_ts TEXT NOT NULL,
+        last_catchup_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+      )
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_thread_cursors_thread
+      ON pipeline_thread_cursors (thread_id)
     `);
   }
 
@@ -1476,12 +1565,300 @@ export class SqlitePipelineStore implements PipelineStore {
         resourceId: input.resourceId,
         events: input.events.map((e) => ({ ...e })),
         proposedReductions: input.proposedReductions.map((r) => ({ ...r })),
-        wakesDelivered: false as const,
+        wakesDelivered: false,
         associationsTouched: associations.length,
       } satisfies ShadowPersistResult;
     });
 
     return apply();
+  }
+
+  // -------------------------------------------------------------------------
+  // Dev-server jobs (Phase 6)
+  // -------------------------------------------------------------------------
+
+  async createDevServerJob(job: DevServerJobCreate): Promise<DevServerJob> {
+    const existing = this.db
+      .query<DevServerJobRow, [string]>(
+        "SELECT * FROM dev_server_jobs WHERE assignment_id = ?",
+      )
+      .get(job.assignmentId);
+    if (existing) return devServerJobFromRow(existing);
+
+    const now = this.clock.now();
+    const full: DevServerJob = {
+      id: job.id,
+      runId: job.runId,
+      assignmentId: job.assignmentId,
+      channelId: job.channelId,
+      threadId: job.threadId,
+      repo: job.repo,
+      branch: job.branch,
+      status: job.status ?? "requested",
+      readyUrl: job.readyUrl ?? null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      deadlineAt: job.deadlineAt,
+      pid: null,
+      error: null,
+      releasedAt: null,
+      releaseReason: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.db
+      .query(
+        `INSERT INTO dev_server_jobs (
+          id, run_id, assignment_id, channel_id, thread_id,
+          repo, branch, status, ready_url, lease_owner, lease_expires_at,
+          deadline_at, pid, error, released_at, release_reason,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        full.id,
+        full.runId,
+        full.assignmentId,
+        full.channelId,
+        full.threadId,
+        full.repo,
+        full.branch,
+        full.status,
+        full.readyUrl,
+        full.leaseOwner,
+        full.leaseExpiresAt,
+        full.deadlineAt,
+        full.pid,
+        full.error,
+        full.releasedAt,
+        full.releaseReason,
+        full.createdAt,
+        full.updatedAt,
+      );
+    return full;
+  }
+
+  async getDevServerJob(id: string): Promise<DevServerJob | undefined> {
+    const row = this.db
+      .query<DevServerJobRow, [string]>(
+        "SELECT * FROM dev_server_jobs WHERE id = ?",
+      )
+      .get(id);
+    return row ? devServerJobFromRow(row) : undefined;
+  }
+
+  async getDevServerJobByAssignment(
+    assignmentId: string,
+  ): Promise<DevServerJob | undefined> {
+    const row = this.db
+      .query<DevServerJobRow, [string]>(
+        "SELECT * FROM dev_server_jobs WHERE assignment_id = ?",
+      )
+      .get(assignmentId);
+    return row ? devServerJobFromRow(row) : undefined;
+  }
+
+  async listDevServerJobs(filter?: {
+    runId?: string;
+    status?: DevServerJobStatus | DevServerJobStatus[];
+  }): Promise<DevServerJob[]> {
+    let rows: DevServerJobRow[];
+    if (filter?.runId && filter.status) {
+      const statuses = Array.isArray(filter.status)
+        ? filter.status
+        : [filter.status];
+      const placeholders = statuses.map(() => "?").join(",");
+      rows = this.db
+        .query<DevServerJobRow, (string | number)[]>(
+          `SELECT * FROM dev_server_jobs
+           WHERE run_id = ? AND status IN (${placeholders})
+           ORDER BY created_at ASC`,
+        )
+        .all(filter.runId, ...statuses);
+    } else if (filter?.runId) {
+      rows = this.db
+        .query<DevServerJobRow, [string]>(
+          `SELECT * FROM dev_server_jobs WHERE run_id = ? ORDER BY created_at ASC`,
+        )
+        .all(filter.runId);
+    } else if (filter?.status) {
+      const statuses = Array.isArray(filter.status)
+        ? filter.status
+        : [filter.status];
+      const placeholders = statuses.map(() => "?").join(",");
+      rows = this.db
+        .query<DevServerJobRow, string[]>(
+          `SELECT * FROM dev_server_jobs
+           WHERE status IN (${placeholders})
+           ORDER BY created_at ASC`,
+        )
+        .all(...statuses);
+    } else {
+      rows = this.db
+        .query<DevServerJobRow, []>(
+          "SELECT * FROM dev_server_jobs ORDER BY created_at ASC",
+        )
+        .all();
+    }
+    return rows.map(devServerJobFromRow);
+  }
+
+  async updateDevServerJob(
+    id: string,
+    patch: Partial<
+      Pick<
+        DevServerJob,
+        | "status"
+        | "readyUrl"
+        | "leaseOwner"
+        | "leaseExpiresAt"
+        | "pid"
+        | "error"
+        | "releasedAt"
+        | "releaseReason"
+        | "deadlineAt"
+      >
+    >,
+  ): Promise<DevServerJob | undefined> {
+    const existing = await this.getDevServerJob(id);
+    if (!existing) return undefined;
+    if (isTerminalDevServerStatus(existing.status)) return existing;
+    const updated: DevServerJob = {
+      ...existing,
+      ...patch,
+      updatedAt: this.clock.now(),
+    };
+    this.db
+      .query(
+        `UPDATE dev_server_jobs SET
+          status = ?,
+          ready_url = ?,
+          lease_owner = ?,
+          lease_expires_at = ?,
+          deadline_at = ?,
+          pid = ?,
+          error = ?,
+          released_at = ?,
+          release_reason = ?,
+          updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        updated.status,
+        updated.readyUrl,
+        updated.leaseOwner,
+        updated.leaseExpiresAt,
+        updated.deadlineAt,
+        updated.pid,
+        updated.error,
+        updated.releasedAt,
+        updated.releaseReason,
+        updated.updatedAt,
+        id,
+      );
+    return updated;
+  }
+
+  async releaseDevServerJob(
+    id: string,
+    reason: string,
+    error?: string | null,
+  ): Promise<boolean> {
+    const existing = await this.getDevServerJob(id);
+    if (!existing) return false;
+    if (isTerminalDevServerStatus(existing.status)) return false;
+    const status = releaseStatusForReason(reason);
+    const now = this.clock.now();
+    const result = this.db
+      .query(
+        `UPDATE dev_server_jobs SET
+          status = ?,
+          error = COALESCE(?, error),
+          released_at = ?,
+          release_reason = ?,
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          updated_at = ?
+         WHERE id = ? AND status NOT IN ('released', 'failed', 'cancelled', 'deadline')`,
+      )
+      .run(status, error ?? null, now, reason, now, id);
+    return result.changes > 0;
+  }
+
+  async reclaimExpiredDevServerJobs(now = this.clock.now()): Promise<number> {
+    const result = this.db
+      .query(
+        `UPDATE dev_server_jobs SET
+          status = 'queued',
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          updated_at = ?
+         WHERE status = 'acquiring'
+           AND lease_expires_at IS NOT NULL
+           AND lease_expires_at <= ?`,
+      )
+      .run(now, now);
+    return result.changes;
+  }
+
+  // -------------------------------------------------------------------------
+  // Thread catch-up cursors
+  // -------------------------------------------------------------------------
+
+  async getThreadCursor(
+    runId: string,
+  ): Promise<PipelineThreadCursor | undefined> {
+    const row = this.db
+      .query<ThreadCursorRow, [string]>(
+        "SELECT * FROM pipeline_thread_cursors WHERE run_id = ?",
+      )
+      .get(runId);
+    return row ? threadCursorFromRow(row) : undefined;
+  }
+
+  async upsertThreadCursor(cursor: PipelineThreadCursor): Promise<void> {
+    this.db
+      .query(
+        `INSERT INTO pipeline_thread_cursors (
+          run_id, channel_id, thread_id, last_observed_ts, last_catchup_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id) DO UPDATE SET
+          channel_id = excluded.channel_id,
+          thread_id = excluded.thread_id,
+          last_observed_ts = excluded.last_observed_ts,
+          last_catchup_at = excluded.last_catchup_at,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        cursor.runId,
+        cursor.channelId,
+        cursor.threadId,
+        cursor.lastObservedTs,
+        cursor.lastCatchupAt,
+        cursor.updatedAt,
+      );
+  }
+
+  async listThreadCursors(filter?: {
+    waitingRunsOnly?: boolean;
+  }): Promise<PipelineThreadCursor[]> {
+    if (filter?.waitingRunsOnly) {
+      const rows = this.db
+        .query<ThreadCursorRow, []>(
+          `SELECT c.* FROM pipeline_thread_cursors c
+           INNER JOIN pipeline_runs r ON r.id = c.run_id
+           WHERE r.status = 'waiting'
+           ORDER BY c.updated_at ASC`,
+        )
+        .all();
+      return rows.map(threadCursorFromRow);
+    }
+    const rows = this.db
+      .query<ThreadCursorRow, []>(
+        "SELECT * FROM pipeline_thread_cursors ORDER BY updated_at ASC",
+      )
+      .all();
+    return rows.map(threadCursorFromRow);
   }
 
   private insertAssignment(assignment: Assignment): void {
@@ -1789,6 +2166,40 @@ function pipelineGitHubResourceFromRow(
     expectedHeadSha: row.expected_head_sha,
     active: row.active === 1,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function devServerJobFromRow(row: DevServerJobRow): DevServerJob {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    assignmentId: row.assignment_id,
+    channelId: row.channel_id,
+    threadId: row.thread_id,
+    repo: row.repo,
+    branch: row.branch,
+    status: row.status as DevServerJobStatus,
+    readyUrl: row.ready_url,
+    leaseOwner: row.lease_owner,
+    leaseExpiresAt: row.lease_expires_at,
+    deadlineAt: row.deadline_at,
+    pid: row.pid,
+    error: row.error,
+    releasedAt: row.released_at,
+    releaseReason: row.release_reason,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function threadCursorFromRow(row: ThreadCursorRow): PipelineThreadCursor {
+  return {
+    runId: row.run_id,
+    channelId: row.channel_id,
+    threadId: row.thread_id,
+    lastObservedTs: row.last_observed_ts,
+    lastCatchupAt: row.last_catchup_at,
     updatedAt: row.updated_at,
   };
 }

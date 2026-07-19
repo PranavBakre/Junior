@@ -18,18 +18,26 @@ import type {
   Assignment,
   AssignmentCreate,
   AttemptRevisionMember,
+  DevServerJob,
+  DevServerJobCreate,
+  DevServerJobStatus,
   OutboxCreate,
   PipelineAttempt,
   PipelineEvent,
   PipelineGate,
   PipelineOutboxRecord,
   PipelineRun,
+  PipelineThreadCursor,
   RecordOutcomeInput,
   StoredOutcome,
   TransitionReceipt,
 } from "../types.ts";
 import type { PipelineStore } from "./interface.ts";
 import { decideOutcomeTransaction } from "./outcome-tx.ts";
+import {
+  isTerminalDevServerStatus,
+  releaseStatusForReason,
+} from "../dev-server-jobs.ts";
 
 export class InMemoryPipelineStore implements PipelineStore {
   private runs = new Map<string, PipelineRun>();
@@ -47,6 +55,9 @@ export class InMemoryPipelineStore implements PipelineStore {
   private githubResources = new Map<string, GitHubResource>();
   private githubByCoords = new Map<string, string>();
   private pipelineGithub = new Map<string, PipelineGitHubResource>();
+  private devServerJobs = new Map<string, DevServerJob>();
+  private devServerJobsByAssignment = new Map<string, string>();
+  private threadCursors = new Map<string, PipelineThreadCursor>();
   private clock: Clock;
 
   constructor(clock: Clock = systemClock) {
@@ -730,6 +741,179 @@ export class InMemoryPipelineStore implements PipelineStore {
       wakesDelivered: false,
       associationsTouched: associations.length,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Dev-server jobs (Phase 6)
+  // -------------------------------------------------------------------------
+
+  async createDevServerJob(job: DevServerJobCreate): Promise<DevServerJob> {
+    const existingId = this.devServerJobsByAssignment.get(job.assignmentId);
+    if (existingId) {
+      const existing = this.devServerJobs.get(existingId);
+      if (existing) return { ...existing };
+    }
+    if (this.devServerJobs.has(job.id)) {
+      throw new Error(`dev server job already exists: ${job.id}`);
+    }
+    const now = this.clock.now();
+    const full: DevServerJob = {
+      id: job.id,
+      runId: job.runId,
+      assignmentId: job.assignmentId,
+      channelId: job.channelId,
+      threadId: job.threadId,
+      repo: job.repo,
+      branch: job.branch,
+      status: job.status ?? "requested",
+      readyUrl: job.readyUrl ?? null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      deadlineAt: job.deadlineAt,
+      pid: null,
+      error: null,
+      releasedAt: null,
+      releaseReason: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.devServerJobs.set(full.id, full);
+    this.devServerJobsByAssignment.set(full.assignmentId, full.id);
+    return { ...full };
+  }
+
+  async getDevServerJob(id: string): Promise<DevServerJob | undefined> {
+    const j = this.devServerJobs.get(id);
+    return j ? { ...j } : undefined;
+  }
+
+  async getDevServerJobByAssignment(
+    assignmentId: string,
+  ): Promise<DevServerJob | undefined> {
+    const id = this.devServerJobsByAssignment.get(assignmentId);
+    if (!id) return undefined;
+    return this.getDevServerJob(id);
+  }
+
+  async listDevServerJobs(filter?: {
+    runId?: string;
+    status?: DevServerJobStatus | DevServerJobStatus[];
+  }): Promise<DevServerJob[]> {
+    const statuses = filter?.status
+      ? new Set(Array.isArray(filter.status) ? filter.status : [filter.status])
+      : null;
+    return [...this.devServerJobs.values()]
+      .filter((j) => {
+        if (filter?.runId && j.runId !== filter.runId) return false;
+        if (statuses && !statuses.has(j.status)) return false;
+        return true;
+      })
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((j) => ({ ...j }));
+  }
+
+  async updateDevServerJob(
+    id: string,
+    patch: Partial<
+      Pick<
+        DevServerJob,
+        | "status"
+        | "readyUrl"
+        | "leaseOwner"
+        | "leaseExpiresAt"
+        | "pid"
+        | "error"
+        | "releasedAt"
+        | "releaseReason"
+        | "deadlineAt"
+      >
+    >,
+  ): Promise<DevServerJob | undefined> {
+    const j = this.devServerJobs.get(id);
+    if (!j) return undefined;
+    if (isTerminalDevServerStatus(j.status)) {
+      return { ...j };
+    }
+    const updated: DevServerJob = {
+      ...j,
+      ...patch,
+      updatedAt: this.clock.now(),
+    };
+    this.devServerJobs.set(id, updated);
+    return { ...updated };
+  }
+
+  async releaseDevServerJob(
+    id: string,
+    reason: string,
+    error?: string | null,
+  ): Promise<boolean> {
+    const j = this.devServerJobs.get(id);
+    if (!j) return false;
+    if (isTerminalDevServerStatus(j.status)) return false;
+    const status = releaseStatusForReason(reason);
+    this.devServerJobs.set(id, {
+      ...j,
+      status,
+      error: error ?? j.error,
+      releasedAt: this.clock.now(),
+      releaseReason: reason,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      updatedAt: this.clock.now(),
+    });
+    return true;
+  }
+
+  async reclaimExpiredDevServerJobs(now = this.clock.now()): Promise<number> {
+    let count = 0;
+    for (const [id, j] of this.devServerJobs) {
+      if (
+        j.status === "acquiring" &&
+        j.leaseExpiresAt != null &&
+        j.leaseExpiresAt <= now
+      ) {
+        this.devServerJobs.set(id, {
+          ...j,
+          status: "queued",
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          updatedAt: now,
+        });
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  // -------------------------------------------------------------------------
+  // Thread catch-up cursors
+  // -------------------------------------------------------------------------
+
+  async getThreadCursor(
+    runId: string,
+  ): Promise<PipelineThreadCursor | undefined> {
+    const c = this.threadCursors.get(runId);
+    return c ? { ...c } : undefined;
+  }
+
+  async upsertThreadCursor(cursor: PipelineThreadCursor): Promise<void> {
+    this.threadCursors.set(cursor.runId, { ...cursor });
+  }
+
+  async listThreadCursors(filter?: {
+    waitingRunsOnly?: boolean;
+  }): Promise<PipelineThreadCursor[]> {
+    const all = [...this.threadCursors.values()];
+    if (!filter?.waitingRunsOnly) {
+      return all.map((c) => ({ ...c }));
+    }
+    return all
+      .filter((c) => {
+        const run = this.runs.get(c.runId);
+        return run != null && run.status === "waiting";
+      })
+      .map((c) => ({ ...c }));
   }
 }
 

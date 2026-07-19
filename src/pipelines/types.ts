@@ -101,6 +101,86 @@ export type BugRun = Omit<PipelineRunBase, "kind" | "phase"> & {
 export type PipelineRun = ProductRun | BugRun;
 
 // ---------------------------------------------------------------------------
+// Bug adaptive modes (Phase 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Typed adaptive investigation modes. Data-support / known-code-failure /
+ * high-risk cases are policies within these modes until telemetry justifies
+ * separate state machines.
+ */
+export type BugMode =
+  | "expected-behavior"
+  | "focused-debug"
+  | "full-investigation";
+
+// ---------------------------------------------------------------------------
+// Dev-server jobs (Phase 6 durable readiness)
+// ---------------------------------------------------------------------------
+
+export type DevServerJobStatus =
+  | "requested"
+  | "queued"
+  | "acquiring"
+  | "ready"
+  | "released"
+  | "failed"
+  | "cancelled"
+  | "deadline";
+
+export type DevServerJob = {
+  id: string;
+  runId: string;
+  assignmentId: string;
+  channelId: string;
+  threadId: string;
+  repo: string;
+  branch: string;
+  status: DevServerJobStatus;
+  readyUrl: string | null;
+  leaseOwner: string | null;
+  leaseExpiresAt: number | null;
+  deadlineAt: number;
+  pid: number | null;
+  error: string | null;
+  releasedAt: number | null;
+  releaseReason: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type DevServerJobCreate = Omit<
+  DevServerJob,
+  | "status"
+  | "readyUrl"
+  | "leaseOwner"
+  | "leaseExpiresAt"
+  | "pid"
+  | "error"
+  | "releasedAt"
+  | "releaseReason"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  status?: DevServerJobStatus;
+  readyUrl?: string | null;
+  deadlineAt: number;
+};
+
+// ---------------------------------------------------------------------------
+// Slack thread catch-up cursors (waiting runs across laptop sleep)
+// ---------------------------------------------------------------------------
+
+export type PipelineThreadCursor = {
+  runId: string;
+  channelId: string;
+  threadId: string;
+  lastObservedTs: string;
+  lastCatchupAt: number | null;
+  updatedAt: number;
+};
+
+// ---------------------------------------------------------------------------
 // Attempt revision vectors
 // ---------------------------------------------------------------------------
 

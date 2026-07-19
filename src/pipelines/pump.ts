@@ -17,6 +17,7 @@ import {
   type SlackAuditCallback,
 } from "./dispatch.ts";
 import { claimReadyOutbox, markDelivered, reclaimExpiredLeases } from "./outbox.ts";
+import { bugContextForAssignment } from "./bug/controller.ts";
 
 export type PumpDeps = {
   store: PipelineStore;
@@ -30,6 +31,8 @@ export type PumpDeps = {
   limit?: number;
   /** Lease duration for claimed outbox rows. */
   leaseMs?: number;
+  /** Workspace root for bug-context artifact paths. */
+  workspaceRoot?: string;
 };
 
 export type PumpReport = {
@@ -72,7 +75,7 @@ export async function pumpOutbox(deps: PumpDeps): Promise<PumpReport> {
 
   for (const item of claimed) {
     try {
-      const handled = await handleOutboxItem(deps.store, dispatchDeps, item);
+      const handled = await handleOutboxItem(deps, dispatchDeps, item);
       if (handled === "delivered") {
         await markDelivered(deps.store, item.id);
         report.delivered += 1;
@@ -108,13 +111,15 @@ export async function recoverAndPump(deps: PumpDeps): Promise<PumpReport> {
 }
 
 async function handleOutboxItem(
-  store: PipelineStore,
+  deps: PumpDeps,
   dispatchDeps: DispatchDeps,
   item: PipelineOutboxRecord,
 ): Promise<"delivered" | "failed" | "skipped"> {
+  const store = deps.store;
   if (
     item.eventType === "assignment.dispatch" ||
-    item.eventType === "assignment.continue"
+    item.eventType === "assignment.continue" ||
+    item.eventType === "assignment.resume"
   ) {
     const assignmentId =
       item.assignmentId ??
@@ -148,11 +153,40 @@ async function handleOutboxItem(
       return "skipped";
     }
 
-    const result = await dispatchAssignment(dispatchDeps, {
-      run,
-      assignment,
-      dedupeKey: `pipeline-outbox:${item.idempotencyKey}`,
-    });
+    let bugContext: string | undefined;
+    if (run.kind === "bug") {
+      try {
+        bugContext = await bugContextForAssignment(
+          {
+            store,
+            clock: deps.clock,
+            workspaceRoot: deps.workspaceRoot,
+          },
+          run,
+          assignment,
+        );
+      } catch (err) {
+        log.warn(
+          "pipeline-pump",
+          `bug-context build failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    const result = await dispatchAssignment(
+      { ...dispatchDeps, bugContext },
+      {
+        run,
+        assignment,
+        // Resume from devserver.ready includes the ready URL in the prompt.
+        prompt:
+          item.eventType === "assignment.resume" &&
+          typeof item.payload.readyUrl === "string"
+            ? `${assignment.objective}\n\n[devserver.ready] ${item.payload.readyUrl}`
+            : undefined,
+        dedupeKey: `pipeline-outbox:${item.idempotencyKey}`,
+      },
+    );
 
     if (result.status === "rejected") {
       log.warn(

@@ -10,6 +10,7 @@ import {
   buildAssignmentContext,
   composeDispatchPrompt,
 } from "./context.ts";
+import { composeBugDispatchPrompt } from "./bug/context.ts";
 import { log } from "../logger.ts";
 
 /** Minimal session manager surface used for pipeline dispatch. */
@@ -58,6 +59,11 @@ export type DispatchDeps = {
    * buffers). Default true — durable buffer is preferred over drop.
    */
   alwaysEnqueue?: boolean;
+  /**
+   * Optional pre-built <bug-context> block for bug-run assignments
+   * (reproducer/build/review). Injected ahead of pipeline-assignment.
+   */
+  bugContext?: string;
 };
 
 /**
@@ -109,10 +115,20 @@ export async function dispatchAssignment(
   }
 
   const contextBlock = buildAssignmentContext({ run, assignment });
-  const prompt = composeDispatchPrompt(
-    contextBlock,
-    input.prompt ?? assignment.objective,
-  );
+  const shouldInjectBugContext =
+    run.kind === "bug" &&
+    isBugWorkerAgent(assignment.targetAgent) &&
+    Boolean(deps.bugContext);
+  const prompt = shouldInjectBugContext
+    ? composeBugDispatchPrompt({
+        bugContext: deps.bugContext!,
+        assignmentContext: contextBlock,
+        objective: input.prompt ?? assignment.objective,
+      })
+    : composeDispatchPrompt(
+        contextBlock,
+        input.prompt ?? assignment.objective,
+      );
   const dedupeKey =
     input.dedupeKey ??
     `pipeline:${run.id}:${assignment.id}:${assignment.idempotencyKey}`;
@@ -197,4 +213,13 @@ async function safeAudit(
       `Slack audit post failed (handoff not lost): ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+function isBugWorkerAgent(agent: string): boolean {
+  return (
+    agent === "reproducer" ||
+    agent === "build" ||
+    agent === "frontend" ||
+    agent === "review"
+  );
 }

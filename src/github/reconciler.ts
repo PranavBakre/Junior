@@ -1,9 +1,8 @@
 /**
- * GitHub shadow reconciler — poll tracked PR resources, persist snapshots and
- * typed semantic events, never wake agents (Phase 5).
- *
- * Export `reconcileTrackedResources` for Phase 6 startup wiring. Do not start
- * a production poll loop from index.ts until wakes are designed.
+ * GitHub reconciler — poll tracked PR resources, persist snapshots and typed
+ * semantic events. Phase 5 shadow mode never wakes agents. Phase 6 enables
+ * wake delivery when eventWakeEnabled=true and shadowMode=false: the bug
+ * controller reduces persisted events into exact assignment wakes.
  */
 
 import type { Clock } from "../time/clock.ts";
@@ -51,6 +50,8 @@ export interface GitHubReconcileStore {
     nextPollAt: number;
     pollClass?: GitHubPollClass;
     terminalAt?: number | null;
+    /** Controller owns wake delivery; store always persists as shadow. */
+    wakeEnabled?: boolean;
   }): Promise<ShadowPersistResult>;
   recordGitHubPollFailure(
     resourceId: string,
@@ -79,8 +80,9 @@ export type ReconcileOptions = {
    */
   shadowMode?: boolean;
   /**
-   * Event wakes. Must remain false in Phase 5. When true without an explicit
-   * future wake handler this still does not deliver wakes.
+   * Event wakes. Requires shadowMode=false. When true, after each successful
+   * snapshot persist the optional onEventsPersisted hook is invoked so the
+   * bug controller can reduce events into exact assignment wakes.
    */
   eventWakeEnabled?: boolean;
   /** Injectable jitter for backoff tests (0..1). */
@@ -92,6 +94,12 @@ export type ReconcileOptions = {
     resourceId: string;
     retryAfterMs: number;
   }) => void;
+  /**
+   * Phase 6 wake hook. Invoked only when eventWakeEnabled && !shadowMode and
+   * events were persisted. Should reduce events and enqueue assignment wakes.
+   * Returns number of wakes enqueued (for pass.wakesDelivered).
+   */
+  onEventsPersisted?: (result: ShadowPersistResult) => Promise<number>;
 };
 
 export type ReconcilePassResult = {
@@ -174,9 +182,8 @@ export async function reconcileTrackedResources(
   const random = options.random ?? Math.random;
   const intervalMs = options.intervalMs ?? GITHUB_POLL_HOT_MS;
 
-  // Phase 5 hard gate: even if a misconfigured flag slips through, never wake.
+  // Wakes only when explicitly enabled and not in shadow mode.
   const allowWakes = !shadowMode && eventWakeEnabled;
-  void allowWakes; // reserved for Phase 6; always false here
 
   const wakeGapDetected = shouldReconcileForWakeGap(
     options.lastTickAt ?? null,
@@ -234,6 +241,8 @@ export async function reconcileTrackedResources(
           random,
           onInvalidCredentials: options.onInvalidCredentials,
           onRateLimited: options.onRateLimited,
+          allowWakes,
+          onEventsPersisted: options.onEventsPersisted,
         });
         mergePass(pass, one);
       }
@@ -262,13 +271,13 @@ export async function reconcileTrackedResources(
       random,
       onInvalidCredentials: options.onInvalidCredentials,
       onRateLimited: options.onRateLimited,
+      allowWakes,
+      onEventsPersisted: options.onEventsPersisted,
     });
     mergePass(pass, one);
     if (pass.credentialsInvalid) break;
   }
 
-  // Phase 5: wakesDelivered must remain 0 regardless of flags.
-  pass.wakesDelivered = 0;
   return pass;
 }
 
@@ -280,12 +289,15 @@ async function applyFetchResult(args: {
   random: () => number;
   onInvalidCredentials?: (reason: string) => void;
   onRateLimited?: (info: { resourceId: string; retryAfterMs: number }) => void;
+  allowWakes?: boolean;
+  onEventsPersisted?: (result: ShadowPersistResult) => Promise<number>;
 }): Promise<{
   updated: number;
   eventsEmitted: number;
   failures: number;
   rateLimited: number;
   credentialsInvalid: boolean;
+  wakesDelivered?: number;
   result?: ShadowPersistResult;
 }> {
   const { resource, fetchResult, store, clock, random } = args;
@@ -363,11 +375,17 @@ async function applyFetchResult(args: {
     nextPollAt,
     pollClass: resource.pollClass,
     terminalAt: terminal ? now : null,
+    wakeEnabled: args.allowWakes === true,
   });
 
-  // Explicit: no wake delivery path exists in Phase 5.
-  if (result.wakesDelivered !== false) {
-    throw new Error("Phase 5 reconciler must not deliver wakes");
+  // Store never delivers wakes itself — controller hook does.
+  let wakesDelivered = 0;
+  if (
+    args.allowWakes &&
+    args.onEventsPersisted &&
+    result.events.length > 0
+  ) {
+    wakesDelivered = await args.onEventsPersisted(result);
   }
 
   await store.releaseGitHubResourceLease(resource.id);
@@ -377,6 +395,7 @@ async function applyFetchResult(args: {
     eventsEmitted: events.length,
     failures: 0,
     rateLimited: 0,
+    wakesDelivered,
     credentialsInvalid: false,
     result,
   };
@@ -390,6 +409,7 @@ function mergePass(
     failures: number;
     rateLimited: number;
     credentialsInvalid: boolean;
+    wakesDelivered?: number;
     result?: ShadowPersistResult;
   },
 ): void {
@@ -397,6 +417,7 @@ function mergePass(
   pass.eventsEmitted += one.eventsEmitted;
   pass.failures += one.failures;
   pass.rateLimited += one.rateLimited;
+  pass.wakesDelivered += one.wakesDelivered ?? 0;
   if (one.credentialsInvalid) pass.credentialsInvalid = true;
   if (one.result) pass.results.push(one.result);
 }

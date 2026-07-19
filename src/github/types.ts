@@ -147,8 +147,11 @@ export type ShadowPersistResult = {
   resourceId: string;
   events: GitHubSemanticEvent[];
   proposedReductions: ProposedReduction[];
-  /** Always false in Phase 5 — wakes are not delivered. */
-  wakesDelivered: false;
+  /**
+   * Store persist never delivers wakes (controller reduces events). Always
+   * false from applyGitHubSnapshotShadow; reconciler may count controller wakes.
+   */
+  wakesDelivered: boolean;
   associationsTouched: number;
 };
 

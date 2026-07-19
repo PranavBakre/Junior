@@ -201,6 +201,11 @@ export interface Config {
      * flag has no effect — existing Slack routing is unchanged.
      */
     legacyDirectivesEnabled: boolean;
+    /**
+     * When true (default false) and runtimeMode=active, explicit !debug /
+     * !reproducer starts create typed BugRuns. MVP requires explicit starts only.
+     */
+    bugPipelineEnabled: boolean;
   };
   /**
    * Outbound GitHub PR reconciliation (Phase 5). Default OFF. Observation is
@@ -362,6 +367,7 @@ export function loadConfig(): Config {
         "PIPELINE_LEGACY_DIRECTIVES_ENABLED",
         true,
       ),
+      bugPipelineEnabled: parseBooleanEnv("BUG_PIPELINE_ENABLED", false),
     },
     github: parseGitHubConfig(),
   };
