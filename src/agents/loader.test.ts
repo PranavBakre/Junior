@@ -37,7 +37,7 @@ describe("loadAgentDefinition", () => {
     expect(def!.model).toBeNull();
     expect(def!.common).toEqual(["core", "building-philosophy"]);
     expect(def!.permissions).toEqual({
-      intent: null,
+      intent: "normal",
       mcp: ["slack-bot"],
       tools: [
         "Read",

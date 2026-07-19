@@ -2,6 +2,7 @@
 name: frontend
 description: Frontend engineer. Use for UI work, component building, styling, frontend features.
 tools: Read, Edit, Write, Bash, Grep, Glob, Agent, mcp__slack-bot__memory_recall
+permissions.intent: normal
 common: core,building-philosophy
 context.threadHistory: true
 context.threadHistoryLimit: 20

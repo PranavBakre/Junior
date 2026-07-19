@@ -56,6 +56,26 @@ describe("prompt lint", () => {
     });
   });
 
+  describe("all public agents declare permissions.intent", () => {
+    it.each(ALL_PUBLIC_AGENTS)("%s has permissions.intent frontmatter", async (name) => {
+      const content = await readAgent(name);
+      expect(content).toMatch(
+        /^permissions\.intent:\s*(read-only|normal|human-gated|utility|no-tools)\s*$/m,
+      );
+    });
+
+    it("restricted roles fail closed", async () => {
+      const review = await readAgent("review");
+      const reproducer = await readAgent("reproducer");
+      const pm = await readAgent("pm");
+      const architect = await readAgent("architect");
+      expect(review).toMatch(/^permissions\.intent:\s*read-only\s*$/m);
+      expect(reproducer).toMatch(/^permissions\.intent:\s*read-only\s*$/m);
+      expect(pm).toMatch(/^permissions\.intent:\s*human-gated\s*$/m);
+      expect(architect).toMatch(/^permissions\.intent:\s*human-gated\s*$/m);
+    });
+  });
+
   describe("all public agents declare context budget", () => {
     it.each(ALL_PUBLIC_AGENTS)("%s has context.threadHistory frontmatter", async (name) => {
       const content = await readAgent(name);

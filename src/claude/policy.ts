@@ -1,5 +1,8 @@
 import type { Config } from "../config.ts";
-import type { AgentPermissions } from "../agents/loader.ts";
+import {
+  resolveEffectivePermissionIntent,
+  type AgentPermissions,
+} from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
 
 /**
@@ -43,7 +46,10 @@ export function mapClaudeRunPolicy(options: {
 }): ClaudeRunPolicy {
   const { config, session, cwd } = options;
   const permissions: AgentPermissions | undefined = session.agentPermissions;
-  const intent = permissions?.intent ?? null;
+  const intent = resolveEffectivePermissionIntent(
+    permissions,
+    session.activeAgentName ?? session.agentType,
+  );
   const declaredTools = permissions?.tools ?? [];
 
   if (intent === "read-only") {

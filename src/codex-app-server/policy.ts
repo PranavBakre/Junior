@@ -1,5 +1,8 @@
 import type { Config } from "../config.ts";
-import type { AgentPermissions } from "../agents/loader.ts";
+import {
+  resolveEffectivePermissionIntent,
+  type AgentPermissions,
+} from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
 
 export type CodexApprovalPolicy = "untrusted" | "on-request" | "never";
@@ -27,7 +30,10 @@ export function mapCodexRunPolicy(options: {
 }): CodexRunPolicy {
   const { config, session, cwd } = options;
   const permissions: AgentPermissions | undefined = session.agentPermissions;
-  const intent = permissions?.intent ?? null;
+  const intent = resolveEffectivePermissionIntent(
+    permissions,
+    session.activeAgentName ?? session.agentType,
+  );
 
   if (intent === "read-only" || intent === "no-tools") {
     return {

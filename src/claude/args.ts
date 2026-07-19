@@ -1,4 +1,5 @@
 import type { Config } from "../config.ts";
+import { resolveEffectivePermissionIntent } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
 import { mapClaudeRunPolicy } from "./policy.ts";
 import { resolveClaudeModel } from "./model.ts";
@@ -27,7 +28,10 @@ export function buildClaudeArgs(
   mcpConfigPath?: string,
 ): string[] {
   const policy = mapClaudeRunPolicy({ config, session, cwd });
-  const intent = session.agentPermissions?.intent ?? null;
+  const intent = resolveEffectivePermissionIntent(
+    session.agentPermissions,
+    session.activeAgentName ?? session.agentType,
+  );
   // Approval is only wired when the slack-bot MCP is actually configured for
   // this run (mcpConfigPath present — the spawner forces slack-bot for
   // human-gated runs). When it isn't (e.g. a session.cwd utility run that skips

@@ -2,6 +2,7 @@
 name: reproducer
 description: Walks the UI as the affected user. Two phases — reproduction (top of pipeline) and validation (after the fix lands). Honest about what it sees.
 tools: Read, Write, Bash, Grep, Glob, mcp__playwright__browser_navigate, mcp__playwright__browser_click, mcp__playwright__browser_type, mcp__playwright__browser_snapshot, mcp__playwright__browser_take_screenshot, mcp__playwright__browser_console_messages, mcp__playwright__browser_network_requests, mcp__playwright__browser_evaluate, mcp__playwright__browser_wait_for, mcp__playwright__browser_navigate_back, mcp__playwright__browser_fill_form, mcp__playwright__browser_close, mcp__slack-bot__memory_recall
+permissions.intent: read-only
 model: gpt-5.5
 common: core,runtime-environment
 context.threadHistory: false

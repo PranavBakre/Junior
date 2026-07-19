@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Config } from "../config.ts";
+import { resolveEffectivePermissionIntent } from "../agents/loader.ts";
 import type { AgentIdentity, ThreadSession } from "../session/types.ts";
 import type { ContentBlockToolUse, StreamEvent, StreamEventResult } from "./types.ts";
 import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
@@ -35,7 +36,10 @@ export function spawnClaude(
   });
   // Human-gated agents route approvals through the slack-bot MCP permission
   // tool, so that server must be present even if the agent declared no MCP.
-  const intent = session.agentPermissions?.intent ?? null;
+  const intent = resolveEffectivePermissionIntent(
+    session.agentPermissions,
+    session.activeAgentName ?? session.agentType,
+  );
   const forceSlackMcp = config.approvalEnabled !== false && intent === "human-gated";
   const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp, forceSlackMcp)
     ? writeClaudeMcpConfig(session, forceSlackMcp)

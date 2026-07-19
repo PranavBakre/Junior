@@ -102,7 +102,7 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.addDirs).toEqual(["/repo"]);
   });
 
-  test("null/unset intent behaves like normal", () => {
+  test("null/unset intent behaves like normal for non-restricted roles", () => {
     const session = createSession("t", "c");
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
@@ -111,5 +111,37 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.allowedTools).toEqual([]);
     expect(policy.disallowedTools).toEqual([]);
     expect(policy.addDirs).toEqual(["/repo"]);
+  });
+
+  test("missing intent fails closed for review/reproducer roles", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.agentPermissions = { intent: null, mcp: [], tools: ["Read"] };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.disallowedTools).toContain("Edit");
+    expect(policy.disallowedTools).toContain("Write");
+  });
+
+  test("missing intent fails closed for pm/architect roles", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "pm";
+    session.agentPermissions = { intent: null, mcp: [], tools: ["Read", "Write"] };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.allowedTools).toEqual(["Read", "Write"]);
+  });
+
+  test("declared intent wins over role fail-closed map", () => {
+    const session = sessionWith({ intent: "normal", mcp: [], tools: [] });
+    session.activeAgentName = "review";
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("bypassPermissions");
   });
 });

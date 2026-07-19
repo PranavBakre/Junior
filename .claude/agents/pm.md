@@ -2,6 +2,7 @@
 name: pm
 description: Product manager. Use for scoping features, planning iterations, making scope cuts.
 tools: Read, Write, Edit, Grep, Glob, mcp__slack-bot__memory_recall
+permissions.intent: human-gated
 common: core
 context.threadHistory: true
 context.threadHistoryLimit: 20
