@@ -49,6 +49,9 @@ const ENV_KEYS = [
   "WHATSAPP_EXTRACTION_INTERVAL_MS",
   "PIPELINE_RUNTIME_MODE",
   "PIPELINE_LEGACY_DIRECTIVES_ENABLED",
+  "PIPELINE_RETENTION_DAYS",
+  "BUG_PIPELINE_ENABLED",
+  "PRODUCT_PIPELINE_ENABLED",
   "GITHUB_RECONCILE_ENABLED",
   "GITHUB_EVENT_WAKE_ENABLED",
   "GITHUB_RECONCILE_TOKEN",
@@ -177,6 +180,13 @@ describe("loadConfig runner providers", () => {
     expect(loadConfig().pipeline?.legacyDirectivesEnabled).toBe(true);
   });
 
+  it("defaults controllers OFF and retention to 90 days", () => {
+    const pipeline = loadConfig().pipeline;
+    expect(pipeline?.bugPipelineEnabled).toBe(false);
+    expect(pipeline?.productPipelineEnabled).toBe(false);
+    expect(pipeline?.retentionDays).toBe(90);
+  });
+
   it("parses PIPELINE_RUNTIME_MODE=shadow", () => {
     process.env.PIPELINE_RUNTIME_MODE = "shadow";
     expect(loadConfig().pipeline?.runtimeMode).toBe("shadow");
@@ -190,6 +200,34 @@ describe("loadConfig runner providers", () => {
   it("rejects invalid PIPELINE_RUNTIME_MODE", () => {
     process.env.PIPELINE_RUNTIME_MODE = "maybe";
     expect(() => loadConfig()).toThrow("Invalid PIPELINE_RUNTIME_MODE");
+  });
+
+  it("rejects BUG_PIPELINE_ENABLED without active mode", () => {
+    process.env.BUG_PIPELINE_ENABLED = "true";
+    process.env.PIPELINE_RUNTIME_MODE = "off";
+    expect(() => loadConfig()).toThrow(
+      "BUG_PIPELINE_ENABLED or PRODUCT_PIPELINE_ENABLED requires PIPELINE_RUNTIME_MODE=active",
+    );
+  });
+
+  it("rejects PRODUCT_PIPELINE_ENABLED in shadow mode", () => {
+    process.env.PRODUCT_PIPELINE_ENABLED = "true";
+    process.env.PIPELINE_RUNTIME_MODE = "shadow";
+    expect(() => loadConfig()).toThrow(
+      "BUG_PIPELINE_ENABLED or PRODUCT_PIPELINE_ENABLED requires PIPELINE_RUNTIME_MODE=active",
+    );
+  });
+
+  it("accepts controllers when PIPELINE_RUNTIME_MODE=active", () => {
+    process.env.PIPELINE_RUNTIME_MODE = "active";
+    process.env.BUG_PIPELINE_ENABLED = "true";
+    process.env.PRODUCT_PIPELINE_ENABLED = "true";
+    process.env.PIPELINE_RETENTION_DAYS = "30";
+    const pipeline = loadConfig().pipeline;
+    expect(pipeline?.runtimeMode).toBe("active");
+    expect(pipeline?.bugPipelineEnabled).toBe(true);
+    expect(pipeline?.productPipelineEnabled).toBe(true);
+    expect(pipeline?.retentionDays).toBe(30);
   });
 
   it("defaults GitHub reconcile OFF and wakes OFF", () => {

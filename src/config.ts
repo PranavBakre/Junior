@@ -190,7 +190,13 @@ export interface Config {
   /**
    * Durable ProductRun/BugRun control plane. Default `off` — substrate is
    * present but live routing does not create pipeline rows. `shadow` records
-   * without dispatching; `active` enables typed controllers (later phases).
+   * without dispatching; `active` enables typed controllers.
+   *
+   * Invalid combinations are rejected at load:
+   * - BUG_PIPELINE_ENABLED or PRODUCT_PIPELINE_ENABLED require
+   *   PIPELINE_RUNTIME_MODE=active
+   * - GITHUB_EVENT_WAKE_ENABLED requires GITHUB_RECONCILE_ENABLED
+   * Shadow mode never dispatches, wakes, or mutates legacy ownership.
    */
   pipeline?: {
     runtimeMode: PipelineRuntimeMode;
@@ -206,6 +212,16 @@ export interface Config {
      * !reproducer starts create typed BugRuns. MVP requires explicit starts only.
      */
     bugPipelineEnabled: boolean;
+    /**
+     * When true (default false) and runtimeMode=active, explicit !pm / !build
+     * starts create typed ProductRuns. Rejected at load unless mode=active.
+     */
+    productPipelineEnabled: boolean;
+    /**
+     * Days to retain full outbox/event payloads for terminal runs before GC
+     * compaction. Default 90. Never touches active/non-terminal runs.
+     */
+    retentionDays: number;
   };
   /**
    * Outbound GitHub PR reconciliation (Phase 5). Default OFF. Observation is
@@ -359,17 +375,48 @@ export function loadConfig(): Config {
         "39a3578dc3f08015b386cc6638029bed",
       ),
     },
-    pipeline: {
-      runtimeMode: parsePipelineRuntimeMode(
-        optional("PIPELINE_RUNTIME_MODE", "off"),
-      ),
-      legacyDirectivesEnabled: parseBooleanEnv(
-        "PIPELINE_LEGACY_DIRECTIVES_ENABLED",
-        true,
-      ),
-      bugPipelineEnabled: parseBooleanEnv("BUG_PIPELINE_ENABLED", false),
-    },
+    pipeline: parsePipelineConfig(),
     github: parseGitHubConfig(),
+  };
+}
+
+/**
+ * Parse and validate pipeline rollout flags.
+ * Controllers stay off by default; invalid combos fail closed at boot.
+ */
+function parsePipelineConfig(): NonNullable<Config["pipeline"]> {
+  const runtimeMode = parsePipelineRuntimeMode(
+    optional("PIPELINE_RUNTIME_MODE", "off"),
+  );
+  const legacyDirectivesEnabled = parseBooleanEnv(
+    "PIPELINE_LEGACY_DIRECTIVES_ENABLED",
+    true,
+  );
+  const bugPipelineEnabled = parseBooleanEnv("BUG_PIPELINE_ENABLED", false);
+  const productPipelineEnabled = parseBooleanEnv(
+    "PRODUCT_PIPELINE_ENABLED",
+    false,
+  );
+  const retentionDays = parsePositiveIntEnv(
+    "PIPELINE_RETENTION_DAYS",
+    optional("PIPELINE_RETENTION_DAYS", "90"),
+  );
+
+  if (
+    (bugPipelineEnabled || productPipelineEnabled) &&
+    runtimeMode !== "active"
+  ) {
+    throw new Error(
+      "Invalid pipeline config: BUG_PIPELINE_ENABLED or PRODUCT_PIPELINE_ENABLED requires PIPELINE_RUNTIME_MODE=active",
+    );
+  }
+
+  return {
+    runtimeMode,
+    legacyDirectivesEnabled,
+    bugPipelineEnabled,
+    productPipelineEnabled,
+    retentionDays,
   };
 }
 

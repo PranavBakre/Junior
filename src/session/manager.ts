@@ -15,6 +15,11 @@ import type {
 } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
+import type { PipelineStore } from "../pipelines/store/interface.ts";
+import {
+  createProductRun,
+  shouldCreateProductRun,
+} from "../pipelines/product/controller.ts";
 import {
   createSession,
   isImplementedRunnerProvider,
@@ -52,6 +57,10 @@ import { log as _log } from "../logger.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
 import { createPreRecall, type PreRecallFn } from "../memory/pre-recall.ts";
 import { clearThreadJuniorMessages } from "../slack/thread-archive.ts";
+import {
+  formatPipelineStatusLines,
+  projectRunSummary,
+} from "../pipelines/projection.ts";
 
 export class SessionManager {
   private store: SessionStore;
@@ -68,6 +77,12 @@ export class SessionManager {
   selfBotId?: string;
   agentRouter?: AgentRouter;
   worktreeManager?: WorktreeManager;
+  /**
+   * Optional pipeline store. When set and PRODUCT_PIPELINE_ENABLED +
+   * PIPELINE_RUNTIME_MODE=active, explicit !pm / !build create ProductRuns.
+   * Also used to enrich !status when a run is active.
+   */
+  pipelineStore?: PipelineStore;
   onResponse?: (session: ThreadSession, response: string) => unknown;
   onAgentSettled?: (
     session: ThreadSession,
@@ -114,6 +129,129 @@ export class SessionManager {
 
   setMemoryIngestor(memoryIngestor: MemoryIngestor): void {
     this.memoryIngestor = memoryIngestor;
+  }
+
+  /**
+   * Enrich !status with active pipeline run summary when the thread has an
+   * activePipelineRunId and a pipeline store is wired.
+   */
+  private async pipelineStatusLines(
+    session: ThreadSession,
+  ): Promise<string[]> {
+    const runId = session.activePipelineRunId;
+    if (!runId || !this.pipelineStore) return [];
+    try {
+      const run = await this.pipelineStore.getRun(runId);
+      if (!run) {
+        return [`*Pipeline:* \`${runId}\` (run not found)`];
+      }
+      const assignments = await this.pipelineStore.listAssignments(run.id);
+      let latestOutcome = null;
+      // Prefer outcome from the most recently updated assignment.
+      const sorted = [...assignments].sort(
+        (a, b) => b.updatedAt - a.updatedAt,
+      );
+      for (const assignment of sorted) {
+        const outcomes = await this.pipelineStore.listOutcomes(assignment.id);
+        if (outcomes.length > 0) {
+          latestOutcome = outcomes[outcomes.length - 1] ?? null;
+          break;
+        }
+      }
+      let attemptDigest: string | null = null;
+      if (run.activeAttemptId) {
+        const attempt = await this.pipelineStore.getAttempt(run.activeAttemptId);
+        attemptDigest = attempt?.revisionDigest ?? null;
+      }
+      if (!attemptDigest) {
+        attemptDigest =
+          sorted.find((a) => a.candidateRevisionDigest)
+            ?.candidateRevisionDigest ?? null;
+      }
+      const summary = projectRunSummary(run, assignments, latestOutcome, {
+        attemptDigest,
+      });
+      return formatPipelineStatusLines(summary);
+    } catch (err) {
+      _log.warn(
+        "status",
+        `pipeline status enrichment failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return [`*Pipeline:* \`${runId}\` (status unavailable)`];
+    }
+  }
+
+  /**
+   * Soft product-pipeline start on explicit !pm / !build when flags allow.
+   * Sets session.activePipelineRunId; never blocks the legacy runner path.
+   */
+  private async tryCreateProductRun(
+    session: ThreadSession,
+    event: SlackMessageEvent,
+  ): Promise<void> {
+    const store = this.pipelineStore;
+    if (!store) return;
+
+    const startKind =
+      event.command === "pm" ? "pm" : event.command === "build" ? "build" : null;
+    if (!startKind) return;
+
+    if (
+      !shouldCreateProductRun({
+        productPipelineEnabled:
+          this.config.pipeline?.productPipelineEnabled === true,
+        runtimeMode: this.config.pipeline?.runtimeMode ?? "off",
+        explicitStart: true,
+      })
+    ) {
+      return;
+    }
+
+    // Skip if thread already has a non-terminal pipeline run.
+    if (session.activePipelineRunId) {
+      const existing = await store.getRun(session.activePipelineRunId);
+      if (existing && existing.status !== "terminal") return;
+    }
+
+    try {
+      const result = await createProductRun(
+        { store, workspaceRoot: process.cwd() },
+        {
+          channelId: event.channel,
+          threadId: event.threadId,
+          objective: event.text.trim() || `${startKind} request`,
+          startKind,
+          messageTs: event.ts,
+          repoRefs: session.targetRepo ? [session.targetRepo] : [],
+        },
+      );
+
+      if (result.created) {
+        await this.store
+          .mutateThread(event.threadId, (s) => {
+            s.activePipelineRunId = result.run.id;
+            s.activePipelineKind = "product";
+          })
+          .catch(async () => {
+            const s = await this.store.get(event.threadId);
+            if (s) {
+              s.activePipelineRunId = result.run.id;
+              s.activePipelineKind = "product";
+              await this.store.set(event.threadId, s);
+            }
+          });
+      }
+
+      _log.info(
+        "product-pipeline",
+        `${result.created ? "created" : "reused"} ProductRun ${result.run.id.slice(0, 8)} phase=${result.run.phase} via !${startKind}`,
+      );
+    } catch (err) {
+      _log.warn(
+        "product-pipeline",
+        `failed to create ProductRun (legacy path continues): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /** Public for tests + reconciliation; the manager doesn't expose drivers otherwise. */
@@ -673,6 +811,10 @@ export class SessionManager {
           `*Last activity:* ${ago}`,
           `*Pending messages:* ${session.pendingMessages.length}`,
         ];
+        const pipelineLines = await this.pipelineStatusLines(session);
+        if (pipelineLines.length > 0) {
+          lines.push(...pipelineLines);
+        }
         this.onCommandResponse?.(event, lines.join("\n"));
         return true;
       }
@@ -683,6 +825,7 @@ export class SessionManager {
           "`!build` — Build agent (continues to runner)",
           "`!frontend` — Frontend agent (continues to runner)",
           "`!review` — Review agent (continues to runner)",
+          "`!pm` — Product manager agent (continues to runner)",
           "`!architect` — Architect agent (continues to runner)",
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
@@ -732,9 +875,14 @@ export class SessionManager {
 
       case "build":
       case "frontend":
-      case "architect": {
+      case "architect":
+      case "pm": {
         session.agentType = event.command;
         await this.store.set(session.threadId, session);
+        // Soft product-pipeline start: only !pm / !build when flags allow.
+        if (event.command === "pm" || event.command === "build") {
+          await this.tryCreateProductRun(session, event);
+        }
         return false;
       }
 

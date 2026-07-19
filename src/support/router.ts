@@ -46,6 +46,11 @@ export type PipelineRoutingOptions = {
    * create typed BugRuns. Default false.
    */
   bugPipelineEnabled?: boolean;
+  /**
+   * When true and runtimeMode=active, explicit !pm / !build starts create
+   * typed ProductRuns. Default false. (Controller may still be canary-gated.)
+   */
+  productPipelineEnabled?: boolean;
   /** Workspace root for bug artifact projections. */
   workspaceRoot?: string;
 };

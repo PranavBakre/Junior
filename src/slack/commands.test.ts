@@ -81,6 +81,7 @@ describe("parseCommand", () => {
       "build",
       "frontend",
       "architect",
+      "pm",
       "reset",
       "clear",
       "status",
