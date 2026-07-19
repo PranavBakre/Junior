@@ -1,3 +1,5 @@
+import { clampPermissionIntent } from "./registry.ts";
+
 /**
  * Per-agent preamble context profile. Each flag controls whether the
  * corresponding block in `buildPromptPreamble` is emitted on the first turn.
@@ -38,30 +40,24 @@ export interface AgentPermissions {
 }
 
 /**
- * Phase 0 temporary role map when frontmatter omits `permissions.intent`.
- * Restricted roles fail closed; builders/orchestrators fall through to null
- * (provider normal path). Phase 3 replaces this with the trusted agent catalog.
- */
-const FAIL_CLOSED_ROLE_INTENTS: Record<string, AgentPermissionIntent> = {
-  review: "read-only",
-  reproducer: "read-only",
-  pm: "human-gated",
-  architect: "human-gated",
-};
-
-/**
- * Resolve effective permission intent: declared frontmatter wins; unknown or
- * missing intent fails closed for restricted roles (review, reproducer, pm,
- * architect).
+ * Resolve effective permission intent for a run.
+ *
+ * Order:
+ * 1. Trusted catalog ceiling for known operational roles (Phase 3).
+ * 2. Declared frontmatter/session intent may only narrow that ceiling —
+ *    target-repo definitions cannot widen permissions.
+ * 3. Unknown agents: declared intent passes through; missing → null (provider
+ *    normal path).
+ *
+ * Restricted roles (review, reproducer, pm, architect) therefore fail closed
+ * even when frontmatter omits `permissions.intent`.
  */
 export function resolveEffectivePermissionIntent(
   permissions: AgentPermissions | undefined,
   agentName: string | null | undefined,
 ): AgentPermissionIntent | null {
   const declared = permissions?.intent ?? null;
-  if (declared) return declared;
-  const name = agentName?.trim() ?? "";
-  return FAIL_CLOSED_ROLE_INTENTS[name] ?? null;
+  return clampPermissionIntent(agentName, declared);
 }
 
 export const DEFAULT_CONTEXT_PROFILE: AgentContextProfile = {

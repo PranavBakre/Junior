@@ -12,11 +12,16 @@ import type { ThreadSession } from "../session/types.ts";
  * surface: `--permission-mode`, `--allowedTools`, `--disallowedTools`, and
  * `--add-dir`.
  *
+ * Intent resolution is provider-neutral (`resolveEffectivePermissionIntent` →
+ * trusted catalog ceiling in `src/agents/registry.ts`). Prefer
+ * `compileClaudePolicy` from `src/runners/policy.ts` as the shared entry point.
+ *
  * Unlike Codex, Claude Code has NO OS-level sandbox. There is no read-only /
  * workspace-write filesystem jail to lean on, so confinement here is purely
  * tool-based (allow/deny lists + permission mode) plus the working directory
  * we hand it. Write lockdown for read-only/no-tools agents is therefore
  * enforced by explicitly disallowing the mutating tools, not by a sandbox.
+ * Do not claim worktree confinement Claude cannot enforce.
  *
  * Pure function — no IO.
  */

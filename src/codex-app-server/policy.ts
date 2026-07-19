@@ -23,6 +23,12 @@ export interface CodexRunPolicy {
   mcpAllowed: boolean;
 }
 
+/**
+ * Maps a Junior agent's permission *intent* onto the Codex app-server
+ * approval/sandbox surface. Intent resolution is provider-neutral
+ * (`resolveEffectivePermissionIntent` → trusted catalog). Prefer
+ * `compileCodexPolicy` from `src/runners/policy.ts` as the shared entry point.
+ */
 export function mapCodexRunPolicy(options: {
   config: Config["codex"];
   session: ThreadSession;

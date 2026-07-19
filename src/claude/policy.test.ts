@@ -136,12 +136,24 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.allowedTools).toEqual(["Read", "Write"]);
   });
 
-  test("declared intent wins over role fail-closed map", () => {
+  test("declared intent cannot widen catalog ceiling for restricted roles", () => {
+    // Phase 3: target-repo / session overrides must not grant review product-code writes.
     const session = sessionWith({ intent: "normal", mcp: [], tools: [] });
     session.activeAgentName = "review";
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
-    expect(policy.permissionMode).toBe("bypassPermissions");
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.disallowedTools).toContain("Edit");
+  });
+
+  test("declared intent may narrow catalog ceiling", () => {
+    const session = sessionWith({ intent: "no-tools", mcp: [], tools: [] });
+    session.activeAgentName = "build";
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.disallowedTools).toContain("Bash");
   });
 });

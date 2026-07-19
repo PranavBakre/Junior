@@ -17,6 +17,7 @@ import type { Config } from "../config.ts";
 import type { AgentIdentity, ThreadSession } from "../session/types.ts";
 import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
 import { buildRunnerRuntime } from "../runners/runtime.ts";
+import { compileOpenCodePermission } from "../runners/policy.ts";
 import { OPENCODE_PROVIDER_AGENT, buildOpenCodeAgentPrompt } from "./prompt.ts";
 import { buildOpenCodeConfigContent } from "./config.ts";
 import { resolveOpenCodeModel } from "./model.ts";
@@ -146,7 +147,10 @@ export function spawnOpenCodeSdk(
     agentPrompt,
     description: "Junior SDK runner",
     model,
-    permission: config.opencode.permission,
+    permission: compileOpenCodePermission({
+      subject: session,
+      fallback: config.opencode.permission,
+    }),
     mcp: session.cwd ? null : undefined,
     subagents: session.cwd ? [] : loadOpenCodeSupportSubagents(),
   });
