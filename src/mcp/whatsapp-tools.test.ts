@@ -186,5 +186,20 @@ describe("whatsapp MCP tools", () => {
     // The newest message survives; the oldest bulk line is what got dropped.
     expect(text).toContain("bulk message 99");
     expect(text).not.toContain("bulk message 0 ");
+
+    // The paging cursor must anchor at the earliest RETAINED message, so
+    // following it reaches the window the size cap omitted.
+    const cursor = text.match(/before_ts=(\d+) and before_id=(\S+)\)/);
+    expect(cursor).not.toBeNull();
+    const beforeTs = Number(cursor![1]);
+    const earliestShownIdx = beforeTs - 1000;
+    expect(text).toContain(`bulk message ${earliestShownIdx} `);
+    const nextPage = await call("whatsapp_read_messages", {
+      group: "g1@g.us",
+      limit: 100,
+      before_ts: beforeTs,
+      before_id: cursor![2],
+    });
+    expect(nextPage).toContain(`bulk message ${earliestShownIdx - 1} `);
   });
 });

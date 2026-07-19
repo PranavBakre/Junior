@@ -112,10 +112,12 @@ function formatMessages(messages: WaMessage[], includeGroup: boolean): string {
     omitted > 0
       ? `(… ${omitted} earlier messages omitted to bound response size — page with before_ts/before_id or lower the limit)\n`
       : "";
-  // getMessages returns the window chronologically — the first entry is the
-  // earliest, and (ts, id) together form the tie-safe backwards cursor.
-  const earliest = messages[0]!;
-  return `${head}${kept.join("\n")}\n\n(${messages.length} messages; to page further back pass before_ts=${earliest.ts} and before_id=${earliest.id})`;
+  // The transcript is chronological and capLines dropped the first `omitted`
+  // lines, so messages[omitted] is the earliest RETAINED message. The cursor
+  // must point there — anchoring it at messages[0] (inside the dropped window)
+  // would make the omitted messages unreachable through pagination.
+  const earliest = messages[omitted]!;
+  return `${head}${kept.join("\n")}\n\n(${kept.length} messages shown; to page further back pass before_ts=${earliest.ts} and before_id=${earliest.id})`;
 }
 
 export function registerWhatsAppTools(server: McpServer): void {
