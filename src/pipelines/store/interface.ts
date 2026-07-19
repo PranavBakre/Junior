@@ -14,6 +14,7 @@ import type {
   DevServerJob,
   DevServerJobCreate,
   DevServerJobStatus,
+  GitHubResourceRegistration,
   PipelineAttempt,
   PipelineEvent,
   PipelineGate,
@@ -132,6 +133,17 @@ export interface PipelineStore {
     activeOnly?: boolean,
   ): Promise<PipelineGitHubResource[]>;
   deactivatePipelineGitHubResource(id: string): Promise<void>;
+
+  /**
+   * Atomically record a PR registration event, upsert the github_resources
+   * row, and create the pipeline_github_resources association.
+   */
+  commitPrRegistration(input: {
+    registration: GitHubResourceRegistration;
+    actorId: string;
+    runPhase: string;
+    now: number;
+  }): Promise<{ eventId: string }>;
 
   /**
    * Atomically persist snapshot + semantic events for active run associations.

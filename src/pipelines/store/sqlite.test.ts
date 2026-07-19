@@ -317,6 +317,37 @@ describe("SqlitePipelineStore", () => {
     expect((await store.listOutbox("run-1"))[0]!.status).toBe("delivered");
   });
 
+  it("rejects a second active run on the same thread", async () => {
+    await store.createRun(makeProductRun({ id: "run-a", threadId: "T-active" }));
+    await expect(
+      store.createRun(
+        makeProductRun({ id: "run-b", threadId: "T-active", phase: "discovery" }),
+      ),
+    ).rejects.toThrow(/active pipeline run already exists/);
+  });
+
+  it("allows a new active run after the prior run is terminal", async () => {
+    await store.createRun(
+      makeProductRun({
+        id: "run-term",
+        threadId: "T-term",
+        status: "terminal",
+        phase: "shipped",
+        terminalOutcome: "shipped",
+      }),
+    );
+    await store.createRun(
+      makeProductRun({
+        id: "run-after-term",
+        threadId: "T-term",
+        status: "active",
+        phase: "discovery",
+      }),
+    );
+    const active = await store.getRunByThread("T-term");
+    expect(active?.id).toBe("run-after-term");
+  });
+
   it("atomically persists GitHub snapshots and multi-PR semantic events without wakes", async () => {
     await store.createRun(makeProductRun({ id: "run-1", threadId: "T1" }));
     await store.createRun(

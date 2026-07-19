@@ -21,6 +21,7 @@ import type {
   DevServerJob,
   DevServerJobCreate,
   DevServerJobStatus,
+  GitHubResourceRegistration,
   OutboxCreate,
   PipelineAttempt,
   PipelineEvent,
@@ -241,7 +242,7 @@ export class InMemoryPipelineStore implements PipelineStore {
       );
     }
 
-    if (decision.outbox) {
+    if (decision.outbox && !input.suppressDispatch) {
       if (!this.outboxByIdempotency.has(decision.outbox.idempotencyKey)) {
         this.outbox.set(decision.outbox.id, { ...decision.outbox });
         this.outboxByIdempotency.set(
@@ -721,6 +722,92 @@ export class InMemoryPipelineStore implements PipelineStore {
       active: false,
       updatedAt: this.clock.now(),
     });
+  }
+
+  async commitPrRegistration(input: {
+    registration: GitHubResourceRegistration;
+    actorId: string;
+    runPhase: string;
+    now: number;
+  }): Promise<{ eventId: string }> {
+    const { registration, actorId, runPhase, now } = input;
+    const idempotencyKey = `pr-reg:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`;
+    const priorId = this.eventByIdempotency.get(idempotencyKey);
+    if (priorId) {
+      return { eventId: priorId };
+    }
+
+    const eventId = crypto.randomUUID();
+    const events = this.events.get(registration.runId) ?? [];
+    const full: PipelineEvent = {
+      id: eventId,
+      runId: registration.runId,
+      sequence: events.length + 1,
+      eventType: "github.pr.registered",
+      actorType: "agent",
+      actorId,
+      assignmentId: registration.assignmentId,
+      outcomeId: null,
+      fromPhase: runPhase,
+      toPhase: runPhase,
+      payloadVersion: 1,
+      payload: { ...registration },
+      idempotencyKey,
+      occurredAt: now,
+      observedAt: now,
+    };
+    events.push(full);
+    this.events.set(registration.runId, events);
+    this.eventByIdempotency.set(idempotencyKey, eventId);
+
+    let resourceId: string;
+    const existing = [...this.githubResources.values()].find(
+      (r) =>
+        r.owner === registration.owner &&
+        r.repo === registration.repo &&
+        r.number === registration.number,
+    );
+    if (existing) {
+      resourceId = existing.id;
+    } else {
+      resourceId = crypto.randomUUID();
+      this.githubResources.set(resourceId, {
+        id: resourceId,
+        kind: "pull_request",
+        owner: registration.owner,
+        repo: registration.repo,
+        number: registration.number,
+        nodeId: null,
+        snapshot: null,
+        lastPolledAt: null,
+        nextPollAt: now,
+        pollClass: "warm",
+        consecutiveFailures: 0,
+        lastError: null,
+        leaseOwner: null,
+        leaseUntil: null,
+        terminalAt: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const assocId = crypto.randomUUID();
+    this.pipelineGithub.set(assocId, {
+      id: assocId,
+      runId: registration.runId,
+      resourceId,
+      role: registration.role,
+      workstreamKey: registration.workstreamKey,
+      attemptId: registration.attemptId,
+      registeredByAssignmentId: registration.assignmentId,
+      expectedHeadSha: registration.expectedHeadSha,
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { eventId };
   }
 
   async applyGitHubSnapshotShadow(input: {

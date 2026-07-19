@@ -54,6 +54,21 @@ export function resolveRunPermissionIntent(
 }
 
 /**
+ * Read-safe MCP tools for read-only / human-gated agents.
+ * Mutating Slack/memory/dispatch tools are NOT included.
+ */
+export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
+  "mcp__slack-bot__slack_read_thread": "allow",
+  "mcp__slack-bot__slack_read_channel": "allow",
+  "mcp__slack-bot__slack_search": "allow",
+  "mcp__slack-bot__slack_search_users": "allow",
+  "mcp__slack-bot__memory_recall": "allow",
+  "mcp__slack-bot__register_worktree": "allow",
+  "mcp__slack-bot__pipeline_get_state": "allow",
+  "mcp__playwright__*": "allow",
+};
+
+/**
  * OpenCode permission surface for a given intent.
  *
  * - read-only / no-tools: deny edit/write/task; no-tools also denies bash + MCP
@@ -96,7 +111,9 @@ export function compileOpenCodePermission(options: {
       // allowlists on Claude; OpenCode has no equivalent command patterns here.
       bash: "deny",
       task: "deny",
-      "mcp__*": "allow",
+      // Explicit read-safe MCP surface only — never blanket mcp__*.
+      ...READ_SAFE_MCP_PERMISSIONS,
+      "mcp__*": "deny",
     };
   }
 
@@ -110,7 +127,12 @@ export function compileOpenCodePermission(options: {
       write: "ask",
       bash: "ask",
       task: "deny",
-      "mcp__*": "allow",
+      // Human-gated roles may use read MCPs freely; mutating MCP tools ask.
+      ...READ_SAFE_MCP_PERMISSIONS,
+      "mcp__slack-bot__slack_send_message": "ask",
+      "mcp__slack-bot__agent_dispatch": "ask",
+      "mcp__slack-bot__memory_add": "ask",
+      "mcp__*": "ask",
     };
   }
 

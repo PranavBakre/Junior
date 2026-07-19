@@ -52,6 +52,21 @@ describe("compileOpenCodePermission", () => {
     });
   });
 
+  it("uses an explicit read-safe MCP allowlist for read-only roles", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "review",
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, string>;
+    expect(permission["mcp__*"]).toBe("deny");
+    expect(permission["mcp__slack-bot__memory_recall"]).toBe("allow");
+    expect(permission["mcp__slack-bot__slack_read_thread"]).toBe("allow");
+    // Mutating MCP tools must not ride a blanket allow.
+    expect(permission["mcp__slack-bot__agent_dispatch"]).not.toBe("allow");
+    expect(permission["mcp__slack-bot__memory_add"]).not.toBe("allow");
+  });
+
   it("asks on mutating tools for human-gated roles", () => {
     const permission = compileOpenCodePermission({
       subject: {

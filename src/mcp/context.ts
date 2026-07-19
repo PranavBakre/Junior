@@ -1,43 +1,135 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ThreadSession } from "../session/types.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const DEFAULT_SLACK_MCP_URL = `http://localhost:${MCP_PORT}/mcp`;
 const DEFAULT_MONGODB_MCP_URL = `http://localhost:${MCP_PORT}/mcp/mongodb`;
 
+/** Default token lifetime for signed MCP run context (2 hours). */
+const MCP_CONTEXT_TTL_MS = 2 * 60 * 60 * 1000;
+
 export interface SlackMcpRunContext {
   agent: string;
   channel: string;
   threadId: string;
+  /**
+   * True when the context was verified via HMAC signature (or internal bypass).
+   * Unsigned/spoofable query-only contexts are rejected when a secret is configured.
+   */
+  signed: boolean;
 }
 
 export function slackMcpAgentForSession(session: ThreadSession): string {
   return session.activeAgentName ?? session.topLevelTmuxAgent ?? topLevelAgentForSession(session);
 }
 
+/**
+ * Secret used to sign MCP run-context URLs. Prefer MCP_CONTEXT_SECRET; fall back
+ * to SLACK_BOT_TOKEN so production always has a key when the bot is configured.
+ * Returns null only in tests/dev with neither set (unsigned mode for local unit tests).
+ */
+export function mcpContextSecret(): string | null {
+  const explicit = process.env.MCP_CONTEXT_SECRET?.trim();
+  if (explicit) return explicit;
+  const bot = process.env.SLACK_BOT_TOKEN?.trim();
+  if (bot) return bot;
+  return null;
+}
+
 export function buildSlackMcpUrl(session: ThreadSession): string {
   const url = new URL(process.env.SLACK_MCP_URL ?? DEFAULT_SLACK_MCP_URL);
-  url.searchParams.set("agent", slackMcpAgentForSession(session));
-  url.searchParams.set("channel", session.channel);
-  url.searchParams.set("thread", session.threadId);
+  applySignedRunContext(url, {
+    agent: slackMcpAgentForSession(session),
+    channel: session.channel,
+    threadId: session.threadId,
+  });
   return url.toString();
 }
 
 export function buildMongoMcpUrl(session: ThreadSession): string {
   const url = new URL(process.env.MONGODB_MCP_URL ?? DEFAULT_MONGODB_MCP_URL);
-  url.searchParams.set("agent", slackMcpAgentForSession(session));
-  url.searchParams.set("channel", session.channel);
-  url.searchParams.set("thread", session.threadId);
+  applySignedRunContext(url, {
+    agent: slackMcpAgentForSession(session),
+    channel: session.channel,
+    threadId: session.threadId,
+  });
   return url.toString();
 }
 
-export function parseSlackMcpRunContext(requestUrl: string | undefined): SlackMcpRunContext | null {
+function applySignedRunContext(
+  url: URL,
+  ctx: { agent: string; channel: string; threadId: string },
+): void {
+  url.searchParams.set("agent", ctx.agent);
+  url.searchParams.set("channel", ctx.channel);
+  url.searchParams.set("thread", ctx.threadId);
+  const secret = mcpContextSecret();
+  if (!secret) return;
+  const exp = String(Date.now() + MCP_CONTEXT_TTL_MS);
+  url.searchParams.set("exp", exp);
+  url.searchParams.set("sig", signRunContext(secret, ctx.agent, ctx.channel, ctx.threadId, exp));
+}
+
+export function signRunContext(
+  secret: string,
+  agent: string,
+  channel: string,
+  threadId: string,
+  exp: string,
+): string {
+  return createHmac("sha256", secret)
+    .update(`${agent}\n${channel}\n${threadId}\n${exp}`)
+    .digest("hex");
+}
+
+/**
+ * Parse and authenticate MCP run context from the request URL.
+ *
+ * When MCP_CONTEXT_SECRET or SLACK_BOT_TOKEN is set, a valid HMAC `sig` +
+ * unexpired `exp` is required. Spoofed agent/channel/thread query params alone
+ * are rejected.
+ *
+ * When no secret is configured (unit tests), falls back to unsigned query params
+ * and marks `signed: false`.
+ */
+export function parseSlackMcpRunContext(
+  requestUrl: string | undefined,
+): SlackMcpRunContext | null {
   if (!requestUrl) return null;
   const url = new URL(requestUrl, DEFAULT_SLACK_MCP_URL);
   const agent = url.searchParams.get("agent")?.trim();
   const channel = url.searchParams.get("channel")?.trim();
   const threadId = url.searchParams.get("thread")?.trim();
   if (!agent || !channel || !threadId) return null;
-  return { agent, channel, threadId };
+
+  const secret = mcpContextSecret();
+  if (!secret) {
+    // Dev/test without a secret: accept query params but mark unsigned so
+    // pipeline tools can still require signed contexts when a secret exists.
+    return { agent, channel, threadId, signed: false };
+  }
+
+  const exp = url.searchParams.get("exp")?.trim();
+  const sig = url.searchParams.get("sig")?.trim();
+  if (!exp || !sig) return null;
+  const expMs = Number(exp);
+  if (!Number.isFinite(expMs) || expMs < Date.now()) return null;
+
+  const expected = signRunContext(secret, agent, channel, threadId, exp);
+  if (!safeEqualHex(sig, expected)) return null;
+
+  return { agent, channel, threadId, signed: true };
+}
+
+function safeEqualHex(a: string, b: string): boolean {
+  try {
+    const ba = Buffer.from(a, "hex");
+    const bb = Buffer.from(b, "hex");
+    if (ba.length !== bb.length || ba.length === 0) return false;
+    return timingSafeEqual(ba, bb);
+  } catch {
+    return false;
+  }
 }
 
 function topLevelAgentForSession(session: ThreadSession): "lead" | "default" {

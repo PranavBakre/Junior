@@ -29,6 +29,12 @@ export type OutcomeAuthContext = {
   channelId: string;
   threadId: string;
   orchestratorContext?: OrchestratorContext;
+  /**
+   * When true, agent "system" / "human" may act without owning the assignment.
+   * Must only be set by trusted internal callers (legacy directive conversion,
+   * pump, controllers) — never from raw MCP URL query params.
+   */
+  trustedInternal?: boolean;
 };
 
 export type ReportOutcomeInput = {
@@ -45,6 +51,10 @@ export type OutcomesDeps = {
   /** When true, completing a PR-opening phase requires registered PRs. */
   githubTrackingEnabled?: boolean;
   now?: () => number;
+  /**
+   * Shadow mode: persist outcomes without enqueueing dispatch outbox items.
+   */
+  suppressDispatch?: boolean;
 };
 
 /**
@@ -261,20 +271,34 @@ export async function reportOutcome(
     });
     const prior = await findPriorLoopFingerprint(deps.store, run.id, loopKey);
     if (prior && outcome.evidenceRefs.length === 0) {
-      // Force escalate path via a synthetic outcome rewrite only for the check —
-      // return escalated receipt without committing a handoff.
+      // Persist a synthetic escalation so the assignment/run cannot spin forever.
       const reason =
         "loop policy: unchanged (run, source, target, progressFingerprint, candidateRevisionDigest) without new evidence";
       log.info(
         "pipeline-outcomes",
         `escalated loop-policy run=${run.id} assignment=${assignment.id}: ${reason}`,
       );
-      return {
-        status: "escalated",
-        runVersion: run.stateVersion,
-        assignmentId: assignment.id,
+      const escalated: AgentOutcome = {
+        ...outcome,
+        action: "escalate",
+        status: "blocked",
+        targetAgent: undefined,
+        nextAssignment: undefined,
         reason,
+        blockers: [
+          ...(outcome.blockers ?? []),
+          { kind: "no_progress", detail: reason },
+        ],
+        progressFingerprint: outcome.progressFingerprint || loopKey,
       };
+      return reportOutcome(deps, {
+        outcome: escalated,
+        toPhase: "needs-human",
+        idempotencyKey:
+          input.idempotencyKey ??
+          `loop-escalate:${loopKey}:${assignment.id}`,
+        auth,
+      });
     }
   }
 
@@ -321,6 +345,7 @@ export async function reportOutcome(
     actorType: "agent",
     actorId: auth.agent,
     idempotencyKey: input.idempotencyKey,
+    suppressDispatch: deps.suppressDispatch === true,
   });
 
   if (
@@ -441,78 +466,14 @@ export async function registerPr(
   if (authFailure) return { ok: false, reason: authFailure };
 
   const now = deps.now?.() ?? Date.now();
-  const event = await deps.store.appendEvent({
-    id: crypto.randomUUID(),
-    runId: run.id,
-    eventType: "github.pr.registered",
-    actorType: "agent",
+  // Single atomic store method: event + resource + association.
+  const result = await deps.store.commitPrRegistration({
+    registration,
     actorId: auth.agent,
-    assignmentId: assignment.id,
-    outcomeId: null,
-    fromPhase: run.phase,
-    toPhase: run.phase,
-    payloadVersion: 1,
-    payload: { ...registration },
-    idempotencyKey: `pr-reg:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`,
-    occurredAt: now,
-    observedAt: now,
+    runPhase: run.phase,
+    now,
   });
-
-  // Materialize association when a github resource row already exists (Phase 5+).
-  const existing = await deps.store.getGitHubResourceByCoords(
-    registration.owner,
-    registration.repo,
-    registration.number,
-  );
-  if (existing) {
-    await deps.store.registerPipelineGitHubResource({
-      id: crypto.randomUUID(),
-      runId: run.id,
-      resourceId: existing.id,
-      role: registration.role,
-      workstreamKey: registration.workstreamKey,
-      attemptId: registration.attemptId,
-      registeredByAssignmentId: registration.assignmentId,
-      expectedHeadSha: registration.expectedHeadSha,
-      active: true,
-    });
-  } else {
-    // Phase 4: create a stub resource + association so completion gates can see
-    // the registration before Phase 5 reconciliation hydrates snapshots.
-    const resourceId = crypto.randomUUID();
-    await deps.store.upsertGitHubResource({
-      id: resourceId,
-      kind: "pull_request",
-      owner: registration.owner,
-      repo: registration.repo,
-      number: registration.number,
-      nodeId: null,
-      snapshot: null,
-      lastPolledAt: null,
-      nextPollAt: now,
-      pollClass: "warm",
-      consecutiveFailures: 0,
-      lastError: null,
-      leaseOwner: null,
-      leaseUntil: null,
-      terminalAt: null,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await deps.store.registerPipelineGitHubResource({
-      id: crypto.randomUUID(),
-      runId: run.id,
-      resourceId,
-      role: registration.role,
-      workstreamKey: registration.workstreamKey,
-      attemptId: registration.attemptId,
-      registeredByAssignmentId: registration.assignmentId,
-      expectedHeadSha: registration.expectedHeadSha,
-      active: true,
-    });
-  }
-
-  return { ok: true, eventId: event.id };
+  return { ok: true, eventId: result.eventId };
 }
 
 // ---------------------------------------------------------------------------
@@ -533,31 +494,26 @@ function authenticateAssignment(
   const target =
     canonicalAgentName(assignment.targetAgent) ?? assignment.targetAgent;
 
-  // Assignment owner (target) may report; orchestrator may also report on
-  // behalf of the run; system/human actors pass for internal conversion.
+  // Assignment owner (target) may report.
   if (caller === target) return null;
-  if (caller === "system" || caller === "human") return null;
+
+  // Internal system/human actors only when explicitly marked trusted (never from
+  // spoofable MCP URL params — set by SessionManager / pipeline pump only).
   if (
-    caller === run.ownerAgent ||
-    canonicalAgentName(run.ownerAgent) === caller
+    auth.trustedInternal === true &&
+    (caller === "system" || caller === "human")
   ) {
     return null;
   }
-  // Orchestrators may report outcomes for any assignment on the run.
-  if (
-    canDispatch(caller, assignment.targetAgent, orchestratorContextFor(run)) ||
+
+  // Orchestrators that own the run may report on behalf of any assignment.
+  const isOrch =
     caller === "lead" ||
     caller === "default" ||
-    caller === "junior"
-  ) {
-    // Only allow orchestrator override when the caller is an orchestrator role.
-    const isOrch =
-      caller === "lead" ||
-      caller === "default" ||
-      caller === "junior" ||
-      caller === run.ownerAgent;
-    if (isOrch) return null;
-  }
+    caller === "junior" ||
+    caller === run.ownerAgent ||
+    canonicalAgentName(run.ownerAgent) === caller;
+  if (isOrch) return null;
 
   return `agent "${auth.agent}" is not authorized to report for assignment target "${assignment.targetAgent}"`;
 }

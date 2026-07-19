@@ -680,38 +680,22 @@ async function applyGitHubEventReduction(
     }
   }
 
-  // Resume exact waiting assignment matching role / phase.
+  // Exact wake only: registered assignment, attempt, role, and workstream.
+  // Never fall back to "any waiting assignment" — wrong agent resume is worse
+  // than a missed wake (which can be recovered on the next reconcile).
   const role = typeof payload.role === "string" ? payload.role : null;
-  const candidates = waiting.filter((a) => {
-    if (event.eventType === "github.pr.checks_changed") {
-      return (
-        a.targetAgent === "build" ||
-        a.targetAgent === "lead" ||
-        a.objective.toLowerCase().includes("check")
-      );
-    }
-    if (event.eventType === "github.pr.merged") {
-      if (role === "dev-pr") {
-        return a.objective.toLowerCase().includes("dev") || run.phase === "dev-merge";
-      }
-      if (role === "main-pr") {
-        return (
-          a.objective.toLowerCase().includes("main") ||
-          run.phase === "main-merge-gate"
-        );
-      }
-    }
-    if (event.eventType === "github.pr.review_decision_changed") {
-      return a.targetAgent === "review" || a.targetAgent === "build";
-    }
-    // head_changed: wake review/validation waiters on that attempt
-    return (
-      a.attemptId === attemptId ||
-      a.status === "waiting"
-    );
+  const resourceId =
+    typeof payload.resourceId === "string" ? payload.resourceId : null;
+  const target = await resolveExactWakeAssignment(store, {
+    run,
+    event,
+    waiting,
+    attemptId,
+    workstreamKey,
+    role,
+    resourceId,
   });
 
-  const target = candidates[0] ?? waiting[0];
   if (target) {
     const idempotencyKey = `github.wake:${event.id}:${target.id}`;
     await store.enqueueOutbox({
@@ -733,6 +717,132 @@ async function applyGitHubEventReduction(
 
   void now;
   return { wakes, invalidated };
+}
+
+/**
+ * Resolve the single assignment that should wake for a GitHub event.
+ * Returns null unless there is an exact, unambiguous match.
+ */
+export async function resolveExactWakeAssignment(
+  store: PipelineStore,
+  args: {
+    run: BugRun;
+    event: PipelineEvent;
+    waiting: Assignment[];
+    attemptId: string | null;
+    workstreamKey: string | null;
+    role: string | null;
+    resourceId: string | null;
+  },
+): Promise<Assignment | null> {
+  const { event, waiting, attemptId, workstreamKey, role, resourceId, run } =
+    args;
+  if (waiting.length === 0) return null;
+
+  const waitingById = new Map(waiting.map((a) => [a.id, a]));
+
+  // 1) Event pins an assignment id — only that assignment, and only if waiting.
+  if (event.assignmentId) {
+    return waitingById.get(event.assignmentId) ?? null;
+  }
+
+  // 2) Resource association pins registered_by_assignment_id (+ role/attempt/workstream).
+  if (resourceId) {
+    const assocs = await store.listAssociationsForResource(resourceId, true);
+    const runAssocs = assocs.filter((a) => a.runId === run.id && a.active);
+    const matched = runAssocs.filter((a) => {
+      if (role && a.role !== role) return false;
+      if (workstreamKey && a.workstreamKey !== workstreamKey) return false;
+      if (attemptId && a.attemptId && a.attemptId !== attemptId) return false;
+      return true;
+    });
+    if (matched.length === 1 && matched[0]!.registeredByAssignmentId) {
+      return waitingById.get(matched[0]!.registeredByAssignmentId) ?? null;
+    }
+    // Ambiguous or missing registration — do not guess.
+    if (matched.length !== 1) return null;
+  }
+
+  // 3) Strict structural filter: attempt + event-type-appropriate agent.
+  // Require attempt match when the event carries one; require exactly one candidate.
+  const candidates = waiting.filter((a) => {
+    if (attemptId) {
+      if (a.attemptId && a.attemptId !== attemptId) return false;
+      // Prefer bindings that share the attempt; allow null attempt only when
+      // no waiting assignment is attempt-bound (legacy single-assignment runs).
+      if (
+        a.attemptId == null &&
+        waiting.some((w) => w.attemptId === attemptId)
+      ) {
+        return false;
+      }
+    }
+    return assignmentMatchesGitHubEventType(a, event.eventType, role, run);
+  });
+
+  if (candidates.length === 1) return candidates[0]!;
+  return null;
+}
+
+function assignmentMatchesGitHubEventType(
+  assignment: Assignment,
+  eventType: string,
+  role: string | null,
+  run: BugRun,
+): boolean {
+  const objective = assignment.objective.toLowerCase();
+  switch (eventType) {
+    case "github.pr.checks_changed":
+      return (
+        objective.includes("check") ||
+        assignment.targetAgent === "lead" ||
+        assignment.targetAgent === "default"
+      );
+    case "github.pr.merged":
+      if (role === "dev-pr") {
+        return (
+          objective.includes("dev") ||
+          run.phase === "dev-merge" ||
+          assignment.targetAgent === "lead" ||
+          assignment.targetAgent === "default"
+        );
+      }
+      if (role === "main-pr") {
+        return (
+          objective.includes("main") ||
+          run.phase === "main-merge-gate" ||
+          assignment.targetAgent === "lead" ||
+          assignment.targetAgent === "default"
+        );
+      }
+      return (
+        assignment.targetAgent === "lead" || assignment.targetAgent === "default"
+      );
+    case "github.pr.review_decision_changed":
+      return (
+        assignment.targetAgent === "review" ||
+        objective.includes("review")
+      );
+    case "github.pr.head_changed":
+      // Head changes invalidate gates; resume only when the waiter is clearly
+      // bound to review/validation on this PR — never builders/dev-server by default.
+      return (
+        assignment.targetAgent === "review" ||
+        assignment.targetAgent === "reproducer" ||
+        objective.includes("review") ||
+        objective.includes("validat")
+      );
+    case "github.pr.closed":
+    case "github.pr.reopened":
+    case "github.pr.base_changed":
+      return (
+        assignment.targetAgent === "lead" ||
+        assignment.targetAgent === "default" ||
+        assignment.targetAgent === "review"
+      );
+    default:
+      return false;
+  }
 }
 
 /**

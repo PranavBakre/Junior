@@ -575,37 +575,56 @@ export class SqlitePipelineStore implements PipelineStore {
   }
 
   async createRun(run: PipelineRun): Promise<void> {
-    this.db
-      .query(
-        `INSERT INTO pipeline_runs (
-          id, kind, definition_version, channel_id, thread_id,
-          phase, status, owner_agent, repo_refs_json, acceptance_json,
-          artifact_refs_json, blocker_refs_json, active_attempt_id,
-          state_version, deadline_at, terminal_outcome, terminal_reason,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        run.id,
-        run.kind,
-        run.definitionVersion,
-        run.channelId,
-        run.threadId,
-        run.phase,
-        run.status,
-        run.ownerAgent,
-        JSON.stringify(run.repoRefs),
-        JSON.stringify(run.acceptanceCriteria),
-        JSON.stringify(run.artifactRefs),
-        JSON.stringify(run.blockerRefs),
-        run.activeAttemptId,
-        run.stateVersion,
-        run.deadlineAt,
-        run.terminalOutcome,
-        run.terminalReason,
-        run.createdAt,
-        run.updatedAt,
-      );
+    // Enforce at most one non-terminal run per thread (matches memory store).
+    // Single transaction so concurrent product/debug starts cannot both insert.
+    const insert = this.db.transaction(() => {
+      if (run.status !== "terminal") {
+        const existing = this.db
+          .query<{ id: string }, [string]>(
+            `SELECT id FROM pipeline_runs
+             WHERE thread_id = ? AND status != 'terminal'
+             LIMIT 1`,
+          )
+          .get(run.threadId);
+        if (existing) {
+          throw new Error(
+            `active pipeline run already exists for thread ${run.threadId}`,
+          );
+        }
+      }
+      this.db
+        .query(
+          `INSERT INTO pipeline_runs (
+            id, kind, definition_version, channel_id, thread_id,
+            phase, status, owner_agent, repo_refs_json, acceptance_json,
+            artifact_refs_json, blocker_refs_json, active_attempt_id,
+            state_version, deadline_at, terminal_outcome, terminal_reason,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          run.id,
+          run.kind,
+          run.definitionVersion,
+          run.channelId,
+          run.threadId,
+          run.phase,
+          run.status,
+          run.ownerAgent,
+          JSON.stringify(run.repoRefs),
+          JSON.stringify(run.acceptanceCriteria),
+          JSON.stringify(run.artifactRefs),
+          JSON.stringify(run.blockerRefs),
+          run.activeAttemptId,
+          run.stateVersion,
+          run.deadlineAt,
+          run.terminalOutcome,
+          run.terminalReason,
+          run.createdAt,
+          run.updatedAt,
+        );
+    });
+    insert();
   }
 
   async getRun(id: string): Promise<PipelineRun | undefined> {
@@ -616,6 +635,16 @@ export class SqlitePipelineStore implements PipelineStore {
   }
 
   async getRunByThread(threadId: string): Promise<PipelineRun | undefined> {
+    // Prefer the active (non-terminal) controller-owned run when present.
+    const active = this.db
+      .query<RunRow, [string]>(
+        `SELECT * FROM pipeline_runs
+         WHERE thread_id = ? AND status != 'terminal'
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(threadId);
+    if (active) return runFromRow(active);
     const row = this.db
       .query<RunRow, [string]>(
         `SELECT * FROM pipeline_runs
@@ -836,7 +865,7 @@ export class SqlitePipelineStore implements PipelineStore {
         this.insertAssignment(decision.nextAssignment);
       }
 
-      if (decision.outbox) {
+      if (decision.outbox && !input.suppressDispatch) {
         this.insertOutbox(decision.outbox);
       }
     });
@@ -1523,6 +1552,113 @@ export class SqlitePipelineStore implements PipelineStore {
       )
       .all(resourceId)
       .map(pipelineGitHubResourceFromRow);
+  }
+
+  async commitPrRegistration(input: {
+    registration: import("../types.ts").GitHubResourceRegistration;
+    actorId: string;
+    runPhase: string;
+    now: number;
+  }): Promise<{ eventId: string }> {
+    const { registration, actorId, runPhase, now } = input;
+    const idempotencyKey = `pr-reg:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`;
+
+    const prior = this.db
+      .query<{ id: string }, [string]>(
+        "SELECT id FROM pipeline_events WHERE idempotency_key = ?",
+      )
+      .get(idempotencyKey);
+    if (prior) return { eventId: prior.id };
+
+    const eventId = crypto.randomUUID();
+    const tx = this.db.transaction(() => {
+      const maxSeq = this.db
+        .query<{ max_seq: number | null }, [string]>(
+          "SELECT MAX(sequence) AS max_seq FROM pipeline_events WHERE run_id = ?",
+        )
+        .get(registration.runId);
+      const sequence = (maxSeq?.max_seq ?? 0) + 1;
+
+      this.insertEventRow({
+        id: eventId,
+        runId: registration.runId,
+        sequence,
+        eventType: "github.pr.registered",
+        actorType: "agent",
+        actorId,
+        assignmentId: registration.assignmentId,
+        outcomeId: null,
+        fromPhase: runPhase,
+        toPhase: runPhase,
+        payloadVersion: 1,
+        payload: { ...registration },
+        idempotencyKey,
+        occurredAt: now,
+        observedAt: now,
+      });
+
+      let resourceId: string;
+      const existing = this.db
+        .query<{ id: string }, [string, string, number]>(
+          `SELECT id FROM github_resources
+           WHERE owner = ? AND repo = ? AND number = ?`,
+        )
+        .get(registration.owner, registration.repo, registration.number);
+      if (existing) {
+        resourceId = existing.id;
+      } else {
+        resourceId = crypto.randomUUID();
+        this.db
+          .query(
+            `INSERT INTO github_resources (
+              id, kind, owner, repo, number, node_id, snapshot_json,
+              last_polled_at, next_poll_at, poll_class, consecutive_failures,
+              last_error, lease_owner, lease_until, terminal_at,
+              created_at, updated_at
+            ) VALUES (?, 'pull_request', ?, ?, ?, NULL, NULL, NULL, ?, 'warm', 0, NULL, NULL, NULL, NULL, ?, ?)`,
+          )
+          .run(
+            resourceId,
+            registration.owner,
+            registration.repo,
+            registration.number,
+            now,
+            now,
+            now,
+          );
+      }
+
+      const assocId = crypto.randomUUID();
+      this.db
+        .query(
+          `INSERT INTO pipeline_github_resources (
+            id, run_id, resource_id, role, workstream_key, attempt_id,
+            registered_by_assignment_id, expected_head_sha, active,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+          ON CONFLICT(run_id, resource_id, role) DO UPDATE SET
+            workstream_key = excluded.workstream_key,
+            attempt_id = excluded.attempt_id,
+            registered_by_assignment_id = excluded.registered_by_assignment_id,
+            expected_head_sha = excluded.expected_head_sha,
+            active = 1,
+            updated_at = excluded.updated_at`,
+        )
+        .run(
+          assocId,
+          registration.runId,
+          resourceId,
+          registration.role,
+          registration.workstreamKey,
+          registration.attemptId,
+          registration.assignmentId,
+          registration.expectedHeadSha,
+          now,
+          now,
+        );
+    });
+    tx();
+    return { eventId };
   }
 
   async deactivatePipelineGitHubResource(id: string): Promise<void> {

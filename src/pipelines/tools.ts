@@ -54,19 +54,26 @@ function authFromContext(runContext: SlackMcpRunContext): OutcomeAuthContext {
 
 function requireActive(
   runtime: PipelineToolRuntime,
-  allowReadWhenOff = false,
+  opts: { allowReadWhenOff?: boolean; allowShadowRecord?: boolean } = {},
 ): ToolTextResult | null {
   if (runtime.runtimeMode === "off") {
-    if (allowReadWhenOff) return null;
+    if (opts.allowReadWhenOff) return null;
     return textResult(
       { ok: false, reason: "pipeline runtime disabled (PIPELINE_RUNTIME_MODE=off)" },
       true,
     );
   }
-  if (runtime.runtimeMode === "shadow") {
-    // Shadow may record but tools that mutate still work for testing substrate;
-    // dispatch is suppressed by the pump/caller, not here.
-    return null;
+  if (runtime.runtimeMode === "shadow" && !opts.allowShadowRecord) {
+    // Shadow records proposals only through explicitly allowlisted paths;
+    // mutating MCP tools that would enqueue durable dispatch must not run.
+    return textResult(
+      {
+        ok: false,
+        reason:
+          "pipeline runtime is in shadow mode; mutating tools are disabled (set PIPELINE_RUNTIME_MODE=active to dispatch)",
+      },
+      true,
+    );
   }
   return null;
 }
@@ -139,7 +146,8 @@ export async function pipelineReportOutcome(
     idempotency_key?: string;
   },
 ): Promise<ToolTextResult> {
-  const disabled = requireActive(runtime);
+  // Shadow may record outcomes for comparison, but suppress dispatch via deps.
+  const disabled = requireActive(runtime, { allowShadowRecord: true });
   if (disabled) return disabled;
   if (!runContext) {
     return textResult({ ok: false, reason: "MCP run context missing" }, true);
@@ -158,10 +166,12 @@ export async function pipelineReportOutcome(
     );
   }
 
+  const shadow = runtime.runtimeMode === "shadow";
   const receipt = await reportOutcome(
     {
       store: runtime.store,
       githubTrackingEnabled: runtime.githubTrackingEnabled,
+      suppressDispatch: shadow,
     },
     {
       outcome,
@@ -171,11 +181,13 @@ export async function pipelineReportOutcome(
     },
   );
 
+  // Only pump/dispatch when runtime is fully active.
   if (
-    receipt.status === "accepted" ||
-    receipt.status === "waiting" ||
-    receipt.status === "escalated" ||
-    receipt.status === "duplicate"
+    !shadow &&
+    (receipt.status === "accepted" ||
+      receipt.status === "waiting" ||
+      receipt.status === "escalated" ||
+      receipt.status === "duplicate")
   ) {
     await runtime.onOutcomeCommitted?.(receipt);
   }

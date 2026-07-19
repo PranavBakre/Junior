@@ -136,6 +136,94 @@ describe("authenticated handoffs", () => {
     expect(outbox.some((o) => o.eventType === "assignment.dispatch")).toBe(true);
   });
 
+  it("persists loop-policy escalation so the assignment cannot spin", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1000));
+    await seedPmRun(store);
+
+    const first = await requestHandoff(
+      { store },
+      {
+        assignmentId: "asg-pm",
+        expectedRunVersion: 0,
+        targetAgent: "architect",
+        objective: "design",
+        reason: "first handoff",
+        progressFingerprint: "same-fp",
+        idempotencyKey: "loop-1",
+        nextIdempotencyKey: "loop-1:next",
+        auth: auth("pm"),
+      },
+    );
+    expect(first.status).toBe("accepted");
+
+    // Architect completes back... then PM tries the same fingerprint handoff again.
+    // Seed a prior outcome with the loop key fingerprint by recording an outcome
+    // event via a second handoff attempt with identical loop dimensions.
+    // Re-create a pending PM assignment to report from after the first completed.
+    await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-pm-2",
+        runId: "run-1",
+        sourceAgent: "human",
+        targetAgent: "pm",
+        objective: "scope again",
+        idempotencyKey: "asg-pm-2",
+      }),
+    );
+
+    const second = await requestHandoff(
+      { store },
+      {
+        assignmentId: "asg-pm-2",
+        expectedRunVersion: first.runVersion,
+        targetAgent: "architect",
+        objective: "design again",
+        reason: "repeat without evidence",
+        progressFingerprint: "same-fp",
+        evidenceRefs: [],
+        idempotencyKey: "loop-2",
+        nextIdempotencyKey: "loop-2:next",
+        auth: auth("pm"),
+      },
+    );
+
+    expect(second.status).toBe("escalated");
+    const asg = await store.getAssignment("asg-pm-2");
+    expect(asg?.status).toBe("completed");
+    const run = await store.getRun("run-1");
+    expect(run?.status).toBe("needs-human");
+    expect(run?.phase).toBe("needs-human");
+    const outcomes = await store.listOutcomes("asg-pm-2");
+    expect(outcomes.some((o) => o.action === "escalate")).toBe(true);
+  });
+
+  it("rejects system/human spoofing without trustedInternal", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1000));
+    await seedPmRun(store);
+
+    const receipt = await requestHandoff(
+      { store },
+      {
+        assignmentId: "asg-pm",
+        expectedRunVersion: 0,
+        targetAgent: "architect",
+        objective: "spoof",
+        reason: "spoof",
+        progressFingerprint: "spoof-1",
+        idempotencyKey: "spoof-1",
+        nextIdempotencyKey: "spoof-1:next",
+        auth: {
+          agent: "system",
+          channelId: "C1",
+          threadId: "T1",
+          // trustedInternal intentionally omitted
+        },
+      },
+    );
+    expect(receipt.status).toBe("rejected");
+    expect(receipt.reason).toMatch(/not authorized/i);
+  });
+
   it("rejects unauthorized edge with explicit receipt", async () => {
     const store = new InMemoryPipelineStore(fakeClock(1000));
     await seedPmRun(store);
@@ -601,7 +689,7 @@ describe("MCP tool runtime mode=off", () => {
     };
     const result = await pipelineGetState(
       runtime,
-      { agent: "pm", channel: "C1", threadId: "T1" },
+      { agent: "pm", channel: "C1", threadId: "T1", signed: true },
       {},
     );
     const payload = JSON.parse(result.content[0]!.text);
@@ -620,7 +708,7 @@ describe("MCP tool runtime mode=off", () => {
     };
     const result = await pipelineRequestHandoff(
       runtime,
-      { agent: "pm", channel: "C1", threadId: "T1" },
+      { agent: "pm", channel: "C1", threadId: "T1", signed: true },
       {
         assignment_id: "asg-pm",
         expected_run_version: 0,

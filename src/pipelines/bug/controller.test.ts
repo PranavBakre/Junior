@@ -596,6 +596,164 @@ describe("GitHub wake delivery", () => {
     expect(second.wakesEnqueued).toBe(0);
   });
 
+  it("does not wake an unrelated waiting assignment on head_changed", async () => {
+    const clock = fakeClock(1000);
+    const store = new InMemoryPipelineStore(clock);
+    const { run, assignment: leadAsg } = await createBugRun(cfg(store, clock), {
+      channelId: "C",
+      threadId: "T-wrong-wake",
+      objective: "orchestrate",
+      startKind: "debug",
+      messageTs: "7.7",
+    });
+
+    // Lead is waiting on something else (dev-server style objective).
+    await store.recordOutcomeTransaction({
+      outcome: baseOutcome({
+        assignmentId: leadAsg.id,
+        expectedRunVersion: 0,
+        action: "wait",
+        status: "progress",
+        reason: "waiting on devserver",
+        progressFingerprint: "wait-dev",
+        wait: {
+          conditionName: "devserver.ready",
+          deadlineAt: 1000 + 3_600_000,
+        },
+      }),
+      toPhase: "validating",
+      actorType: "agent",
+      actorId: "lead",
+      idempotencyKey: "wait-dev-1",
+    });
+
+    // A second waiting builder that must NOT receive a head_changed wake.
+    await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-builder-wait",
+        runId: run.id,
+        sourceAgent: "lead",
+        targetAgent: "build",
+        objective: "implement fix",
+        status: "waiting",
+        attemptId: "att-1",
+        idempotencyKey: "asg-builder-wait",
+      }),
+    );
+
+    await store.appendEvent({
+      id: "gh-head-1",
+      runId: run.id,
+      eventType: "github.pr.head_changed",
+      actorType: "system",
+      actorId: "github-reconciler",
+      assignmentId: null,
+      outcomeId: null,
+      fromPhase: null,
+      toPhase: null,
+      payloadVersion: 1,
+      payload: {
+        resourceId: "res-x",
+        role: "candidate",
+        workstreamKey: "backend",
+        attemptId: "att-1",
+        fingerprint: "fp-head-1",
+        shadow: true,
+        next: { headRefOid: "deadbeef" },
+        previous: { headRefOid: "cafebabe" },
+      },
+      idempotencyKey: "fp-head-1",
+      occurredAt: 2000,
+      observedAt: 2000,
+    });
+
+    const result = await reduceGitHubEventsForWakes(cfg(store, clock), {
+      runId: run.id,
+    });
+    // No exact match (no registered assignment / no review waiter) → no wake.
+    expect(result.wakesEnqueued).toBe(0);
+    const wakes = (await store.listOutbox(run.id)).filter(
+      (o) => o.eventType === "assignment.resume",
+    );
+    expect(wakes).toHaveLength(0);
+  });
+
+  it("wakes only the assignment pinned on the GitHub event", async () => {
+    const clock = fakeClock(1000);
+    const store = new InMemoryPipelineStore(clock);
+    const { run, assignment: leadAsg } = await createBugRun(cfg(store, clock), {
+      channelId: "C",
+      threadId: "T-pin-wake",
+      objective: "orchestrate",
+      startKind: "debug",
+      messageTs: "8.8",
+    });
+
+    await store.recordOutcomeTransaction({
+      outcome: baseOutcome({
+        assignmentId: leadAsg.id,
+        expectedRunVersion: 0,
+        action: "wait",
+        status: "progress",
+        reason: "waiting",
+        progressFingerprint: "wait-lead",
+        wait: {
+          conditionName: "github.checks",
+          deadlineAt: 1000 + 3_600_000,
+        },
+      }),
+      toPhase: "checks",
+      actorType: "agent",
+      actorId: "lead",
+      idempotencyKey: "wait-lead-pin",
+    });
+
+    const reviewAsg = await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-review-wait",
+        runId: run.id,
+        sourceAgent: "lead",
+        targetAgent: "review",
+        objective: "review PR",
+        status: "waiting",
+        attemptId: "att-1",
+        idempotencyKey: "asg-review-wait",
+      }),
+    );
+
+    await store.appendEvent({
+      id: "gh-pin-1",
+      runId: run.id,
+      eventType: "github.pr.review_decision_changed",
+      actorType: "system",
+      actorId: "github-reconciler",
+      assignmentId: reviewAsg.id,
+      outcomeId: null,
+      fromPhase: null,
+      toPhase: null,
+      payloadVersion: 1,
+      payload: {
+        resourceId: "res-pin",
+        role: "review-target",
+        fingerprint: "fp-pin",
+        shadow: true,
+      },
+      idempotencyKey: "fp-pin",
+      occurredAt: 2000,
+      observedAt: 2000,
+    });
+
+    const result = await reduceGitHubEventsForWakes(cfg(store, clock), {
+      runId: run.id,
+    });
+    expect(result.wakesEnqueued).toBe(1);
+    const wakes = (await store.listOutbox(run.id)).filter(
+      (o) => o.eventType === "assignment.resume",
+    );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]!.assignmentId).toBe(reviewAsg.id);
+  });
+
   it("mode=off / wake disabled delivers zero wakes", async () => {
     const clock = fakeClock(1000);
     const store = new InMemoryPipelineStore(clock);

@@ -428,20 +428,19 @@ export class SqliteSessionStore implements SessionStore {
       );
     }
 
-    const keep = agents.map((a) => a.agentName);
-    if (keep.length === 0) {
-      this.db
-        .query("DELETE FROM agent_sessions WHERE thread_id = ?")
-        .run(threadId);
-    } else {
-      const placeholders = keep.map(() => "?").join(", ");
-      this.db
-        .query(
-          `DELETE FROM agent_sessions
-           WHERE thread_id = ? AND agent_name NOT IN (${placeholders})`,
-        )
-        .run(threadId, ...keep);
-    }
+    // Intentionally do NOT delete agent rows missing from this snapshot.
+    // Concurrent mutators can each UPSERT a different agent; a stale map that
+    // lacked a peer agent would wipe it via NOT IN. Explicit removals go
+    // through delete() / removeAgentSession.
+  }
+
+  /** Explicit agent removal (reset paths). Safe: named delete only. */
+  removeAgentSession(threadId: string, agentName: string): void {
+    this.db
+      .query(
+        "DELETE FROM agent_sessions WHERE thread_id = ? AND agent_name = ?",
+      )
+      .run(threadId, agentName);
   }
 
   private readStateVersion(threadId: string): number | null {
