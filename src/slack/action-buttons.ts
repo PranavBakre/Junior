@@ -7,6 +7,11 @@ import type { WorktreeManager, WorktreeStatus } from "../worktree/manager.ts";
 import { log } from "../logger.ts";
 import { resolvePendingApproval } from "../mcp/approval.ts";
 import type { SlackActionRecord, SlackActionStore } from "./action-store.ts";
+import {
+  formatResourceAnchorForPrompt,
+  isCompleteResourceAnchor,
+  MUTATING_PR_ACTION_IDS,
+} from "./formatting.ts";
 
 export const ACTION_BUTTON_ID = "junior_agent_action";
 export const ACTION_BUTTON_ID_PATTERN = new RegExp(`^${ACTION_BUTTON_ID}(?::\\d+)?$`);
@@ -93,12 +98,27 @@ async function handleDispatch(
     throw new Error(`unknown agent: ${targetAgent}`);
   }
 
+  // Mutating PR actions must revalidate a stored exact resource anchor at click
+  // time. Never ask an agent to infer the PR from conversational recency.
+  if (MUTATING_PR_ACTION_IDS.has(action.id)) {
+    if (!isCompleteResourceAnchor(action.resourceAnchor)) {
+      throw new Error(
+        "merge action is no longer available: missing exact PR resource anchor",
+      );
+    }
+  }
+
+  let prompt = action.prompt;
+  if (action.resourceAnchor && isCompleteResourceAnchor(action.resourceAnchor)) {
+    prompt = `${action.prompt}\n\n${formatResourceAnchorForPrompt(action.resourceAnchor)}`;
+  }
+
   await sessionManager.handleAgentMessage(
     {
       threadId: record.threadTs,
       channel: record.channelId,
       user: userId,
-      text: action.prompt,
+      text: prompt,
       ts: `${record.messageTs}:button:${record.actionId}`,
       command: null,
       dedupeKey: `button:${record.token}`,

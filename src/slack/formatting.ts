@@ -60,6 +60,28 @@ const ACTIONS_END_ESCAPED = "&lt;/junior-actions&gt;";
 
 export type SlackActionButtonStyle = "primary" | "danger";
 
+/**
+ * Versioned structured target for mutating PR actions (merge, etc.).
+ * Agents should include this when emitting merge buttons. Generic merge
+ * prompts without an exact anchor are dropped so multi-PR threads cannot
+ * pick the wrong PR from conversational recency.
+ */
+export type SlackResourceAnchor = {
+  version: 1;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  expectedBase: string;
+  runId?: string;
+  expectedRunVersion?: number;
+  reviewVerdictId?: string;
+};
+
+/** Action ids that mutate a PR and require a stored resource anchor. */
+export const MUTATING_PR_ACTION_IDS = new Set([
+  "review:merge-gxt-admin",
+]);
+
 export type SlackActionButtonSpec =
   | {
       id: string;
@@ -68,6 +90,7 @@ export type SlackActionButtonSpec =
       type: "dispatch_agent";
       agent: string;
       prompt: string;
+      resourceAnchor?: SlackResourceAnchor;
     }
   | {
       id: string;
@@ -168,7 +191,9 @@ export function prepareSlackResponseWithActions(
 
   return {
     text: visibleText,
-    actions: parseActionButtonSpecs(extracted.jsonText),
+    actions: parseActionButtonSpecs(extracted.jsonText, {
+      responseText: visibleText,
+    }),
   };
 }
 
@@ -214,7 +239,10 @@ function findActionMarkers(
   };
 }
 
-export function parseActionButtonSpecs(jsonText: string): SlackActionButtonSpec[] {
+export function parseActionButtonSpecs(
+  jsonText: string,
+  options: { responseText?: string } = {},
+): SlackActionButtonSpec[] {
   if (!jsonText) return [];
   let parsed: unknown;
   try {
@@ -224,16 +252,89 @@ export function parseActionButtonSpecs(jsonText: string): SlackActionButtonSpec[
   }
   if (!Array.isArray(parsed)) return [];
 
+  const proseCandidates = options.responseText
+    ? parseResourceAnchorCandidatesFromProse(options.responseText)
+    : [];
+
   const actions: SlackActionButtonSpec[] = [];
   for (const candidate of parsed) {
-    const action = normalizeActionButtonSpec(candidate);
+    const action = normalizeActionButtonSpec(candidate, proseCandidates);
     if (action) actions.push(action);
     if (actions.length >= 5) break;
   }
   return actions;
 }
 
-function normalizeActionButtonSpec(value: unknown): SlackActionButtonSpec | null {
+/**
+ * Best-effort prose extraction of PR targets. Used only as a candidate when the
+ * action JSON lacks a full anchor; revalidated before storage and never used as
+ * sole authority for multi-PR ambiguity.
+ */
+export function parseResourceAnchorCandidatesFromProse(
+  text: string,
+): SlackResourceAnchor[] {
+  const anchors: SlackResourceAnchor[] = [];
+  const seen = new Set<string>();
+  const prUrl =
+    /https?:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = prUrl.exec(text)) !== null) {
+    const repo = match[1];
+    const prNumber = Number(match[2]);
+    const key = `${repo}#${prNumber}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // Prose cannot supply headSha/base — partial candidates are not stored as
+    // complete anchors. Returned only so callers can detect multi-PR ambiguity.
+    anchors.push({
+      version: 1,
+      repo,
+      prNumber,
+      headSha: "",
+      expectedBase: "",
+    });
+  }
+  return anchors;
+}
+
+export function isCompleteResourceAnchor(
+  anchor: SlackResourceAnchor | undefined | null,
+): anchor is SlackResourceAnchor {
+  if (!anchor || anchor.version !== 1) return false;
+  if (!anchor.repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(anchor.repo)) {
+    return false;
+  }
+  if (!Number.isInteger(anchor.prNumber) || anchor.prNumber <= 0) return false;
+  if (!/^[0-9a-f]{7,40}$/i.test(anchor.headSha)) return false;
+  if (!anchor.expectedBase || anchor.expectedBase.length > 200) return false;
+  return true;
+}
+
+export function formatResourceAnchorForPrompt(anchor: SlackResourceAnchor): string {
+  const lines = [
+    "Exact PR target (do not infer a different PR from thread recency):",
+    `- repo: ${anchor.repo}`,
+    `- prNumber: ${anchor.prNumber}`,
+    `- headSha: ${anchor.headSha}`,
+    `- expectedBase: ${anchor.expectedBase}`,
+  ];
+  if (anchor.runId) lines.push(`- runId: ${anchor.runId}`);
+  if (anchor.expectedRunVersion != null) {
+    lines.push(`- expectedRunVersion: ${anchor.expectedRunVersion}`);
+  }
+  if (anchor.reviewVerdictId) {
+    lines.push(`- reviewVerdictId: ${anchor.reviewVerdictId}`);
+  }
+  lines.push(
+    "Revalidate that the PR head still matches headSha and the base is expectedBase before any merge. Stop if they do not match.",
+  );
+  return lines.join("\n");
+}
+
+function normalizeActionButtonSpec(
+  value: unknown,
+  proseCandidates: SlackResourceAnchor[] = [],
+): SlackActionButtonSpec | null {
   if (!isRecord(value)) return null;
   const id = normalizeActionString(value.id, 80);
   const label = normalizeActionString(value.label, 30);
@@ -245,6 +346,29 @@ function normalizeActionButtonSpec(value: unknown): SlackActionButtonSpec | null
     const agent = normalizeActionString(value.agent, 80);
     const prompt = normalizeActionString(value.prompt, 2_000);
     if (!agent || !prompt) return null;
+    const resourceAnchor = normalizeResourceAnchor(value.resourceAnchor);
+
+    // Mutating PR actions require an exact stored anchor. Do not render a
+    // generic merge button when the agent omitted it, or when prose shows
+    // multiple PRs and the JSON did not pin one.
+    if (MUTATING_PR_ACTION_IDS.has(id)) {
+      if (!isCompleteResourceAnchor(resourceAnchor)) {
+        // Single complete prose candidate is still not enough without head/base;
+        // only accept a complete structured anchor.
+        return null;
+      }
+      if (
+        proseCandidates.length > 1 &&
+        !proseCandidates.some(
+          (c) =>
+            c.repo === resourceAnchor.repo && c.prNumber === resourceAnchor.prNumber,
+        )
+      ) {
+        // Anchor does not match any PR mentioned in the response — refuse.
+        return null;
+      }
+    }
+
     return {
       id,
       label,
@@ -252,6 +376,9 @@ function normalizeActionButtonSpec(value: unknown): SlackActionButtonSpec | null
       type,
       agent,
       prompt,
+      ...(resourceAnchor && isCompleteResourceAnchor(resourceAnchor)
+        ? { resourceAnchor }
+        : {}),
     };
   }
 
@@ -265,6 +392,44 @@ function normalizeActionButtonSpec(value: unknown): SlackActionButtonSpec | null
   }
 
   return null;
+}
+
+function normalizeResourceAnchor(value: unknown): SlackResourceAnchor | null {
+  if (!isRecord(value)) return null;
+  const version = value.version === 1 || value.version === "1" ? 1 : null;
+  if (version !== 1) return null;
+  const repo = normalizeActionString(value.repo, 200);
+  const expectedBase = normalizeActionString(value.expectedBase, 200);
+  const headSha = normalizeActionString(value.headSha, 40);
+  const prNumber =
+    typeof value.prNumber === "number"
+      ? value.prNumber
+      : typeof value.prNumber === "string" && /^\d+$/.test(value.prNumber.trim())
+        ? Number(value.prNumber.trim())
+        : null;
+  if (!repo || !expectedBase || !headSha || prNumber == null) return null;
+
+  const anchor: SlackResourceAnchor = {
+    version: 1,
+    repo,
+    prNumber,
+    headSha,
+    expectedBase,
+  };
+
+  const runId = normalizeActionString(value.runId, 120);
+  if (runId) anchor.runId = runId;
+  if (
+    typeof value.expectedRunVersion === "number" &&
+    Number.isInteger(value.expectedRunVersion) &&
+    value.expectedRunVersion >= 0
+  ) {
+    anchor.expectedRunVersion = value.expectedRunVersion;
+  }
+  const reviewVerdictId = normalizeActionString(value.reviewVerdictId, 120);
+  if (reviewVerdictId) anchor.reviewVerdictId = reviewVerdictId;
+
+  return isCompleteResourceAnchor(anchor) ? anchor : null;
 }
 
 function normalizeActionString(value: unknown, maxLength: number): string | null {
