@@ -31,6 +31,26 @@ export interface RunnerEventDone {
   type: "done";
   provider: RunnerProvider;
   usage?: Record<string, unknown>;
+  completion?: RunnerCompletion;
+}
+
+export type RunnerCompletionStatus = "success" | "incomplete" | "failure";
+
+export type RunnerCompletionReason =
+  | "completed"
+  | "max_turns"
+  | "missing_result"
+  | "provider_error"
+  | "process_error"
+  | "timeout";
+
+/** Provider-neutral terminal semantics. Process exit code alone is not completion. */
+export interface RunnerCompletion {
+  status: RunnerCompletionStatus;
+  reason: RunnerCompletionReason;
+  retryable: boolean;
+  providerSubtype?: string;
+  turns?: number;
 }
 
 export type RunnerEvent =
@@ -46,6 +66,7 @@ export interface SpawnResult {
   events: RunnerEvent[];
   exitCode: number | null;
   error: string | null;
+  completion?: RunnerCompletion;
 }
 
 export type RunnerKillSignal = "SIGINT" | "SIGTERM" | "SIGKILL";
