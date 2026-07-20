@@ -6,12 +6,20 @@ import { SqliteSessionStore } from "../session/store/sqlite.ts";
 export async function cleanupStaleSessions(
   store: SessionStore,
   staleTimeoutMs: number,
+  isPipelineRunActive?: (runId: string) => Promise<boolean>,
 ): Promise<string[]> {
   const sessions = await store.getAll();
   const cleaned: string[] = [];
 
   for (const [threadId, session] of sessions) {
     if (Date.now() - session.lastActivity > staleTimeoutMs) {
+      // A pipeline run owns durable work beyond any individual model turn.
+      // Preserve its session row so startup reconciliation can resume it.
+      if (
+        session.activePipelineRunId &&
+        (!isPipelineRunActive ||
+          await isPipelineRunActive(session.activePipelineRunId))
+      ) continue;
       if (session.status === "busy" || session.status === "draining") {
         continue;
       }

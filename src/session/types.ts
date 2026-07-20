@@ -4,6 +4,16 @@ export interface PendingMessage {
   ts: string;
   command?: string;
   dedupeKey?: string;
+  pipelineInvocation?: PipelineInvocationRef;
+}
+
+/** Trusted control-plane identity attached by the outbox pump, never by a model. */
+export interface PipelineInvocationRef {
+  runId: string;
+  assignmentId: string;
+  dispatchKey: string;
+  outcomeCountAtDispatch: number;
+  retryCount: number;
 }
 
 export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";
@@ -64,6 +74,7 @@ export interface AgentSession {
   tmuxSessionName?: string | null;
   /** Compare-and-set version for concurrent agent-row updates. Missing → 0. */
   stateVersion?: number;
+  activePipelineInvocation?: PipelineInvocationRef | null;
 }
 
 export interface AgentIdentity {
@@ -183,6 +194,8 @@ export interface ThreadSession {
    */
   activePipelineRunId?: string | null;
   activePipelineKind?: "product" | "bug" | null;
+  /** Exact assignment dispatch currently owned by the top-level runner. */
+  activePipelineInvocation?: PipelineInvocationRef | null;
   /** Authoritative Slack source turn for the active top-level invocation. */
   activeTopLevelMessageTs?: string | null;
   /**

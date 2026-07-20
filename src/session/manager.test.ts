@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import type {
+  RunnerCompletion,
   RunnerEvent,
   SpawnHandle,
   SpawnResult,
@@ -12,11 +13,22 @@ import type { App } from "@slack/bolt";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { InMemoryPipelineStore } from "../pipelines/store/memory.ts";
+import {
+  makeAssignmentCreate,
+  makeProductRun,
+} from "../pipelines/store/test-helpers.ts";
+import { fakeClock } from "../time/clock.ts";
 
 // --- Mock setup ---
 
 interface MockHandle extends SpawnHandle {
-  _complete: (response?: string, sessionId?: string, events?: RunnerEvent[]) => void;
+  _complete: (
+    response?: string,
+    sessionId?: string,
+    events?: RunnerEvent[],
+    completion?: RunnerCompletion,
+  ) => void;
   _error: (errorMsg: string) => void;
 }
 
@@ -36,7 +48,12 @@ function createMockHandle(
     onEvent: (cb) => listeners.push(cb),
     kill: mock(() => {}),
     pid: 12345,
-    _complete: (resp?: string, sid?: string, resultEvents?: RunnerEvent[]) => {
+    _complete: (
+      resp?: string,
+      sid?: string,
+      resultEvents?: RunnerEvent[],
+      completion?: RunnerCompletion,
+    ) => {
       const finalResponse = resp ?? response;
       const finalSessionId = sid ?? sessionId;
       for (const l of listeners)
@@ -50,10 +67,13 @@ function createMockHandle(
       resolveResult({
         provider: "claude",
         sessionId: finalSessionId,
-        response: finalResponse,
+        response: completion && completion.status !== "success" ? "" : finalResponse,
         events: resultEvents ?? [],
         exitCode: 0,
-        error: null,
+        error: completion && completion.status !== "success"
+          ? "Claude reached the turn limit"
+          : null,
+        completion,
       });
     },
     _error: (errorMsg: string) => {
@@ -2161,5 +2181,146 @@ describe("SessionManager", () => {
       expect(after.dormant).toBe(false);
       expect(after.humanParticipants).toEqual(["U-A"]);
     });
+  });
+});
+
+describe("typed pipeline settlement", () => {
+  it("quietly resumes a max-turn Claude session and trusts its later durable outcome", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-settlement",
+      targetAgent: "build",
+      idempotencyKey: "asg-settlement-key",
+    }));
+    const handles: MockHandle[] = [];
+    const prompts: string[] = [];
+    const localSpawn: SpawnRunnerFn = (_session, prompt) => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      prompts.push(prompt);
+      return handle;
+    };
+    const manager = new SessionManager(sessionStore, testConfig, localSpawn);
+    manager.pipelineStore = pipelineStore;
+    const errors = mock((_session, _error) => undefined);
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "implement the assignment",
+      dedupeKey: "pipeline-outbox:dispatch-settlement",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-settlement",
+        dispatchKey: "dispatch-settlement",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    const first = handles[0]!;
+    first._complete("about to report", "claude-settlement", [], {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+      providerSubtype: "error_max_turns",
+      turns: 25,
+    });
+
+    await waitFor(() => handles.length === 2);
+    expect(prompts[1]).toContain("pipeline_report_outcome");
+    expect(errors).not.toHaveBeenCalled();
+    const storedDuringRetry = await sessionStore.get("thread-1");
+    expect(
+      storedDuringRetry?.agentSessions.build?.activePipelineInvocation?.retryCount,
+    ).toBe(1);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    const receipt = await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-settlement",
+        expectedRunVersion: run.stateVersion,
+        action: "escalate",
+        status: "blocked",
+        reason: "waiting for a human-only credential",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [{ kind: "missing_authority", detail: "credential required" }],
+        checks: [],
+        progressFingerprint: "settled-after-resume",
+      },
+      toPhase: "needs-human",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "settled-after-resume",
+    });
+    expect(receipt.status).not.toBe("rejected");
+
+    const second = handles[1]!;
+    second._complete("", "claude-settlement", [], {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+      providerSubtype: "error_max_turns",
+      turns: 25,
+    });
+    await waitFor(async () =>
+      (await sessionStore.get("thread-1"))?.agentSessions.build?.status === "done"
+    );
+    expect(errors).not.toHaveBeenCalled();
+    expect(
+      (await sessionStore.get("thread-1"))?.agentSessions.build
+        ?.activePipelineInvocation,
+    ).toBeNull();
+  });
+
+  it("posts one failure only after the bounded recovery budget is exhausted", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-exhausted",
+      targetAgent: "build",
+      idempotencyKey: "asg-exhausted-key",
+    }));
+    const handles: MockHandle[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    const errors = mock((_session, _error) => undefined);
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "implement the assignment",
+      dedupeKey: "pipeline-outbox:dispatch-exhausted",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-exhausted",
+        dispatchKey: "dispatch-exhausted",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+
+    for (let index = 0; index < 3; index++) {
+      await waitFor(() => handles.length === index + 1);
+      handles[index]!._complete("", "claude-exhausted", [], {
+        status: "incomplete",
+        reason: "max_turns",
+        retryable: true,
+        providerSubtype: "error_max_turns",
+        turns: 25,
+      });
+      if (index < 2) expect(errors).not.toHaveBeenCalled();
+    }
+
+    await waitFor(() => errors.mock.calls.length === 1);
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(await pipelineStore.listOutcomes("asg-exhausted")).toHaveLength(1);
+    expect((await pipelineStore.getRun("run-1"))?.status).toBe("needs-human");
   });
 });

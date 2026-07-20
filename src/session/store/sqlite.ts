@@ -370,6 +370,9 @@ export class SqliteSessionStore implements SessionStore {
         pid: row.pid ?? existing?.pid ?? null,
         stateVersion: row.state_version ?? existing?.stateVersion ?? 0,
       };
+      if (existing?.activePipelineInvocation !== undefined) {
+        agent.activePipelineInvocation = existing.activePipelineInvocation;
+      }
       // Keep tmuxSessionName optional when never set (matches AgentSession shape
       // and round-trip equality for pre-tmux rows).
       const tmuxSessionName =

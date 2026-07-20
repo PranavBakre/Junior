@@ -1,5 +1,6 @@
 import type { App } from "@slack/bolt";
 import type { SessionStore } from "../session/store/interface.ts";
+import type { PipelineInvocationRef } from "../session/types.ts";
 import { parseCommand } from "./commands.ts";
 import { isPersistentAgent } from "../support/agents.ts";
 import { log } from "../logger.ts";
@@ -65,6 +66,8 @@ export interface SlackMessageEvent {
   /** True when raw Slack text contained `<@selfUserId>` before mention stripping. */
   mentionsJunior?: boolean;
   dedupeKey?: string;
+  /** Internal-only trusted assignment correlation from the pipeline outbox. */
+  pipelineInvocation?: PipelineInvocationRef;
 }
 
 export type OnMessageCallback = (event: SlackMessageEvent) => void;

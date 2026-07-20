@@ -8,6 +8,17 @@ import { SqliteSessionStore } from "../session/store/sqlite.ts";
 import { createSession } from "../session/types.ts";
 
 describe("cleanupStaleSessions", () => {
+  it("keeps stale idle sessions that still own a pipeline run", async () => {
+    const store = new InMemorySessionStore();
+    const session = createSession("pipeline-thread", "C1");
+    session.lastActivity = Date.now() - 100_000;
+    session.activePipelineRunId = "run-active";
+    await store.set(session.threadId, session);
+
+    expect(await cleanupStaleSessions(store, 50_000)).toEqual([]);
+    expect(await store.get(session.threadId)).toBeDefined();
+  });
+
   function makeStore() {
     return new InMemorySessionStore();
   }

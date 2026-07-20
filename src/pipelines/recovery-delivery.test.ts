@@ -46,10 +46,12 @@ describe("outbox at-least-once delivery", () => {
     );
 
     const seenDedupeKeys: string[] = [];
+    const invocations: SlackMessageEvent["pipelineInvocation"][] = [];
     const dispatcher = {
       handleAgentMessage: mock(
         async (event: SlackMessageEvent, _agent: string) => {
           if (event.dedupeKey) seenDedupeKeys.push(event.dedupeKey);
+          invocations.push(event.pipelineInvocation);
         },
       ),
     };
@@ -109,5 +111,11 @@ describe("outbox at-least-once delivery", () => {
 
     // Consumer-facing dedupe keys stay deterministic for the original delivery.
     expect(key.startsWith("pipeline-outbox:")).toBe(true);
+    expect(invocations[0]).toMatchObject({
+      runId: "run-1",
+      assignmentId: delivered[0]!.assignmentId,
+      dispatchKey: delivered[0]!.idempotencyKey,
+      outcomeCountAtDispatch: 0,
+    });
   });
 });
