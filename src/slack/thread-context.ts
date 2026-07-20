@@ -55,12 +55,17 @@ export async function resolveUserName(
           profile?: { display_name?: string; real_name?: string };
         }
       | undefined;
-    const name =
+    // Display names are user-controlled and get interpolated into author
+    // labels (`User(${name} <@ID>)`) AFTER the message-body sanitizer has
+    // already run — escape here, at the source, so every call site (mention
+    // resolution, thread history, drain `from` attributes) is covered.
+    const name = escapeBlockDelimiters(
       user?.profile?.display_name ||
-      user?.profile?.real_name ||
-      user?.real_name ||
-      user?.name ||
-      userId;
+        user?.profile?.real_name ||
+        user?.real_name ||
+        user?.name ||
+        userId,
+    );
     userNameCache.set(userId, name);
     return name;
   } catch {
