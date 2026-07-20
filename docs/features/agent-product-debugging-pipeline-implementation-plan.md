@@ -832,6 +832,35 @@ Rollback:
 - version action payloads so old buttons fail closed with “action no longer available”;
 - keep review-triggered cleanup disabled under every rollback.
 
+## Pipeline settlement incident: Claude max-turn exit
+
+The July 20 failure in Slack thread `1784535599.540009` was not 25 separate
+errors. Claude used all 25 configured agentic turns and emitted
+`result.subtype=error_max_turns` with process exit code 0 immediately after
+discovering the PR-registration and outcome tools. Junior discarded the result
+subtype, treated exit 0 as success, posted the last intention sentence, and
+marked the builder settled even though the exact assignment had no typed
+outcome. The delivered outbox row therefore had no settlement acknowledgement
+and no restart path.
+
+The required invariant is now: a pipeline invocation is settled only when its
+exact assignment gains a new durable typed outcome after that dispatch (or the
+run/assignment becomes terminal). Each dispatch carries a trusted run id,
+assignment id, dispatch key, and outcome-count baseline. A missing outcome
+quietly resumes the same provider session up to two times; a committed outcome
+wins even if the provider reaches its turn cap immediately afterward. Exhaustion
+records one idempotent `needs-human` escalation and posts one concise Slack
+failure. Startup and periodic reconciliation re-wake delivered assignments whose
+runners disappeared, using the same bounded budget. Long pipelines remain
+unbounded across typed `continue_self` and handoff assignments; the bound is per
+assignment invocation, preventing runaway recovery chatter.
+
+Product starts also carry an optional explicit `required_workstreams` list.
+Repository identity is the fallback before objective keywords, so a frontend
+repository does not become a full-stack build merely because the request says
+the backend already supports the feature. Explicit two-stream starts create and
+dispatch both backend and frontend assignments idempotently.
+
 ## Audit-to-phase coverage
 
 | Audit finding | Owning phase(s) | Proof of completion |
