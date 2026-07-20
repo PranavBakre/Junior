@@ -432,7 +432,14 @@ export class SessionManager {
       return;
     }
 
-    this.runRunnerWithAgent(session, event.text, event.ts, event.files, agentName);
+    this.runRunnerWithAgent(
+      session,
+      event.text,
+      event.ts,
+      event.files,
+      agentName,
+      event.user,
+    );
   }
 
   // Generic single-session path for "default" (any-channel @mentions) and the
@@ -486,7 +493,14 @@ export class SessionManager {
       return;
     }
 
-    this.runRunnerWithAgent(session, event.text, event.ts, event.files, agentName);
+    this.runRunnerWithAgent(
+      session,
+      event.text,
+      event.ts,
+      event.files,
+      agentName,
+      event.user,
+    );
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -1200,6 +1214,7 @@ export class SessionManager {
     latestTs: string | undefined,
     files: SlackFileAttachment[] | undefined,
     agentName: string,
+    senderUserId?: string,
   ): Promise<void> {
     const isTopLevel = agentName === "lead" || agentName === "default";
     try {
@@ -1301,61 +1316,74 @@ export class SessionManager {
       // rule), and only if the agent wants the workspace context at all.
       // OpenCode may store a sessionId while continuity is disabled; treat that
       // as a fresh turn so thread/assignment/memory context is still injected.
-      if (this.slackApp && latestTs) {
-        const provider = sessionProvider(runSession, this.config);
-        const resumes = willResume({
-          provider,
-          sessionId: runSession.sessionId,
-          opencodeContinuityEnabled: this.config.opencode.continuityEnabled,
-        });
-        const isFirstTurn = !resumes;
-        const needsThreadCatchup = !!session.needsThreadCatchup;
+      if (this.slackApp) {
+        // Attribute the current message to its sender BEFORE mention resolution
+        // so it renders as `User(Name <@ID>): text` — the same format thread
+        // history uses. Without the label the model has no signal about who is
+        // speaking and fills the gap from its persona/memory defaults.
+        const attributed = senderUserId
+          ? `<@${senderUserId}>: ${prompt}`
+          : prompt;
         const readablePrompt = await resolveSlackMentions(
           this.slackApp,
-          prompt,
+          attributed,
           this.botUserId,
         );
-        if (isFirstTurn || needsThreadCatchup) {
-          const preambleProfile: AgentContextProfile = needsThreadCatchup
-            ? {
-                ...contextProfile,
-                identity: false,
-                slack: true,
-                threadHistory: true,
-                threadHistoryLimit: Math.max(
-                  contextProfile.threadHistoryLimit,
-                  1000,
-                ),
-              }
-            : contextProfile;
-          const preamble = await buildPromptPreamble(
-            this.slackApp,
-            session.channel,
-            session.threadId,
-            latestTs,
-            this.botUserId,
-            workspace,
-            worktreePaths,
-            this.config.repos,
-            preambleProfile,
-          );
-          prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
-          if (needsThreadCatchup) {
-            session.needsThreadCatchup = false;
-            await this.store.set(session.threadId, session);
-          }
-        } else if (contextProfile.workspace) {
-          const workspaceBlock = buildWorkspaceBlock(
-            workspace,
-            worktreePaths,
-            this.config.repos,
-            session.threadId,
-          );
-          prompt = workspaceBlock
-            ? `${workspaceBlock}\n\n${readablePrompt}`
-            : readablePrompt;
-        } else {
+        if (!latestTs) {
+          // Drain / internal continuation turns: no preamble decision to make,
+          // but buffered messages still carry `<@ID>:` prefixes to resolve.
           prompt = readablePrompt;
+        } else {
+          const provider = sessionProvider(runSession, this.config);
+          const resumes = willResume({
+            provider,
+            sessionId: runSession.sessionId,
+            opencodeContinuityEnabled: this.config.opencode.continuityEnabled,
+          });
+          const isFirstTurn = !resumes;
+          const needsThreadCatchup = !!session.needsThreadCatchup;
+          if (isFirstTurn || needsThreadCatchup) {
+            const preambleProfile: AgentContextProfile = needsThreadCatchup
+              ? {
+                  ...contextProfile,
+                  identity: false,
+                  slack: true,
+                  threadHistory: true,
+                  threadHistoryLimit: Math.max(
+                    contextProfile.threadHistoryLimit,
+                    1000,
+                  ),
+                }
+              : contextProfile;
+            const preamble = await buildPromptPreamble(
+              this.slackApp,
+              session.channel,
+              session.threadId,
+              latestTs,
+              this.botUserId,
+              workspace,
+              worktreePaths,
+              this.config.repos,
+              preambleProfile,
+            );
+            prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
+            if (needsThreadCatchup) {
+              session.needsThreadCatchup = false;
+              await this.store.set(session.threadId, session);
+            }
+          } else if (contextProfile.workspace) {
+            const workspaceBlock = buildWorkspaceBlock(
+              workspace,
+              worktreePaths,
+              this.config.repos,
+              session.threadId,
+            );
+            prompt = workspaceBlock
+              ? `${workspaceBlock}\n\n${readablePrompt}`
+              : readablePrompt;
+          } else {
+            prompt = readablePrompt;
+          }
         }
       }
 
@@ -1910,7 +1938,7 @@ export class SessionManager {
               s.activeTopLevelMessageTs ??
               null;
             settle.drainPrompt = pendingMessages
-              .map((m) => `[${m.user}]: ${m.text}`)
+              .map((m) => `<@${m.user}>: ${m.text}`)
               .join("\n");
             s.pendingMessages = [];
             s.status = "draining";
@@ -1941,7 +1969,7 @@ export class SessionManager {
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
             settle.drainPrompt = pendingMessages
-              .map((m) => `[${m.user}]: ${m.text}`)
+              .map((m) => `<@${m.user}>: ${m.text}`)
               .join("\n");
             agentSession.pendingMessages = [];
             agentSession.status = "busy";

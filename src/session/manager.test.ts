@@ -561,7 +561,7 @@ describe("SessionManager", () => {
 
     expect(mockSpawnFn).toHaveBeenCalledTimes(1);
     const drainPrompt = mockSpawnFn.mock.calls[0][1] as string;
-    expect(drainPrompt).toContain("[U123]: second echo");
+    expect(drainPrompt).toContain("<@U123>: second echo");
 
     drainHandle._complete("second response", "echo-session-1");
     await new Promise((r) => setTimeout(r, 10));
@@ -880,7 +880,7 @@ describe("SessionManager", () => {
     // spawnClaude should have been called again for the buffered message
     expect(mockSpawnFn).toHaveBeenCalledTimes(1);
     const drainPrompt = mockSpawnFn.mock.calls[0][1] as string;
-    expect(drainPrompt).toContain("[U456]: Second");
+    expect(drainPrompt).toContain("<@U456>: Second");
 
     // Session should be in draining/busy
     const session = await store.get("thread-1");
@@ -1881,6 +1881,36 @@ describe("SessionManager", () => {
       expect(prompt).not.toContain("private fix note");
       expect(prompt).toContain("please continue");
       expect((await store.get("thread-1"))!.needsThreadCatchup).toBe(false);
+    });
+
+    it("attributes the current message to its sender in the prompt", async () => {
+      manager.slackApp = {
+        client: {
+          users: {
+            info: async ({ user }: { user: string }) => ({
+              user: { profile: { display_name: `name-${user}` } },
+            }),
+          },
+          conversations: {
+            info: async () => ({ channel: { name: "test" } }),
+            replies: async () => ({ messages: [] }),
+          },
+        },
+      } as unknown as App;
+
+      currentHandle = createMockHandle();
+      mockSpawnFn = mock(() => currentHandle);
+      await manager.handleMessage(
+        makeEvent({ user: "UCHET77", text: "add me to the admin dashboard", ts: "10" }),
+      );
+      for (let i = 0; i < 10 && mockSpawnFn.mock.calls.length === 0; i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+
+      const prompt = mockSpawnFn.mock.calls[0][1] as string;
+      expect(prompt).toContain(
+        "User(name-UCHET77 <@UCHET77>): add me to the admin dashboard",
+      );
     });
 
     it("@mention wakes dormant and falls through to routing", async () => {
