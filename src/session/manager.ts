@@ -1321,15 +1321,7 @@ export class SessionManager {
         // so it renders as `User(Name <@ID>): text` — the same format thread
         // history uses. Without the label the model has no signal about who is
         // speaking and fills the gap from its persona/memory defaults.
-        // Only real Slack IDs qualify: internal dispatch paths pass synthetic
-        // senders ("mcp-internal", "pipeline-internal") or the bot's own user
-        // ID, and prefixing those would emit an unresolvable pseudo-mention or
-        // label a worker's task as if Junior itself were the requester.
-        const isAttributableSender =
-          !!senderUserId &&
-          senderUserId !== this.botUserId &&
-          /^[UWB][A-Z0-9]+$/.test(senderUserId);
-        const attributed = isAttributableSender
+        const attributed = this.isAttributableSender(senderUserId)
           ? `<@${senderUserId}>: ${prompt}`
           : prompt;
         const readablePrompt = await resolveSlackMentions(
@@ -1945,9 +1937,7 @@ export class SessionManager {
               pendingMessages[pendingMessages.length - 1]?.ts ??
               s.activeTopLevelMessageTs ??
               null;
-            settle.drainPrompt = pendingMessages
-              .map((m) => `<@${m.user}>: ${m.text}`)
-              .join("\n");
+            settle.drainPrompt = this.buildDrainPrompt(pendingMessages);
             s.pendingMessages = [];
             s.status = "draining";
             settle.action = "drain";
@@ -1976,9 +1966,7 @@ export class SessionManager {
             agentSession.status = "idle";
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
-            settle.drainPrompt = pendingMessages
-              .map((m) => `<@${m.user}>: ${m.text}`)
-              .join("\n");
+            settle.drainPrompt = this.buildDrainPrompt(pendingMessages);
             agentSession.pendingMessages = [];
             agentSession.status = "busy";
             settle.action = "drain";
@@ -2253,6 +2241,39 @@ export class SessionManager {
     // `!<agent>` directives it may emit.
     sections.push(buildDispatchAllowBlock(agentName));
     return sections.length > 0 ? sections.join("\n\n") : null;
+  }
+
+  /**
+   * Only real Slack IDs (users/workspace users/foreign bots) get author
+   * attribution in prompts. Internal dispatch paths pass synthetic senders
+   * ("mcp-internal", "pipeline-internal", "junior-internal-dispatch") or the
+   * bot's own user ID; attributing those would emit an unresolvable
+   * pseudo-mention or label a worker's task as if Junior were the requester.
+   */
+  private isAttributableSender(userId: string | undefined): userId is string {
+    return (
+      !!userId && userId !== this.botUserId && /^[UWB][A-Z0-9]+$/.test(userId)
+    );
+  }
+
+  /**
+   * Format buffered messages for a drain turn. Each message gets its own
+   * <buffered-message> block so multi-author drains stay unambiguous: a flat
+   * `User(...): text` line per message would collide with the anti-spoofing
+   * instruction (only a message's LEADING attribution is authoritative), and
+   * message bodies span lines, so line-start labels can't mark boundaries.
+   * The `from` mention resolves to `User(Name <@ID>)` downstream; synthetic
+   * internal senders get no `from` attribute.
+   */
+  private buildDrainPrompt(messages: PendingMessage[]): string {
+    return messages
+      .map((m) => {
+        const from = this.isAttributableSender(m.user)
+          ? ` from="<@${m.user}>"`
+          : "";
+        return `<buffered-message${from}>\n${m.text}\n</buffered-message>`;
+      })
+      .join("\n");
   }
 
   private toPendingMessage(event: SlackMessageEvent): PendingMessage {

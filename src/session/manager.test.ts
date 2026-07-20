@@ -561,7 +561,9 @@ describe("SessionManager", () => {
 
     expect(mockSpawnFn).toHaveBeenCalledTimes(1);
     const drainPrompt = mockSpawnFn.mock.calls[0][1] as string;
-    expect(drainPrompt).toContain("<@U123>: second echo");
+    expect(drainPrompt).toContain(
+      '<buffered-message from="<@U123>">\nsecond echo\n</buffered-message>',
+    );
 
     drainHandle._complete("second response", "echo-session-1");
     await new Promise((r) => setTimeout(r, 10));
@@ -880,7 +882,9 @@ describe("SessionManager", () => {
     // spawnClaude should have been called again for the buffered message
     expect(mockSpawnFn).toHaveBeenCalledTimes(1);
     const drainPrompt = mockSpawnFn.mock.calls[0][1] as string;
-    expect(drainPrompt).toContain("<@U456>: Second");
+    expect(drainPrompt).toContain(
+      '<buffered-message from="<@U456>">\nSecond\n</buffered-message>',
+    );
 
     // Session should be in draining/busy
     const session = await store.get("thread-1");
@@ -1968,6 +1972,12 @@ describe("SessionManager", () => {
       await manager.handleMessage(
         makeEvent({ user: "UDRAIN2", text: "Second", ts: "21" }),
       );
+      await manager.handleMessage(
+        makeEvent({ user: "UDRAIN3", text: "Third", ts: "22" }),
+      );
+      await manager.handleMessage(
+        makeEvent({ user: "mcp-internal", text: "internal task", ts: "23" }),
+      );
 
       const drainHandle = createMockHandle();
       mockSpawnFn = mock(() => drainHandle);
@@ -1976,8 +1986,19 @@ describe("SessionManager", () => {
         await new Promise((r) => setTimeout(r, 5));
       }
 
+      // Each buffered message keeps its own author; synthetic senders get a
+      // bare block instead of a forged/unresolvable from attribute.
       const drainPrompt = mockSpawnFn.mock.calls[0][1] as string;
-      expect(drainPrompt).toContain("User(name-UDRAIN2 <@UDRAIN2>): Second");
+      expect(drainPrompt).toContain(
+        '<buffered-message from="User(name-UDRAIN2 <@UDRAIN2>)">\nSecond\n</buffered-message>',
+      );
+      expect(drainPrompt).toContain(
+        '<buffered-message from="User(name-UDRAIN3 <@UDRAIN3>)">\nThird\n</buffered-message>',
+      );
+      expect(drainPrompt).toContain(
+        "<buffered-message>\ninternal task\n</buffered-message>",
+      );
+      expect(drainPrompt).not.toContain("<@mcp-internal>");
     });
 
     it("@mention wakes dormant and falls through to routing", async () => {

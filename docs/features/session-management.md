@@ -56,7 +56,7 @@ Worker terminal states: done (clean) | failed (spawn/setup error).
 
 - New message + idle → mark busy, spawn, persist.
 - New message + busy → push to that agent's `pendingMessages`, fire `onMessageBuffered`, persist.
-- On exit: refetch session (long-running agents go stale; concurrent agents may have written), drain that agent's buffer as `"<@USERID>: text"` lines (mention resolution renders them as `User(Name <@USERID>): text`, matching thread history), or settle to terminal state. If the thread was muted mid-turn, discard the buffer.
+- On exit: refetch session (long-running agents go stale; concurrent agents may have written), drain that agent's buffer as one `<buffered-message from="<@USERID>">` block per message (mention resolution renders `from` as `User(Name <@USERID>)`; synthetic internal senders like `mcp-internal` get a bare block with no `from`), or settle to terminal state. Blocks — not flat `User(...):` lines — because a drain can carry multiple authors and multi-line bodies; each block's `from` is authoritative for its own content. If the thread was muted mid-turn, discard the buffer.
 - `!cancel` kills every handle keyed under the thread and zeroes all buffers/pids.
 - `!reset <agent>` kills only that agent's handle and clears its slice; `!reset all` deletes the row. Run completions check ownership of `handles[threadId:agentName]` before writing — a discarded run never clobbers state or posts to Slack.
 
