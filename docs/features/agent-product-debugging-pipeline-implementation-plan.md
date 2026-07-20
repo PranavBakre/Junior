@@ -810,6 +810,12 @@ Rollout order:
 3. After a clean divergence soak, flip read authority to per-agent rows while retaining compatibility writes through the declared rollback window.
 4. Record typed pipeline proposals in `shadow` mode without dispatch; sample them against current Slack/prompt outcomes rather than building a permanent full comparison system.
 5. Activate the trusted permission compiler and typed handoff substrate together, with only explicitly enabled controller starts.
+   Ordinary Junior/default and `CHANNEL_DEFAULTS` lead threads may also be
+   deliberately promoted by the active orchestrator through the authenticated
+   `pipeline_start_run` control-plane tool. This remains an explicit agent
+   action with a durable reason and source-turn idempotency; message keywords,
+   channel membership, and casual one-step asks never start a run by
+   themselves. Non-orchestrator channel defaults fail closed.
 6. Enable GitHub tracking without wakes for explicitly registered PRs, including sessions with multiple same-repo and cross-repo PRs.
 7. Enable GitHub wakes and BugRun for explicit starts in one support channel.
 8. Enable ProductRun only for explicit `!pm`/`!build` starts in one channel.
