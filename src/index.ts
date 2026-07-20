@@ -543,9 +543,13 @@ setInterval(() => {
   cleanupStaleSessions(
     store,
     config.session.staleTimeoutMs,
-    async (runId) => {
+    async (runId, staleBefore) => {
       const run = await pipelineStore.getRun(runId);
-      return Boolean(run && run.status !== "terminal");
+      return Boolean(
+        run &&
+        run.status !== "terminal" &&
+        run.updatedAt >= staleBefore,
+      );
     },
   ).then((cleaned) => {
     if (cleaned.length > 0) {
