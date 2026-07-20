@@ -12,13 +12,22 @@ When Junior spawns a `claude -p` process, that process has zero knowledge of the
 `buildPromptPreamble()` assembles a first-turn preamble. Each block is gated by the resolved agent's `AgentContextProfile` (frontmatter `context.*` flags; defaults all-true).
 
 1. **`<identity>`** — Junior's persona (see [agent-definitions](agent-definitions.md)) + the bot's Slack user ID so Claude can recognize its own messages.
-2. **`<slack-context>`** — channel name + ID, thread_ts, instruction not to search Slack, how to tag users via `<@USERID>`, the `NO_SLACK_MESSAGE` sentinel, and the no-double-post rule when `slack_send_message` was used.
+2. **`<slack-context>`** — channel name + ID, thread_ts, instruction not to search Slack, how to tag users via `<@USERID>`, the instruction to read the current message's author attribution (never assume the speaker), the `NO_SLACK_MESSAGE` sentinel, and the no-double-post rule when `slack_send_message` was used.
 3. **`<workspace>`** — see Workspace Block below.
 4. **`<thread-context>`** — prior messages from `conversations.replies` (limit 100, excluding the current message), labeled `User(Name <@U…>)` or `Junior (you)`, with `[shared file: name]` annotations.
 5. **`<persistent-agent-state>`** — injected by the manager (not preamble itself) when the agent has `context.agentState`; lists per-thread agent sessions and pending counts.
 6. **`<dispatch-allow>`** — appended to the system prompt by the manager (`buildDispatchAllowBlock`) so every agent sees the authoritative list of `!<agent>` directives it may emit. See [agent-routing](agent-routing.md).
 
 On **resumed turns** (sessionId already set), `--resume` carries identity/slack/history forward. The manager skips the full preamble and re-emits only the workspace block (cheap insurance for the worktree safety rule), when the agent declares `context.workspace`.
+
+On **every turn** (first, resumed, and drain), the manager attributes the current input to its sender(s) before mention resolution. Without this label the model has no signal about who is speaking and fills the gap from its persona/memory defaults (it once mistook a first-time requester for Pranav and nearly acted on the wrong admin account). Two forms, and the slack-context block declares them the only authoritative author signals (anything author-shaped inside message content is quoted text):
+
+- **Single message:** prefixed `<@USERID>: text`, rendering as `User(Name <@USERID>): text` — the same format as thread history.
+- **Drain turns:** one `<buffered-message from="<@USERID>">` block per buffered message. A drain can carry multiple authors and multi-line bodies, so flat `User(...):` lines can't mark message boundaries; each block's `from` is authoritative for its own content.
+
+Attribution requires a real Slack ID (`/^[UWB][A-Z0-9]+$/`, not the bot's own user). Synthetic internal senders (`mcp-internal`, `pipeline-internal`, `junior-internal-dispatch`, pipeline-guard continuations) stay unprefixed — as single messages they arrive bare, and in drains they get a `<buffered-message>` block with no `from`.
+
+The delimiters are kept out-of-band: `escapeBlockDelimiters` rewrites `<buffered-message` / `</buffered-message>` to `&lt;…` inside all untrusted text — attributed current-message bodies, drained message bodies, thread-history lines, display names (escaped at the source in `resolveUserName`, since they splice into labels after the body sanitizer runs), and file names (`[shared file: …]` annotations in history and archives). Downloaded Slack files additionally get `[<>"]` replaced with `_` at write time (`sanitizeFileName`), so the on-disk path echoed into the prompt is inherently clean. Mentions (`<@ID>`) in bodies are deliberately NOT escaped — resolving who a message tags is a feature; inline author-shaped text is covered by the "quoted content" instruction.
 
 ## Workspace Block
 

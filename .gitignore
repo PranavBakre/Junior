@@ -6,6 +6,9 @@ logs/
 .DS_Store
 .claude/worktrees/
 learnings.md
+# Deliberately-local docs (proposals, scratch notes) — a broad `git add docs/`
+# must never sweep these into a public branch.
+*.local.md
 data/
 *.db
 *.db-journal

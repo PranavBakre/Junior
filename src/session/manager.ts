@@ -47,12 +47,13 @@ import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
   buildWorkspaceBlock,
+  escapeBlockDelimiters,
   resolveSlackMentions,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
 import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
-import { downloadSlackFiles } from "../slack/files.ts";
+import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
 import { createPreRecall, type PreRecallFn } from "../memory/pre-recall.ts";
@@ -432,7 +433,14 @@ export class SessionManager {
       return;
     }
 
-    this.runRunnerWithAgent(session, event.text, event.ts, event.files, agentName);
+    this.runRunnerWithAgent(
+      session,
+      event.text,
+      event.ts,
+      event.files,
+      agentName,
+      event.user,
+    );
   }
 
   // Generic single-session path for "default" (any-channel @mentions) and the
@@ -486,7 +494,14 @@ export class SessionManager {
       return;
     }
 
-    this.runRunnerWithAgent(session, event.text, event.ts, event.files, agentName);
+    this.runRunnerWithAgent(
+      session,
+      event.text,
+      event.ts,
+      event.files,
+      agentName,
+      event.user,
+    );
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -1200,6 +1215,7 @@ export class SessionManager {
     latestTs: string | undefined,
     files: SlackFileAttachment[] | undefined,
     agentName: string,
+    senderUserId?: string,
   ): Promise<void> {
     const isTopLevel = agentName === "lead" || agentName === "default";
     try {
@@ -1301,61 +1317,77 @@ export class SessionManager {
       // rule), and only if the agent wants the workspace context at all.
       // OpenCode may store a sessionId while continuity is disabled; treat that
       // as a fresh turn so thread/assignment/memory context is still injected.
-      if (this.slackApp && latestTs) {
-        const provider = sessionProvider(runSession, this.config);
-        const resumes = willResume({
-          provider,
-          sessionId: runSession.sessionId,
-          opencodeContinuityEnabled: this.config.opencode.continuityEnabled,
-        });
-        const isFirstTurn = !resumes;
-        const needsThreadCatchup = !!session.needsThreadCatchup;
+      if (this.slackApp) {
+        // Attribute the current message to its sender BEFORE mention resolution
+        // so it renders as `User(Name <@ID>): text` — the same format thread
+        // history uses. Without the label the model has no signal about who is
+        // speaking and fills the gap from its persona/memory defaults.
+        // Human-sent bodies also get block delimiters escaped so a message
+        // can't smuggle in a forged <buffered-message from=...> block that
+        // the instruction would treat as authoritative.
+        const attributed = this.isAttributableSender(senderUserId)
+          ? `<@${senderUserId}>: ${escapeBlockDelimiters(prompt)}`
+          : prompt;
         const readablePrompt = await resolveSlackMentions(
           this.slackApp,
-          prompt,
+          attributed,
           this.botUserId,
         );
-        if (isFirstTurn || needsThreadCatchup) {
-          const preambleProfile: AgentContextProfile = needsThreadCatchup
-            ? {
-                ...contextProfile,
-                identity: false,
-                slack: true,
-                threadHistory: true,
-                threadHistoryLimit: Math.max(
-                  contextProfile.threadHistoryLimit,
-                  1000,
-                ),
-              }
-            : contextProfile;
-          const preamble = await buildPromptPreamble(
-            this.slackApp,
-            session.channel,
-            session.threadId,
-            latestTs,
-            this.botUserId,
-            workspace,
-            worktreePaths,
-            this.config.repos,
-            preambleProfile,
-          );
-          prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
-          if (needsThreadCatchup) {
-            session.needsThreadCatchup = false;
-            await this.store.set(session.threadId, session);
-          }
-        } else if (contextProfile.workspace) {
-          const workspaceBlock = buildWorkspaceBlock(
-            workspace,
-            worktreePaths,
-            this.config.repos,
-            session.threadId,
-          );
-          prompt = workspaceBlock
-            ? `${workspaceBlock}\n\n${readablePrompt}`
-            : readablePrompt;
-        } else {
+        if (!latestTs) {
+          // Drain / internal continuation turns: no preamble decision to make,
+          // but buffered messages still carry `<@ID>:` prefixes to resolve.
           prompt = readablePrompt;
+        } else {
+          const provider = sessionProvider(runSession, this.config);
+          const resumes = willResume({
+            provider,
+            sessionId: runSession.sessionId,
+            opencodeContinuityEnabled: this.config.opencode.continuityEnabled,
+          });
+          const isFirstTurn = !resumes;
+          const needsThreadCatchup = !!session.needsThreadCatchup;
+          if (isFirstTurn || needsThreadCatchup) {
+            const preambleProfile: AgentContextProfile = needsThreadCatchup
+              ? {
+                  ...contextProfile,
+                  identity: false,
+                  slack: true,
+                  threadHistory: true,
+                  threadHistoryLimit: Math.max(
+                    contextProfile.threadHistoryLimit,
+                    1000,
+                  ),
+                }
+              : contextProfile;
+            const preamble = await buildPromptPreamble(
+              this.slackApp,
+              session.channel,
+              session.threadId,
+              latestTs,
+              this.botUserId,
+              workspace,
+              worktreePaths,
+              this.config.repos,
+              preambleProfile,
+            );
+            prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
+            if (needsThreadCatchup) {
+              session.needsThreadCatchup = false;
+              await this.store.set(session.threadId, session);
+            }
+          } else if (contextProfile.workspace) {
+            const workspaceBlock = buildWorkspaceBlock(
+              workspace,
+              worktreePaths,
+              this.config.repos,
+              session.threadId,
+            );
+            prompt = workspaceBlock
+              ? `${workspaceBlock}\n\n${readablePrompt}`
+              : readablePrompt;
+          } else {
+            prompt = readablePrompt;
+          }
         }
       }
 
@@ -1370,10 +1402,11 @@ export class SessionManager {
             this.config.slack.botToken,
           );
           if (filePaths.length > 0) {
+            // Match on the sanitized basename — that's what's on disk now.
             const imageNames = new Set(
               files
                 .filter((f) => f.mimetype.startsWith("image/"))
-                .map((f) => f.name.split(/[\\/]/).pop() ?? f.name),
+                .map((f) => sanitizeFileName(f.name.split(/[\\/]/).pop() ?? f.name)),
             );
             imagePaths = filePaths.filter((p) => {
               const name = p.split(/[\\/]/).pop() ?? p;
@@ -1909,9 +1942,7 @@ export class SessionManager {
               pendingMessages[pendingMessages.length - 1]?.ts ??
               s.activeTopLevelMessageTs ??
               null;
-            settle.drainPrompt = pendingMessages
-              .map((m) => `[${m.user}]: ${m.text}`)
-              .join("\n");
+            settle.drainPrompt = this.buildDrainPrompt(pendingMessages);
             s.pendingMessages = [];
             s.status = "draining";
             settle.action = "drain";
@@ -1940,9 +1971,7 @@ export class SessionManager {
             agentSession.status = "idle";
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
-            settle.drainPrompt = pendingMessages
-              .map((m) => `[${m.user}]: ${m.text}`)
-              .join("\n");
+            settle.drainPrompt = this.buildDrainPrompt(pendingMessages);
             agentSession.pendingMessages = [];
             agentSession.status = "busy";
             settle.action = "drain";
@@ -2217,6 +2246,40 @@ export class SessionManager {
     // `!<agent>` directives it may emit.
     sections.push(buildDispatchAllowBlock(agentName));
     return sections.length > 0 ? sections.join("\n\n") : null;
+  }
+
+  /**
+   * Only real Slack IDs (users/workspace users/foreign bots) get author
+   * attribution in prompts. Internal dispatch paths pass synthetic senders
+   * ("mcp-internal", "pipeline-internal", "junior-internal-dispatch") or the
+   * bot's own user ID; attributing those would emit an unresolvable
+   * pseudo-mention or label a worker's task as if Junior were the requester.
+   */
+  private isAttributableSender(userId: string | undefined): userId is string {
+    return (
+      !!userId && userId !== this.botUserId && /^[UWB][A-Z0-9]+$/.test(userId)
+    );
+  }
+
+  /**
+   * Format buffered messages for a drain turn. Each message gets its own
+   * <buffered-message> block so multi-author drains stay unambiguous: a flat
+   * `User(...): text` line per message would collide with the anti-spoofing
+   * instruction (only a message's LEADING attribution is authoritative), and
+   * message bodies span lines, so line-start labels can't mark boundaries.
+   * The `from` mention resolves to `User(Name <@ID>)` downstream; synthetic
+   * internal senders get no `from` attribute.
+   */
+  private buildDrainPrompt(messages: PendingMessage[]): string {
+    return messages
+      .map((m) => {
+        const from = this.isAttributableSender(m.user)
+          ? ` from="<@${m.user}>"`
+          : "";
+        const body = escapeBlockDelimiters(m.text);
+        return `<buffered-message${from}>\n${body}\n</buffered-message>`;
+      })
+      .join("\n");
   }
 
   private toPendingMessage(event: SlackMessageEvent): PendingMessage {
