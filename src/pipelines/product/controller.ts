@@ -367,9 +367,13 @@ export function inferProductWorkstreams(
   if (explicit && explicit.length > 0) {
     return [...new Set(explicit)];
   }
-  const repos = repoRefs.join(" ").toLowerCase();
-  const hasFrontendRepo = /(?:^|[-_/])(client|frontend|web|admin)(?:$|[-_/])/.test(repos);
-  const hasBackendRepo = /(?:^|[-_/])(backend|api|service|server)(?:$|[-_/])/.test(repos);
+  const repos = repoRefs.map((repoRef) => repoRef.toLowerCase());
+  const hasFrontendRepo = repos.some((repo) =>
+    /(?:^|[-_/])(client|frontend|web|admin)(?:$|[-_/])/.test(repo)
+  );
+  const hasBackendRepo = repos.some((repo) =>
+    /(?:^|[-_/])(backend|api|service|server)(?:$|[-_/])/.test(repo)
+  );
   if (hasFrontendRepo && hasBackendRepo) return ["backend", "frontend"];
   if (hasFrontendRepo) return ["frontend"];
   if (hasBackendRepo) return ["backend"];

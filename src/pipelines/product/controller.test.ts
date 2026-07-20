@@ -273,6 +273,28 @@ describe("createProductRun", () => {
     expect(await store.listAssignments(result.run.id)).toHaveLength(3);
   });
 
+  it.each([
+    ["backend first", ["GrowthX-Club/gx-backend", "GrowthX-Club/gx-client-next"]],
+    ["frontend first", ["GrowthX-Club/gx-client-next", "GrowthX-Club/gx-backend"]],
+  ])("fans out inferred multi-repo builds with %s", async (_label, repoRefs) => {
+    const store = new InMemoryPipelineStore(fakeClock(1000));
+    const result = await createProductRun(cfg(store), {
+      channelId: "C1",
+      threadId: `T-inferred-${_label}`,
+      objective: "Ship the feature across the supplied repositories",
+      startKind: "build",
+      messageTs: "222.5",
+      repoRefs,
+    });
+
+    expect(result.run.phase).toBe("building");
+    const openTargets = (await store.listAssignments(result.run.id))
+      .filter((assignment) => assignment.status === "pending")
+      .map((assignment) => assignment.targetAgent)
+      .sort();
+    expect(openTargets).toEqual(["build", "frontend"]);
+  });
+
   it("idempotent reuse of active run on same thread", async () => {
     const store = new InMemoryPipelineStore(fakeClock(1000));
     const first = await createProductRun(cfg(store), {
