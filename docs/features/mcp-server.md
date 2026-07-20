@@ -56,6 +56,9 @@ Junior main process
 | `memory_recall` | (internal SQLite + profiles) | Recall v3 memory: keyed entity profiles (by `entity_refs`) + semantic claims (query embedded locally, cosine-ranked) |
 | `memory_add` | (internal SQLite) | Add and locally embed one atomic claim (lesson/fact/situation-claim) into the semantic store |
 | `memory_consolidate` | (internal SQLite + LLM) | Run the v3 offline consolidation sweep: read unconsolidated source records, derive episodes/profiles/claims via the runner LLM |
+| `whatsapp_list_groups` | (internal SQLite) | List WhatsApp groups with stored messages (name, JID, counts, activity window) |
+| `whatsapp_read_messages` | (internal SQLite) | Read stored WhatsApp messages by group/time window, paged backwards with `before_ts` |
+| `whatsapp_search_messages` | (internal SQLite) | Case-insensitive text search over stored WhatsApp messages, optionally by group/sender |
 
 Slack tools require explicit `channel_id` and `thread_ts` parameters. The spawned Claude already knows its thread coordinates from the prompt preamble built by `buildPromptPreamble()`.
 
@@ -104,6 +107,37 @@ dispatchable via `!<agent>`.
 pulled onto disk but the running process has not registered its `username` /
 `iconEmoji` yet. Agent prompts themselves are read from disk on each resolve;
 the registry reload is for persistent-agent identity/dispatch metadata.
+
+### WhatsApp tools
+
+The `whatsapp_*` tools (`src/mcp/whatsapp-tools.ts`) are the only read surface
+over the WhatsApp message archive (see [whatsapp-tools.md](whatsapp-tools.md)).
+The subsystem starts after `startMcpServer` in the async bootstrap, so the
+handle arrives via `setWhatsAppHandle`; until then (or when `WHATSAPP_ENABLED`
+is off) the tools answer with a plain "not enabled" message. `group` arguments
+accept either an exact JID or a case-insensitive subject substring — ambiguous
+substrings return the candidate list instead of guessing.
+
+The archive is the operator's personal WhatsApp history, so access is gated:
+a run context is required (the bare loopback URL with no query params is
+callable by any local process — including agents spawned for non-admin turns —
+so it denies), the session's STORED channel must be a DM (`D…` — the
+query-param channel is caller-controlled and ignored; channel-thread replies
+are visible to every channel member, so no poster-based check is sound there),
+and every human participant of the session — resolved live from the session
+store at each tool call, never from a spawn-time snapshot — must pass the
+explicit admin check (`ADMIN_SLACK_USER_ID` + admins table; the local-dev
+open-admin fallback never unlocks the archive). Unknown sessions deny. All
+message-bearing responses (including group subjects) are wrapped in an
+UNTRUSTED-content boundary before entering a tool-capable agent's context.
+
+Known residual: the `thread` query param is unsigned, so a caller that learns
+a real admin-DM thread id could still impersonate that session; signing the
+run context (a per-spawn credential) is the follow-up that would harden every
+slack-bot tool. Note the honest ceiling: agents with unrestricted Bash on this
+machine can read `data/whatsapp.db` directly, so the MCP gate can never exceed
+filesystem-level protection — restricting which agents get Bash (or moving the
+archive off-box) is the stronger lever.
 
 ### Memory tools
 

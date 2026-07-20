@@ -8,17 +8,17 @@ export interface IngestStore {
 
 export interface IngestDeps {
   store: IngestStore;
-  /** Compiled from `config.groupPattern`, case-insensitive. */
-  groupPattern: RegExp;
+  /** Compiled from `config.groupPattern`, case-insensitive. Null = no filter (all groups). */
+  groupPattern: RegExp | null;
   /** Resolve a group JID to its current subject. Undefined when the group is unknown. */
   resolveGroupName: (groupJid: string) => string | undefined;
 }
 
 /**
- * Pure event→store glue. Persists ONLY messages from groups whose resolved
- * subject matches `groupPattern`, and only when the message carries text or a
- * caption. Everything else (DMs, non-matching groups, unknown groups, empty
- * system messages) is silently skipped.
+ * Pure event→store glue. Persists group messages that carry text or a caption;
+ * when `groupPattern` is set, only groups whose resolved subject matches it.
+ * Everything else (DMs, non-matching groups, unknown groups, empty system
+ * messages) is silently skipped.
  *
  * Returns the number of messages actually handed to `upsertMessage` (dedup
  * happens at the store layer via INSERT OR IGNORE).
@@ -55,10 +55,10 @@ export function toWaMessage(
   if (!groupJid.endsWith("@g.us")) return null;
 
   const groupName = deps.resolveGroupName(groupJid);
-  // Can't confirm this is a Hermes group without a subject — skip rather than
-  // risk persisting unrelated groups.
+  // Without a subject we can't apply the group filter — skip rather than risk
+  // persisting groups the pattern was meant to exclude.
   if (groupName === undefined) return null;
-  if (!deps.groupPattern.test(groupName)) return null;
+  if (deps.groupPattern && !deps.groupPattern.test(groupName)) return null;
 
   const content = unwrap(message.message ?? undefined);
   const text = extractText(content);

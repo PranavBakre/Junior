@@ -40,13 +40,8 @@ import { WorkflowRegistry } from "./workflows/registry.ts";
 import { WorkflowScheduler } from "./workflows/scheduler.ts";
 import { createMemoryStore } from "./memory/factory.ts";
 import { MemoryIngestor } from "./memory/ingestion.ts";
-import {
-  createClaudeExtractionRunner,
-  createExtractionSweep,
-  startWhatsApp,
-  type WhatsAppHandle,
-} from "./whatsapp/index.ts";
-import { createNotionSync } from "./notion/sync.ts";
+import { startWhatsApp, type WhatsAppHandle } from "./whatsapp/index.ts";
+import { setWhatsAppHandle } from "./mcp/whatsapp-tools.ts";
 import {
   InMemoryWorkflowStore,
   SqliteWorkflowStore,
@@ -275,11 +270,9 @@ registerAgentActionButtons(app, actionStore, sessionManager, worktreeManager, {
   supportChannels,
 });
 
-// WhatsApp ingestion handle + extraction-sweep timers — populated in the async
-// bootstrap when enabled, torn down here on shutdown.
+// WhatsApp ingestion handle — populated in the async bootstrap when enabled,
+// torn down here on shutdown.
 let whatsappHandle: WhatsAppHandle | null = null;
-let whatsappSweepInterval: ReturnType<typeof setInterval> | null = null;
-let whatsappInitialSweepTimer: ReturnType<typeof setTimeout> | null = null;
 
 setupGracefulShutdown(sessionManager, devServerManager, async () => {
   await workflowScheduler.shutdown();
@@ -287,9 +280,10 @@ setupGracefulShutdown(sessionManager, devServerManager, async () => {
   workflowStore.close?.();
   actionStore.close();
   memoryStore.close();
-  if (whatsappInitialSweepTimer) clearTimeout(whatsappInitialSweepTimer);
-  if (whatsappSweepInterval) clearInterval(whatsappSweepInterval);
   if (whatsappHandle) {
+    // Detach the MCP tools before closing the store so a late tool call gets
+    // the "not enabled" answer instead of a closed-database throw.
+    setWhatsAppHandle(null);
     await whatsappHandle.stop();
   }
 });
@@ -370,49 +364,14 @@ setInterval(() => {
     );
   }
 
-  // WhatsApp ingestion (Phase 0+1, read-only). Non-fatal on failure — a broken
-  // pairing/socket must not stop the Slack bot from booting.
+  // WhatsApp ingestion (read-only archive). Incoming messages trigger nothing —
+  // the store is only read on demand via the whatsapp_* MCP tools. Non-fatal
+  // on failure: a broken pairing/socket must not stop the Slack bot from booting.
   if (config.whatsapp?.enabled) {
     try {
       whatsappHandle = await startWhatsApp(config.whatsapp);
+      setWhatsAppHandle(whatsappHandle);
       log.info("boot", "WhatsApp ingestion started");
-
-      // Notion sync is optional — without a token the sweep still extracts
-      // tasks into SQLite, it just doesn't project them to Notion. Log the
-      // disabled state ONCE here, not on every sweep.
-      const notionSync = config.whatsapp.notionToken
-        ? createNotionSync({
-            token: config.whatsapp.notionToken,
-            pageId: config.whatsapp.notionPageId,
-          })
-        : null;
-      if (!notionSync) {
-        log.info(
-          "whatsapp",
-          "NOTION_TOKEN unset — extraction sweep runs with Notion sync disabled",
-        );
-      }
-
-      const runExtraction = createExtractionSweep({
-        store: whatsappHandle.store,
-        // Neutral sandbox cwd for the extraction subprocess, kept next to the
-        // WhatsApp data dir so the untrusted-content run doesn't inherit junior's
-        // project CLAUDE.md / `.claude/` / `.mcp.json` context.
-        runner: createClaudeExtractionRunner({
-          sandboxDir: resolve(config.whatsapp.dbPath, "..", "whatsapp-extraction-sandbox"),
-        }),
-        notionSync,
-        resolveGroupName: whatsappHandle.resolveGroupName,
-        logger: log,
-      });
-
-      // One initial sweep shortly after boot (let backfill land), then on cadence.
-      whatsappInitialSweepTimer = setTimeout(() => {
-        void runExtraction();
-      }, 30_000);
-      whatsappSweepInterval = setInterval(() => {
-        void runExtraction();
-      }, config.whatsapp.extractionIntervalMs);
     } catch (err) {
       log.error(
         "boot",

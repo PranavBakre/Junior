@@ -9,17 +9,10 @@ export { WhatsAppClient } from "./client.ts";
 export { WhatsAppStore } from "./store.ts";
 export { createReadyGate, ingestMessages, toWaMessage } from "./ingest.ts";
 export type { ReadyGate } from "./ingest.ts";
-export {
-  createClaudeExtractionRunner,
-  createExtractionSweep,
-  runExtractionSweep,
-  type ExtractionRunner,
-  type ExtractionSweepDeps,
-} from "./extraction/index.ts";
 export type * from "./types.ts";
 
 export interface WhatsAppHandle {
-  /** The live message + task store — shared with the extraction sweep. */
+  /** The live message store — shared with the MCP read/search tools. */
   store: WhatsAppStore;
   /** Resolve a group JID to its current subject (from the socket's group map). */
   resolveGroupName: (groupJid: string) => string | undefined;
@@ -29,7 +22,9 @@ export interface WhatsAppHandle {
 /**
  * Start the WhatsApp ingestion subsystem: open the store, connect the Baileys
  * socket, and pipe backfill + live messages through `ingestMessages` into the
- * store (filtered to Hermes groups). Read-only — no send path.
+ * store (optionally filtered by `groupPattern`). Read-only — no send path,
+ * and nothing is triggered off incoming messages; the archive is only read
+ * on demand through the bot MCP server's whatsapp_* tools.
  *
  * Backfill batches can arrive before the group-name map is populated, so every
  * batch flows through a `createReadyGate`: pre-open batches are buffered and
@@ -38,15 +33,17 @@ export interface WhatsAppHandle {
  * `onConnectionClose` and reopened by the next `onOpen`, so batches arriving on
  * a fresh socket never process against a stale group map.
  *
- * Returns a handle exposing the store + group-name resolver (for the extraction
- * sweep) plus `stop()`, which ends the socket and closes the DB; wire it into
- * the process's graceful shutdown.
+ * Returns a handle exposing the store + group-name resolver plus `stop()`,
+ * which ends the socket and closes the DB; wire it into the process's
+ * graceful shutdown.
  */
 export async function startWhatsApp(
   config: WhatsAppConfig,
 ): Promise<WhatsAppHandle> {
   const store = new WhatsAppStore(config.dbPath);
-  const groupPattern = new RegExp(config.groupPattern, "i");
+  const groupPattern = config.groupPattern
+    ? new RegExp(config.groupPattern, "i")
+    : null;
 
   // Assigned synchronously below; only read from callbacks that fire after
   // `connect()` returns, by which point the client exists.

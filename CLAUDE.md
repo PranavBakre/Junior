@@ -29,6 +29,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How does process lifecycle and error handling work? | [docs/features/process-lifecycle.md](docs/features/process-lifecycle.md) |
 | How are spawned child process trees cleaned up on shutdown? | [docs/features/process-tree-cleanup.md](docs/features/process-tree-cleanup.md) |
 | How does the bot Slack MCP server work? | [docs/features/mcp-server.md](docs/features/mcp-server.md) |
+| How does the WhatsApp message archive + read tools work? | [docs/features/whatsapp-tools.md](docs/features/whatsapp-tools.md) |
 | How does Junior's long-term memory work (claims, episodes, profiles, embeddings, recall, consolidation)? | [docs/features/memory-system-v3.md](docs/features/memory-system-v3.md) |
 | Headless vs tmux driver, why two paths exist, how tmux runs the TUI? | [docs/features/interactive-driver.md](docs/features/interactive-driver.md) |
 | How do persistent agents (orchestrator, reproducer, review, …) work? | [docs/features/persistent-agents.md](docs/features/persistent-agents.md) |
