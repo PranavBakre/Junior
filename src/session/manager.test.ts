@@ -19,6 +19,7 @@ import {
   makeProductRun,
 } from "../pipelines/store/test-helpers.ts";
 import { fakeClock } from "../time/clock.ts";
+import type { WorktreeManager } from "../worktree/manager.ts";
 
 // --- Mock setup ---
 
@@ -363,6 +364,44 @@ describe("SessionManager", () => {
     const callArgs = mockSpawnFn.mock.calls[0];
     // Second arg is the prompt
     expect(callArgs[1]).toBe("Build me a feature");
+  });
+
+  it("switches to and registers the PR repo worktree before starting review", async () => {
+    const createWorktree = mock(async () => "/tmp/frontend.junior-worktrees/slack-thread-1");
+    manager.worktreeManager = {
+      createWorktree,
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    existing.worktreePaths = {
+      junior: "/tmp/junior.junior-worktrees/slack-thread-1",
+    };
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "review https://github.com/GrowthX-Club/frontend/pull/127",
+      }),
+      "review",
+    );
+    await waitFor(() => createWorktree.mock.calls.length === 1);
+
+    expect(createWorktree).toHaveBeenCalledWith(
+      "frontend",
+      "thread-1",
+      undefined,
+    );
+    const runSession = mockSpawnFn.mock.calls[0][0];
+    expect(runSession.worktreePath).toBe(
+      "/tmp/frontend.junior-worktrees/slack-thread-1",
+    );
+    expect(runSession.worktreePaths).toEqual({
+      junior: "/tmp/junior.junior-worktrees/slack-thread-1",
+      frontend: "/tmp/frontend.junior-worktrees/slack-thread-1",
+    });
+    expect(runSession.targetRepo).toBe("frontend");
   });
 
   it("adds downloaded non-image Slack file paths to the prompt", async () => {

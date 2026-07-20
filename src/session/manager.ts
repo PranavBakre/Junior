@@ -54,6 +54,7 @@ import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
+import { inferReviewRepo } from "../worktree/review-routing.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
 import { createPreRecall, type PreRecallFn } from "../memory/pre-recall.ts";
 import { clearThreadJuniorMessages } from "../slack/thread-archive.ts";
@@ -1225,9 +1226,39 @@ export class SessionManager {
         ? null
         : this.getOrCreateAgentSession(session, agentName);
       const agentIdentity = identityForAgent(agentName);
-      const runSession = this.buildRunSession(session, agentName, agentIdentity);
-      runSession.currentMessageTs = latestTs ?? null;
       const rawMessage = prompt;
+
+      // Reviewers run checks only in Junior-managed worktrees. Route each PR
+      // URL to its repo-specific worktree, and fall back to a pipeline repo ref
+      // only when the run names exactly one configured repo. This also lets one
+      // Slack session review PRs across different repositories without reusing
+      // the wrong checkout.
+      if (agentName === "review" && this.worktreeManager) {
+        let pipelineRepoRefs: string[] = [];
+        if (session.activePipelineRunId && this.pipelineStore) {
+          try {
+            const activeRun = await this.pipelineStore.getRun(
+              session.activePipelineRunId,
+            );
+            pipelineRepoRefs = activeRun?.repoRefs ?? [];
+          } catch (err) {
+            _log.warn(
+              "manager",
+              `review repo inference failed for pipeline ${session.activePipelineRunId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        const inferredRepo = inferReviewRepo(
+          this.config.repos,
+          prompt,
+          pipelineRepoRefs,
+        );
+        if (inferredRepo && session.targetRepo !== inferredRepo.name) {
+          session.targetRepo = inferredRepo.name;
+          session.worktreePath = session.worktreePaths[inferredRepo.name] ?? null;
+          await this.store.set(session.threadId, session);
+        }
+      }
 
       // Resolve target repo before building the preamble so workspace info can be injected.
       let targetRepo: { name: string; path: string } | undefined;
@@ -1253,6 +1284,10 @@ export class SessionManager {
             session.threadId,
             session.baseRef ?? undefined,
           );
+          session.worktreePaths = {
+            ...session.worktreePaths,
+            [targetRepo.name]: session.worktreePath,
+          };
           await this.store.set(session.threadId, session);
         } catch (err) {
           _log.warn(
@@ -1281,6 +1316,11 @@ export class SessionManager {
         session.worktreePaths && Object.keys(session.worktreePaths).length > 0
           ? session.worktreePaths
           : undefined;
+
+      // Build after worktree routing/creation so provider policy and cwd see
+      // the newly registered isolated checkout on this same turn.
+      const runSession = this.buildRunSession(session, agentName, agentIdentity);
+      runSession.currentMessageTs = latestTs ?? null;
 
       // Resolve the agent definition early so its declared context profile
       // gates the preamble. Default agent (no .md) and missing-flag cases
