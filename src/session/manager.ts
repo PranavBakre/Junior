@@ -49,6 +49,7 @@ import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loa
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
+import { createPreRecall, type PreRecallFn } from "../memory/pre-recall.ts";
 import { clearThreadJuniorMessages } from "../slack/thread-archive.ts";
 
 export class SessionManager {
@@ -59,6 +60,7 @@ export class SessionManager {
   private spawnRunner: SpawnRunnerFn;
   private drivers: DriverMap;
   private memoryIngestor?: MemoryIngestor;
+  private preRecall: PreRecallFn | null;
 
   slackApp?: App;
   botUserId?: string;
@@ -104,6 +106,9 @@ export class SessionManager {
         ),
     });
     this.memoryIngestor = memoryIngestor;
+    this.preRecall = config.memory.preRecall?.enabled
+      ? createPreRecall(config)
+      : null;
   }
 
   setMemoryIngestor(memoryIngestor: MemoryIngestor): void {
@@ -985,6 +990,7 @@ export class SessionManager {
         : this.getOrCreateAgentSession(session, agentName);
       const agentIdentity = identityForAgent(agentName);
       const runSession = this.buildRunSession(session, agentName, agentIdentity);
+      const rawMessage = prompt;
 
       // Resolve target repo before building the preamble so workspace info can be injected.
       let targetRepo: { name: string; path: string } | undefined;
@@ -1181,6 +1187,13 @@ export class SessionManager {
         const agentStateBlock = this.buildAgentStateBlock(session);
         if (agentStateBlock) {
           prompt = `${agentStateBlock}\n\n${prompt}`;
+        }
+      }
+
+      if (this.preRecall) {
+        const preRecallBlock = await this.preRecall(rawMessage);
+        if (preRecallBlock) {
+          prompt = `${preRecallBlock}\n\n${prompt}`;
         }
       }
 

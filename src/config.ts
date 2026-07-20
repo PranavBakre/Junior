@@ -152,6 +152,19 @@ export interface Config {
      * populates it and read sites default to "local".
      */
     embedProvider?: EmbeddingProviderKind;
+    /**
+     * Pre-recall hook: before each runner turn, a cheap LLM extracts recall
+     * queries from the incoming message and injects matching claims into the
+     * prompt. Optional so existing Config test fixtures stay valid; `loadConfig`
+     * always populates it.
+     */
+    preRecall?: {
+      enabled: boolean;
+      runner: "claude" | "opencode" | "codex";
+      /** Override the pinned cheapest model for the chosen runner. */
+      model?: string;
+      timeoutMs: number;
+    };
   };
   threadArchives: {
     dir: string;
@@ -276,6 +289,12 @@ export function loadConfig(): Config {
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
       embedProvider: parseEmbedProvider(optional("MEMORY_EMBED_PROVIDER", "local")),
+      preRecall: {
+        enabled: parseBooleanEnv("PRE_RECALL_ENABLED", true),
+        runner: parsePreRecallRunner(optional("PRE_RECALL_RUNNER", "claude")),
+        model: process.env.PRE_RECALL_MODEL || undefined,
+        timeoutMs: Number(optional("PRE_RECALL_TIMEOUT_MS", "15000")),
+      },
     },
     threadArchives: {
       dir: optional("THREAD_ARCHIVE_DIR", "data/thread-archives"),
@@ -368,6 +387,13 @@ function parseRunnerProvider(value: string): ImplementedRunnerProvider {
   }
   throw new Error(
     `Invalid RUNNER_PROVIDER: ${value} (expected opencode|opencode-sdk|codex-app-server|claude)`,
+  );
+}
+
+function parsePreRecallRunner(value: string): "claude" | "opencode" | "codex" {
+  if (value === "claude" || value === "opencode" || value === "codex") return value;
+  throw new Error(
+    `Invalid PRE_RECALL_RUNNER: ${value} (expected claude|opencode|codex)`,
   );
 }
 
