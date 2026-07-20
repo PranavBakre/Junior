@@ -35,7 +35,11 @@ import {
 import type { OpenCodePermissionConfig } from "../opencode/config.ts";
 import { hasCapability } from "../agents/capabilities.ts";
 import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
-import { worktreeVerificationCommandPatterns } from "../agents/verification.ts";
+import {
+  reviewInspectionCommandPatterns,
+  worktreeInspectionCommandPatterns,
+  worktreeVerificationCommandPatterns,
+} from "../agents/verification.ts";
 
 export interface PermissionSubject {
   agentPermissions?: AgentPermissions;
@@ -87,6 +91,7 @@ export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
  */
 export function compileOpenCodePermission(options: {
   subject: PermissionSubject;
+  cwd?: string;
   fallback?: OpenCodePermissionConfig;
 }): OpenCodePermissionConfig {
   const intent = resolveRunPermissionIntent(options.subject);
@@ -99,13 +104,14 @@ export function compileOpenCodePermission(options: {
   )
     ? { [GITHUB_POST_REVIEW_TOOL]: "allow" }
     : {};
-  const mayVerifyWorktree =
-    hasCapability(agentName, "worktree-verify") &&
-    Boolean(
-      options.subject.worktreePath ||
-        Object.keys(options.subject.worktreePaths ?? {}).length > 0,
-    ) &&
-    Boolean(options.subject.verificationPackageManager);
+  const worktreeRoots = [
+    options.subject.worktreePath,
+    ...Object.values(options.subject.worktreePaths ?? {}),
+  ].filter((root): root is string => Boolean(root));
+  const mayInspect = hasCapability(agentName, "worktree-verify");
+  const hasRegisteredWorktreeCwd =
+    Boolean(options.cwd) &&
+    worktreeRoots.includes(options.cwd!);
 
   if (intent === "no-tools") {
     return {
@@ -129,11 +135,16 @@ export function compileOpenCodePermission(options: {
       list: "allow",
       edit: "deny",
       write: "deny",
-      bash: mayVerifyWorktree
+      bash: mayInspect
         ? Object.fromEntries([
             ["*", "deny"],
-            ...worktreeVerificationCommandPatterns(
-              options.subject.verificationPackageManager!,
+            ...(hasRegisteredWorktreeCwd && options.subject.verificationPackageManager
+              ? worktreeVerificationCommandPatterns(
+                  options.subject.verificationPackageManager,
+                )
+              : hasRegisteredWorktreeCwd
+                ? worktreeInspectionCommandPatterns()
+                : reviewInspectionCommandPatterns()
             ).map(
               (pattern) => [pattern, "allow"],
             ),
@@ -238,6 +249,7 @@ export function buildPermissionMatrix(options: {
     });
     const openCode = compileOpenCodePermission({
       subject: threadSession,
+      cwd,
       fallback: options.openCodeFallback ?? "allow",
     });
 

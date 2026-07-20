@@ -1,7 +1,7 @@
 import type { JavaScriptPackageManager } from "../worktree/package-manager.ts";
 
-/** Read-only repository and PR inspection available to every reviewer. */
-const REVIEW_INSPECTION_COMMAND_PATTERNS = [
+/** Non-mutating repository and PR inspection safe in any reviewer cwd. */
+const REVIEW_SAFE_INSPECTION_COMMAND_PATTERNS = [
   "git status",
   "git status *",
   "git diff",
@@ -11,11 +11,19 @@ const REVIEW_INSPECTION_COMMAND_PATTERNS = [
   "git rev-parse *",
   "git merge-base *",
   "git branch --show-current",
+  "git blame *",
   "git ls-files *",
-  "git fetch *",
+  "gh api --method GET *",
+  "gh api -X GET *",
+  "gh pr list *",
   "gh pr view *",
   "gh pr diff *",
   "gh pr checks *",
+] as const;
+
+/** Commands that change refs/files and therefore require an isolated worktree. */
+const REVIEW_WORKTREE_INSPECTION_COMMAND_PATTERNS = [
+  "git fetch *",
   "gh pr checkout *",
 ] as const;
 
@@ -35,7 +43,7 @@ const VERIFICATION_SCRIPTS = [
 export function worktreeVerificationCommandPatterns(
   packageManager: JavaScriptPackageManager,
 ): string[] {
-  const commands: string[] = [...REVIEW_INSPECTION_COMMAND_PATTERNS];
+  const commands = worktreeInspectionCommandPatterns();
 
   for (const script of VERIFICATION_SCRIPTS) {
     if (script === "test") {
@@ -48,10 +56,22 @@ export function worktreeVerificationCommandPatterns(
     if (script === "test") {
       commands.push(
         `${packageManager} run test:*`,
-        `${packageManager} run test:* *`,
       );
     }
   }
 
   return commands;
+}
+
+/** Repository/PR inspection that remains useful without JS package metadata. */
+export function worktreeInspectionCommandPatterns(): string[] {
+  return [
+    ...REVIEW_SAFE_INSPECTION_COMMAND_PATTERNS,
+    ...REVIEW_WORKTREE_INSPECTION_COMMAND_PATTERNS,
+  ];
+}
+
+/** Read-only inspection for reviews without a registered worktree. */
+export function reviewInspectionCommandPatterns(): string[] {
+  return [...REVIEW_SAFE_INSPECTION_COMMAND_PATTERNS];
 }

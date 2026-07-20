@@ -149,6 +149,7 @@ export function spawnOpenCodeSdk(
     model,
     permission: compileOpenCodePermission({
       subject: session,
+      cwd: runtime.cwd,
       fallback: config.opencode.permission,
     }),
     mcp: session.cwd ? null : undefined,

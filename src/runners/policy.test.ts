@@ -35,7 +35,7 @@ const codexConfig = {
 };
 
 describe("compileOpenCodePermission", () => {
-  it("denies edit/write/bash for read-only roles", () => {
+  it("allows only non-mutating inspection for reviewers without a worktree", () => {
     const permission = compileOpenCodePermission({
       subject: {
         activeAgentName: "review",
@@ -46,9 +46,17 @@ describe("compileOpenCodePermission", () => {
     expect(permission).toMatchObject({
       edit: "deny",
       write: "deny",
-      bash: "deny",
       task: "deny",
       read: "allow",
+    });
+    expect((permission as Record<string, unknown>).bash).toMatchObject({
+      "*": "deny",
+      "gh pr view *": "allow",
+      "git blame *": "allow",
+    });
+    expect((permission as Record<string, unknown>).bash).not.toMatchObject({
+      "git fetch *": "allow",
+      "gh pr checkout *": "allow",
     });
   });
 
@@ -60,6 +68,7 @@ describe("compileOpenCodePermission", () => {
         verificationPackageManager: "npm",
         agentPermissions: { intent: "read-only", mcp: [], tools: [] },
       },
+      cwd: "/repo.junior-worktrees/slack-t",
     }) as Record<string, unknown>;
 
     expect(permission.edit).toBe("deny");
@@ -73,16 +82,46 @@ describe("compileOpenCodePermission", () => {
     expect(permission.bash).not.toMatchObject({ "npm install *": "allow" });
   });
 
-  it("keeps bash denied when a review worktree has no detected manager", () => {
+  it("keeps read-only inspection when a review worktree has no detected manager", () => {
     const permission = compileOpenCodePermission({
       subject: {
         activeAgentName: "review",
         worktreePath: "/repo.junior-worktrees/slack-t",
         agentPermissions: { intent: "read-only", mcp: [], tools: [] },
       },
+      cwd: "/repo.junior-worktrees/slack-t",
     }) as Record<string, unknown>;
 
-    expect(permission.bash).toBe("deny");
+    expect(permission.bash).toMatchObject({
+      "*": "deny",
+      "git blame *": "allow",
+      "gh pr list *": "allow",
+      "gh api --method GET *": "allow",
+    });
+    expect(permission.bash).not.toMatchObject({ "npm test *": "allow" });
+  });
+
+  it("withholds worktree mutations and checks when cwd is outside the registered worktree", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "review",
+        worktreePath: "/repo.junior-worktrees/slack-t",
+        verificationPackageManager: "npm",
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+      cwd: "/shared/repo",
+    }) as Record<string, unknown>;
+
+    expect(permission.bash).toMatchObject({
+      "*": "deny",
+      "gh pr view *": "allow",
+      "git blame *": "allow",
+    });
+    expect(permission.bash).not.toMatchObject({
+      "git fetch *": "allow",
+      "gh pr checkout *": "allow",
+      "npm test *": "allow",
+    });
   });
 
   it("uses an explicit read-safe MCP allowlist for read-only roles", () => {
@@ -167,11 +206,14 @@ describe("provider permission compilation matrix", () => {
       expect(byName.has(name)).toBe(true);
     }
 
-    // Review / reproducer: hard read-only where enforceable.
+    // Review / reproducer: hard read-only where enforceable. Review also gets
+    // a non-mutating shell inspection surface; reproducer remains in plan.
     for (const name of ["review", "reproducer"] as const) {
       const row = byName.get(name)!;
       expect(row.intent).toBe("read-only");
-      expect(row.claudePermissionMode).toBe("plan");
+      expect(row.claudePermissionMode).toBe(
+        name === "review" ? "default" : "plan",
+      );
       expect(row.codexSandbox).toBe("read-only");
       expect(row.openCode).toMatchObject({ edit: "deny", write: "deny" });
     }

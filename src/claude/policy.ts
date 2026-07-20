@@ -5,7 +5,11 @@ import {
 } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
 import { hasCapability } from "../agents/capabilities.ts";
-import { worktreeVerificationCommandPatterns } from "../agents/verification.ts";
+import {
+  reviewInspectionCommandPatterns,
+  worktreeInspectionCommandPatterns,
+  worktreeVerificationCommandPatterns,
+} from "../agents/verification.ts";
 import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
 
 /**
@@ -85,19 +89,24 @@ export function mapClaudeRunPolicy(options: {
     session.worktreePath,
     ...Object.values(session.worktreePaths ?? {}),
   ].filter((root): root is string => Boolean(root));
-  const mayVerifyWorktree =
-    hasCapability(agentName, "worktree-verify") &&
-    worktreeRoots.includes(cwd) &&
-    Boolean(session.verificationPackageManager);
+  const mayInspect = hasCapability(agentName, "worktree-verify");
+  const hasRegisteredWorktreeCwd = worktreeRoots.includes(cwd);
 
   if (intent === "read-only") {
-    if (mayVerifyWorktree) {
+    if (mayInspect) {
       const readOnlyDeclaredTools = declaredTools.filter(
         (tool) => !isMutatingToolSpec(tool),
       );
-      const verificationTools = worktreeVerificationCommandPatterns(
-        session.verificationPackageManager!,
-      ).map((pattern) => `Bash(${pattern})`);
+      const commandPatterns = hasRegisteredWorktreeCwd && session.verificationPackageManager
+        ? worktreeVerificationCommandPatterns(
+            session.verificationPackageManager,
+          )
+        : hasRegisteredWorktreeCwd
+          ? worktreeInspectionCommandPatterns()
+          : reviewInspectionCommandPatterns();
+      const verificationTools = commandPatterns.map(
+        (pattern) => `Bash(${pattern})`,
+      );
       return {
         // Headless default mode denies commands that are neither explicitly
         // allowed nor approved. Review has no approval round-trip, so this is
@@ -111,12 +120,9 @@ export function mapClaudeRunPolicy(options: {
           ]),
         ],
         disallowedTools: [...READ_ONLY_DISALLOWED],
-        addDirs: [
-          ...new Set([
-            cwd,
-            ...worktreeRoots,
-          ]),
-        ],
+        addDirs: hasRegisteredWorktreeCwd
+          ? [...new Set([cwd, ...worktreeRoots])]
+          : [],
       };
     }
     // Critical safety case: review / reproducer-validation agents must not

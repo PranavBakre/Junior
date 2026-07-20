@@ -9,6 +9,11 @@ describe("worktreeVerificationCommandPatterns", () => {
       expect(patterns).toContain(`${manager} test`);
       expect(patterns).toContain(`${manager} run typecheck`);
       expect(patterns).toContain("git diff *");
+      expect(patterns).toContain("git blame *");
+      expect(patterns).toContain("gh pr list *");
+      expect(patterns).toContain("gh api --method GET *");
+      expect(patterns).not.toContain("gh api *");
+      expect(patterns).not.toContain(`${manager} run test:* *`);
       for (const other of ["npm", "pnpm", "bun"] as const) {
         if (other !== manager) {
           expect(patterns).not.toContain(`${other} test`);
@@ -19,4 +24,3 @@ describe("worktreeVerificationCommandPatterns", () => {
     },
   );
 });
-

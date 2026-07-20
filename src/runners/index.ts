@@ -14,6 +14,7 @@ import {
   wantsMcp,
 } from "./mcp-config.ts";
 import { compileOpenCodePermission } from "./policy.ts";
+import { resolveRunnerCwd } from "./runtime.ts";
 
 export function sessionProvider(
   session: ThreadSession,
@@ -59,6 +60,7 @@ export function spawnRunner(
         // Prefer catalog/session intent when present; fall back to operator config.
         permission: compileOpenCodePermission({
           subject: session,
+          cwd: resolveRunnerCwd(session, targetRepoCwd),
           fallback: config.opencode.permission,
         }),
         mcp: buildOpenCodeMcpConfig(config, session),

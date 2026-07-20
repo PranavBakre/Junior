@@ -81,7 +81,7 @@ install dependencies, edit source, commit, push, publish, or deploy.
 
 When re-reviewing a PR:
 
-1. Read existing GitHub review comments and reviews with `gh api` / `gh pr view` before making new comments. Fetch and check the *current* state of the code at each prior finding's location -- never re-flag a finding that's already resolved.
+1. Read existing GitHub review comments and reviews with `gh api --method GET` / `gh pr view` before making new comments. Fetch and check the *current* state of the code at each prior finding's location -- never re-flag a finding that's already resolved.
 2. Do not duplicate issues already raised. If a previous blocker/warning is still present, reply/update in that existing thread when possible; otherwise mention that it is still unresolved in the verdict.
 3. Review only newly pushed commits and the code paths needed to verify prior findings. Do not re-review unchanged code from scratch unless the previous review state is unavailable or the diff has been rebased so heavily that the old comments no longer map.
 4. If all previous blocker/warning items are fixed, still run the normal clean-pass approval rule: two consecutive clean passes before `approved`.

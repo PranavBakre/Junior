@@ -22,7 +22,7 @@ function sessionWith(
 }
 
 describe("mapClaudeRunPolicy", () => {
-  test("read-only locks down writes and uses plan mode", () => {
+  test("generic read-only locks down writes and uses plan mode", () => {
     const session = sessionWith({
       intent: "read-only",
       mcp: [],
@@ -135,12 +135,14 @@ describe("mapClaudeRunPolicy", () => {
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
-    expect(policy.permissionMode).toBe("plan");
+    expect(policy.permissionMode).toBe("default");
     expect(policy.disallowedTools).toContain("Edit");
     expect(policy.disallowedTools).toContain("Write");
     expect(policy.allowedTools).toContain(
       "mcp__slack-bot__github_post_review",
     );
+    expect(policy.allowedTools).toContain("Bash(gh pr view *)");
+    expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
   });
 
   test("review may run allowlisted checks only in a registered worktree", () => {
@@ -174,7 +176,7 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.addDirs).toContain("/expo/.junior-worktrees/review");
   });
 
-  test("review stays in plan mode when cwd is not a registered worktree", () => {
+  test("review gets safe inspection only when cwd is not a registered worktree", () => {
     const session = createSession("t", "c");
     session.activeAgentName = "review";
     session.worktreePath = "/registered-worktree";
@@ -183,11 +185,14 @@ describe("mapClaudeRunPolicy", () => {
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/shared-repo" });
 
-    expect(policy.permissionMode).toBe("plan");
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("Bash(gh pr view *)");
+    expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
+    expect(policy.allowedTools).not.toContain("Bash(gh pr checkout *)");
     expect(policy.allowedTools).not.toContain("Bash(npm test *)");
   });
 
-  test("review stays in plan mode when package-manager metadata is ambiguous", () => {
+  test("review keeps inspection tools when package-manager metadata is ambiguous", () => {
     const session = createSession("t", "c");
     session.activeAgentName = "review";
     session.worktreePath = "/registered-worktree";
@@ -199,7 +204,10 @@ describe("mapClaudeRunPolicy", () => {
       cwd: session.worktreePath,
     });
 
-    expect(policy.permissionMode).toBe("plan");
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("Bash(git blame *)");
+    expect(policy.allowedTools).toContain("Bash(gh pr list *)");
+    expect(policy.allowedTools).toContain("Bash(gh api --method GET *)");
     expect(policy.allowedTools).not.toContain("Bash(npm test *)");
   });
 
@@ -235,7 +243,7 @@ describe("mapClaudeRunPolicy", () => {
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
-    expect(policy.permissionMode).toBe("plan");
+    expect(policy.permissionMode).toBe("default");
     expect(policy.disallowedTools).toContain("Edit");
   });
 
