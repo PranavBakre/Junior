@@ -964,6 +964,14 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         bug_mode: z
           .enum(["expected-behavior", "focused-debug", "full-investigation"])
           .optional(),
+        required_workstreams: z
+          .array(z.enum(["backend", "frontend"]))
+          .min(1)
+          .max(2)
+          .optional()
+          .describe(
+            "Product build scope chosen by the orchestrator. Prefer this over keyword inference.",
+          ),
       },
     },
     async (args) => {

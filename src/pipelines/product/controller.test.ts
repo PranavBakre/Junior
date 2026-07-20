@@ -228,6 +228,51 @@ describe("createProductRun", () => {
     expect(loaded.length).toBe(2);
   });
 
+  it("routes a frontend repo to frontend despite incidental backend wording", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1000));
+    const result = await createProductRun(cfg(store), {
+      channelId: "C1",
+      threadId: "T-frontend-scope",
+      objective: "The backend already supports it; add the admin UI control",
+      startKind: "build",
+      messageTs: "222.3",
+      repoRefs: ["GrowthX-Club/gx-admin-client"],
+    });
+    expect(result.assignment.targetAgent).toBe("frontend");
+    const assignments = await store.listAssignments(result.run.id);
+    expect(assignments).toHaveLength(1);
+  });
+
+  it("fans out an explicitly declared full-stack build", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1000));
+    const result = await createProductRun(cfg(store), {
+      channelId: "C1",
+      threadId: "T-explicit-fullstack",
+      objective: "Implement the POST /api/invites endpoint and React admin UI",
+      startKind: "build",
+      messageTs: "222.4",
+      requiredWorkstreams: ["backend", "frontend"],
+    });
+    expect(result.run.phase).toBe("building");
+    const assignments = await store.listAssignments(result.run.id);
+    const openTargets = assignments
+      .filter((assignment) => assignment.status === "pending")
+      .map((assignment) => assignment.targetAgent)
+      .sort();
+    expect(openTargets).toEqual(["build", "frontend"]);
+
+    const replay = await createProductRun(cfg(store), {
+      channelId: "C1",
+      threadId: "T-explicit-fullstack",
+      objective: "Implement the POST /api/invites endpoint and React admin UI",
+      startKind: "build",
+      messageTs: "222.4",
+      requiredWorkstreams: ["backend", "frontend"],
+    });
+    expect(replay.created).toBe(false);
+    expect(await store.listAssignments(result.run.id)).toHaveLength(3);
+  });
+
   it("idempotent reuse of active run on same thread", async () => {
     const store = new InMemoryPipelineStore(fakeClock(1000));
     const first = await createProductRun(cfg(store), {
