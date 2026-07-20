@@ -1321,7 +1321,15 @@ export class SessionManager {
         // so it renders as `User(Name <@ID>): text` — the same format thread
         // history uses. Without the label the model has no signal about who is
         // speaking and fills the gap from its persona/memory defaults.
-        const attributed = senderUserId
+        // Only real Slack IDs qualify: internal dispatch paths pass synthetic
+        // senders ("mcp-internal", "pipeline-internal") or the bot's own user
+        // ID, and prefixing those would emit an unresolvable pseudo-mention or
+        // label a worker's task as if Junior itself were the requester.
+        const isAttributableSender =
+          !!senderUserId &&
+          senderUserId !== this.botUserId &&
+          /^[UWB][A-Z0-9]+$/.test(senderUserId);
+        const attributed = isAttributableSender
           ? `<@${senderUserId}>: ${prompt}`
           : prompt;
         const readablePrompt = await resolveSlackMentions(
