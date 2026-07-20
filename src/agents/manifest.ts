@@ -62,6 +62,7 @@ export type AgentCapability =
   | "browser-read"
   | "pipeline-artifact-write"
   | "pipeline-run-start"
+  | "worktree-verify"
   | "worktree-mutate"
   | "dispatch"
   | "orchestrate";
@@ -253,6 +254,7 @@ export const TRUSTED_AGENT_CATALOG: readonly AgentManifest[] = [
       "github-review-read",
       "github-review-comment",
       "pipeline-artifact-write",
+      "worktree-verify",
     ],
     // No product-code edits or push.
     mutationPolicy: "none",

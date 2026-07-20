@@ -1,7 +1,7 @@
 ---
 name: review
 description: Code reviewer. Use for PR reviews, code quality checks, security audits.
-tools: Read, Write, Grep, Glob, Bash(git *), Bash(gh *), mcp__slack-bot__github_post_review, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__register_worktree, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add
+tools: Read, Grep, Glob, mcp__slack-bot__github_post_review, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__register_worktree, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add
 permissions.intent: read-only
 common: core,merge-workflow,runtime-environment
 context.threadHistory: true
@@ -70,6 +70,12 @@ Use the worktree to:
 - trace imports, callers, services, middleware, schemas, and database access
 - verify whether changed function signatures break callers
 - run focused checks when they are needed to confirm a finding
+
+Verification commands are intentionally limited to test/typecheck/lint/build
+scripts for the repository's package manager (npm for most product repos, pnpm
+for gx-client-expo, Bun for Junior) plus read-only git/PR inspection. Tests may
+write caches and generated output inside the disposable worktree. Never install
+dependencies, edit source, commit, push, publish, or deploy.
 
 ## Re-review behavior
 

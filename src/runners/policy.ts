@@ -35,11 +35,14 @@ import {
 import type { OpenCodePermissionConfig } from "../opencode/config.ts";
 import { hasCapability } from "../agents/capabilities.ts";
 import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
+import { WORKTREE_VERIFICATION_COMMAND_PATTERNS } from "../agents/verification.ts";
 
 export interface PermissionSubject {
   agentPermissions?: AgentPermissions;
   activeAgentName?: string | null;
   agentType?: string | null;
+  worktreePath?: string | null;
+  worktreePaths?: Record<string, string>;
 }
 
 /**
@@ -77,8 +80,8 @@ export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
  * - human-gated: ask on mutating tools
  * - normal / utility / null: use the configured fallback (typically "allow")
  *
- * Reviewers do not receive arbitrary Bash merely to run tests — verification
- * should go through a pipeline-owned allowlisted runner (Phase 4+).
+ * Reviewers receive granular verification commands only when a managed
+ * worktree is registered; arbitrary Bash remains denied.
  */
 export function compileOpenCodePermission(options: {
   subject: PermissionSubject;
@@ -94,6 +97,12 @@ export function compileOpenCodePermission(options: {
   )
     ? { [GITHUB_POST_REVIEW_TOOL]: "allow" }
     : {};
+  const mayVerifyWorktree =
+    hasCapability(agentName, "worktree-verify") &&
+    Boolean(
+      options.subject.worktreePath ||
+        Object.keys(options.subject.worktreePaths ?? {}).length > 0,
+    );
 
   if (intent === "no-tools") {
     return {
@@ -117,9 +126,14 @@ export function compileOpenCodePermission(options: {
       list: "allow",
       edit: "deny",
       write: "deny",
-      // Best-effort: deny shell. Review uses git/gh via provider-specific
-      // allowlists on Claude; OpenCode has no equivalent command patterns here.
-      bash: "deny",
+      bash: mayVerifyWorktree
+        ? Object.fromEntries([
+            ["*", "deny"],
+            ...WORKTREE_VERIFICATION_COMMAND_PATTERNS.map(
+              (pattern) => [pattern, "allow"],
+            ),
+          ])
+        : "deny",
       task: "deny",
       // Explicit read-safe MCP surface only — never blanket mcp__*.
       ...READ_SAFE_MCP_PERMISSIONS,

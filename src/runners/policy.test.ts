@@ -52,6 +52,26 @@ describe("compileOpenCodePermission", () => {
     });
   });
 
+  it("allows only verification bash patterns for review worktrees", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "review",
+        worktreePath: "/repo.junior-worktrees/slack-t",
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, unknown>;
+
+    expect(permission.edit).toBe("deny");
+    expect(permission.write).toBe("deny");
+    expect(permission.bash).toMatchObject({
+      "*": "deny",
+      "npm test *": "allow",
+      "pnpm test *": "allow",
+      "bun test *": "allow",
+    });
+    expect(permission.bash).not.toMatchObject({ "npm install *": "allow" });
+  });
+
   it("uses an explicit read-safe MCP allowlist for read-only roles", () => {
     const permission = compileOpenCodePermission({
       subject: {
