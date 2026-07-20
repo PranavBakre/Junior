@@ -53,7 +53,7 @@ import {
 } from "../slack/thread-context.ts";
 import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
-import { downloadSlackFiles } from "../slack/files.ts";
+import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
 import { createPreRecall, type PreRecallFn } from "../memory/pre-recall.ts";
@@ -1402,10 +1402,11 @@ export class SessionManager {
             this.config.slack.botToken,
           );
           if (filePaths.length > 0) {
+            // Match on the sanitized basename — that's what's on disk now.
             const imageNames = new Set(
               files
                 .filter((f) => f.mimetype.startsWith("image/"))
-                .map((f) => f.name.split(/[\\/]/).pop() ?? f.name),
+                .map((f) => sanitizeFileName(f.name.split(/[\\/]/).pop() ?? f.name)),
             );
             imagePaths = filePaths.filter((p) => {
               const name = p.split(/[\\/]/).pop() ?? p;

@@ -303,10 +303,13 @@ async function fetchThreadHistory(
       .map(async (m) => {
         // Extract file names from message attachments
         const files = (m as Record<string, unknown>).files;
+        // File names are user-controlled — escape them like message text so a
+        // crafted name can't forge prompt structure in the [shared file: …]
+        // annotation.
         const fileNames: string[] = Array.isArray(files)
           ? (files as Array<Record<string, unknown>>)
               .filter((f) => typeof f.name === "string")
-              .map((f) => f.name as string)
+              .map((f) => escapeBlockDelimiters(f.name as string))
           : [];
 
         const user = m.user ?? "unknown";

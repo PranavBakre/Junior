@@ -27,7 +27,7 @@ On **every turn** (first, resumed, and drain), the manager attributes the curren
 
 Attribution requires a real Slack ID (`/^[UWB][A-Z0-9]+$/`, not the bot's own user). Synthetic internal senders (`mcp-internal`, `pipeline-internal`, `junior-internal-dispatch`, pipeline-guard continuations) stay unprefixed — as single messages they arrive bare, and in drains they get a `<buffered-message>` block with no `from`.
 
-The delimiters are kept out-of-band: `escapeBlockDelimiters` rewrites `<buffered-message` / `</buffered-message>` to `&lt;…` inside all untrusted text (attributed current-message bodies, drained message bodies, and thread-history lines), so message content can never close its own block or open a forged one attributed to someone else. Mentions (`<@ID>`) in bodies are deliberately NOT escaped — resolving who a message tags is a feature; inline author-shaped text is covered by the "quoted content" instruction.
+The delimiters are kept out-of-band: `escapeBlockDelimiters` rewrites `<buffered-message` / `</buffered-message>` to `&lt;…` inside all untrusted text — attributed current-message bodies, drained message bodies, thread-history lines, display names (escaped at the source in `resolveUserName`, since they splice into labels after the body sanitizer runs), and file names (`[shared file: …]` annotations in history and archives). Downloaded Slack files additionally get `[<>"]` replaced with `_` at write time (`sanitizeFileName`), so the on-disk path echoed into the prompt is inherently clean. Mentions (`<@ID>`) in bodies are deliberately NOT escaped — resolving who a message tags is a feature; inline author-shaped text is covered by the "quoted content" instruction.
 
 ## Workspace Block
 

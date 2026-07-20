@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { WebClient } from "@slack/web-api";
 import {
+  escapeBlockDelimiters,
   resolveChannelName,
   resolveSlackMentions,
   resolveUserName,
@@ -103,7 +104,7 @@ function extractFileNames(files: unknown): string[] {
     .filter((f): f is { name: string } =>
       typeof f === "object" && f !== null && typeof (f as { name?: unknown }).name === "string",
     )
-    .map((f) => f.name);
+    .map((f) => escapeBlockDelimiters(f.name));
 }
 
 function formatTsUtc(ts: string): string {
