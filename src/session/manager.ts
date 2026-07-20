@@ -304,10 +304,14 @@ export class SessionManager {
     // engaged — an aside is side-talk, not engagement.
     if (event.command === "aside") {
       if (isHuman && event.user) {
+        const user = event.user;
         const session = await this.store.get(event.threadId);
-        if (session && !session.humanParticipants.includes(event.user)) {
-          session.humanParticipants.push(event.user);
-          await this.store.set(event.threadId, session);
+        if (session && !session.humanParticipants.includes(user)) {
+          await this.mutateSession(event.threadId, (s) => {
+            if (!s.humanParticipants.includes(user)) {
+              s.humanParticipants.push(user);
+            }
+          });
         }
       }
       this.onReaction?.(event, "eyes");
@@ -331,36 +335,36 @@ export class SessionManager {
     // summon — the sender is engaging Junior, so mark them engaged too.
     if (event.command === "listen") {
       if (session) {
-        let changed = false;
-        if (session.dormant) {
-          session.dormant = false;
-          session.needsThreadCatchup = true;
-          changed = true;
+        const user = isHuman ? event.user : undefined;
+        if (
+          session.dormant ||
+          (user && !session.engagedHumans.includes(user))
+        ) {
+          await this.mutateSession(event.threadId, (s) => {
+            if (s.dormant) {
+              s.dormant = false;
+              s.needsThreadCatchup = true;
+            }
+            if (user && !s.engagedHumans.includes(user)) {
+              s.engagedHumans.push(user);
+            }
+          });
         }
-        if (isHuman && event.user) {
-          session.engagedHumans ??= [];
-          if (!session.engagedHumans.includes(event.user)) {
-            session.engagedHumans.push(event.user);
-            changed = true;
-          }
-        }
-        if (changed) await this.store.set(event.threadId, session);
       }
       this.onReaction?.(event, "ear");
       return true;
     }
 
-    // @mention wakes a dormant thread, then falls through so the mention is
-    // processed normally.
-    if (event.mentionsJunior && session?.dormant) {
-      session.dormant = false;
-      session.needsThreadCatchup = true;
-      await this.store.set(event.threadId, session);
-    }
-
-    // Dormant after the wake check → drop silently. No state change.
+    // Dormant: an @mention wakes the thread and falls through so the mention
+    // is processed normally; anything else drops silently.
     if (session?.dormant) {
-      return true;
+      if (!event.mentionsJunior) return true;
+      await this.mutateSession(event.threadId, (s) => {
+        if (s.dormant) {
+          s.dormant = false;
+          s.needsThreadCatchup = true;
+        }
+      });
     }
 
     if (isAutoTrigger) return false;
@@ -377,18 +381,20 @@ export class SessionManager {
       session &&
       !session.dormantAnnounced &&
       !event.mentionsJunior &&
-      !(event.user && session.engagedHumans?.includes(event.user))
+      !(event.user && session.engagedHumans.includes(event.user))
     ) {
       const otherHumans = session.humanParticipants.filter(
         (u) => u !== event.user,
       );
       if (otherHumans.length > 0) {
-        session.dormant = true;
-        session.dormantAnnounced = true;
-        if (event.user && !session.humanParticipants.includes(event.user)) {
-          session.humanParticipants.push(event.user);
-        }
-        await this.store.set(event.threadId, session);
+        const user = event.user;
+        await this.mutateSession(event.threadId, (s) => {
+          s.dormant = true;
+          s.dormantAnnounced = true;
+          if (user && !s.humanParticipants.includes(user)) {
+            s.humanParticipants.push(user);
+          }
+        });
         this.onCommandResponse?.(
           event,
           "Two people are interacting here, so I’ll stop replying. @ me or use !listen to bring me back.",
@@ -401,12 +407,18 @@ export class SessionManager {
     // engaging it. Engaged humans never fire the sidebar trigger again
     // (the thread opener's first message has no session yet; that case is
     // covered by getOrCreateSession marking engagement on routed messages).
-    if (isHuman && event.user && session) {
-      session.engagedHumans ??= [];
-      if (!session.engagedHumans.includes(event.user)) {
-        session.engagedHumans.push(event.user);
-        await this.store.set(event.threadId, session);
-      }
+    if (
+      isHuman &&
+      event.user &&
+      session &&
+      !session.engagedHumans.includes(event.user)
+    ) {
+      const user = event.user;
+      await this.mutateSession(event.threadId, (s) => {
+        if (!s.engagedHumans.includes(user)) {
+          s.engagedHumans.push(user);
+        }
+      });
     }
 
     return false;
@@ -2133,32 +2145,38 @@ export class SessionManager {
       await this.store.set(event.threadId, session);
     }
 
+    // Track human participants for the attention gate. Bots — Junior, its
+    // agents, and foreign bots — are excluded by design (see gateAttention).
+    // A message reaching here routed to Junior, so the sender is also
+    // engaged — their later plain follow-ups must not trip the sidebar
+    // trigger. This covers the thread opener, whose first message passes
+    // the gate before any session row exists. Goes through mutateSession —
+    // a new participant can post while a runner turn is mid-flight, and a
+    // whole-row get→set here would revert status/sessionId.
+    const isHuman = !event.isSelfBot && !event.botId;
+    if (
+      isHuman &&
+      event.user &&
+      (!session.humanParticipants.includes(event.user) ||
+        !session.engagedHumans.includes(event.user))
+    ) {
+      const user = event.user;
+      session = await this.mutateSession(event.threadId, (s) => {
+        if (!s.humanParticipants.includes(user)) {
+          s.humanParticipants.push(user);
+        }
+        if (!s.engagedHumans.includes(user)) {
+          s.engagedHumans.push(user);
+        }
+      });
+    }
+
     session.leadSessionId ??= session.sessionId;
     session.agentSessions ??= {};
     session.provider ??= "claude";
     session.humanParticipants ??= [];
     session.engagedHumans ??= [];
     session.needsThreadCatchup ??= false;
-
-    // Track human participants for the attention gate. Bots — Junior, its
-    // agents, and foreign bots — are excluded by design (see gateAttention).
-    // A message reaching here routed to Junior, so the sender is also
-    // engaged — their later plain follow-ups must not trip the sidebar
-    // trigger. This covers the thread opener, whose first message passes
-    // the gate before any session row exists.
-    const isHuman = !event.isSelfBot && !event.botId;
-    if (isHuman && event.user) {
-      let changed = false;
-      if (!session.humanParticipants.includes(event.user)) {
-        session.humanParticipants.push(event.user);
-        changed = true;
-      }
-      if (!session.engagedHumans.includes(event.user)) {
-        session.engagedHumans.push(event.user);
-        changed = true;
-      }
-      if (changed) await this.store.set(event.threadId, session);
-    }
 
     return session;
   }
