@@ -119,6 +119,7 @@ describe("createSession", () => {
       "dormant",
       "dormantAnnounced",
       "driverMode",
+      "engagedHumans",
       "humanParticipants",
       "idleInterruptCount",
       "lastActivity",
@@ -168,6 +169,11 @@ describe("createSession", () => {
   it("has humanParticipants as empty array by default", () => {
     const session = createSession("t1", "C01");
     expect(session.humanParticipants).toEqual([]);
+  });
+
+  it("has engagedHumans as empty array by default", () => {
+    const session = createSession("t1", "C01");
+    expect(session.engagedHumans).toEqual([]);
   });
 });
 

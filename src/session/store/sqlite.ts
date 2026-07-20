@@ -554,13 +554,14 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   session.driverMode ??= "headless";
   session.tmuxSessionName ??= null;
   session.topLevelTmuxAgent ??= null;
-  // Migration: dormant / dormantAnnounced / humanParticipants added for the
-  // attention gate. Pre-existing sessions default to "awake, never announced,
-  // no recorded participants" — they re-accumulate naturally as new messages
-  // arrive.
+  // Migration: dormant / dormantAnnounced / humanParticipants /
+  // engagedHumans added for the attention gate. Pre-existing sessions
+  // default to "awake, never announced, no recorded participants" — they
+  // re-accumulate naturally as new messages arrive.
   session.dormant ??= false;
   session.dormantAnnounced ??= false;
   session.humanParticipants ??= [];
+  session.engagedHumans ??= [];
   session.pipelineGuardRetryCount ??= 0;
   session.stateVersion ??= 0;
   // Pipeline substrate (Phase 2): pre-existing rows default to no active run.

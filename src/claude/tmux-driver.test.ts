@@ -37,6 +37,7 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     needsThreadCatchup: false,
     dormantAnnounced: false,
     humanParticipants: [],
+    engagedHumans: [],
     ...overrides,
   };
 }

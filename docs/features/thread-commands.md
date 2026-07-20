@@ -123,7 +123,7 @@ The problem this solves: a thread that started with Junior often turns into a hu
 
 - `!aside [text]` — drop the current message before it reaches any agent. React with 👀 so the user knows it landed; do not spawn Claude. Anyone in the thread. Cheap, no state change.
 
-- **Auto-dormant trigger** — when a human posts a message that does NOT @mention Junior AND at least one other human has already posted in the thread, set `session.dormant = true`, post a single notice to the thread:
+- **Auto-dormant trigger** — when a human who has never directly engaged Junior in this thread posts a message that does NOT @mention Junior AND at least one other human has already posted in the thread, set `session.dormant = true`, post a single notice to the thread:
   > Two people are interacting here, so I’ll stop replying. @ me or use !listen to bring me back.
 
   After that, drop every message in the thread except:
@@ -131,17 +131,19 @@ The problem this solves: a thread that started with Junior often turns into a hu
     - `!aside` (still works — it's a no-op anyway)
     - any message that @mentions Junior (wake)
 
-  Track `humanParticipants: string[]` on the session — append on every human message (not Junior, not its agents, not other bots). Decision rule: if the set already contains a user other than the current sender AND the current message doesn't @mention Junior → go dormant.
+  Track `humanParticipants: string[]` on the session — append on every human message (not Junior, not its agents, not other bots). Also track `engagedHumans: string[]` — the subset who have directly engaged Junior: their message @mentioned it, routed to a runner turn, or they summoned it with `!listen`. Decision rule: if the set already contains a user other than the current sender AND the current message doesn't @mention Junior AND the sender has never engaged Junior → go dormant.
+
+  The engagement check is what keeps a genuinely mixed conversation alive: once a second human @mentions Junior (or Junior has been replying to them), their plain follow-ups — and the first human's — are continuation of a conversation *with* Junior, not a sidebar. Without it the very next untagged message after Junior replies would falsely trip the trigger. `!aside` posters and the sender whose sidebar message fired the trigger are participants but never engaged, so a lurker who only whispered asides still trips the gate with their first real message.
 
 - `!listen` — set `session.dormant = false`, react with 👂 (or post a short ack). Anyone in the thread.
 
 - **Bot identity rule** — Junior and its agents (lead, reproducer, thinker, scotty, uhura, bones, etc.) share the same Slack `bot_id` and are never participants. Other bots (Friday, Doraemon, CI webhooks, foreign assistants) are not counted either — they're not conversation partners.
 
-**Persistence:** `dormant: boolean` and `humanParticipants: string[]` are columns on the `sessions` table in SQLite. Survives restart so a dormant thread doesn't auto-resume on bot bounce.
+**Persistence:** `dormant: boolean`, `humanParticipants: string[]`, and `engagedHumans: string[]` persist on the session row in SQLite. Survives restart so a dormant thread doesn't auto-resume on bot bounce.
 
 **Wake by @mention:** `app_mention` events always wake the thread before routing. The mention itself is the explicit "I'm talking to you again" signal.
 
-**Test:** Thread with one human + Junior — chats freely, never goes dormant. Second human joins and @mentions Junior — wakes (no-op, wasn't dormant). Second human posts without mention while first human is also present — dormant, notice posted once. Subsequent messages dropped silently. `!listen` from either human — wakes, next message routes normally. `!aside fyi I have to step out` — dropped, 👀 reaction, thread state unchanged.
+**Test:** Thread with one human + Junior — chats freely, never goes dormant. Second human joins and @mentions Junior — wakes (no-op, wasn't dormant), and their untagged follow-ups keep routing (engaged) — as do the first human's. Second never-engaged human posts without mention while first human is also present — dormant, notice posted once. Subsequent messages dropped silently. `!listen` from either human — wakes, next message routes normally. `!aside fyi I have to step out` — dropped, 👀 reaction, thread state unchanged.
 
 **Defers:** Per-user wake (only the thread owner can `!listen`), time-based auto-wake, configurable trigger threshold.
 
