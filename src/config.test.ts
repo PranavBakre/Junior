@@ -47,6 +47,16 @@ const ENV_KEYS = [
   "ADMIN_SLACK_USER_ID",
   "HTTP_DASHBOARD_PORT",
   "WHATSAPP_GROUP_PATTERN",
+  "PIPELINE_RUNTIME_MODE",
+  "PIPELINE_LEGACY_DIRECTIVES_ENABLED",
+  "PIPELINE_RETENTION_DAYS",
+  "BUG_PIPELINE_ENABLED",
+  "PRODUCT_PIPELINE_ENABLED",
+  "GITHUB_RECONCILE_ENABLED",
+  "GITHUB_EVENT_WAKE_ENABLED",
+  "GITHUB_RECONCILE_TOKEN",
+  "GITHUB_RECONCILE_USE_CLI",
+  "GITHUB_RECONCILE_INTERVAL_MS",
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -159,6 +169,94 @@ describe("loadConfig runner providers", () => {
 
     expect(() => loadConfig()).toThrow(
       "RUNNER_PROVIDER=codex is a planned provider but is not yet implemented. Use opencode|opencode-sdk|codex-app-server|claude.",
+    );
+  });
+
+  it("defaults PIPELINE_RUNTIME_MODE to off", () => {
+    expect(loadConfig().pipeline?.runtimeMode).toBe("off");
+  });
+
+  it("defaults PIPELINE_LEGACY_DIRECTIVES_ENABLED to true", () => {
+    expect(loadConfig().pipeline?.legacyDirectivesEnabled).toBe(true);
+  });
+
+  it("defaults controllers OFF and retention to 90 days", () => {
+    const pipeline = loadConfig().pipeline;
+    expect(pipeline?.bugPipelineEnabled).toBe(false);
+    expect(pipeline?.productPipelineEnabled).toBe(false);
+    expect(pipeline?.retentionDays).toBe(90);
+  });
+
+  it("parses PIPELINE_RUNTIME_MODE=shadow", () => {
+    process.env.PIPELINE_RUNTIME_MODE = "shadow";
+    expect(loadConfig().pipeline?.runtimeMode).toBe("shadow");
+  });
+
+  it("parses PIPELINE_LEGACY_DIRECTIVES_ENABLED=false", () => {
+    process.env.PIPELINE_LEGACY_DIRECTIVES_ENABLED = "false";
+    expect(loadConfig().pipeline?.legacyDirectivesEnabled).toBe(false);
+  });
+
+  it("rejects invalid PIPELINE_RUNTIME_MODE", () => {
+    process.env.PIPELINE_RUNTIME_MODE = "maybe";
+    expect(() => loadConfig()).toThrow("Invalid PIPELINE_RUNTIME_MODE");
+  });
+
+  it("rejects BUG_PIPELINE_ENABLED without active mode", () => {
+    process.env.BUG_PIPELINE_ENABLED = "true";
+    process.env.PIPELINE_RUNTIME_MODE = "off";
+    expect(() => loadConfig()).toThrow(
+      "BUG_PIPELINE_ENABLED or PRODUCT_PIPELINE_ENABLED requires PIPELINE_RUNTIME_MODE=active",
+    );
+  });
+
+  it("rejects PRODUCT_PIPELINE_ENABLED in shadow mode", () => {
+    process.env.PRODUCT_PIPELINE_ENABLED = "true";
+    process.env.PIPELINE_RUNTIME_MODE = "shadow";
+    expect(() => loadConfig()).toThrow(
+      "BUG_PIPELINE_ENABLED or PRODUCT_PIPELINE_ENABLED requires PIPELINE_RUNTIME_MODE=active",
+    );
+  });
+
+  it("accepts controllers when PIPELINE_RUNTIME_MODE=active", () => {
+    process.env.PIPELINE_RUNTIME_MODE = "active";
+    process.env.BUG_PIPELINE_ENABLED = "true";
+    process.env.PRODUCT_PIPELINE_ENABLED = "true";
+    process.env.PIPELINE_RETENTION_DAYS = "30";
+    const pipeline = loadConfig().pipeline;
+    expect(pipeline?.runtimeMode).toBe("active");
+    expect(pipeline?.bugPipelineEnabled).toBe(true);
+    expect(pipeline?.productPipelineEnabled).toBe(true);
+    expect(pipeline?.retentionDays).toBe(30);
+  });
+
+  it("defaults GitHub reconcile OFF and wakes OFF", () => {
+    const config = loadConfig();
+    expect(config.github).toEqual({
+      reconcileEnabled: false,
+      eventWakeEnabled: false,
+      reconcileToken: null,
+      reconcileUseCli: false,
+      reconcileIntervalMs: 30000,
+    });
+  });
+
+  it("parses GitHub reconcile settings", () => {
+    process.env.GITHUB_RECONCILE_ENABLED = "true";
+    process.env.GITHUB_RECONCILE_TOKEN = " ghp_readonly ";
+    process.env.GITHUB_RECONCILE_INTERVAL_MS = "45000";
+    const config = loadConfig();
+    expect(config.github?.reconcileEnabled).toBe(true);
+    expect(config.github?.eventWakeEnabled).toBe(false);
+    expect(config.github?.reconcileToken).toBe("ghp_readonly");
+    expect(config.github?.reconcileIntervalMs).toBe(45000);
+  });
+
+  it("rejects wakes without reconcile", () => {
+    process.env.GITHUB_EVENT_WAKE_ENABLED = "true";
+    process.env.GITHUB_RECONCILE_ENABLED = "false";
+    expect(() => loadConfig()).toThrow(
+      "GITHUB_EVENT_WAKE_ENABLED=true requires GITHUB_RECONCILE_ENABLED=true",
     );
   });
 

@@ -58,7 +58,7 @@ function seedStore(store: WhatsAppStore): void {
 
 /** Authorized baseline: admin-only DM with a live session lookup. */
 const ADMIN_DM_AUTH: WhatsAppToolAuth = {
-  runContext: { agent: "default", channel: "D_ADMIN_DM", threadId: "171.001" },
+  runContext: { agent: "default", channel: "D_ADMIN_DM", threadId: "171.001", signed: false },
   isAdmin: async (u) => u === "U_ADMIN",
   getSession: async () => ({ channel: "D_ADMIN_DM", humanParticipants: ["U_ADMIN"] }),
 };
@@ -251,8 +251,8 @@ describe("whatsapp MCP tool authorization", () => {
     return captured.tools;
   }
 
-  const dmContext = { agent: "default", channel: "D_ADMIN_DM", threadId: "171.001" };
-  const channelContext = { agent: "default", channel: "C_GENERAL", threadId: "171.001" };
+  const dmContext = { agent: "default", channel: "D_ADMIN_DM", threadId: "171.001", signed: false };
+  const channelContext = { agent: "default", channel: "C_GENERAL", threadId: "171.001", signed: false };
 
   async function callAll(tools: Map<string, ToolHandler>): Promise<string[]> {
     const out: string[] = [];

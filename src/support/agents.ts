@@ -1,4 +1,12 @@
 import { loadAgentDefinition } from "../agents/loader.ts";
+import {
+  isCatalogAgent,
+  isCatalogOrchestrator,
+  listCatalogAgents,
+  registryAllowsHandoff,
+  resolveAgentManifest,
+  type OrchestratorContext,
+} from "../agents/registry.ts";
 import { log } from "../logger.ts";
 import type { AgentIdentity } from "../session/types.ts";
 
@@ -177,13 +185,75 @@ export function workerMayDispatch(
 }
 
 /**
+ * Whether `source` may dispatch/hand off to `target`.
+ *
+ * Prefers the trusted catalog handoff graph when the source is registered.
+ * Falls back to legacy orchestrator power / WORKER_DISPATCH_ALLOW so
+ * pre-catalog sessions (e.g. thinker) and overlay-only workers keep working.
+ *
+ * Slack directive routing still uses `dispatchableAgentsFor` +
+ * `workerMayDispatch` (legacy-authoritative) until pipeline mode activates
+ * typed handoffs. This function is the forward path for internal/pipeline use.
+ */
+export function canDispatch(
+  sourceAgent: string,
+  targetAgent: string,
+  context: OrchestratorContext = "default",
+): boolean {
+  ensureShadowResolve();
+
+  if (targetAgent === "human") {
+    // Any known role may escalate to a human.
+    if (resolveAgentManifest(sourceAgent)) return true;
+    if (isOrchestratorAgent(sourceAgent)) return true;
+    return workerMayDispatch(sourceAgent, targetAgent);
+  }
+
+  const sourceManifest = resolveAgentManifest(sourceAgent);
+  if (sourceManifest) {
+    if (registryAllowsHandoff(sourceAgent, targetAgent, context)) {
+      return true;
+    }
+    // Catalog source with no matching edge: fail closed for catalog targets.
+    // Overlay-only targets (registered in AGENT_IDENTITIES but not catalog)
+    // remain dispatchable by orchestrators via the legacy path below.
+    if (isCatalogAgent(targetAgent)) {
+      return false;
+    }
+    if (isCatalogOrchestrator(sourceAgent) || isOrchestratorAgent(sourceAgent)) {
+      return (
+        isPersistentAgent(targetAgent) &&
+        !isOrchestratorAgent(targetAgent) &&
+        targetAgent !== "echo"
+      );
+    }
+    return false;
+  }
+
+  // Legacy / non-catalog source.
+  if (isOrchestratorAgent(sourceAgent)) {
+    return (
+      (isPersistentAgent(targetAgent) || isCatalogAgent(targetAgent)) &&
+      !isOrchestratorAgent(targetAgent) &&
+      targetAgent !== "echo"
+    );
+  }
+  return workerMayDispatch(sourceAgent, targetAgent);
+}
+
+/**
  * Persistent agents this agent may dispatch via `!<agent>`. Lead may dispatch
  * any registered persistent agent; workers are restricted to
  * WORKER_DISPATCH_ALLOW. Returns an empty array for agents with no dispatch
  * capability — they should re-route requests through lead (e.g. via plain
  * commentary that lead's next turn reads).
+ *
+ * Legacy-authoritative for Slack routing. Pipeline code should prefer
+ * `canDispatch` + the trusted catalog handoff graph.
  */
 export function dispatchableAgentsFor(agentName: string): string[] {
+  ensureShadowResolve();
+
   if (isOrchestratorAgent(agentName)) {
     // Orchestrators (lead, default Junior) may dispatch any registered worker.
     // Exclude self, the other orchestrator, and echo.
@@ -193,6 +263,92 @@ export function dispatchableAgentsFor(agentName: string): string[] {
   }
   const allow = WORKER_DISPATCH_ALLOW[agentName];
   return allow ? [...allow] : [];
+}
+
+let shadowResolved = false;
+
+/**
+ * Shadow-resolve the trusted catalog against legacy AGENT_IDENTITIES /
+ * ORCHESTRATOR_AGENTS / WORKER_DISPATCH_ALLOW and log differences. Legacy
+ * constants remain authoritative for Slack routing until pipeline activation.
+ */
+export function ensureShadowResolve(): void {
+  if (shadowResolved) return;
+  shadowResolved = true;
+  shadowResolveAgentCatalog();
+}
+
+/** Test helper — reset the once-flag so shadow resolve can re-run. */
+export function resetShadowResolveForTests(): void {
+  shadowResolved = false;
+}
+
+export function shadowResolveAgentCatalog(): void {
+  const divergences: string[] = [];
+
+  // Orchestrator set: every catalog orchestrator should be in ORCHESTRATOR_AGENTS
+  // and every legacy orchestrator should resolve in the catalog (junior aliases).
+  for (const manifest of listCatalogAgents()) {
+    if (manifest.role !== "orchestrator") continue;
+    if (!isOrchestratorAgent(manifest.name)) {
+      divergences.push(
+        `catalog orchestrator "${manifest.name}" missing from ORCHESTRATOR_AGENTS`,
+      );
+    }
+  }
+  for (const name of ["lead", "default", "junior"] as const) {
+    if (isOrchestratorAgent(name) && !isCatalogOrchestrator(name) && name !== "junior") {
+      divergences.push(
+        `legacy orchestrator "${name}" missing from trusted catalog`,
+      );
+    }
+    if (name === "junior" && isOrchestratorAgent(name) && !resolveAgentManifest("junior")) {
+      divergences.push(`legacy orchestrator alias "junior" missing from catalog aliases`);
+    }
+  }
+
+  // Identity coverage: catalog roles that post to Slack should have identities.
+  // Product roles (pm/architect/build/frontend) intentionally may lack public
+  // Slack identities — they are internal/pipeline dispatch targets.
+  const slackFacing = new Set(["default", "lead", "review", "reproducer"]);
+  for (const name of slackFacing) {
+    if (!AGENT_IDENTITIES[name]) {
+      divergences.push(`slack-facing catalog agent "${name}" missing AGENT_IDENTITIES entry`);
+    }
+  }
+
+  // Handoff edges: log catalog edges that legacy worker allow-list lacks, and
+  // legacy edges the catalog does not know about.
+  for (const manifest of listCatalogAgents()) {
+    if (manifest.role === "orchestrator") continue;
+    for (const target of manifest.handoffPolicy.mayDelegateTo) {
+      if (target === "human" || target === "orchestrator") continue;
+      const legacyAllows = workerMayDispatch(manifest.name, target);
+      const registryAllows = registryAllowsHandoff(manifest.name, target);
+      if (registryAllows && !legacyAllows) {
+        divergences.push(
+          `handoff ${manifest.name}→${target}: catalog allows, legacy WORKER_DISPATCH_ALLOW denies (shadow)`,
+        );
+      }
+    }
+  }
+  for (const [source, targets] of Object.entries(WORKER_DISPATCH_ALLOW)) {
+    for (const target of targets) {
+      if (resolveAgentManifest(source) && !registryAllowsHandoff(source, target)) {
+        divergences.push(
+          `handoff ${source}→${target}: legacy allows, catalog denies (shadow)`,
+        );
+      }
+    }
+  }
+
+  if (divergences.length === 0) {
+    log.info("agents", "shadow-resolve: trusted catalog matches legacy constants");
+    return;
+  }
+  for (const line of divergences) {
+    log.info("agents", `shadow-resolve: ${line}`);
+  }
 }
 
 /**

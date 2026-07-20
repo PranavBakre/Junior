@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import type { AgentIdentity, ThreadSession } from "../session/types.ts";
+import type { AgentIdentity, RunnerProvider, ThreadSession } from "../session/types.ts";
 
 export interface RunnerRuntimeOptions {
   session: ThreadSession;
@@ -12,6 +12,36 @@ export interface RunnerRuntime {
   cwd: string;
   needsProjectMcp: boolean;
   env: Record<string, string>;
+}
+
+/**
+ * Whether this provider invocation will resume a prior model session.
+ *
+ * Prompt construction must inject bounded thread/assignment/artifact/memory
+ * context whenever this returns false — a stored session ID alone is not proof
+ * of resume when the provider has continuity disabled (OpenCode default).
+ */
+export function willResume(options: {
+  provider: RunnerProvider;
+  sessionId: string | null | undefined;
+  opencodeContinuityEnabled: boolean;
+}): boolean {
+  const sessionId = options.sessionId?.trim();
+  if (!sessionId) return false;
+
+  switch (options.provider) {
+    case "opencode":
+    case "opencode-sdk":
+      return options.opencodeContinuityEnabled;
+    case "claude":
+    case "codex":
+    case "codex-app-server":
+      return true;
+    default: {
+      const _exhaustive: never = options.provider;
+      return _exhaustive;
+    }
+  }
 }
 
 export function buildRunnerRuntime(options: RunnerRuntimeOptions): RunnerRuntime {

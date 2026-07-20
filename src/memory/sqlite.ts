@@ -220,7 +220,11 @@ export class SqliteMemoryStore implements MemoryStore {
     const where: string[] = ["active = 1"];
     const params: (string | number)[] = [];
     if (filters.repo) {
-      where.push("repo = ?");
+      if (filters.repoIncludeGlobal) {
+        where.push("(repo = ? OR repo IS NULL)");
+      } else {
+        where.push("repo = ?");
+      }
       params.push(filters.repo);
     }
     if (filters.kind) {

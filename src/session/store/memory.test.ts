@@ -1,6 +1,24 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { InMemorySessionStore } from "./memory.ts";
-import { createSession } from "../types.ts";
+import { SessionVersionConflictError } from "./interface.ts";
+import { createSession, type AgentSession } from "../types.ts";
+
+function makeAgent(
+  name: string,
+  overrides: Partial<AgentSession> = {},
+): AgentSession {
+  return {
+    agentName: name,
+    provider: "claude",
+    sessionId: null,
+    status: "idle",
+    pendingMessages: [],
+    lastActivity: Date.now(),
+    pid: null,
+    stateVersion: 0,
+    ...overrides,
+  };
+}
 
 describe("InMemorySessionStore", () => {
   let store: InMemorySessionStore;
@@ -102,5 +120,113 @@ describe("InMemorySessionStore", () => {
     expect(recent.size).toBe(1);
     expect(recent.has("fresh")).toBe(true);
     expect(recent.has("stale")).toBe(false);
+  });
+
+  it("increments stateVersion on set and mutateThread", async () => {
+    const session = createSession("thread-1", "channel-1");
+    await store.set("thread-1", session);
+    const v1 = await store.get("thread-1");
+    expect(v1!.stateVersion).toBe(1);
+
+    await store.mutateThread("thread-1", (s) => {
+      s.status = "busy";
+    });
+    const v2 = await store.get("thread-1");
+    expect(v2!.stateVersion).toBe(2);
+    expect(v2!.status).toBe("busy");
+  });
+
+  it("concurrent mutateThread on same thread preserves both agents", async () => {
+    await store.set("thread-1", createSession("thread-1", "channel-1"));
+
+    await Promise.all([
+      store.mutateThread("thread-1", async (s) => {
+        // Yield so both mutators are in flight before either commits.
+        await Promise.resolve();
+        s.agentSessions.review = makeAgent("review", { status: "busy" });
+      }),
+      store.mutateThread("thread-1", async (s) => {
+        await Promise.resolve();
+        s.agentSessions.reproducer = makeAgent("reproducer", {
+          status: "busy",
+        });
+      }),
+    ]);
+
+    const retrieved = await store.get("thread-1");
+    expect(Object.keys(retrieved!.agentSessions).sort()).toEqual([
+      "reproducer",
+      "review",
+    ]);
+  });
+
+  it("concurrent session-id persist and pending-message append both survive", async () => {
+    const session = createSession("thread-1", "channel-1");
+    session.agentSessions.review = makeAgent("review", { status: "busy" });
+    await store.set("thread-1", session);
+
+    await Promise.all([
+      store.mutateThread("thread-1", (s) => {
+        s.agentSessions.review.sessionId = "review-session-42";
+      }),
+      store.mutateThread("thread-1", (s) => {
+        s.agentSessions.review.pendingMessages.push({
+          user: "U9",
+          text: "follow-up",
+          ts: "9.9",
+        });
+      }),
+    ]);
+
+    const retrieved = await store.get("thread-1");
+    expect(retrieved!.agentSessions.review.sessionId).toBe("review-session-42");
+    expect(retrieved!.agentSessions.review.pendingMessages).toEqual([
+      { user: "U9", text: "follow-up", ts: "9.9" },
+    ]);
+  });
+
+  it("stale CAS throws SessionVersionConflictError; mutateThread retries succeed", async () => {
+    await store.set("thread-1", createSession("thread-1", "channel-1"));
+    const current = await store.get("thread-1");
+    expect(current!.stateVersion).toBe(1);
+
+    expect(() => {
+      store.casSet(
+        "thread-1",
+        createSession("thread-1", "channel-1"),
+        /*expectedVersion*/ 0,
+      );
+    }).toThrow(SessionVersionConflictError);
+
+    const updated = await store.mutateThread("thread-1", (s) => {
+      s.status = "busy";
+    });
+    expect(updated.status).toBe("busy");
+    expect(updated.stateVersion).toBe(2);
+  });
+
+  it("mutateThread throws when session is missing", async () => {
+    await expect(
+      store.mutateThread("missing", (s) => {
+        s.status = "busy";
+      }),
+    ).rejects.toThrow("session not found: missing");
+  });
+
+  it("mutateAgent updates one agent without dropping siblings", async () => {
+    const session = createSession("thread-1", "channel-1");
+    session.agentSessions.review = makeAgent("review", { status: "busy" });
+    session.agentSessions.reproducer = makeAgent("reproducer", {
+      status: "idle",
+    });
+    await store.set("thread-1", session);
+
+    await store.mutateAgent("thread-1", "review", (agent) => {
+      agent.status = "done";
+    });
+
+    const retrieved = await store.get("thread-1");
+    expect(retrieved!.agentSessions.review.status).toBe("done");
+    expect(retrieved!.agentSessions.reproducer.status).toBe("idle");
   });
 });

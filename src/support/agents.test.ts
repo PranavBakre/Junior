@@ -5,10 +5,13 @@ import {
   AGENT_IDENTITIES,
   agentForUsername,
   buildDispatchAllowBlock,
+  canDispatch,
   dispatchableAgentsFor,
   isOrchestratorAgent,
   loadOverlayIdentities,
   registerAgentIdentity,
+  resetShadowResolveForTests,
+  shadowResolveAgentCatalog,
   workerMayDispatch,
 } from "./agents.ts";
 
@@ -102,6 +105,58 @@ describe("workerMayDispatch", () => {
 
   it("blocks unknown source agents", () => {
     expect(workerMayDispatch("unknown", "review")).toBe(false);
+  });
+});
+
+describe("canDispatch (catalog-preferring)", () => {
+  it("uses the trusted handoff graph for catalog sources", () => {
+    expect(canDispatch("pm", "architect")).toBe(true);
+    expect(canDispatch("pm", "build")).toBe(true);
+    expect(canDispatch("architect", "frontend")).toBe(true);
+    expect(canDispatch("build", "frontend")).toBe(true);
+    expect(canDispatch("frontend", "build")).toBe(true);
+    expect(canDispatch("review", "build")).toBe(true);
+    expect(canDispatch("reproducer", "review")).toBe(true);
+    expect(canDispatch("review", "reproducer")).toBe(false);
+    expect(canDispatch("pm", "review")).toBe(false);
+  });
+
+  it("resolves symbolic orchestrator by context", () => {
+    expect(canDispatch("pm", "orchestrator", "support")).toBe(true);
+    expect(canDispatch("pm", "lead", "support")).toBe(true);
+    expect(canDispatch("pm", "default", "default")).toBe(true);
+  });
+
+  it("always allows human escalation for catalog roles", () => {
+    expect(canDispatch("review", "human")).toBe(true);
+    expect(canDispatch("build", "human")).toBe(true);
+  });
+
+  it("falls back to legacy WORKER_DISPATCH_ALLOW for thinker", () => {
+    // thinker is not in the catalog — legacy path only.
+    expect(canDispatch("thinker", "review")).toBe(true);
+    expect(canDispatch("thinker", "reproducer")).toBe(true);
+    expect(canDispatch("thinker", "build")).toBe(false);
+  });
+
+  it("lets orchestrators dispatch overlay workers via legacy identity registry", () => {
+    const key = "overlay-can-dispatch-test";
+    registerAgentIdentity(key, {
+      username: "OverlayCanDispatch",
+      iconEmoji: ":test_tube:",
+    });
+    try {
+      expect(canDispatch("lead", key)).toBe(true);
+      expect(canDispatch("default", key)).toBe(true);
+    } finally {
+      delete AGENT_IDENTITIES[key];
+    }
+  });
+
+  it("shadow-resolve is idempotent and does not throw", () => {
+    resetShadowResolveForTests();
+    expect(() => shadowResolveAgentCatalog()).not.toThrow();
+    expect(() => shadowResolveAgentCatalog()).not.toThrow();
   });
 });
 

@@ -47,7 +47,8 @@ Junior validates the JSON, strips it from the Slack-visible text, renders Slack 
 - `cleanup_worktree` may be clicked by any thread participant.
 - Worktree cleanup refuses tracked changes and unknown untracked files.
 - Cleanup may proceed when the only untracked paths are `learnings.md`, `.codex/`, `.claude/`, or `.DS_Store`.
-- `review: approved` triggers automatic safe worktree cleanup.
+- `review: approved` does **not** automatically clean up worktrees. Cleanup is explicit via the Cleanup worktree button (or a later terminal-pipeline transition). Merge/retry buttons stay available after approval.
+- Mutating PR actions (`review:merge-gxt-admin`) require a complete structured `resourceAnchor` (`repo`, `prNumber`, `headSha`, `expectedBase`). Generic merge buttons without an exact anchor are not rendered.
 
 ## Action Types
 

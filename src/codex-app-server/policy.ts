@@ -1,5 +1,8 @@
 import type { Config } from "../config.ts";
-import type { AgentPermissions } from "../agents/loader.ts";
+import {
+  resolveEffectivePermissionIntent,
+  type AgentPermissions,
+} from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
 
 export type CodexApprovalPolicy = "untrusted" | "on-request" | "never";
@@ -20,6 +23,12 @@ export interface CodexRunPolicy {
   mcpAllowed: boolean;
 }
 
+/**
+ * Maps a Junior agent's permission *intent* onto the Codex app-server
+ * approval/sandbox surface. Intent resolution is provider-neutral
+ * (`resolveEffectivePermissionIntent` → trusted catalog). Prefer
+ * `compileCodexPolicy` from `src/runners/policy.ts` as the shared entry point.
+ */
 export function mapCodexRunPolicy(options: {
   config: Config["codex"];
   session: ThreadSession;
@@ -27,7 +36,10 @@ export function mapCodexRunPolicy(options: {
 }): CodexRunPolicy {
   const { config, session, cwd } = options;
   const permissions: AgentPermissions | undefined = session.agentPermissions;
-  const intent = permissions?.intent ?? null;
+  const intent = resolveEffectivePermissionIntent(
+    permissions,
+    session.activeAgentName ?? session.agentType,
+  );
 
   if (intent === "read-only" || intent === "no-tools") {
     return {
@@ -39,10 +51,15 @@ export function mapCodexRunPolicy(options: {
   }
 
   if (intent === "human-gated") {
+    // Read-only sandbox, NOT workspace-write: with a writable workspace and
+    // `on-request`, ordinary in-workspace edits never trigger an approval —
+    // the sandbox permits them and the model only asks when IT chooses. A
+    // read-only jail makes every mutation an explicit escalation request,
+    // which is the human gate this intent advertises.
     return {
       approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-      sandboxPolicy: workspaceWritePolicy(cwd),
+      sandbox: "read-only",
+      sandboxPolicy: { type: "readOnly" },
       mcpAllowed: !session.cwd,
     };
   }

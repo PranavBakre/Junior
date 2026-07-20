@@ -99,6 +99,12 @@ export interface ClaimInput {
 
 export interface ClaimRecallFilters {
   repo?: string;
+  /**
+   * With `repo` set, also include repo-less (global) claims — "this repo or
+   * global, never other repos". Without `repo`, has no effect. Used by
+   * pre-recall scoping, where excluding global lessons would gut recall.
+   */
+  repoIncludeGlobal?: boolean;
   kind?: ClaimKind;
   tags?: string[];
   /** Absolute epoch-ms lower bound: only claims with created_at >= sinceMs. */

@@ -53,6 +53,15 @@ import { prepareSlackResponseWithActions, type SlackActionButtonSpec } from "../
 import { buildActionBlocks, splitActionMessageText } from "../slack/responder.ts";
 import type { SlackActionStore } from "../slack/action-store.ts";
 import { disableAgentActionMessages } from "../slack/action-buttons.ts";
+import type { PipelineToolRuntime } from "../pipelines/tools.ts";
+import {
+  pipelineGetState,
+  pipelineRegisterPr,
+  pipelineReportOutcome,
+  pipelineRequestHandoff,
+  pipelineRunCheck,
+  pipelineWriteArtifact,
+} from "../pipelines/tools.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -95,6 +104,12 @@ let sessionStore: SessionStore | undefined;
 let worktreeManager: WorktreeManager | undefined;
 let sessionManager: SessionManager | undefined;
 let slackActionStore: SlackActionStore | undefined;
+let pipelineRuntime: PipelineToolRuntime | undefined;
+
+/** Inject pipeline tool runtime (store + mode). Called from boot or tests. */
+export function setPipelineRuntime(runtime: PipelineToolRuntime | undefined): void {
+  pipelineRuntime = runtime;
+}
 
 function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
   registerWhatsAppTools(server, {
@@ -854,6 +869,224 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
+  // -------------------------------------------------------------------------
+  // Pipeline control-plane tools (Phase 4). Authenticated via MCP run context.
+  // When PIPELINE_RUNTIME_MODE=off, mutating tools return disabled; get_state
+  // still answers with empty/not-found.
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    "pipeline_get_state",
+    {
+      description:
+        "Read the durable pipeline run state for the current Slack thread (or a run_id). " +
+        "Returns phase, assignments, outbox, and registered GitHub resources. Safe when pipeline mode is off (empty).",
+      inputSchema: {
+        run_id: z.string().optional().describe("Pipeline run id (defaults to active run for this thread)"),
+      },
+    },
+    async ({ run_id }) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: true,
+                runtimeMode: "off",
+                run: null,
+                message: "pipeline runtime not configured",
+              }),
+            },
+          ],
+        };
+      }
+      return pipelineGetState(pipelineRuntime, runContext, { run_id });
+    },
+  );
+
+  server.registerTool(
+    "pipeline_report_outcome",
+    {
+      description:
+        "Report a structured agent outcome (continue_self|handoff|wait|escalate|complete). " +
+        "Runtime validates authority, state version, edges, and budgets; returns an explicit receipt.",
+      inputSchema: {
+        outcome: z
+          .record(z.string(), z.unknown())
+          .describe("AgentOutcome object (assignmentId, expectedRunVersion, action, status, reason, progressFingerprint, ...)"),
+        to_phase: z.string().optional().describe("Optional phase advance"),
+        idempotency_key: z.string().optional().describe("Duplicate-safe idempotency key"),
+      },
+    },
+    async ({ outcome, to_phase, idempotency_key }) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: "pipeline runtime disabled (PIPELINE_RUNTIME_MODE=off)",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return pipelineReportOutcome(pipelineRuntime, runContext, {
+        outcome,
+        to_phase,
+        idempotency_key,
+      });
+    },
+  );
+
+  server.registerTool(
+    "pipeline_request_handoff",
+    {
+      description:
+        "Request a typed handoff to another agent. Runtime validates the handoff graph and returns a receipt. " +
+        "Successor work is enqueued on the durable outbox (not Slack-as-bus).",
+      inputSchema: {
+        assignment_id: z.string().describe("Current assignment id"),
+        expected_run_version: z.number().describe("CAS expected run state_version"),
+        target_agent: z.string().describe("Target agent name (e.g. architect, build, review)"),
+        objective: z.string().describe("Objective for the successor assignment"),
+        reason: z.string().describe("Why the handoff is requested"),
+        progress_fingerprint: z.string().describe("Progress fingerprint for loop policy"),
+        idempotency_key: z.string().describe("Shared idempotency key"),
+        evidence_refs: z.array(z.string()).optional(),
+        artifact_refs: z.array(z.string()).optional(),
+        acceptance_criteria: z.array(z.string()).optional(),
+        to_phase: z.string().optional(),
+        candidate_revision_digest: z.string().optional(),
+      },
+    },
+    async (args) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: "pipeline runtime disabled (PIPELINE_RUNTIME_MODE=off)",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return pipelineRequestHandoff(pipelineRuntime, runContext, args);
+    },
+  );
+
+  server.registerTool(
+    "pipeline_write_artifact",
+    {
+      description:
+        "Write a pipeline-owned artifact under data/pipelines/<runId>/ (or an assignment-registered path). " +
+        "Path traversal outside those roots is rejected.",
+      inputSchema: {
+        path: z.string().describe("Relative path under the run artifact directory"),
+        content: z.string().describe("File contents"),
+        run_id: z.string().optional(),
+        assignment_id: z.string().optional(),
+      },
+    },
+    async (args) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: "pipeline runtime disabled (PIPELINE_RUNTIME_MODE=off)",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return pipelineWriteArtifact(pipelineRuntime, runContext, args);
+    },
+  );
+
+  server.registerTool(
+    "pipeline_register_pr",
+    {
+      description:
+        "Register a GitHub PR created for this pipeline run with exact owner/repo/number/role/workstream/head SHA. " +
+        "Required before completing a PR-opening phase when GitHub tracking is enabled.",
+      inputSchema: {
+        run_id: z.string(),
+        assignment_id: z.string(),
+        owner: z.string(),
+        repo: z.string(),
+        number: z.number(),
+        role: z.enum(["candidate", "dev-pr", "main-pr", "dependency", "review-target"]),
+        workstream_key: z.string(),
+        expected_head_sha: z.string(),
+        attempt_id: z.string().optional().nullable(),
+      },
+    },
+    async (args) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: "pipeline runtime disabled (PIPELINE_RUNTIME_MODE=off)",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return pipelineRegisterPr(pipelineRuntime, runContext, args);
+    },
+  );
+
+  server.registerTool(
+    "pipeline_run_check",
+    {
+      description:
+        "Run an allowlisted verification check through the pipeline-owned runner and record evidence. " +
+        "Does not expose arbitrary shell. Currently records stub evidence with the given status.",
+      inputSchema: {
+        assignment_id: z.string(),
+        check_name: z
+          .string()
+          .describe("Allowlisted check name: typecheck|unit-test|lint|build|integration-test"),
+        run_id: z.string().optional(),
+        command: z.string().optional().describe("Recorded command label (not executed as shell)"),
+        status: z.enum(["passed", "failed", "skipped"]).optional(),
+        stdout: z.string().optional(),
+        stderr: z.string().optional(),
+      },
+    },
+    async (args) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: "pipeline runtime disabled (PIPELINE_RUNTIME_MODE=off)",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return pipelineRunCheck(pipelineRuntime, runContext, args);
+    },
+  );
 }
 
 /**
@@ -1016,6 +1249,8 @@ export interface MemoryToolDeps {
 export interface RecallMemoryArgs {
   query: string;
   repo?: string;
+  /** With `repo`, also include repo-less (global) claims. See ClaimRecallFilters. */
+  repoIncludeGlobal?: boolean;
   kinds?: ClaimKind[];
   entityRefs?: string[];
   limit?: number;
@@ -1072,7 +1307,10 @@ export async function recallMemory(
   const merged: ClaimRecallResult[] = [];
   for (const kind of kindScopes) {
     const filters: ClaimRecallFilters = {};
-    if (args.repo) filters.repo = args.repo;
+    if (args.repo) {
+      filters.repo = args.repo;
+      if (args.repoIncludeGlobal) filters.repoIncludeGlobal = true;
+    }
     if (kind) filters.kind = kind;
     const results = await deps.store.recallClaims({
       queryVector,
@@ -1246,12 +1484,16 @@ export function startMcpServer(
   wtManager?: WorktreeManager,
   manager?: SessionManager,
   actionStore?: SlackActionStore,
+  pipeline?: PipelineToolRuntime,
 ): void {
   slack = new WebClient(botToken);
   sessionStore = store;
   worktreeManager = wtManager;
   sessionManager = manager;
   slackActionStore = actionStore;
+  if (pipeline) {
+    pipelineRuntime = pipeline;
+  }
 
   const handleHttpRequest = async (
     req: import("node:http").IncomingMessage,

@@ -13,7 +13,6 @@ import {
 import { SlackResponder } from "./slack/responder.ts";
 import { SlackActionStore } from "./slack/action-store.ts";
 import {
-  cleanupThreadWorktrees,
   disableAgentActionMessages,
   registerAgentActionButtons,
 } from "./slack/action-buttons.ts";
@@ -47,6 +46,11 @@ import {
   SqliteWorkflowStore,
   type WorkflowStore,
 } from "./workflows/store.ts";
+import { createPipelineStore } from "./pipelines/store/factory.ts";
+import { pumpOutbox } from "./pipelines/pump.ts";
+import { recoverPipelineRuntime } from "./pipelines/recovery.ts";
+import { gcTerminalPipelineHistory } from "./pipelines/gc.ts";
+import type { PipelineToolRuntime } from "./pipelines/tools.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -66,9 +70,46 @@ const agentRouter = new AgentRouter(
 const worktreeManager = new WorktreeManager(config.repos);
 const devServerManager = new DevServerManager(config.repos, worktreeManager);
 const devServerQueue = new DevServerQueue(devServerManager, config.repos);
-startMcpServer(config.slack.botToken, store, worktreeManager, sessionManager, actionStore);
+
+// Pipeline control plane (Phase 2+ substrate). Always construct the store so
+// MCP tools can answer; live dispatch/routing only when runtimeMode=active.
+const pipelineStore = createPipelineStore({
+  kind: config.session.store === "memory" ? "memory" : "sqlite",
+  sqlitePath: resolve(config.session.sqlitePath),
+});
+const pipelineRuntimeMode = config.pipeline?.runtimeMode ?? "off";
+const pipelineToolRuntime: PipelineToolRuntime = {
+  store: pipelineStore,
+  runtimeMode: pipelineRuntimeMode,
+  githubTrackingEnabled: config.github?.reconcileEnabled ?? false,
+  onOutcomeCommitted: async () => {
+    // Shadow/off never dispatch — only active mode pumps the outbox.
+    if (pipelineRuntimeMode !== "active") return;
+    try {
+      await pumpOutbox({
+        store: pipelineStore,
+        dispatcher: sessionManager,
+        sessionReader: store,
+      });
+    } catch (err) {
+      log.warn(
+        "pipeline",
+        `outbox pump after outcome failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  },
+};
+startMcpServer(
+  config.slack.botToken,
+  store,
+  worktreeManager,
+  sessionManager,
+  actionStore,
+  pipelineToolRuntime,
+);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
+sessionManager.pipelineStore = pipelineStore;
 sessionManager.slackApp = app;
 const responder = new SlackResponder(app);
 const autoTriggerChannels = new Set(Object.keys(config.channelDefaults));
@@ -85,6 +126,15 @@ const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
   sessionStore: store,
   slackClient: app.client,
   repos: config.repos,
+  pipeline: {
+    store: pipelineStore,
+    runtimeMode: pipelineRuntimeMode,
+    legacyDirectivesEnabled: config.pipeline?.legacyDirectivesEnabled ?? true,
+    githubTrackingEnabled: config.github?.reconcileEnabled ?? false,
+    bugPipelineEnabled: config.pipeline?.bugPipelineEnabled ?? false,
+    productPipelineEnabled: config.pipeline?.productPipelineEnabled ?? false,
+    workspaceRoot: process.cwd(),
+  },
 });
 const workflowRegistry = new WorkflowRegistry({
   repos: config.repos,
@@ -111,10 +161,6 @@ const workflowController = new WorkflowController({
   slackClient: app.client,
   isAdmin: (userId) => sessionManager.isAdmin(userId),
 });
-
-function isApprovedReviewResponse(response: string): boolean {
-  return /^review:\s*approved\b/i.test(response.trim());
-}
 
 sessionManager.onResponse = async (session, response) => {
   const prepared = prepareSlackResponseWithActions(response);
@@ -241,29 +287,9 @@ sessionManager.onAgentDispatched = async (session, agentName) => {
   );
 };
 
-sessionManager.onAgentSettled = async (session, agentName, response) => {
-  if (agentName !== "review" || !response || !isApprovedReviewResponse(response)) {
-    return;
-  }
-  const result = await cleanupThreadWorktrees(
-    session.threadId,
-    sessionManager,
-    worktreeManager,
-  );
-  await app.client.chat.postMessage({
-    channel: session.channel,
-    thread_ts: session.threadId,
-    text: result,
-  });
-  if (result.startsWith("Cleaned up worktree")) {
-    await disableAgentActionMessages(
-      actionStore,
-      app.client,
-      session.threadId,
-      "review",
-    );
-  }
-};
+// Review approval must not auto-cleanup worktrees or disable merge/retry
+// actions. Cleanup is explicit (Cleanup worktree button) or terminal-pipeline
+// only. See docs/features/agent-product-debugging-pipeline-implementation-plan.md Phase 0.
 
 registerHomeTab(app, store, config.session.homeWindowMs, workflowStore);
 registerAgentActionButtons(app, actionStore, sessionManager, worktreeManager, {
@@ -278,6 +304,7 @@ setupGracefulShutdown(sessionManager, devServerManager, async () => {
   await workflowScheduler.shutdown();
   workflowRegistry.stopWatching();
   workflowStore.close?.();
+  pipelineStore.close?.();
   actionStore.close();
   memoryStore.close();
   if (whatsappHandle) {
@@ -287,6 +314,181 @@ setupGracefulShutdown(sessionManager, devServerManager, async () => {
     await whatsappHandle.stop();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Pipeline boot order (mode=off stays safe: reclaim is harmless; no pump/wake)
+// 1. stores already open above
+// 2. reclaim expired outbox / dev-server / github leases
+// 3. optional GitHub reconcile when GITHUB_RECONCILE_ENABLED
+// 4. outbox pump only when PIPELINE_RUNTIME_MODE=active (shadow never dispatches)
+// 5. retention GC for terminal history (harmless when empty)
+// ---------------------------------------------------------------------------
+const pipelineBoot = (async () => {
+  try {
+    const report = await recoverPipelineRuntime(pipelineStore);
+    const parts = [
+      report.reclaimedOutboxLeases > 0
+        ? `outbox=${report.reclaimedOutboxLeases}`
+        : null,
+      report.reclaimedDevServerLeases > 0
+        ? `devserver=${report.reclaimedDevServerLeases}`
+        : null,
+      report.deadlineReleasedDevServerJobs > 0
+        ? `devserver-deadline=${report.deadlineReleasedDevServerJobs}`
+        : null,
+      report.reclaimedGitHubLeases > 0
+        ? `github=${report.reclaimedGitHubLeases}`
+        : null,
+    ].filter(Boolean);
+    if (parts.length > 0) {
+      log.info("pipeline", `boot recovery reclaimed ${parts.join(" ")}`);
+    }
+  } catch (err) {
+    log.warn(
+      "pipeline",
+      `boot recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // GitHub observation is independent of pipeline runtime mode, but wakes
+  // still require eventWakeEnabled + active controllers in the reconciler.
+  if (config.github?.reconcileEnabled) {
+    try {
+      const { createGitHubClient } = await import("./github/client.ts");
+      const { reconcileTrackedResources } = await import(
+        "./github/reconciler.ts"
+      );
+      const client = createGitHubClient({
+        token: config.github.reconcileToken ?? undefined,
+        useCli: config.github.reconcileUseCli,
+      });
+      const shadowMode = pipelineRuntimeMode !== "active";
+      const eventWakeEnabled =
+        (config.github.eventWakeEnabled ?? false) &&
+        pipelineRuntimeMode === "active";
+
+      // Track last successful tick so wake-gap detection does not treat every
+      // interval pass as a cold startup (which would force-poll everything).
+      let lastTickAt: number | null = null;
+      const runReconcile = async () => {
+        try {
+          const pass = await reconcileTrackedResources({
+            store: pipelineStore,
+            client,
+            shadowMode,
+            eventWakeEnabled,
+            intervalMs: config.github?.reconcileIntervalMs,
+            lastTickAt,
+            onEventsPersisted: eventWakeEnabled
+              ? async (persistResult) => {
+                  // Lazy import to avoid loading bug controller when wakes off.
+                  const { reduceGitHubEventsForWakes } = await import(
+                    "./pipelines/bug/controller.ts"
+                  );
+                  const assocs =
+                    await pipelineStore.listAssociationsForResource(
+                      persistResult.resourceId,
+                      true,
+                    );
+                  let wakes = 0;
+                  for (const assoc of assocs) {
+                    const run = await pipelineStore.getRun(assoc.runId);
+                    if (!run || run.status === "terminal") continue;
+                    const result = await reduceGitHubEventsForWakes(
+                      {
+                        store: pipelineStore,
+                        eventWakeEnabled: true,
+                      },
+                      { runId: run.id },
+                    );
+                    wakes += result.wakesEnqueued;
+                  }
+                  if (wakes > 0 && pipelineRuntimeMode === "active") {
+                    await pumpOutbox({
+                      store: pipelineStore,
+                      dispatcher: sessionManager,
+                      sessionReader: store,
+                    });
+                  }
+                  return wakes;
+                }
+              : undefined,
+          });
+          lastTickAt = Date.now();
+          if (pass.updated > 0 || pass.eventsEmitted > 0 || pass.failures > 0) {
+            log.info(
+              "github",
+              `reconcile examined=${pass.examined} updated=${pass.updated} events=${pass.eventsEmitted} failures=${pass.failures} wakes=${pass.wakesDelivered}`,
+            );
+          }
+        } catch (err) {
+          log.warn(
+            "github",
+            `reconcile pass failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      };
+
+      await runReconcile();
+      setInterval(
+        () => {
+          void runReconcile();
+        },
+        config.github.reconcileIntervalMs,
+      );
+      log.info(
+        "boot",
+        `GitHub reconciler enabled (shadow=${shadowMode} wakes=${eventWakeEnabled})`,
+      );
+    } catch (err) {
+      log.warn(
+        "boot",
+        `GitHub reconciler failed to start: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  if (pipelineRuntimeMode === "active") {
+    setInterval(() => {
+      pumpOutbox({
+        store: pipelineStore,
+        dispatcher: sessionManager,
+        sessionReader: store,
+      }).catch((err) => {
+        log.warn(
+          "pipeline",
+          `periodic outbox pump failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }, 15_000);
+    log.info("boot", "Pipeline outbox pump started (PIPELINE_RUNTIME_MODE=active)");
+  } else {
+    log.info(
+      "boot",
+      `Pipeline runtime mode=${pipelineRuntimeMode} (pump/dispatch disabled)`,
+    );
+  }
+
+  // Retention GC — terminal history only; safe when empty / mode=off.
+  try {
+    const gcReport = await gcTerminalPipelineHistory({
+      store: pipelineStore,
+      retentionDays: config.pipeline?.retentionDays ?? 90,
+    });
+    if (gcReport.runsCompacted > 0) {
+      log.info(
+        "pipeline",
+        `boot GC compacted ${gcReport.runsCompacted} terminal run(s)`,
+      );
+    }
+  } catch (err) {
+    log.warn(
+      "pipeline",
+      `boot GC failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+})();
+void pipelineBoot;
 
 // Periodic health checks
 setInterval(() => {

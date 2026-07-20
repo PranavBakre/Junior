@@ -13,6 +13,7 @@ import {
   slackMcpUrl,
   wantsMcp,
 } from "./mcp-config.ts";
+import { compileOpenCodePermission } from "./policy.ts";
 
 export function sessionProvider(
   session: ThreadSession,
@@ -55,7 +56,11 @@ export function spawnRunner(
       {
         defaultModel: config.opencode.model,
         continuityEnabled: config.opencode.continuityEnabled,
-        permission: config.opencode.permission,
+        // Prefer catalog/session intent when present; fall back to operator config.
+        permission: compileOpenCodePermission({
+          subject: session,
+          fallback: config.opencode.permission,
+        }),
         mcp: buildOpenCodeMcpConfig(config, session),
       },
       targetRepoCwd,

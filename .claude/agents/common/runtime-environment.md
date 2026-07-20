@@ -57,7 +57,7 @@ support/bugs/<product>/<bug-id>/
 ├── vercel.md           # vercel-status output (Task)
 ├── reproduction.md     # reproducer phase=reproduction (top of pipeline)
 ├── scoping.md          # orchestrator Phase-2 output
-├── review.md           # review output (after !review) — verdict summary; inline comments live on the GitHub PR
+├── review.md           # review verdict summary — authored by review, persisted by the lead (review runs read-only); inline comments live on the GitHub PR
 ├── validation.md       # reproducer phase=validation (against local fix branch, before merge)
 └── email.md            # email-drafter output (Task, optional)
 ```

@@ -188,7 +188,60 @@ export interface Config {
    * on `?.enabled`.
    */
   whatsapp?: WhatsAppConfig;
+  /**
+   * Durable ProductRun/BugRun control plane. Default `off` — substrate is
+   * present but live routing does not create pipeline rows. `shadow` records
+   * without dispatching; `active` enables typed controllers.
+   *
+   * Invalid combinations are rejected at load:
+   * - BUG_PIPELINE_ENABLED or PRODUCT_PIPELINE_ENABLED require
+   *   PIPELINE_RUNTIME_MODE=active
+   * - GITHUB_EVENT_WAKE_ENABLED requires GITHUB_RECONCILE_ENABLED
+   * Shadow mode never dispatches, wakes, or mutates legacy ownership.
+   */
+  pipeline?: {
+    runtimeMode: PipelineRuntimeMode;
+    /**
+     * When true (default) and runtimeMode=active with an active pipeline run,
+     * parse legacy `!review`/`!reproducer`/etc directives into structured
+     * assignments with shared idempotency keys. When runtimeMode=off, this
+     * flag has no effect — existing Slack routing is unchanged.
+     */
+    legacyDirectivesEnabled: boolean;
+    /**
+     * When true (default false) and runtimeMode=active, explicit !debug /
+     * !reproducer starts create typed BugRuns. MVP requires explicit starts only.
+     */
+    bugPipelineEnabled: boolean;
+    /**
+     * When true (default false) and runtimeMode=active, explicit !pm / !build
+     * starts create typed ProductRuns. Rejected at load unless mode=active.
+     */
+    productPipelineEnabled: boolean;
+    /**
+     * Days to retain full outbox/event payloads for terminal runs before GC
+     * compaction. Default 90. Never touches active/non-terminal runs.
+     */
+    retentionDays: number;
+  };
+  /**
+   * Outbound GitHub PR reconciliation (Phase 5). Default OFF. Observation is
+   * independent of wake delivery — wakes require reconcile and stay disabled
+   * until Phase 6.
+   */
+  github?: {
+    reconcileEnabled: boolean;
+    /** Must stay false in Phase 5. Rejected at parse if true without reconcile. */
+    eventWakeEnabled: boolean;
+    /** Read-only fine-grained token. Optional when useCli is true. */
+    reconcileToken: string | null;
+    /** Explicit opt-in for `gh` CLI auth fallback (dev only). */
+    reconcileUseCli: boolean;
+    reconcileIntervalMs: number;
+  };
 }
+
+export type PipelineRuntimeMode = "off" | "shadow" | "active";
 
 function required(name: string): string {
   const val = process.env[name];
@@ -291,7 +344,9 @@ export function loadConfig(): Config {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
       embedProvider: parseEmbedProvider(optional("MEMORY_EMBED_PROVIDER", "local")),
       preRecall: {
-        enabled: parseBooleanEnv("PRE_RECALL_ENABLED", true),
+        // Default OFF: pre-recall spawns a subprocess on every Slack turn.
+        // Operators must opt in after verifying timeout/kill behaviour.
+        enabled: parseBooleanEnv("PRE_RECALL_ENABLED", false),
         runner: parsePreRecallRunner(optional("PRE_RECALL_RUNNER", "claude")),
         model: process.env.PRE_RECALL_MODEL || undefined,
         timeoutMs: Number(optional("PRE_RECALL_TIMEOUT_MS", "15000")),
@@ -315,6 +370,68 @@ export function loadConfig(): Config {
       // Unset = ingest every group the account is in.
       groupPattern: process.env.WHATSAPP_GROUP_PATTERN?.trim() || null,
     },
+    pipeline: parsePipelineConfig(),
+    github: parseGitHubConfig(),
+  };
+}
+
+/**
+ * Parse and validate pipeline rollout flags.
+ * Controllers stay off by default; invalid combos fail closed at boot.
+ */
+function parsePipelineConfig(): NonNullable<Config["pipeline"]> {
+  const runtimeMode = parsePipelineRuntimeMode(
+    optional("PIPELINE_RUNTIME_MODE", "off"),
+  );
+  const legacyDirectivesEnabled = parseBooleanEnv(
+    "PIPELINE_LEGACY_DIRECTIVES_ENABLED",
+    true,
+  );
+  const bugPipelineEnabled = parseBooleanEnv("BUG_PIPELINE_ENABLED", false);
+  const productPipelineEnabled = parseBooleanEnv(
+    "PRODUCT_PIPELINE_ENABLED",
+    false,
+  );
+  const retentionDays = parsePositiveIntEnv(
+    "PIPELINE_RETENTION_DAYS",
+    optional("PIPELINE_RETENTION_DAYS", "90"),
+  );
+
+  if (
+    (bugPipelineEnabled || productPipelineEnabled) &&
+    runtimeMode !== "active"
+  ) {
+    throw new Error(
+      "Invalid pipeline config: BUG_PIPELINE_ENABLED or PRODUCT_PIPELINE_ENABLED requires PIPELINE_RUNTIME_MODE=active",
+    );
+  }
+
+  return {
+    runtimeMode,
+    legacyDirectivesEnabled,
+    bugPipelineEnabled,
+    productPipelineEnabled,
+    retentionDays,
+  };
+}
+
+function parseGitHubConfig(): NonNullable<Config["github"]> {
+  const reconcileEnabled = parseBooleanEnv("GITHUB_RECONCILE_ENABLED", false);
+  const eventWakeEnabled = parseBooleanEnv("GITHUB_EVENT_WAKE_ENABLED", false);
+  if (eventWakeEnabled && !reconcileEnabled) {
+    throw new Error(
+      "Invalid GitHub config: GITHUB_EVENT_WAKE_ENABLED=true requires GITHUB_RECONCILE_ENABLED=true",
+    );
+  }
+  return {
+    reconcileEnabled,
+    eventWakeEnabled,
+    reconcileToken: process.env.GITHUB_RECONCILE_TOKEN?.trim() || null,
+    reconcileUseCli: parseBooleanEnv("GITHUB_RECONCILE_USE_CLI", false),
+    reconcileIntervalMs: parsePositiveIntEnv(
+      "GITHUB_RECONCILE_INTERVAL_MS",
+      optional("GITHUB_RECONCILE_INTERVAL_MS", "30000"),
+    ),
   };
 }
 
@@ -339,6 +456,22 @@ function parseHttpDashboard(raw: string | undefined): { enabled: boolean; port: 
     );
   }
   return { enabled: true, port };
+}
+
+/**
+ * Mirrors `parseHttpDashboard`'s throw-on-bad-input convention: NaN, 0,
+ * negative, and non-integer (decimal/Infinity) values throw at config load
+ * rather than silently feeding a degenerate near-zero delay into
+ * `setInterval`.
+ */
+function parsePositiveIntEnv(name: string, raw: string): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `Invalid ${name}: ${JSON.stringify(raw)} (expected a positive integer)`,
+    );
+  }
+  return value;
 }
 
 function parseEmbedProvider(value: string): EmbeddingProviderKind {
@@ -455,5 +588,14 @@ function parseVerbosity(value: string): SessionVerbosity {
   }
   throw new Error(
     `Invalid SESSION_DEFAULT_VERBOSITY: ${value} (expected quiet|normal|verbose)`,
+  );
+}
+
+function parsePipelineRuntimeMode(value: string): PipelineRuntimeMode {
+  if (value === "off" || value === "shadow" || value === "active") {
+    return value;
+  }
+  throw new Error(
+    `Invalid PIPELINE_RUNTIME_MODE: ${value} (expected off|shadow|active)`,
   );
 }

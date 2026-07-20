@@ -230,7 +230,14 @@ by review
     "style": "primary",
     "type": "dispatch_agent",
     "agent": "lead",
-    "prompt": "merge with the admin token"
+    "prompt": "merge with the admin token",
+    "resourceAnchor": {
+      "version": 1,
+      "repo": "GrowthX-Club/gx-backend",
+      "prNumber": 3295,
+      "headSha": "abc1234def",
+      "expectedBase": "dev"
+    }
   },
   {
     "id": "thread:cleanup-worktree",
@@ -250,7 +257,48 @@ by review
           type: "dispatch_agent",
           agent: "lead",
           prompt: "merge with the admin token",
+          resourceAnchor: {
+            version: 1,
+            repo: "GrowthX-Club/gx-backend",
+            prNumber: 3295,
+            headSha: "abc1234def",
+            expectedBase: "dev",
+          },
         },
+        {
+          id: "thread:cleanup-worktree",
+          label: "Cleanup worktree",
+          type: "cleanup_worktree",
+        },
+      ],
+    });
+  });
+
+  it("drops mutating merge actions without an exact resource anchor", () => {
+    const result = prepareSlackResponseWithActions(`review: approved
+by review
+
+<junior-actions>
+[
+  {
+    "id": "review:merge-gxt-admin",
+    "label": "Merge via gxt-admin",
+    "style": "primary",
+    "type": "dispatch_agent",
+    "agent": "lead",
+    "prompt": "merge the review-approved PR"
+  },
+  {
+    "id": "thread:cleanup-worktree",
+    "label": "Cleanup worktree",
+    "type": "cleanup_worktree"
+  }
+]
+</junior-actions>`);
+
+    expect(result).toEqual({
+      text: "review: approved\nby review",
+      actions: [
         {
           id: "thread:cleanup-worktree",
           label: "Cleanup worktree",
@@ -267,6 +315,64 @@ not json
 </junior-actions>`);
 
     expect(result).toEqual({ text: "ok", actions: [] });
+  });
+
+  it("drops a merge action whose anchor disagrees with the single PR in prose", () => {
+    // The visible review covers PR 3295; the anchor pins PR 9999. Rendering
+    // the button would dispatch a merge for a PR the review never covered.
+    const result = prepareSlackResponseWithActions(`review: approved
+https://github.com/GrowthX-Club/gx-backend/pull/3295 looks good.
+
+<junior-actions>
+[
+  {
+    "id": "review:merge-gxt-admin",
+    "label": "Merge via gxt-admin",
+    "type": "dispatch_agent",
+    "agent": "lead",
+    "prompt": "merge it",
+    "resourceAnchor": {
+      "version": 1,
+      "repo": "GrowthX-Club/gx-backend",
+      "prNumber": 9999,
+      "headSha": "abc1234def",
+      "expectedBase": "dev"
+    }
+  }
+]
+</junior-actions>`);
+
+    expect(result?.actions).toEqual([]);
+  });
+
+  it("keeps a merge action whose anchor matches the single PR in prose", () => {
+    const result = prepareSlackResponseWithActions(`review: approved
+https://github.com/GrowthX-Club/gx-backend/pull/3295 looks good.
+
+<junior-actions>
+[
+  {
+    "id": "review:merge-gxt-admin",
+    "label": "Merge via gxt-admin",
+    "type": "dispatch_agent",
+    "agent": "lead",
+    "prompt": "merge it",
+    "resourceAnchor": {
+      "version": 1,
+      "repo": "GrowthX-Club/gx-backend",
+      "prNumber": 3295,
+      "headSha": "abc1234def",
+      "expectedBase": "dev"
+    }
+  }
+]
+</junior-actions>`);
+
+    expect(result?.actions).toHaveLength(1);
+    expect(result?.actions[0]).toMatchObject({
+      id: "review:merge-gxt-admin",
+      resourceAnchor: { prNumber: 3295 },
+    });
   });
 });
 

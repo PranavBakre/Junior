@@ -1279,6 +1279,57 @@ describe("SessionManager", () => {
       expect(response).toContain("*Agent:*");
       expect(response).toContain("*Pending messages:*");
     });
+
+    it("includes pipeline summary when activePipelineRunId is set", async () => {
+      const { InMemoryPipelineStore } = await import(
+        "../pipelines/store/memory.ts"
+      );
+      const { makeProductRun, makeAssignmentCreate } = await import(
+        "../pipelines/store/test-helpers.ts"
+      );
+      const pipelineStore = new InMemoryPipelineStore();
+      await pipelineStore.createRun(
+        makeProductRun({
+          id: "run-status-1",
+          phase: "building",
+          ownerAgent: "build",
+          status: "active",
+        }),
+      );
+      await pipelineStore.createAssignment(
+        makeAssignmentCreate({
+          id: "asg-status-1",
+          runId: "run-status-1",
+          targetAgent: "build",
+          objective: "implement feature",
+          status: "leased",
+          idempotencyKey: "status-asg-1",
+          candidateRevisionDigest: "deadbeefcafef00d12345678",
+        }),
+      );
+
+      manager.pipelineStore = pipelineStore;
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      await manager.handleMessage(makeEvent({ text: "Start" }));
+      const session = await store.get("thread-1");
+      session!.activePipelineRunId = "run-status-1";
+      session!.activePipelineKind = "product";
+      session!.status = "idle";
+      await store.set("thread-1", session!);
+
+      await manager.handleMessage(
+        makeEvent({ command: "status", text: "", ts: "ts-status-pipe" }),
+      );
+
+      const response = onCmd.mock.calls.at(-1)?.[1] as string;
+      expect(response).toContain("*Pipeline:*");
+      expect(response).toContain("run-status-1");
+      expect(response).toContain("building");
+      expect(response).toContain("build");
+      expect(response).toContain("deadbeefcafe");
+    });
   });
 
   describe("!provider", () => {

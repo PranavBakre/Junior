@@ -62,6 +62,8 @@ export interface AgentSession {
    * (thread-level decision); only the unique tmux session name is per-agent.
    */
   tmuxSessionName?: string | null;
+  /** Compare-and-set version for concurrent agent-row updates. Missing → 0. */
+  stateVersion?: number;
 }
 
 export interface AgentIdentity {
@@ -169,6 +171,18 @@ export interface ThreadSession {
   idleInterruptCount: number;
   /** Number of automatic lead-pipeline guard continuations attempted for the current turn. */
   pipelineGuardRetryCount?: number;
+  /**
+   * Compare-and-set version for concurrent thread-session updates. Incremented
+   * on every successful store write. Missing / legacy rows normalize to 0.
+   */
+  stateVersion?: number;
+  /**
+   * Active multi-agent pipeline run (ProductRun / BugRun). Null when the
+   * thread is not under the durable pipeline control plane. Phase 2 substrate
+   * only — live routing still does not create pipeline rows when mode=off.
+   */
+  activePipelineRunId?: string | null;
+  activePipelineKind?: "product" | "bug" | null;
 }
 
 export function createSession(
@@ -217,6 +231,9 @@ export function createSession(
     topLevelTmuxAgent: null,
     idleInterruptCount: 0,
     pipelineGuardRetryCount: 0,
+    stateVersion: 0,
+    activePipelineRunId: null,
+    activePipelineKind: null,
   };
 }
 

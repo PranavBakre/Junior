@@ -16,7 +16,10 @@ import type { MemoryToolDeps, RecallMemoryResult } from "../mcp/slack-server.ts"
 import { recallMemory } from "../mcp/slack-server.ts";
 import { createMemoryStore } from "./factory.ts";
 import { createProfileStore } from "./profiles/index.ts";
-import { signalProcessTree } from "../lifecycle/process-tree.ts";
+import {
+  isProcessTreeAlive,
+  terminateProcessTree,
+} from "../lifecycle/process-tree.ts";
 import { sanitizeClaudeModel } from "./consolidation/runner.ts";
 import { createOpenCodeStreamParser, createOpenCodeEventMapper } from "../opencode/parser.ts";
 import { log as _log } from "../logger.ts";
@@ -44,7 +47,19 @@ Examples:
 - "onboard rahul, phone 9876543210, email rahul@test.com" → ["member onboarding procedure"]`;
 
 // ── Public types ─────────────────────────────────────────────────────────────
-export type PreRecallFn = (message: string) => Promise<string | null>;
+export interface PreRecallOptions {
+  /**
+   * Session target repo (RepoConfig.name). Scopes recall so another repo's
+   * conventions or operational data can't inject into this session's prompt.
+   * Null/undefined recalls across the whole corpus (repo-less sessions).
+   */
+  repo?: string | null;
+}
+
+export type PreRecallFn = (
+  message: string,
+  options?: PreRecallOptions,
+) => Promise<string | null>;
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
@@ -80,19 +95,33 @@ export function createPreRecall(config: Config): PreRecallFn {
     return deps;
   }
 
-  return async (message: string): Promise<string | null> => {
+  return async (
+    message: string,
+    options?: PreRecallOptions,
+  ): Promise<string | null> => {
     try {
       // Step 1: Extract recall queries via cheap LLM
       const queries = await extractRecallQueries(message, runner, model, timeoutMs);
       if (queries.length === 0) return null;
 
-      // Step 2: Run each query through recallMemory()
+      // Step 2: Run each query through recallMemory(), scoped to the session's
+      // repo when one is set.
       const memDeps = await getDeps();
       const seenClaimIds = new Set<string>();
       const allClaims: RecallMemoryResult["claims"] = [];
 
       for (const query of queries) {
-        const result = await recallMemory({ query, limit: 3 }, memDeps);
+        const result = await recallMemory(
+          {
+            query,
+            limit: 3,
+            // "This repo or global, never other repos" — a strict repo filter
+            // would drop the repo-less lessons that make up most of the corpus.
+            repo: options?.repo ?? undefined,
+            repoIncludeGlobal: true,
+          },
+          memDeps,
+        );
         for (const claim of result.claims) {
           if (seenClaimIds.has(claim.id)) continue;
           seenClaimIds.add(claim.id);
@@ -183,46 +212,39 @@ function runTextForRunner(runner: PreRecallRunner): RunTextFn {
 
 // ── Claude subprocess ────────────────────────────────────────────────────────
 
-async function claudeRunText(req: RunTextRequest): Promise<string> {
-  const args = [
-    "-p", req.message,
+/**
+ * Locked down like the untrusted-content extraction runners: the input is a
+ * raw Slack message, so the subprocess gets NO tools, NO MCP servers, NO
+ * user/project hooks (a user-level Stop hook otherwise replaces the -p JSON
+ * envelope's `result` with the hook reply). The message rides stdin, not argv
+ * (E2BIG on long messages). Exported for tests.
+ */
+export function buildPreRecallClaudeArgs(model: string): string[] {
+  return [
+    "-p",
     "--system-prompt", EXTRACTION_SYSTEM_PROMPT,
     "--output-format", "json",
-    "--model", sanitizeClaudeModel(req.model),
+    "--model", sanitizeClaudeModel(model),
+    "--tools", "",
+    "--strict-mcp-config",
+    "--settings", '{"disableAllHooks":true}',
   ];
+}
+
+async function claudeRunText(req: RunTextRequest): Promise<string> {
+  // Neutral cwd outside the repo so the run can't inherit junior's CLAUDE.md /
+  // .claude/ / .mcp.json context.
+  const args = buildPreRecallClaudeArgs(req.model);
 
   const proc = Bun.spawn(["claude", ...args], {
+    cwd: tmpdir(),
     stdout: "pipe",
     stderr: "pipe",
-    stdin: "ignore",
+    stdin: new TextEncoder().encode(req.message),
     detached: true,
   });
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    signalProcessTree(proc.pid, "SIGINT");
-  }, req.timeoutMs);
-
-  try {
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    if (timedOut) {
-      throw new Error(`pre-recall: claude timed out after ${req.timeoutMs}ms`);
-    }
-    if (exitCode !== 0) {
-      let stderr = "";
-      try {
-        stderr = (await new Response(proc.stderr).text()).trim();
-      } catch {
-        // best-effort
-      }
-      throw new Error(`pre-recall: claude exited ${exitCode}${stderr ? `: ${stderr}` : ""}`);
-    }
-    return extractClaudeAssistantText(stdout);
-  } finally {
-    clearTimeout(timer);
-  }
+  return runPreRecallProcess(proc, req.timeoutMs, "claude", extractClaudeAssistantText);
 }
 
 /**
@@ -256,38 +278,26 @@ async function openCodeRunText(req: RunTextRequest): Promise<string> {
   if (req.model) args.push("--model", req.model);
   args.push(combinedPrompt);
 
+  // Same lockdown intent as the claude branch: neutral cwd outside the repo
+  // (no junior project config/MCP discovery), an inline config that denies
+  // every tool (the extractor only needs text-in/text-out), and no
+  // OPENCODE_CONFIG env layer from the developer shell.
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { "*": "deny" } }),
+  };
+  delete env.OPENCODE_CONFIG;
+
   const proc = Bun.spawn(["opencode", ...args], {
+    cwd: tmpdir(),
+    env,
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
     detached: true,
   });
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    signalProcessTree(proc.pid, "SIGINT");
-  }, req.timeoutMs);
-
-  try {
-    const stdout = await new Response(proc.stdout).text();
-    const exitCode = await proc.exited;
-    if (timedOut) {
-      throw new Error(`pre-recall: opencode timed out after ${req.timeoutMs}ms`);
-    }
-    if (exitCode !== 0) {
-      let stderr = "";
-      try {
-        stderr = (await new Response(proc.stderr).text()).trim();
-      } catch {
-        // best-effort
-      }
-      throw new Error(`pre-recall: opencode exited ${exitCode}${stderr ? `: ${stderr}` : ""}`);
-    }
-    return extractOpenCodeAssistantText(stdout);
-  } finally {
-    clearTimeout(timer);
-  }
+  return runPreRecallProcess(proc, req.timeoutMs, "opencode", extractOpenCodeAssistantText);
 }
 
 /**
@@ -330,17 +340,8 @@ async function codexRunText(req: RunTextRequest): Promise<string> {
     detached: true,
   });
 
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    signalProcessTree(proc.pid, "SIGINT");
-  }, req.timeoutMs);
-
   try {
-    const exitCode = await proc.exited;
-    if (timedOut) {
-      throw new Error(`pre-recall: codex timed out after ${req.timeoutMs}ms`);
-    }
+    const exitCode = await runPreRecallExited(proc, req.timeoutMs, "codex");
     if (exitCode !== 0) {
       let stderr = "";
       try {
@@ -362,7 +363,112 @@ async function codexRunText(req: RunTextRequest): Promise<string> {
     }
     return text;
   } finally {
-    clearTimeout(timer);
     await rm(outFile, { force: true }).catch(() => {});
   }
+}
+
+/**
+ * Await process exit with a hard deadline. On timeout, SIGINT then SIGKILL the
+ * process tree so a hung child cannot leave the Slack turn stuck forever.
+ */
+type PreRecallProc = {
+  pid?: number | null;
+  exited: Promise<number>;
+  stdout?: ReadableStream<Uint8Array> | number | null;
+  stderr?: ReadableStream<Uint8Array> | number | null;
+};
+
+async function runPreRecallExited(
+  proc: PreRecallProc,
+  timeoutMs: number,
+  label: string,
+): Promise<number> {
+  let timedOut = false;
+  const forceMs = Math.min(2_000, Math.max(500, Math.floor(timeoutMs / 4)));
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void terminateProcessTree(proc.pid, {
+      signal: "SIGINT",
+      forceAfterMs: forceMs,
+      waitAfterForceMs: 500,
+    });
+  }, timeoutMs);
+
+  try {
+    // Hard ceiling: if SIGKILL also fails to reap, don't hang the turn.
+    const hardDeadlineMs = timeoutMs + forceMs + 2_000;
+    const exitCode = await Promise.race([
+      proc.exited,
+      sleep(hardDeadlineMs).then(async () => {
+        timedOut = true;
+        await terminateProcessTree(proc.pid, {
+          signal: "SIGKILL",
+          forceAfterMs: 0,
+          waitAfterForceMs: 200,
+        });
+        throw new Error(
+          `pre-recall: ${label} hung after ${hardDeadlineMs}ms (forced kill)`,
+        );
+      }),
+    ]);
+    if (timedOut) {
+      throw new Error(`pre-recall: ${label} timed out after ${timeoutMs}ms`);
+    }
+    return exitCode;
+  } finally {
+    clearTimeout(timer);
+    if (isProcessTreeAlive(proc.pid)) {
+      await terminateProcessTree(proc.pid, {
+        signal: "SIGKILL",
+        forceAfterMs: 0,
+        waitAfterForceMs: 200,
+      });
+    }
+  }
+}
+
+async function runPreRecallProcess(
+  proc: PreRecallProc,
+  timeoutMs: number,
+  label: string,
+  extract: (stdout: string) => string,
+): Promise<string> {
+  try {
+    // Start reading stdout immediately so the pipe cannot fill and stall.
+    const stdoutStream = proc.stdout;
+    const stdoutPromise =
+      stdoutStream && typeof stdoutStream !== "number"
+        ? new Response(stdoutStream).text()
+        : Promise.resolve("");
+    const exitCode = await runPreRecallExited(proc, timeoutMs, label);
+    const stdout = await stdoutPromise;
+    if (exitCode !== 0) {
+      let stderr = "";
+      try {
+        const stderrStream = proc.stderr;
+        if (stderrStream && typeof stderrStream !== "number") {
+          stderr = (await new Response(stderrStream).text()).trim();
+        }
+      } catch {
+        // best-effort
+      }
+      throw new Error(
+        `pre-recall: ${label} exited ${exitCode}${stderr ? `: ${stderr}` : ""}`,
+      );
+    }
+    return extract(stdout);
+  } catch (err) {
+    if (isProcessTreeAlive(proc.pid)) {
+      await terminateProcessTree(proc.pid, {
+        signal: "SIGKILL",
+        forceAfterMs: 0,
+        waitAfterForceMs: 200,
+      });
+    }
+    throw err;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

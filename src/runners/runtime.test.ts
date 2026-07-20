@@ -4,6 +4,7 @@ import {
   buildRunnerEnv,
   needsProjectMcp,
   resolveRunnerCwd,
+  willResume,
 } from "./runtime.ts";
 
 function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
@@ -40,6 +41,55 @@ function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
     ...overrides,
   };
 }
+
+describe("willResume", () => {
+  it("is false without a session id", () => {
+    expect(
+      willResume({
+        provider: "claude",
+        sessionId: null,
+        opencodeContinuityEnabled: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("resumes claude when a session id is present", () => {
+    expect(
+      willResume({
+        provider: "claude",
+        sessionId: "ses_1",
+        opencodeContinuityEnabled: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not resume opencode when continuity is disabled", () => {
+    expect(
+      willResume({
+        provider: "opencode",
+        sessionId: "ses_1",
+        opencodeContinuityEnabled: false,
+      }),
+    ).toBe(false);
+    expect(
+      willResume({
+        provider: "opencode-sdk",
+        sessionId: "ses_1",
+        opencodeContinuityEnabled: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("resumes opencode only when continuity is enabled", () => {
+    expect(
+      willResume({
+        provider: "opencode",
+        sessionId: "ses_1",
+        opencodeContinuityEnabled: true,
+      }),
+    ).toBe(true);
+  });
+});
 
 describe("runner runtime", () => {
   it("resolves cwd using session override first", () => {

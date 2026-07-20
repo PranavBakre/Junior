@@ -75,9 +75,24 @@ describe("mapClaudeRunPolicy", () => {
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
     expect(policy.permissionMode).toBe("plan");
-    expect(policy.allowedTools).toEqual(["Read", "Edit"]);
+    // Declared mutating tools must NOT be pre-allowed: under the approval
+    // round-trip (default mode) --allowedTools skips the permission prompt,
+    // which would bypass the human gate this intent exists for.
+    expect(policy.allowedTools).toEqual(["Read"]);
     expect(policy.disallowedTools).toEqual([]);
     expect(policy.addDirs).toEqual(["/repo"]);
+  });
+
+  test("human-gated strips every mutating tool spec from the pre-allow list", () => {
+    const session = sessionWith({
+      intent: "human-gated",
+      mcp: [],
+      tools: ["Read", "Write", "Edit", "NotebookEdit", "Bash", "Bash(git *)", "Grep", "mcp__slack-bot__memory_recall"],
+    });
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.allowedTools).toEqual(["Read", "Grep", "mcp__slack-bot__memory_recall"]);
   });
 
   test("utility preserves the configured permission mode", () => {
@@ -102,7 +117,7 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.addDirs).toEqual(["/repo"]);
   });
 
-  test("null/unset intent behaves like normal", () => {
+  test("null/unset intent behaves like normal for non-restricted roles", () => {
     const session = createSession("t", "c");
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
@@ -111,5 +126,50 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.allowedTools).toEqual([]);
     expect(policy.disallowedTools).toEqual([]);
     expect(policy.addDirs).toEqual(["/repo"]);
+  });
+
+  test("missing intent fails closed for review/reproducer roles", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.agentPermissions = { intent: null, mcp: [], tools: ["Read"] };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.disallowedTools).toContain("Edit");
+    expect(policy.disallowedTools).toContain("Write");
+  });
+
+  test("missing intent fails closed for pm/architect roles", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "pm";
+    session.agentPermissions = { intent: null, mcp: [], tools: ["Read", "Write"] };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    // Write is declared but human-gated must not pre-allow it.
+    expect(policy.allowedTools).toEqual(["Read"]);
+  });
+
+  test("declared intent cannot widen catalog ceiling for restricted roles", () => {
+    // Phase 3: target-repo / session overrides must not grant review product-code writes.
+    const session = sessionWith({ intent: "normal", mcp: [], tools: [] });
+    session.activeAgentName = "review";
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.disallowedTools).toContain("Edit");
+  });
+
+  test("declared intent may narrow catalog ceiling", () => {
+    const session = sessionWith({ intent: "no-tools", mcp: [], tools: [] });
+    session.activeAgentName = "build";
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.disallowedTools).toContain("Bash");
   });
 });

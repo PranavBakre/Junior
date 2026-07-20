@@ -1,5 +1,8 @@
 import type { Config } from "../config.ts";
-import type { AgentPermissions } from "../agents/loader.ts";
+import {
+  resolveEffectivePermissionIntent,
+  type AgentPermissions,
+} from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
 
 /**
@@ -9,11 +12,16 @@ import type { ThreadSession } from "../session/types.ts";
  * surface: `--permission-mode`, `--allowedTools`, `--disallowedTools`, and
  * `--add-dir`.
  *
+ * Intent resolution is provider-neutral (`resolveEffectivePermissionIntent` →
+ * trusted catalog ceiling in `src/agents/registry.ts`). Prefer
+ * `compileClaudePolicy` from `src/runners/policy.ts` as the shared entry point.
+ *
  * Unlike Codex, Claude Code has NO OS-level sandbox. There is no read-only /
  * workspace-write filesystem jail to lean on, so confinement here is purely
  * tool-based (allow/deny lists + permission mode) plus the working directory
  * we hand it. Write lockdown for read-only/no-tools agents is therefore
  * enforced by explicitly disallowing the mutating tools, not by a sandbox.
+ * Do not claim worktree confinement Claude cannot enforce.
  *
  * Pure function — no IO.
  */
@@ -36,6 +44,21 @@ const READ_ONLY_DISALLOWED = [
 /** Hardest lockdown — no edits and no shell at all. */
 const NO_TOOLS_DISALLOWED = ["Edit", "Write", "NotebookEdit", "Bash"];
 
+/**
+ * True for tool specifiers that can mutate state: file editors and any Bash
+ * pattern (Bash(git *) can commit/push — command patterns don't make it safe).
+ */
+function isMutatingToolSpec(spec: string): boolean {
+  const name = spec.trim();
+  return (
+    name === "Edit" ||
+    name === "Write" ||
+    name === "NotebookEdit" ||
+    name === "Bash" ||
+    name.startsWith("Bash(")
+  );
+}
+
 export function mapClaudeRunPolicy(options: {
   config: Config["claude"];
   session: ThreadSession;
@@ -43,7 +66,10 @@ export function mapClaudeRunPolicy(options: {
 }): ClaudeRunPolicy {
   const { config, session, cwd } = options;
   const permissions: AgentPermissions | undefined = session.agentPermissions;
-  const intent = permissions?.intent ?? null;
+  const intent = resolveEffectivePermissionIntent(
+    permissions,
+    session.activeAgentName ?? session.agentType,
+  );
   const declaredTools = permissions?.tools ?? [];
 
   if (intent === "read-only") {
@@ -72,9 +98,16 @@ export function mapClaudeRunPolicy(options: {
   if (intent === "human-gated") {
     // Propose, don't execute. A later phase layers live approval on top; the
     // policy module's safe base is `plan`.
+    //
+    // Mutating tools MUST NOT be pre-allowed: when the approval round-trip is
+    // active the spawner switches to `default` mode, and anything in
+    // --allowedTools skips the permission prompt entirely — a declared
+    // Write/Edit would silently bypass the human gate it exists for. Leaving
+    // them un-allowed routes each mutation through the approval tool
+    // (approval mode) or blocks it (plan mode).
     return {
       permissionMode: "plan",
-      allowedTools: declaredTools,
+      allowedTools: declaredTools.filter((tool) => !isMutatingToolSpec(tool)),
       disallowedTools: [],
       addDirs: [cwd],
     };

@@ -1,3 +1,5 @@
+import { clampPermissionIntent } from "./registry.ts";
+
 /**
  * Per-agent preamble context profile. Each flag controls whether the
  * corresponding block in `buildPromptPreamble` is emitted on the first turn.
@@ -35,6 +37,27 @@ export interface AgentPermissions {
   intent: AgentPermissionIntent | null;
   mcp: string[];
   tools: string[];
+}
+
+/**
+ * Resolve effective permission intent for a run.
+ *
+ * Order:
+ * 1. Trusted catalog ceiling for known operational roles (Phase 3).
+ * 2. Declared frontmatter/session intent may only narrow that ceiling —
+ *    target-repo definitions cannot widen permissions.
+ * 3. Unknown agents: declared intent passes through; missing → null (provider
+ *    normal path).
+ *
+ * Restricted roles (review, reproducer, pm, architect) therefore fail closed
+ * even when frontmatter omits `permissions.intent`.
+ */
+export function resolveEffectivePermissionIntent(
+  permissions: AgentPermissions | undefined,
+  agentName: string | null | undefined,
+): AgentPermissionIntent | null {
+  const declared = permissions?.intent ?? null;
+  return clampPermissionIntent(agentName, declared);
 }
 
 export const DEFAULT_CONTEXT_PROFILE: AgentContextProfile = {
