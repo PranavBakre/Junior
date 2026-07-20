@@ -82,6 +82,10 @@ const pipelineToolRuntime: PipelineToolRuntime = {
   store: pipelineStore,
   runtimeMode: pipelineRuntimeMode,
   githubTrackingEnabled: config.github?.reconcileEnabled ?? false,
+  sessionStore: store,
+  productPipelineEnabled: config.pipeline?.productPipelineEnabled ?? false,
+  bugPipelineEnabled: config.pipeline?.bugPipelineEnabled ?? false,
+  workspaceRoot: process.cwd(),
   onOutcomeCommitted: async () => {
     // Shadow/off never dispatch — only active mode pumps the outbox.
     if (pipelineRuntimeMode !== "active") return;
@@ -97,6 +101,15 @@ const pipelineToolRuntime: PipelineToolRuntime = {
         `outbox pump after outcome failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  },
+  onRunStarted: async () => {
+    if (pipelineRuntimeMode !== "active") return;
+    await pumpOutbox({
+      store: pipelineStore,
+      dispatcher: sessionManager,
+      sessionReader: store,
+      workspaceRoot: process.cwd(),
+    });
   },
 };
 startMcpServer(

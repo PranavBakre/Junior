@@ -7,12 +7,17 @@ import type { PipelineRuntimeMode } from "../config.ts";
 import {
   canEditProductCode,
   canWritePipelineArtifacts,
+  checkCapability,
   isReadOnlyRole,
 } from "../agents/capabilities.ts";
 import {
   canonicalAgentName,
 } from "../agents/registry.ts";
-import type { SlackMcpRunContext } from "../mcp/context.ts";
+import {
+  slackMcpAgentForSession,
+  type SlackMcpRunContext,
+} from "../mcp/context.ts";
+import type { SessionStore } from "../session/store/interface.ts";
 import type { PipelineStore } from "./store/interface.ts";
 import { projectRunSummary } from "./projection.ts";
 import {
@@ -29,13 +34,25 @@ import type {
   PipelineRun,
   TransitionReceipt,
 } from "./types.ts";
+import { createProductRun } from "./product/controller.ts";
+import { createBugRun } from "./bug/controller.ts";
+import type { BugMode } from "./bug/definition.ts";
 
 export type PipelineToolRuntime = {
   store: PipelineStore;
   runtimeMode: PipelineRuntimeMode;
   githubTrackingEnabled: boolean;
+  sessionStore?: SessionStore;
+  productPipelineEnabled?: boolean;
+  bugPipelineEnabled?: boolean;
+  workspaceRoot?: string;
   /** Optional post-outcome hook (e.g. pump outbox). */
   onOutcomeCommitted?: (receipt: TransitionReceipt) => Promise<void>;
+  /** Optional immediate wake after a new or recovered pipeline start. */
+  onRunStarted?: (input: {
+    runId: string;
+    assignmentId: string;
+  }) => Promise<void>;
 };
 
 export type ToolTextResult = {
@@ -62,6 +79,197 @@ function authFromContext(runContext: SlackMcpRunContext): OutcomeAuthContext {
     channelId: runContext.channel,
     threadId: runContext.threadId,
   };
+}
+
+export type PipelineStartRunArgs = {
+  kind: "product" | "bug";
+  start_kind: "pm" | "build" | "debug" | "reproducer";
+  objective: string;
+  reason: string;
+  idempotency_key: string;
+  repo_refs?: string[];
+  acceptance_criteria?: string[];
+  bug_mode?: BugMode;
+};
+
+/**
+ * Deliberately promote the authenticated current Slack turn into a durable
+ * pipeline. Text and keywords never enter this path on their own.
+ */
+export async function pipelineStartRun(
+  runtime: PipelineToolRuntime,
+  runContext: SlackMcpRunContext | null,
+  args: PipelineStartRunArgs,
+): Promise<ToolTextResult> {
+  const disabled = requireActive(runtime);
+  if (disabled) return disabled;
+  if (!runContext?.signed) {
+    return textResult({ ok: false, reason: "signed MCP run context required" }, true);
+  }
+  if (!runtime.sessionStore) {
+    return textResult({ ok: false, reason: "pipeline session store unavailable" }, true);
+  }
+
+  const capability = checkCapability(runContext.agent, "pipeline-run-start");
+  if (!capability.ok) {
+    return textResult({ ok: false, reason: capability.reason }, true);
+  }
+
+  const productStart =
+    args.kind === "product" &&
+    (args.start_kind === "pm" || args.start_kind === "build");
+  const bugStart =
+    args.kind === "bug" &&
+    (args.start_kind === "debug" || args.start_kind === "reproducer");
+  if (!productStart && !bugStart) {
+    return textResult(
+      {
+        ok: false,
+        reason: `start_kind "${args.start_kind}" is invalid for ${args.kind} pipeline`,
+      },
+      true,
+    );
+  }
+  if (args.kind === "product" && !runtime.productPipelineEnabled) {
+    return textResult({ ok: false, reason: "product pipeline is disabled" }, true);
+  }
+  if (args.kind === "bug" && !runtime.bugPipelineEnabled) {
+    return textResult({ ok: false, reason: "bug pipeline is disabled" }, true);
+  }
+
+  const session = await runtime.sessionStore.get(runContext.threadId);
+  if (!session) {
+    return textResult({ ok: false, reason: "thread session not found" }, true);
+  }
+  if (session.channel !== runContext.channel) {
+    return textResult(
+      { ok: false, reason: "session does not match authenticated channel" },
+      true,
+    );
+  }
+  const sessionAgent = slackMcpAgentForSession(session);
+  if (sessionAgent !== runContext.agent) {
+    return textResult(
+      {
+        ok: false,
+        reason: `authenticated agent "${runContext.agent}" does not own the current session turn`,
+      },
+      true,
+    );
+  }
+  const sourceMessageTs =
+    session.activeTopLevelMessageTs ?? runContext.messageTs ?? null;
+  if (!sourceMessageTs) {
+    return textResult(
+      { ok: false, reason: "authoritative source message timestamp missing" },
+      true,
+    );
+  }
+
+  const active = await runtime.store.getRunByThread(runContext.threadId);
+  if (active && active.status !== "terminal" && active.kind !== args.kind) {
+    return textResult(
+      {
+        ok: false,
+        reason: `thread already has an active ${active.kind} pipeline`,
+        activeRunId: active.id,
+        activeKind: active.kind,
+      },
+      true,
+    );
+  }
+
+  const repoRefs = [
+    ...new Set([
+      ...(session.targetRepo ? [session.targetRepo] : []),
+      ...(args.repo_refs ?? []).map((repo) => repo.trim()).filter(Boolean),
+    ]),
+  ];
+  const provenance = {
+    actorType: "agent" as const,
+    actorId: runContext.agent,
+    reason: args.reason.trim(),
+    idempotencyKey: `${runContext.threadId}:${sourceMessageTs}:${args.idempotency_key}`,
+    sourceMessageTs,
+  };
+
+  try {
+    const started = productStart
+      ? await createProductRun(
+          { store: runtime.store, workspaceRoot: runtime.workspaceRoot },
+          {
+            channelId: runContext.channel,
+            threadId: runContext.threadId,
+            objective: args.objective,
+            startKind: args.start_kind as "pm" | "build",
+            messageTs: sourceMessageTs,
+            repoRefs,
+            ownerAgent: runContext.agent,
+            acceptanceCriteria: args.acceptance_criteria,
+            provenance,
+          },
+        )
+      : await createBugRun(
+          { store: runtime.store, workspaceRoot: runtime.workspaceRoot },
+          {
+            channelId: runContext.channel,
+            threadId: runContext.threadId,
+            objective: args.objective,
+            startKind: args.start_kind as "debug" | "reproducer",
+            messageTs: sourceMessageTs,
+            repoRefs,
+            ownerAgent: runContext.agent,
+            targetAgent:
+              args.start_kind === "debug" ? runContext.agent : "reproducer",
+            explicitMode: args.bug_mode,
+            provenance,
+          },
+        );
+
+    await runtime.sessionStore.mutateThread(runContext.threadId, (current) => {
+      if (current.channel !== runContext.channel) {
+        throw new Error("session channel changed during pipeline start");
+      }
+      current.activePipelineRunId = started.run.id;
+      current.activePipelineKind = started.run.kind;
+    });
+
+    let wakeError: string | null = null;
+    try {
+      await runtime.onRunStarted?.({
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+      });
+    } catch (err) {
+      wakeError = err instanceof Error ? err.message : String(err);
+    }
+
+    return textResult({
+      ok: true,
+      created: started.created,
+      run: started.run,
+      initialAssignment: started.assignment,
+      dispatchQueued: true,
+      wakeError,
+    });
+  } catch (err) {
+    const winner = await runtime.store.getRunByThread(runContext.threadId);
+    if (winner && winner.status !== "terminal" && winner.kind !== args.kind) {
+      return textResult(
+        {
+          ok: false,
+          reason: `thread already has an active ${winner.kind} pipeline`,
+          activeRunId: winner.id,
+          activeKind: winner.kind,
+        },
+        true,
+      );
+    }
+    return textResult(
+      { ok: false, reason: err instanceof Error ? err.message : String(err) },
+      true,
+    );
+  }
 }
 
 /**

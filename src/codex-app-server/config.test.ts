@@ -4,6 +4,21 @@ import { buildCodexConfigToml, buildCodexMcpConfig } from "./config.ts";
 import type { Config } from "../config.ts";
 
 describe("buildCodexMcpConfig", () => {
+  it("injects Slack MCP for trusted pipeline-start orchestrators", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "lead";
+    session.agentPermissions = { intent: "normal", mcp: [], tools: [] };
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toEqual({
+      "slack-bot": {
+        transport: "http",
+        url: expect.stringContaining(
+          "http://localhost:3456/mcp?agent=lead&channel=c&thread=t",
+        ),
+      },
+    });
+  });
+
   it("builds only agent-declared MCP servers and honors utility carve-out", () => {
     const session = createSession("t", "c");
     session.agentPermissions = { intent: "normal", mcp: ["slack-bot", "playwright"], tools: [] };

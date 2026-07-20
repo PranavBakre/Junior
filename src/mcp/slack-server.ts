@@ -60,6 +60,7 @@ import {
   pipelineReportOutcome,
   pipelineRequestHandoff,
   pipelineRunCheck,
+  pipelineStartRun,
   pipelineWriteArtifact,
 } from "../pipelines/tools.ts";
 import { postGitHubReview } from "../github/review-comments.ts";
@@ -942,6 +943,47 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
   // When PIPELINE_RUNTIME_MODE=off, mutating tools return disabled; get_state
   // still answers with empty/not-found.
   // -------------------------------------------------------------------------
+
+  server.registerTool(
+    "pipeline_start_run",
+    {
+      description:
+        "Deliberately upgrade the authenticated current Slack thread into a durable product or bug pipeline. " +
+        "Only trusted orchestrators may call this. Text alone never starts a pipeline; channel, thread, agent, and source turn come from signed runtime context.",
+      inputSchema: {
+        kind: z.enum(["product", "bug"]),
+        start_kind: z.enum(["pm", "build", "debug", "reproducer"]),
+        objective: z.string().min(1).max(20_000),
+        reason: z.string().min(1).max(2_000),
+        idempotency_key: z.string().min(1).max(200),
+        repo_refs: z.array(z.string().min(1).max(200)).max(20).optional(),
+        acceptance_criteria: z
+          .array(z.string().min(1).max(2_000))
+          .max(50)
+          .optional(),
+        bug_mode: z
+          .enum(["expected-behavior", "focused-debug", "full-investigation"])
+          .optional(),
+      },
+    },
+    async (args) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: "pipeline runtime disabled (PIPELINE_RUNTIME_MODE=off)",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      return pipelineStartRun(pipelineRuntime, runContext, args);
+    },
+  );
 
   server.registerTool(
     "pipeline_get_state",

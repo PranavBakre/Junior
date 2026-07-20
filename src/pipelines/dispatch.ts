@@ -11,6 +11,7 @@ import {
   composeDispatchPrompt,
 } from "./context.ts";
 import { composeBugDispatchPrompt } from "./bug/context.ts";
+import { composeProductDispatchPrompt } from "./product/context.ts";
 import { log } from "../logger.ts";
 
 /** Minimal session manager surface used for pipeline dispatch. */
@@ -64,6 +65,8 @@ export type DispatchDeps = {
    * (reproducer/build/review). Injected ahead of pipeline-assignment.
    */
   bugContext?: string;
+  /** Pre-built <product-context> block for product-run assignments. */
+  productContext?: string;
 };
 
 /**
@@ -125,10 +128,16 @@ export async function dispatchAssignment(
         assignmentContext: contextBlock,
         objective: input.prompt ?? assignment.objective,
       })
-    : composeDispatchPrompt(
-        contextBlock,
-        input.prompt ?? assignment.objective,
-      );
+    : run.kind === "product" && deps.productContext
+      ? composeProductDispatchPrompt({
+          productContext: deps.productContext,
+          assignmentContext: contextBlock,
+          objective: input.prompt ?? assignment.objective,
+        })
+      : composeDispatchPrompt(
+          contextBlock,
+          input.prompt ?? assignment.objective,
+        );
   const dedupeKey =
     input.dedupeKey ??
     `pipeline:${run.id}:${assignment.id}:${assignment.idempotencyKey}`;

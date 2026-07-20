@@ -183,6 +183,15 @@ export interface ThreadSession {
    */
   activePipelineRunId?: string | null;
   activePipelineKind?: "product" | "bug" | null;
+  /** Authoritative Slack source turn for the active top-level invocation. */
+  activeTopLevelMessageTs?: string | null;
+  /**
+   * Ephemeral Slack event identity for the current runner invocation. It is
+   * copied onto the run-only session passed to providers and must not be
+   * persisted. MCP pipeline starts use it as an authenticated idempotency
+   * source instead of trusting a model-supplied timestamp.
+   */
+  currentMessageTs?: string | null;
 }
 
 export function createSession(

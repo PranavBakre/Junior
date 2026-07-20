@@ -18,6 +18,7 @@ import {
 } from "./dispatch.ts";
 import { claimReadyOutbox, markDelivered, reclaimExpiredLeases } from "./outbox.ts";
 import { bugContextForAssignment } from "./bug/controller.ts";
+import { productContextForAssignment } from "./product/controller.ts";
 
 export type PumpDeps = {
   store: PipelineStore;
@@ -154,6 +155,7 @@ async function handleOutboxItem(
     }
 
     let bugContext: string | undefined;
+    let productContext: string | undefined;
     if (run.kind === "bug") {
       try {
         bugContext = await bugContextForAssignment(
@@ -172,9 +174,27 @@ async function handleOutboxItem(
         );
       }
     }
+    if (run.kind === "product") {
+      try {
+        productContext = await productContextForAssignment(
+          {
+            store,
+            clock: deps.clock,
+            workspaceRoot: deps.workspaceRoot,
+          },
+          run,
+          assignment,
+        );
+      } catch (err) {
+        log.warn(
+          "pipeline-pump",
+          `product-context build failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     const result = await dispatchAssignment(
-      { ...dispatchDeps, bugContext },
+      { ...dispatchDeps, bugContext, productContext },
       {
         run,
         assignment,

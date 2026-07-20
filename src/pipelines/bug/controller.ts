@@ -18,6 +18,7 @@ import {
   type BugRun,
   type PipelineEvent,
   type PipelineGate,
+  type PipelineStartProvenance,
   type TransitionReceipt,
 } from "../types.ts";
 import {
@@ -82,6 +83,7 @@ export type CreateBugRunInput = {
   runId?: string;
   /** Initial target: debug → lead/orchestrator; reproducer → reproducer. */
   targetAgent?: string;
+  provenance?: PipelineStartProvenance;
 };
 
 export type CreateBugRunResult = {
@@ -121,6 +123,7 @@ export async function createBugRun(
     if (!open) {
       throw new Error(`active bug run ${existing.id} has no assignments`);
     }
+    await ensureBugStartDelivery(store, existing, open, mode, input);
     return {
       run: existing,
       assignment: open,
@@ -188,6 +191,31 @@ export async function createBugRun(
         idempotencyKey: `bug-start:${input.threadId}:${input.messageTs}:${input.startKind}`,
       },
       events: [
+        ...(input.provenance
+          ? [
+              {
+                id: crypto.randomUUID(),
+                runId,
+                eventType: "pipeline.promoted",
+                actorType: input.provenance.actorType,
+                actorId: input.provenance.actorId,
+                assignmentId,
+                outcomeId: null,
+                fromPhase: null,
+                toPhase: "intake",
+                payloadVersion: 1,
+                payload: {
+                  kind: "bug",
+                  startKind: input.startKind,
+                  reason: input.provenance.reason,
+                  sourceMessageTs: input.provenance.sourceMessageTs,
+                },
+                idempotencyKey: `pipeline.promoted:${input.provenance.idempotencyKey}`,
+                occurredAt: now,
+                observedAt: now,
+              },
+            ]
+          : []),
         {
           id: crypto.randomUUID(),
           runId,
@@ -250,6 +278,7 @@ export async function createBugRun(
               a.status === "waiting",
           ) ?? assignments[assignments.length - 1];
         if (open) {
+          await ensureBugStartDelivery(store, raced, open, modeRaced, input);
           return {
             run: raced,
             assignment: open,
@@ -263,30 +292,7 @@ export async function createBugRun(
   }
 
   // Enqueue initial dispatch.
-  await store.enqueueOutbox({
-    id: crypto.randomUUID(),
-    runId,
-    assignmentId: assignment.id,
-    eventType: "assignment.dispatch",
-    payload: {
-      assignmentId: assignment.id,
-      targetAgent,
-      mode,
-    },
-    idempotencyKey: `bug-dispatch:${assignment.idempotencyKey}`,
-  });
-
-  // Thread catch-up cursor for waiting runs / laptop sleep.
-  if (store.upsertThreadCursor) {
-    await store.upsertThreadCursor({
-      runId,
-      channelId: input.channelId,
-      threadId: input.threadId,
-      lastObservedTs: input.messageTs,
-      lastCatchupAt: null,
-      updatedAt: now,
-    });
-  }
+  await ensureBugStartDelivery(store, run, assignment, mode, input);
 
   await maybeWriteProjection(config, run, mode, [assignment]);
 
@@ -296,6 +302,38 @@ export async function createBugRun(
   );
 
   return { run, assignment, mode, created: true };
+}
+
+async function ensureBugStartDelivery(
+  store: PipelineStore,
+  run: BugRun,
+  assignment: Assignment,
+  mode: BugMode,
+  input: CreateBugRunInput,
+): Promise<void> {
+  await store.enqueueOutbox({
+    id: crypto.randomUUID(),
+    runId: run.id,
+    assignmentId: assignment.id,
+    eventType: "assignment.dispatch",
+    payload: {
+      assignmentId: assignment.id,
+      targetAgent: assignment.targetAgent,
+      mode,
+    },
+    idempotencyKey: `bug-dispatch:${assignment.idempotencyKey}`,
+  });
+
+  if (store.upsertThreadCursor) {
+    await store.upsertThreadCursor({
+      runId: run.id,
+      channelId: run.channelId,
+      threadId: run.threadId,
+      lastObservedTs: input.messageTs,
+      lastCatchupAt: null,
+      updatedAt: Date.now(),
+    });
+  }
 }
 
 /**

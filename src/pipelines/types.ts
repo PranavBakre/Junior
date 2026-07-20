@@ -406,6 +406,15 @@ export type PipelineEvent = {
   observedAt: number;
 };
 
+/** Auditable provenance for promoting an ordinary thread into a pipeline. */
+export type PipelineStartProvenance = {
+  actorType: "agent" | "human";
+  actorId: string;
+  reason: string;
+  idempotencyKey: string;
+  sourceMessageTs: string;
+};
+
 export type OutboxStatus =
   | "pending"
   | "leased"

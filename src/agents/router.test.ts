@@ -41,6 +41,10 @@ describe("AgentRouter overlay", () => {
     await fs.mkdir(path.join(fallbackDir, "common"), { recursive: true });
     await fs.mkdir(path.join(orgDir, "common"), { recursive: true });
     await fs.writeFile(path.join(fallbackDir, "common", "core.md"), "# public core");
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "pipeline-start.md"),
+      "# PIPELINE START CONTRACT",
+    );
   });
 
   afterEach(async () => {
@@ -333,6 +337,49 @@ describe("AgentRouter overlay", () => {
     expect(defaultPrompt).not.toContain("# BUG PIPELINE PLAYBOOK");
     expect(defaultPrompt).not.toContain("# MERGE WORKFLOW RULES");
     expect(defaultPrompt).not.toContain("# RUNTIME ENVIRONMENT");
+  });
+
+  it("injects the active typed pipeline contract for top-level orchestrators", async () => {
+    await fs.writeFile(
+      path.join(fallbackDir, "default.md"),
+      `---\nname: default\ncommon: core\n---\n\nDEFAULT BODY`,
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "bug-pipeline.md"),
+      "# BUG PIPELINE PLAYBOOK",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "product-pipeline.md"),
+      "# PRODUCT PIPELINE PLAYBOOK",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "merge-workflow.md"),
+      "# MERGE WORKFLOW RULES",
+    );
+    await fs.writeFile(
+      path.join(fallbackDir, "common", "runtime-environment.md"),
+      "# RUNTIME ENVIRONMENT",
+    );
+    const router = new AgentRouter([], fallbackDir, orgDir);
+
+    const bugPrompt = await router.composeSystemPrompt(
+      makeSession({
+        agentType: "default",
+        activeAgentName: "default",
+        activePipelineKind: "bug",
+      }),
+    );
+    const productPrompt = await router.composeSystemPrompt(
+      makeSession({
+        agentType: "default",
+        activeAgentName: "default",
+        activePipelineKind: "product",
+      }),
+    );
+
+    expect(bugPrompt).toContain("# BUG PIPELINE PLAYBOOK");
+    expect(productPrompt).toContain("# PRODUCT PIPELINE PLAYBOOK");
+    expect(productPrompt).toContain("# PIPELINE START CONTRACT");
   });
 
   it("missing org overlay dir degrades to public fallback", async () => {

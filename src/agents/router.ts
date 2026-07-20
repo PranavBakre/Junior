@@ -81,6 +81,23 @@ export class AgentRouter {
     const rawName = agentNameForSession(session);
     const definition = await this.resolveAgent(session);
     const commonProfile = [...(definition?.common ?? ["core"])];
+    const authorizationName =
+      session.activeAgentName === "default" && session.agentType
+        ? session.agentType
+        : session.activeAgentName ?? rawName;
+    const isTopLevelOrchestrator =
+      authorizationName === "default" ||
+      authorizationName === "lead" ||
+      authorizationName === "junior" ||
+      authorizationName === "thinker";
+
+    // Trusted top-level orchestrators may deliberately upgrade an ordinary
+    // thread. Inject this contract independently of target-repo prompt
+    // frontmatter so an override cannot accidentally remove the control-plane
+    // decision rules.
+    if (isTopLevelOrchestrator && !commonProfile.includes("pipeline-start")) {
+      commonProfile.push("pipeline-start");
+    }
 
     // Support-channel sessions (marker "lead", plus resumed pre-merge "thinker"
     // sessions) run the bug pipeline. Append the pipeline preambles AFTER the
@@ -91,10 +108,21 @@ export class AgentRouter {
     // because the pipeline's merge step and dev-server/bug-folder contracts live
     // there — the lean default profile deliberately omits them for casual
     // threads. Casual "default" sessions get none of this.
-    if (rawName === "lead" || rawName === "thinker") {
+    if (
+      rawName === "lead" ||
+      rawName === "thinker" ||
+      (isTopLevelOrchestrator && session.activePipelineKind === "bug")
+    ) {
       for (const name of ["merge-workflow", "runtime-environment", "bug-pipeline"]) {
         if (!commonProfile.includes(name)) commonProfile.push(name);
       }
+    }
+    if (
+      isTopLevelOrchestrator &&
+      session.activePipelineKind === "product" &&
+      !commonProfile.includes("product-pipeline")
+    ) {
+      commonProfile.push("product-pipeline");
     }
 
     const preambleParts: string[] = [];

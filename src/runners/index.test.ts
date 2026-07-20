@@ -4,6 +4,20 @@ import { createSession } from "../session/types.ts";
 import { buildOpenCodeMcpConfig } from "./index.ts";
 
 describe("buildOpenCodeMcpConfig", () => {
+  it("injects Slack MCP for trusted pipeline-start orchestrators", () => {
+    const session = createSession("thread-1", "C01");
+    session.activeAgentName = "default";
+    session.agentPermissions = { intent: "normal", mcp: [], tools: [] };
+
+    expect(buildOpenCodeMcpConfig(testConfig(), session)?.["slack-bot"]).toEqual({
+      type: "remote",
+      url: expect.stringContaining(
+        "http://localhost:3456/mcp?agent=default&channel=C01&thread=thread-1",
+      ),
+      enabled: true,
+    });
+  });
+
   it("injects Slack MCP for the trusted reviewer comment capability", () => {
     const session = createSession("thread-1", "C01");
     session.activeAgentName = "review";

@@ -12,12 +12,27 @@ describe("Slack MCP run context", () => {
   it("encodes trusted run context in the MCP URL", () => {
     const session = createSession("thread-1", "C01");
     session.activeAgentName = "default";
+    session.currentMessageTs = "1711111111.000002";
 
     const parsed = new URL(buildSlackMcpUrl(session));
 
     expect(parsed.searchParams.get("agent")).toBe("default");
     expect(parsed.searchParams.get("channel")).toBe("C01");
     expect(parsed.searchParams.get("thread")).toBe("thread-1");
+    expect(parsed.searchParams.get("message_ts")).toBe("1711111111.000002");
+    expect(parseSlackMcpRunContext(parsed.toString())?.messageTs).toBe(
+      "1711111111.000002",
+    );
+  });
+
+  it("signs a CHANNEL_DEFAULTS specialist as the prompt role, not default", () => {
+    const session = createSession("thread-1", "C01");
+    session.activeAgentName = "default";
+    session.agentType = "build";
+
+    expect(new URL(buildSlackMcpUrl(session)).searchParams.get("agent")).toBe(
+      "build",
+    );
   });
 
   it("encodes trusted run context in the MongoDB MCP proxy URL", () => {
@@ -107,6 +122,7 @@ describe("Slack MCP run context", () => {
         agent: "review",
         channel: "C01",
         threadId: "thread-1",
+        messageTs: null,
         signed: true,
       });
 

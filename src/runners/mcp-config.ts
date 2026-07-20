@@ -30,6 +30,14 @@ export function allowedMcpServers(session: ThreadSession): Set<McpServerName> {
   ) {
     allowed.add("slack-bot");
   }
+  if (
+    hasCapability(
+      session.activeAgentName ?? session.agentType,
+      "pipeline-run-start",
+    )
+  ) {
+    allowed.add("slack-bot");
+  }
   return allowed;
 }
 

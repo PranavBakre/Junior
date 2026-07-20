@@ -14,6 +14,7 @@ import {
   type Assignment,
   type AttemptRevisionMember,
   type PipelineGate,
+  type PipelineStartProvenance,
   type ProductPhase,
   type ProductRun,
   type TransitionReceipt,
@@ -60,6 +61,7 @@ export type CreateProductRunInput = {
   runId?: string;
   targetAgent?: string;
   acceptanceCriteria?: string[];
+  provenance?: PipelineStartProvenance;
 };
 
 export type CreateProductRunResult = {
@@ -104,6 +106,7 @@ export async function createProductRun(
     if (!open) {
       throw new Error(`active product run ${existing.id} has no assignments`);
     }
+    await ensureProductStartDelivery(store, existing, open, input);
     return {
       run: existing,
       assignment: open,
@@ -185,14 +188,39 @@ export async function createProductRun(
         deadlineAt: input.deadlineAt ?? null,
         idempotencyKey: `product-start:${input.threadId}:${input.messageTs}:${input.startKind}`,
       },
-      events:
-        start.skipReasons.length > 0
+      events: [
+        ...(input.provenance
+          ? [
+              {
+                id: crypto.randomUUID(),
+                runId,
+                eventType: "pipeline.promoted",
+                actorType: input.provenance.actorType,
+                actorId: input.provenance.actorId,
+                assignmentId,
+                outcomeId: null,
+                fromPhase: null,
+                toPhase: start.phase,
+                payloadVersion: 1,
+                payload: {
+                  kind: "product",
+                  startKind: input.startKind,
+                  reason: input.provenance.reason,
+                  sourceMessageTs: input.provenance.sourceMessageTs,
+                },
+                idempotencyKey: `pipeline.promoted:${input.provenance.idempotencyKey}`,
+                occurredAt: now,
+                observedAt: now,
+              },
+            ]
+          : []),
+        ...(start.skipReasons.length > 0
           ? [
               {
                 id: crypto.randomUUID(),
                 runId,
                 eventType: SKIP_EVENT,
-                actorType: "system",
+                actorType: "system" as const,
                 actorId: "product-controller",
                 assignmentId,
                 outcomeId: null,
@@ -205,7 +233,8 @@ export async function createProductRun(
                 observedAt: now,
               },
             ]
-          : [],
+          : []),
+      ],
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -225,6 +254,7 @@ export async function createProductRun(
               a.status === "waiting",
           ) ?? assignments[assignments.length - 1];
         if (open) {
+          await ensureProductStartDelivery(store, raced, open, input);
           return {
             run: raced,
             assignment: open,
@@ -256,30 +286,7 @@ export async function createProductRun(
     });
   }
 
-  await store.enqueueOutbox({
-    id: crypto.randomUUID(),
-    runId,
-    assignmentId: assignment.id,
-    eventType: "assignment.dispatch",
-    payload: {
-      assignmentId: assignment.id,
-      targetAgent,
-      startKind: input.startKind,
-      phase: start.phase,
-    },
-    idempotencyKey: `product-dispatch:${assignment.idempotencyKey}`,
-  });
-
-  if (store.upsertThreadCursor) {
-    await store.upsertThreadCursor({
-      runId,
-      channelId: input.channelId,
-      threadId: input.threadId,
-      lastObservedTs: input.messageTs,
-      lastCatchupAt: null,
-      updatedAt: now,
-    });
-  }
+  await ensureProductStartDelivery(store, run, assignment, input);
 
   log.info(
     "product-controller",
@@ -292,6 +299,38 @@ export async function createProductRun(
     skipReasons: start.skipReasons,
     created: true,
   };
+}
+
+async function ensureProductStartDelivery(
+  store: PipelineStore,
+  run: ProductRun,
+  assignment: Assignment,
+  input: CreateProductRunInput,
+): Promise<void> {
+  await store.enqueueOutbox({
+    id: crypto.randomUUID(),
+    runId: run.id,
+    assignmentId: assignment.id,
+    eventType: "assignment.dispatch",
+    payload: {
+      assignmentId: assignment.id,
+      targetAgent: assignment.targetAgent,
+      startKind: input.startKind,
+      phase: run.phase,
+    },
+    idempotencyKey: `product-dispatch:${assignment.idempotencyKey}`,
+  });
+
+  if (store.upsertThreadCursor) {
+    await store.upsertThreadCursor({
+      runId: run.id,
+      channelId: run.channelId,
+      threadId: run.threadId,
+      lastObservedTs: input.messageTs,
+      lastCatchupAt: null,
+      updatedAt: Date.now(),
+    });
+  }
 }
 
 /**
@@ -793,7 +832,7 @@ export async function registerProductPr(
       expectedHeadSha: input.expectedHeadSha,
       registrationKey: key,
     },
-    idempotencyKey: `pr-reg:${key}`,
+    idempotencyKey: `pr-reg:${run.id}:${key}`,
     occurredAt: now,
     observedAt: now,
   });

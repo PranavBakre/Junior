@@ -195,6 +195,14 @@ describe("capabilities", () => {
     expect(hasCapability("review", "worktree-mutate")).toBe(false);
   });
 
+  it("grants pipeline starts only to trusted orchestrators", () => {
+    expect(hasCapability("default", "pipeline-run-start")).toBe(true);
+    expect(hasCapability("lead", "pipeline-run-start")).toBe(true);
+    expect(hasCapability("junior", "pipeline-run-start")).toBe(true);
+    expect(hasCapability("build", "pipeline-run-start")).toBe(false);
+    expect(hasCapability("review", "pipeline-run-start")).toBe(false);
+  });
+
   it("classifies orchestrators", () => {
     expect(isCatalogOrchestrator("lead")).toBe(true);
     expect(isCatalogOrchestrator("default")).toBe(true);

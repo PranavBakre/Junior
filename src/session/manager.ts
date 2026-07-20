@@ -475,6 +475,7 @@ export class SessionManager {
       }
       s.status = "busy";
       s.activeAgentName = agentName;
+      s.activeTopLevelMessageTs = event.ts;
       s.slackIdentity = identityForAgent(agentName);
       s.lastActivity = Date.now();
       outcome.action = "run";
@@ -1207,6 +1208,7 @@ export class SessionManager {
         : this.getOrCreateAgentSession(session, agentName);
       const agentIdentity = identityForAgent(agentName);
       const runSession = this.buildRunSession(session, agentName, agentIdentity);
+      runSession.currentMessageTs = latestTs ?? null;
       const rawMessage = prompt;
 
       // Resolve target repo before building the preamble so workspace info can be injected.
@@ -1903,6 +1905,10 @@ export class SessionManager {
             s.status = "idle";
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
+            s.activeTopLevelMessageTs =
+              pendingMessages[pendingMessages.length - 1]?.ts ??
+              s.activeTopLevelMessageTs ??
+              null;
             settle.drainPrompt = pendingMessages
               .map((m) => `[${m.user}]: ${m.text}`)
               .join("\n");
