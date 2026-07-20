@@ -27,6 +27,8 @@ On **every turn** (first, resumed, and drain), the manager attributes the curren
 
 Attribution requires a real Slack ID (`/^[UWB][A-Z0-9]+$/`, not the bot's own user). Synthetic internal senders (`mcp-internal`, `pipeline-internal`, `junior-internal-dispatch`, pipeline-guard continuations) stay unprefixed — as single messages they arrive bare, and in drains they get a `<buffered-message>` block with no `from`.
 
+The delimiters are kept out-of-band: `escapeBlockDelimiters` rewrites `<buffered-message` / `</buffered-message>` to `&lt;…` inside all untrusted text (attributed current-message bodies, drained message bodies, and thread-history lines), so message content can never close its own block or open a forged one attributed to someone else. Mentions (`<@ID>`) in bodies are deliberately NOT escaped — resolving who a message tags is a feature; inline author-shaped text is covered by the "quoted content" instruction.
+
 ## Workspace Block
 
 `buildWorkspaceBlock()` renders one of two shapes:

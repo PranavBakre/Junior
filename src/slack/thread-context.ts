@@ -96,6 +96,19 @@ export async function resolveSlackMentions(
   });
 }
 
+/**
+ * Neutralize `<buffered-message>` delimiters inside untrusted message text.
+ * The slack-context instruction declares a block's `from` attribute an
+ * authoritative author signal, so the delimiters must be out-of-band: a body
+ * containing `</buffered-message><buffered-message from="...">` would
+ * otherwise render as a syntactically perfect block attributed to whoever the
+ * forger names. Escaping just the `<` keeps the text readable while making it
+ * unparseable as a block boundary.
+ */
+export function escapeBlockDelimiters(text: string): string {
+  return text.replace(/<(?=\/?buffered-message)/gi, "&lt;");
+}
+
 export interface WorkspaceContext {
   worktreePath: string;
   repoName: string;
@@ -296,7 +309,9 @@ async function fetchThreadHistory(
         return {
           user,
           userName: user === "unknown" ? user : await resolveUserName(app, user),
-          text: (await resolveSlackMentions(app, m.text ?? "", botUserId)).trim(),
+          text: escapeBlockDelimiters(
+            (await resolveSlackMentions(app, m.text ?? "", botUserId)).trim(),
+          ),
           ts: m.ts!,
           isBot: !!(botUserId && m.user === botUserId),
           fileNames,

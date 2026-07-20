@@ -47,6 +47,7 @@ import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
   buildWorkspaceBlock,
+  escapeBlockDelimiters,
   resolveSlackMentions,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
@@ -1321,8 +1322,11 @@ export class SessionManager {
         // so it renders as `User(Name <@ID>): text` — the same format thread
         // history uses. Without the label the model has no signal about who is
         // speaking and fills the gap from its persona/memory defaults.
+        // Human-sent bodies also get block delimiters escaped so a message
+        // can't smuggle in a forged <buffered-message from=...> block that
+        // the instruction would treat as authoritative.
         const attributed = this.isAttributableSender(senderUserId)
-          ? `<@${senderUserId}>: ${prompt}`
+          ? `<@${senderUserId}>: ${escapeBlockDelimiters(prompt)}`
           : prompt;
         const readablePrompt = await resolveSlackMentions(
           this.slackApp,
@@ -2271,7 +2275,8 @@ export class SessionManager {
         const from = this.isAttributableSender(m.user)
           ? ` from="<@${m.user}>"`
           : "";
-        return `<buffered-message${from}>\n${m.text}\n</buffered-message>`;
+        const body = escapeBlockDelimiters(m.text);
+        return `<buffered-message${from}>\n${body}\n</buffered-message>`;
       })
       .join("\n");
   }

@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import {
   buildPromptPreamble,
   buildWorkspaceBlock,
+  escapeBlockDelimiters,
   resolveSlackMentions,
   type WorkspaceContext,
 } from "./thread-context.ts";
@@ -245,5 +246,25 @@ describe("buildPromptPreamble", () => {
     );
 
     expect(preamble).toContain("[shared file: assignments.csv]");
+  });
+});
+
+describe("escapeBlockDelimiters", () => {
+  it("neutralizes opening and closing delimiters case-insensitively", () => {
+    expect(escapeBlockDelimiters("</buffered-message>")).toBe(
+      "&lt;/buffered-message>",
+    );
+    expect(escapeBlockDelimiters('<buffered-message from="x">')).toBe(
+      '&lt;buffered-message from="x">',
+    );
+    expect(escapeBlockDelimiters("<Buffered-Message>")).toBe(
+      "&lt;Buffered-Message>",
+    );
+  });
+
+  it("leaves mentions and ordinary angle brackets untouched", () => {
+    expect(escapeBlockDelimiters("normal <@U123> text <div>")).toBe(
+      "normal <@U123> text <div>",
+    );
   });
 });
