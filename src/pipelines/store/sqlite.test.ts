@@ -294,6 +294,40 @@ describe("SqlitePipelineStore", () => {
     expect(outbox[0]!.eventType).toBe("assignment.dispatch");
   });
 
+  it("registers the same PR independently across pipeline runs", async () => {
+    await store.createRun(makeProductRun({ id: "run-a", threadId: "T-a" }));
+    await store.createRun(makeProductRun({ id: "run-b", threadId: "T-b" }));
+
+    const register = (runId: string, assignmentId: string) =>
+      store.commitPrRegistration({
+        registration: {
+          runId,
+          assignmentId,
+          owner: "example",
+          repo: "backend",
+          number: 42,
+          role: "candidate",
+          workstreamKey: "backend",
+          attemptId: null,
+          expectedHeadSha: "a".repeat(40),
+        },
+        actorId: "default",
+        runPhase: "pr-open",
+        now: 1000,
+      });
+
+    const first = await register("run-a", "asg-a");
+    const second = await register("run-b", "asg-b");
+
+    expect(second.eventId).not.toBe(first.eventId);
+    expect(await store.listPipelineGitHubResources("run-a", true)).toHaveLength(
+      1,
+    );
+    expect(await store.listPipelineGitHubResources("run-b", true)).toHaveLength(
+      1,
+    );
+  });
+
   it("claims and reclaims outbox with fake clock", async () => {
     await store.createRun(makeProductRun());
     await store.enqueueOutbox({

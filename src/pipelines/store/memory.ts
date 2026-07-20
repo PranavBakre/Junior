@@ -855,7 +855,7 @@ export class InMemoryPipelineStore implements PipelineStore {
     now: number;
   }): Promise<{ eventId: string }> {
     const { registration, actorId, runPhase, now } = input;
-    const idempotencyKey = `pr-reg:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`;
+    const idempotencyKey = `pr-reg:${registration.runId}:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`;
     const priorId = this.eventByIdempotency.get(idempotencyKey);
     if (priorId) {
       return { eventId: priorId };

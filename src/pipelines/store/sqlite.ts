@@ -1834,7 +1834,7 @@ export class SqlitePipelineStore implements PipelineStore {
     now: number;
   }): Promise<{ eventId: string }> {
     const { registration, actorId, runPhase, now } = input;
-    const idempotencyKey = `pr-reg:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`;
+    const idempotencyKey = `pr-reg:${registration.runId}:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`;
 
     const prior = this.db
       .query<{ id: string }, [string]>(
@@ -2714,4 +2714,3 @@ function threadCursorFromRow(row: ThreadCursorRow): PipelineThreadCursor {
     updatedAt: row.updated_at,
   };
 }
-
