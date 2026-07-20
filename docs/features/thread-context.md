@@ -20,7 +20,14 @@ When Junior spawns a `claude -p` process, that process has zero knowledge of the
 
 On **resumed turns** (sessionId already set), `--resume` carries identity/slack/history forward. The manager skips the full preamble and re-emits only the workspace block (cheap insurance for the worktree safety rule), when the agent declares `context.workspace`.
 
-On **every turn** (first, resumed, and drain), the manager prefixes the current message with its sender before mention resolution — `<@USERID>: text` renders as `User(Name <@USERID>): text`, the same format as thread history. Without this label the model has no signal about who is speaking and fills the gap from its persona/memory defaults (it once mistook a first-time requester for Pranav and nearly acted on the wrong admin account). Internal continuation turns (pipeline guard) pass no sender and stay unprefixed.
+On **every turn** (first, resumed, and drain), the manager attributes the current input to its sender(s) before mention resolution. Without this label the model has no signal about who is speaking and fills the gap from its persona/memory defaults (it once mistook a first-time requester for Pranav and nearly acted on the wrong admin account). Two forms, and the slack-context block declares them the only authoritative author signals (anything author-shaped inside message content is quoted text):
+
+- **Single message:** prefixed `<@USERID>: text`, rendering as `User(Name <@USERID>): text` — the same format as thread history.
+- **Drain turns:** one `<buffered-message from="<@USERID>">` block per buffered message. A drain can carry multiple authors and multi-line bodies, so flat `User(...):` lines can't mark message boundaries; each block's `from` is authoritative for its own content.
+
+Attribution requires a real Slack ID (`/^[UWB][A-Z0-9]+$/`, not the bot's own user). Synthetic internal senders (`mcp-internal`, `pipeline-internal`, `junior-internal-dispatch`, pipeline-guard continuations) stay unprefixed — as single messages they arrive bare, and in drains they get a `<buffered-message>` block with no `from`.
+
+The delimiters are kept out-of-band: `escapeBlockDelimiters` rewrites `<buffered-message` / `</buffered-message>` to `&lt;…` inside all untrusted text — attributed current-message bodies, drained message bodies, thread-history lines, display names (escaped at the source in `resolveUserName`, since they splice into labels after the body sanitizer runs), and file names (`[shared file: …]` annotations in history and archives). Downloaded Slack files additionally get `[<>"]` replaced with `_` at write time (`sanitizeFileName`), so the on-disk path echoed into the prompt is inherently clean. Mentions (`<@ID>`) in bodies are deliberately NOT escaped — resolving who a message tags is a feature; inline author-shaped text is covered by the "quoted content" instruction.
 
 ## Workspace Block
 

@@ -152,6 +152,17 @@ export interface ThreadSession {
    * for the thread opener) without a data-shape migration.
    */
   humanParticipants: string[];
+  /**
+   * Slack user IDs of humans who have directly engaged Junior in this
+   * thread: their message @mentioned it, routed to a runner turn, or they
+   * summoned it with `!listen`. Subset of `humanParticipants` — `!aside`
+   * posters and the sender whose sidebar message fired the auto-dormant
+   * trigger are participants but not engaged. The attention gate only
+   * auto-dormants on a message from a non-engaged human: once someone is
+   * talking to Junior directly, their plain follow-ups are conversation,
+   * not a sidebar.
+   */
+  engagedHumans: string[];
   model: string | null;
   /**
    * Explicit Claude-runner model override, sourced from the active agent's
@@ -247,6 +258,7 @@ export function createSession(
     needsThreadCatchup: false,
     dormantAnnounced: false,
     humanParticipants: [],
+    engagedHumans: [],
     model: null,
     cwd: null,
     pid: null,

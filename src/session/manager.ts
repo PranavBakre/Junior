@@ -47,12 +47,13 @@ import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
   buildWorkspaceBlock,
+  escapeBlockDelimiters,
   resolveSlackMentions,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
 import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
-import { downloadSlackFiles } from "../slack/files.ts";
+import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import { inferReviewRepo } from "../worktree/review-routing.ts";
 import { detectJavaScriptPackageManager } from "../worktree/package-manager.ts";
@@ -283,7 +284,10 @@ export class SessionManager {
    * - Drop everything while muted, except `!unmute`.
    * - Drop everything while dormant.
    * - One-shot auto-dormant trigger when a second human posts without
-   *   mentioning Junior. Announcement only fires once per thread (sticky
+   *   mentioning Junior AND has never directly engaged it in this thread.
+   *   Humans who have engaged Junior (@mention, a routed message, `!listen`)
+   *   never trip the trigger — their follow-ups are conversation with Junior,
+   *   not a sidebar. Announcement only fires once per thread (sticky
    *   `dormantAnnounced` flag), so manual `!listen` is respected — re-silence
    *   is `!aside` or `!mute`.
    *
@@ -292,18 +296,25 @@ export class SessionManager {
    * input there, not a sidebar.
    */
   async gateAttention(event: SlackMessageEvent): Promise<boolean> {
+    // Junior, its agents, and foreign bots never trip or feed the gate.
+    const isHuman = !event.isSelfBot && !event.botId;
+
     // !aside: drop the message but still record the sender as a participant —
     // they're a human in the room even if this message isn't for Junior. The
     // alternative (skip tracking) creates a corner where U-B posts only
     // asides, then a real non-mention message, and the gate fails to fire
-    // because U-B was never registered as present.
+    // because U-B was never registered as present. Deliberately NOT marked
+    // engaged — an aside is side-talk, not engagement.
     if (event.command === "aside") {
-      const isHuman = !event.isSelfBot && !event.botId;
       if (isHuman && event.user) {
+        const user = event.user;
         const session = await this.store.get(event.threadId);
-        if (session && !session.humanParticipants.includes(event.user)) {
-          session.humanParticipants.push(event.user);
-          await this.store.set(event.threadId, session);
+        if (session && !session.humanParticipants.includes(user)) {
+          await this.mutateSession(event.threadId, (s) => {
+            if (!s.humanParticipants.includes(user)) {
+              s.humanParticipants.push(user);
+            }
+          });
         }
       }
       this.onReaction?.(event, "eyes");
@@ -323,59 +334,94 @@ export class SessionManager {
       return true;
     }
 
-    // !listen: wake from dormant if needed. Anyone in the thread.
+    // !listen: wake from dormant if needed. Anyone in the thread. An explicit
+    // summon — the sender is engaging Junior, so mark them engaged too.
     if (event.command === "listen") {
-      if (session && session.dormant) {
-        session.dormant = false;
-        session.needsThreadCatchup = true;
-        await this.store.set(event.threadId, session);
+      if (session) {
+        const user = isHuman ? event.user : undefined;
+        if (
+          session.dormant ||
+          (user && !session.engagedHumans.includes(user))
+        ) {
+          await this.mutateSession(event.threadId, (s) => {
+            if (s.dormant) {
+              s.dormant = false;
+              s.needsThreadCatchup = true;
+            }
+            if (user && !s.engagedHumans.includes(user)) {
+              s.engagedHumans.push(user);
+            }
+          });
+        }
       }
       this.onReaction?.(event, "ear");
       return true;
     }
 
-    // @mention wakes a dormant thread, then falls through so the mention is
-    // processed normally.
-    if (event.mentionsJunior && session?.dormant) {
-      session.dormant = false;
-      session.needsThreadCatchup = true;
-      await this.store.set(event.threadId, session);
-    }
-
-    // Dormant after the wake check → drop silently. No state change.
+    // Dormant: an @mention wakes the thread and falls through so the mention
+    // is processed normally; anything else drops silently.
     if (session?.dormant) {
-      return true;
+      if (!event.mentionsJunior) return true;
+      await this.mutateSession(event.threadId, (s) => {
+        if (s.dormant) {
+          s.dormant = false;
+          s.needsThreadCatchup = true;
+        }
+      });
     }
 
     if (isAutoTrigger) return false;
 
     // Trigger: actor must be human (not Junior, not its agents, not any
     // foreign bot). Session must exist with another human already recorded.
-    // Message must not @mention Junior. And the gate fires at most once per
-    // thread — once announced, dormancy is the human's call (`!aside` / `!mute`).
-    const isHuman = !event.isSelfBot && !event.botId;
+    // Message must not @mention Junior, and the sender must never have
+    // directly engaged Junior in this thread — someone already conversing
+    // with Junior posting a plain follow-up is continuation, not a sidebar.
+    // And the gate fires at most once per thread — once announced, dormancy
+    // is the human's call (`!aside` / `!mute`).
     if (
       isHuman &&
       session &&
       !session.dormantAnnounced &&
-      !event.mentionsJunior
+      !event.mentionsJunior &&
+      !(event.user && session.engagedHumans.includes(event.user))
     ) {
       const otherHumans = session.humanParticipants.filter(
         (u) => u !== event.user,
       );
       if (otherHumans.length > 0) {
-        session.dormant = true;
-        session.dormantAnnounced = true;
-        if (!session.humanParticipants.includes(event.user)) {
-          session.humanParticipants.push(event.user);
-        }
-        await this.store.set(event.threadId, session);
+        const user = event.user;
+        await this.mutateSession(event.threadId, (s) => {
+          s.dormant = true;
+          s.dormantAnnounced = true;
+          if (user && !s.humanParticipants.includes(user)) {
+            s.humanParticipants.push(user);
+          }
+        });
         this.onCommandResponse?.(
           event,
           "Two people are interacting here, so I’ll stop replying. @ me or use !listen to bring me back.",
         );
         return true;
       }
+    }
+
+    // The message is about to route to Junior — the sender is directly
+    // engaging it. Engaged humans never fire the sidebar trigger again
+    // (the thread opener's first message has no session yet; that case is
+    // covered by getOrCreateSession marking engagement on routed messages).
+    if (
+      isHuman &&
+      event.user &&
+      session &&
+      !session.engagedHumans.includes(event.user)
+    ) {
+      const user = event.user;
+      await this.mutateSession(event.threadId, (s) => {
+        if (!s.engagedHumans.includes(user)) {
+          s.engagedHumans.push(user);
+        }
+      });
     }
 
     return false;
@@ -1366,8 +1412,11 @@ export class SessionManager {
         // so it renders as `User(Name <@ID>): text` — the same format thread
         // history uses. Without the label the model has no signal about who is
         // speaking and fills the gap from its persona/memory defaults.
-        const attributed = senderUserId
-          ? `<@${senderUserId}>: ${prompt}`
+        // Human-sent bodies also get block delimiters escaped so a message
+        // can't smuggle in a forged <buffered-message from=...> block that
+        // the instruction would treat as authoritative.
+        const attributed = this.isAttributableSender(senderUserId)
+          ? `<@${senderUserId}>: ${escapeBlockDelimiters(prompt)}`
           : prompt;
         const readablePrompt = await resolveSlackMentions(
           this.slackApp,
@@ -1443,10 +1492,11 @@ export class SessionManager {
             this.config.slack.botToken,
           );
           if (filePaths.length > 0) {
+            // Match on the sanitized basename — that's what's on disk now.
             const imageNames = new Set(
               files
                 .filter((f) => f.mimetype.startsWith("image/"))
-                .map((f) => f.name.split(/[\\/]/).pop() ?? f.name),
+                .map((f) => sanitizeFileName(f.name.split(/[\\/]/).pop() ?? f.name)),
             );
             imagePaths = filePaths.filter((p) => {
               const name = p.split(/[\\/]/).pop() ?? p;
@@ -2146,9 +2196,7 @@ export class SessionManager {
               drained.messages[drained.messages.length - 1]?.ts ??
               s.activeTopLevelMessageTs ??
               null;
-            settle.drainPrompt = drained.messages
-              .map((m) => `<@${m.user}>: ${m.text}`)
-              .join("\n");
+            settle.drainPrompt = this.buildDrainPrompt(drained.messages);
             s.pendingMessages = drained.remaining;
             s.activePipelineInvocation = drained.pipelineInvocation;
             s.status = "draining";
@@ -2181,9 +2229,7 @@ export class SessionManager {
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
             const drained = this.takePendingBatch(pendingMessages);
-            settle.drainPrompt = drained.messages
-              .map((m) => `<@${m.user}>: ${m.text}`)
-              .join("\n");
+            settle.drainPrompt = this.buildDrainPrompt(drained.messages);
             agentSession.pendingMessages = drained.remaining;
             agentSession.activePipelineInvocation = drained.pipelineInvocation;
             agentSession.status = "busy";
@@ -2369,19 +2415,38 @@ export class SessionManager {
       await this.store.set(event.threadId, session);
     }
 
+    // Track human participants for the attention gate. Bots — Junior, its
+    // agents, and foreign bots — are excluded by design (see gateAttention).
+    // A message reaching here routed to Junior, so the sender is also
+    // engaged — their later plain follow-ups must not trip the sidebar
+    // trigger. This covers the thread opener, whose first message passes
+    // the gate before any session row exists. Goes through mutateSession —
+    // a new participant can post while a runner turn is mid-flight, and a
+    // whole-row get→set here would revert status/sessionId.
+    const isHuman = !event.isSelfBot && !event.botId;
+    if (
+      isHuman &&
+      event.user &&
+      (!session.humanParticipants.includes(event.user) ||
+        !session.engagedHumans.includes(event.user))
+    ) {
+      const user = event.user;
+      session = await this.mutateSession(event.threadId, (s) => {
+        if (!s.humanParticipants.includes(user)) {
+          s.humanParticipants.push(user);
+        }
+        if (!s.engagedHumans.includes(user)) {
+          s.engagedHumans.push(user);
+        }
+      });
+    }
+
     session.leadSessionId ??= session.sessionId;
     session.agentSessions ??= {};
     session.provider ??= "claude";
     session.humanParticipants ??= [];
+    session.engagedHumans ??= [];
     session.needsThreadCatchup ??= false;
-
-    // Track human participants for the attention gate. Bots — Junior, its
-    // agents, and foreign bots — are excluded by design (see gateAttention).
-    const isHuman = !event.isSelfBot && !event.botId;
-    if (isHuman && event.user && !session.humanParticipants.includes(event.user)) {
-      session.humanParticipants.push(event.user);
-      await this.store.set(event.threadId, session);
-    }
 
     return session;
   }
@@ -2501,6 +2566,40 @@ export class SessionManager {
     // `!<agent>` directives it may emit.
     sections.push(buildDispatchAllowBlock(agentName));
     return sections.length > 0 ? sections.join("\n\n") : null;
+  }
+
+  /**
+   * Only real Slack IDs (users/workspace users/foreign bots) get author
+   * attribution in prompts. Internal dispatch paths pass synthetic senders
+   * ("mcp-internal", "pipeline-internal", "junior-internal-dispatch") or the
+   * bot's own user ID; attributing those would emit an unresolvable
+   * pseudo-mention or label a worker's task as if Junior were the requester.
+   */
+  private isAttributableSender(userId: string | undefined): userId is string {
+    return (
+      !!userId && userId !== this.botUserId && /^[UWB][A-Z0-9]+$/.test(userId)
+    );
+  }
+
+  /**
+   * Format buffered messages for a drain turn. Each message gets its own
+   * <buffered-message> block so multi-author drains stay unambiguous: a flat
+   * `User(...): text` line per message would collide with the anti-spoofing
+   * instruction (only a message's LEADING attribution is authoritative), and
+   * message bodies span lines, so line-start labels can't mark boundaries.
+   * The `from` mention resolves to `User(Name <@ID>)` downstream; synthetic
+   * internal senders get no `from` attribute.
+   */
+  private buildDrainPrompt(messages: PendingMessage[]): string {
+    return messages
+      .map((m) => {
+        const from = this.isAttributableSender(m.user)
+          ? ` from="<@${m.user}>"`
+          : "";
+        const body = escapeBlockDelimiters(m.text);
+        return `<buffered-message${from}>\n${body}\n</buffered-message>`;
+      })
+      .join("\n");
   }
 
   private toPendingMessage(event: SlackMessageEvent): PendingMessage {
