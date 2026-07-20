@@ -2009,6 +2009,97 @@ describe("SessionManager", () => {
       expect(drop).toBe(false);
       const after = (await store.get("thread-1"))!;
       expect(after.dormant).toBe(false);
+      // The mention passing the gate marks U-B engaged
+      expect(after.engagedHumans).toContain("U-B");
+    });
+
+    it("does not trigger on follow-ups from a second human who @mentioned Junior", async () => {
+      // U-A starts the thread, U-B joins by @mentioning Junior
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      await manager.gateAttention(
+        makeEvent({
+          user: "U-B",
+          mentionsJunior: true,
+          text: "addressing junior",
+          ts: "ts-mention-b",
+        }),
+      );
+
+      const responses: string[] = [];
+      manager.onCommandResponse = (_e, r) => responses.push(r);
+
+      // U-B's plain follow-up — engaged, must NOT trip the sidebar trigger
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "and one more thing", ts: "ts-b-followup" }),
+      );
+      expect(drop).toBe(false);
+      expect(responses).toEqual([]);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+      expect(after.dormantAnnounced).toBe(false);
+    });
+
+    it("does not trigger on the first human's follow-up after a second human engages", async () => {
+      // U-A starts the thread (routed message → engaged via getOrCreateSession)
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      expect((await store.get("thread-1"))!.engagedHumans).toContain("U-A");
+      // U-B joins by @mentioning Junior
+      await manager.gateAttention(
+        makeEvent({
+          user: "U-B",
+          mentionsJunior: true,
+          text: "addressing junior",
+          ts: "ts-mention-b",
+        }),
+      );
+
+      // U-A's plain follow-up — Junior was already talking to them
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-A", text: "yes do that", ts: "ts-a-followup" }),
+      );
+      expect(drop).toBe(false);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(false);
+    });
+
+    it("still triggers for an aside-only human's first real message", async () => {
+      // U-A starts the thread; U-B has only posted !aside (participant, NOT engaged)
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+      await manager.gateAttention(
+        makeEvent({ command: "aside", user: "U-B", text: "side note", ts: "ts-aside-b" }),
+      );
+
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "anyway, as I was saying", ts: "ts-b-real" }),
+      );
+      expect(drop).toBe(true);
+      const after = (await store.get("thread-1"))!;
+      expect(after.dormant).toBe(true);
+      expect(after.engagedHumans).not.toContain("U-B");
+    });
+
+    it("marks the sender engaged on !listen", async () => {
+      await manager.handleMessage(makeEvent({ user: "U-A" }));
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      await manager.gateAttention(
+        makeEvent({ command: "listen", user: "U-B", text: "", ts: "ts-listen-b" }),
+      );
+      expect((await store.get("thread-1"))!.engagedHumans).toContain("U-B");
+
+      // U-B's plain follow-up after summoning Junior does not trip the trigger
+      const drop = await manager.gateAttention(
+        makeEvent({ user: "U-B", text: "so about that bug", ts: "ts-b-after-listen" }),
+      );
+      expect(drop).toBe(false);
+      expect((await store.get("thread-1"))!.dormant).toBe(false);
     });
 
     it("does not re-trigger after manual !listen (sticky dormantAnnounced)", async () => {
