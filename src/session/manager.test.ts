@@ -26,7 +26,7 @@ import type { WorktreeManager } from "../worktree/manager.ts";
 interface MockHandle extends SpawnHandle {
   _complete: (
     response?: string,
-    sessionId?: string,
+    sessionId?: string | null,
     events?: RunnerEvent[],
     completion?: RunnerCompletion,
   ) => void;
@@ -51,24 +51,26 @@ function createMockHandle(
     pid: 12345,
     _complete: (
       resp?: string,
-      sid?: string,
+      sid?: string | null,
       resultEvents?: RunnerEvent[],
       completion?: RunnerCompletion,
     ) => {
       const finalResponse = resp ?? response;
-      const finalSessionId = sid ?? sessionId;
+      const finalSessionId = sid === undefined ? sessionId : sid;
       for (const l of listeners)
-        l({
-          type: "init",
-          provider: "claude",
-          sessionId: finalSessionId,
-        });
+        if (finalSessionId) {
+          l({
+            type: "init",
+            provider: "claude",
+            sessionId: finalSessionId,
+          });
+        }
       for (const l of listeners)
         l({ type: "done", provider: "claude" });
       resolveResult({
         provider: "claude",
         sessionId: finalSessionId,
-        response: completion && completion.status !== "success" ? "" : finalResponse,
+        response: finalResponse,
         events: resultEvents ?? [],
         exitCode: 0,
         error: completion && completion.status !== "success"
@@ -294,10 +296,12 @@ function createCompletingOpencodeHandle(
     onEvent: (cb) => listeners.push(cb),
     kill: mock(() => {}),
     pid,
-    _complete: (resp?: string, sid?: string, resultEvents?: RunnerEvent[]) => {
-      const finalSessionId = sid ?? sessionId;
+    _complete: (resp?: string, sid?: string | null, resultEvents?: RunnerEvent[]) => {
+      const finalSessionId = sid === undefined ? sessionId : sid;
       for (const l of listeners) {
-        l({ type: "init", provider: "opencode", sessionId: finalSessionId });
+        if (finalSessionId) {
+          l({ type: "init", provider: "opencode", sessionId: finalSessionId });
+        }
         l({ type: "done", provider: "opencode" });
       }
       resolveResult({
@@ -1725,6 +1729,33 @@ describe("SessionManager", () => {
     expect(errors).toEqual(["Claude crashed"]);
   });
 
+  it("publishes useful partial output from a non-pipeline turn-limit result", async () => {
+    const errors: string[] = [];
+    const responses: string[] = [];
+    manager.onError = (_session, error) => {
+      if (error) errors.push(error);
+    };
+    manager.onResponse = (_session, response) => responses.push(response);
+
+    await manager.handleMessage(makeEvent({ text: "Do a long investigation" }));
+    currentHandle._complete(
+      "I traced the failure to the queue lease.",
+      "claude-partial",
+      [],
+      {
+        status: "incomplete",
+        reason: "max_turns",
+        retryable: true,
+        providerSubtype: "error_max_turns",
+        turns: 25,
+      },
+    );
+
+    await waitFor(() => errors.length === 1 && responses.length === 1);
+    expect(errors[0]).toContain("turn limit");
+    expect(responses).toEqual(["I traced the failure to the queue lease."]);
+  });
+
   // --- onEvent forwarding ---
 
   it("forwards stream events via onEvent", async () => {
@@ -2363,5 +2394,51 @@ describe("typed pipeline settlement", () => {
     expect(errors).toHaveBeenCalledTimes(1);
     expect(await pipelineStore.listOutcomes("asg-exhausted")).toHaveLength(1);
     expect((await pipelineStore.getRun("run-1"))?.status).toBe("needs-human");
+  });
+
+  it("reports zero recovery continuations when no provider session can resume", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-no-session",
+      targetAgent: "build",
+      idempotencyKey: "asg-no-session-key",
+    }));
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, () => handle);
+    manager.pipelineStore = pipelineStore;
+    const errors = mock((_session, _error) => undefined);
+    const responses = mock((_session, _response) => undefined);
+    manager.onError = errors;
+    manager.onResponse = responses;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "implement the assignment",
+      dedupeKey: "pipeline-outbox:dispatch-no-session",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-no-session",
+        dispatchKey: "dispatch-no-session",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+
+    handle._complete("about to report", null, [], {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+      providerSubtype: "error_max_turns",
+      turns: 25,
+    });
+
+    await waitFor(() => errors.mock.calls.length === 1);
+    expect(errors.mock.calls[0]![1]).toContain("without a recovery continuation");
+    expect(errors.mock.calls[0]![1]).not.toContain("after 2");
+    expect(responses).not.toHaveBeenCalled();
+    const outcomes = await pipelineStore.listOutcomes("asg-no-session");
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.reason).toContain("without a recovery continuation");
   });
 });

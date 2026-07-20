@@ -370,6 +370,9 @@ export class SqliteSessionStore implements SessionStore {
         pid: row.pid ?? existing?.pid ?? null,
         stateVersion: row.state_version ?? existing?.stateVersion ?? 0,
       };
+      // Fields without dedicated dual-write columns remain durable in the
+      // authoritative parent-session JSON. Preserve the exact dispatch while
+      // overlaying the independently queryable agent row.
       if (existing?.activePipelineInvocation !== undefined) {
         agent.activePipelineInvocation = existing.activePipelineInvocation;
       }

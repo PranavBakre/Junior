@@ -149,10 +149,10 @@ export function spawnClaude(
     return {
       provider: "claude",
       sessionId,
-      // An incomplete terminal result often follows an intention sentence such
-      // as "Now I will report the outcome". Never publish that as completion.
-      response:
-        completion.status === "success" ? resultText || lastAssistantText : "",
+      // Pipeline invocations suppress incomplete prose in the settlement
+      // layer. Ordinary turns still need their last useful assistant text when
+      // Claude reaches a turn cap or otherwise returns an incomplete result.
+      response: selectClaudeResponse(resultText, lastAssistantText),
       events,
       exitCode,
       error,
@@ -171,6 +171,13 @@ export function spawnClaude(
     },
     pid: proc.pid,
   };
+}
+
+export function selectClaudeResponse(
+  resultText: string,
+  lastAssistantText: string,
+): string {
+  return resultText || lastAssistantText;
 }
 
 export function shouldUseClaudeMcpConfig(

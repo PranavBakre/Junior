@@ -1882,6 +1882,9 @@ export class SessionManager {
     }
 
     const latestRun = await this.pipelineStore.getRun(invocation.runId);
+    const recoverySummary = invocation.retryCount === 0
+      ? "without a recovery continuation"
+      : `after ${invocation.retryCount} recovery continuation${invocation.retryCount === 1 ? "" : "s"}`;
     if (latestRun && latestRun.status !== "terminal") {
       await this.pipelineStore.recordOutcomeTransaction({
         outcome: {
@@ -1889,7 +1892,7 @@ export class SessionManager {
           expectedRunVersion: latestRun.stateVersion,
           action: "escalate",
           status: "blocked",
-          reason: `Pipeline invocation ended without a typed outcome after ${maxRetries} recovery continuations.`,
+          reason: `Pipeline invocation ended without a typed outcome ${recoverySummary}.`,
           evidenceRefs: [],
           artifactRefs: [],
           blockers: [{
@@ -1908,7 +1911,7 @@ export class SessionManager {
     return {
       ...result,
       response: "",
-      error: `Pipeline assignment ${invocation.assignmentId.slice(0, 8)} stopped without reporting a typed outcome after ${maxRetries} recovery continuations. The run was escalated for human attention.`,
+      error: `Pipeline assignment ${invocation.assignmentId.slice(0, 8)} stopped without reporting a typed outcome ${recoverySummary}. The run was escalated for human attention.`,
       completion: {
         status: "failure",
         reason: result.completion?.reason ?? "provider_error",

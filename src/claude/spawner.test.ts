@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { createSession } from "../session/types.ts";
 import {
   classifyClaudeCompletion,
+  selectClaudeResponse,
   shouldUseClaudeMcpConfig,
 } from "./spawner.ts";
 
@@ -25,6 +26,20 @@ describe("shouldUseClaudeMcpConfig", () => {
     const session = createSession("thread-1", "C01");
 
     expect(shouldUseClaudeMcpConfig(session, true)).toBe(true);
+  });
+});
+
+describe("selectClaudeResponse", () => {
+  it("preserves the last assistant turn when an incomplete result has no text", () => {
+    expect(selectClaudeResponse("", "I finished the diagnosis before the cap.")).toBe(
+      "I finished the diagnosis before the cap.",
+    );
+  });
+
+  it("prefers provider result text when present", () => {
+    expect(selectClaudeResponse("final result", "earlier assistant text")).toBe(
+      "final result",
+    );
   });
 });
 
