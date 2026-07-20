@@ -33,6 +33,8 @@ import {
   type CodexRunPolicy,
 } from "../codex-app-server/policy.ts";
 import type { OpenCodePermissionConfig } from "../opencode/config.ts";
+import { hasCapability } from "../agents/capabilities.ts";
+import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
 
 export interface PermissionSubject {
   agentPermissions?: AgentPermissions;
@@ -84,6 +86,14 @@ export function compileOpenCodePermission(options: {
 }): OpenCodePermissionConfig {
   const intent = resolveRunPermissionIntent(options.subject);
   const fallback = options.fallback ?? "allow";
+  const agentName =
+    options.subject.activeAgentName ?? options.subject.agentType;
+  const capabilityPermissions = hasCapability(
+    agentName,
+    "github-review-comment",
+  )
+    ? { [GITHUB_POST_REVIEW_TOOL]: "allow" }
+    : {};
 
   if (intent === "no-tools") {
     return {
@@ -113,6 +123,7 @@ export function compileOpenCodePermission(options: {
       task: "deny",
       // Explicit read-safe MCP surface only — never blanket mcp__*.
       ...READ_SAFE_MCP_PERMISSIONS,
+      ...capabilityPermissions,
       "mcp__*": "deny",
     };
   }

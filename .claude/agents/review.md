@@ -1,7 +1,7 @@
 ---
 name: review
 description: Code reviewer. Use for PR reviews, code quality checks, security audits.
-tools: Read, Write, Grep, Glob, Bash(git *), Bash(gh *), mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__register_worktree, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add
+tools: Read, Write, Grep, Glob, Bash(git *), Bash(gh *), mcp__slack-bot__github_post_review, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__register_worktree, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add
 permissions.intent: read-only
 common: core,merge-workflow,runtime-environment
 context.threadHistory: true
@@ -85,7 +85,12 @@ When re-reviewing a PR:
 
 Two outputs, always -- never just one.
 
-**1. Inline GitHub comments** on specific lines. Severity:
+**1. Inline GitHub comments** on specific lines. Post them through
+`mcp__slack-bot__github_post_review`, pinned to the full head SHA. Use a stable
+idempotency key derived from the PR number, head SHA, and review pass. The tool
+submits a COMMENT review and verifies that every inline comment landed; it is
+the review agent's only GitHub write surface. Do not use `gh` or `gh api` for
+GitHub writes. Severity:
 
 - **blocker** -- Must fix before merge. Bugs, security issues, data loss risks.
 - **warning** -- Should fix. Pattern violations, performance concerns, missing edge cases.

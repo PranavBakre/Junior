@@ -4,6 +4,32 @@ import { createSession } from "../session/types.ts";
 import { buildOpenCodeMcpConfig } from "./index.ts";
 
 describe("buildOpenCodeMcpConfig", () => {
+  it("injects Slack MCP for the trusted reviewer comment capability", () => {
+    const session = createSession("thread-1", "C01");
+    session.activeAgentName = "review";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
+
+    const mcp = buildOpenCodeMcpConfig(testConfig(), session);
+
+    expect(mcp?.["slack-bot"]).toEqual({
+      type: "remote",
+      url: expect.stringContaining(
+        "http://localhost:3456/mcp?agent=review&channel=C01&thread=thread-1",
+      ),
+      enabled: true,
+    });
+  });
+
+  it("does not inject Slack MCP for a reproducer without a declared Slack tool", () => {
+    const session = createSession("thread-1", "C01");
+    session.activeAgentName = "reproducer";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
+
+    const mcp = buildOpenCodeMcpConfig(testConfig(), session);
+
+    expect(mcp?.["slack-bot"]).toBeUndefined();
+  });
+
   it("only includes Mixpanel MCP for the feature-metrics agent", () => {
     const mainSession = createSession("thread-1", "C01");
     const featureMetricsSession = createSession("thread-1", "C01");

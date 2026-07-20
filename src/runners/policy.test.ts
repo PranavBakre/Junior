@@ -62,9 +62,21 @@ describe("compileOpenCodePermission", () => {
     expect(permission["mcp__*"]).toBe("deny");
     expect(permission["mcp__slack-bot__memory_recall"]).toBe("allow");
     expect(permission["mcp__slack-bot__slack_read_thread"]).toBe("allow");
+    expect(permission["mcp__slack-bot__github_post_review"]).toBe("allow");
     // Mutating MCP tools must not ride a blanket allow.
     expect(permission["mcp__slack-bot__agent_dispatch"]).not.toBe("allow");
     expect(permission["mcp__slack-bot__memory_add"]).not.toBe("allow");
+  });
+
+  it("does not grant GitHub review writes to the reproducer", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "reproducer",
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, string>;
+    expect(permission["mcp__slack-bot__github_post_review"]).not.toBe("allow");
+    expect(permission["mcp__*"]).toBe("deny");
   });
 
   it("asks on mutating tools for human-gated roles", () => {

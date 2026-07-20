@@ -62,6 +62,7 @@ import {
   pipelineRunCheck,
   pipelineWriteArtifact,
 } from "../pipelines/tools.ts";
+import { postGitHubReview } from "../github/review-comments.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -127,6 +128,73 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         : null;
     },
   });
+  server.registerTool(
+    "github_post_review",
+    {
+      description:
+        "Post one idempotent GitHub COMMENT review at an exact PR head. " +
+        "This is the only GitHub write available to read-only reviewers: it can add a review body and inline comments, " +
+        "but cannot approve, request changes, merge, push, edit code, or call arbitrary endpoints. " +
+        "Use this instead of gh/gh api for review writes.",
+      inputSchema: {
+        owner: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+        repo: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+        pr_number: z.number().int().positive(),
+        head_sha: z.string().regex(/^[a-f0-9]{40}$/i),
+        body: z.string().min(1).max(20_000),
+        idempotency_key: z.string().min(1).max(200),
+        comments: z
+          .array(
+            z.object({
+              path: z.string().min(1).max(1_024),
+              line: z.number().int().positive(),
+              side: z.enum(["LEFT", "RIGHT"]),
+              body: z.string().min(1).max(10_000),
+              start_line: z.number().int().positive().optional(),
+              start_side: z.enum(["LEFT", "RIGHT"]).optional(),
+            }),
+          )
+          .max(100)
+          .optional(),
+      },
+    },
+    async ({
+      owner,
+      repo,
+      pr_number,
+      head_sha,
+      body,
+      idempotency_key,
+      comments,
+    }) => {
+      const result = await postGitHubReview(runContext, {
+        owner,
+        repo,
+        prNumber: pr_number,
+        headSha: head_sha,
+        body,
+        idempotencyKey: idempotency_key,
+        comments: (comments ?? []).map((comment) => ({
+          path: comment.path,
+          line: comment.line,
+          side: comment.side,
+          body: comment.body,
+          ...(comment.start_line !== undefined
+            ? { startLine: comment.start_line }
+            : {}),
+          ...(comment.start_side !== undefined
+            ? { startSide: comment.start_side }
+            : {}),
+        })),
+      });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+        ...(result.ok ? {} : { isError: true }),
+      };
+    },
+  );
   server.registerTool(
     "slack_send_message",
     {

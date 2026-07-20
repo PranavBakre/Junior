@@ -136,6 +136,21 @@ describe("runner runtime", () => {
     expect(env.SLACK_BOT_TOKEN).toBe("xoxb-test");
   });
 
+  it("never exposes the MCP context signing secret to child runners", () => {
+    const previous = process.env.MCP_CONTEXT_SECRET;
+    process.env.MCP_CONTEXT_SECRET = "parent-only-secret";
+    try {
+      const env = buildRunnerEnv(
+        makeSession({ activeAgentName: "review" }),
+        "xoxb-test",
+      );
+      expect(env.MCP_CONTEXT_SECRET).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.MCP_CONTEXT_SECRET;
+      else process.env.MCP_CONTEXT_SECRET = previous;
+    }
+  });
+
   it("sets JUNIOR_SLACK_ICON_URL for image URL identities", () => {
     const env = buildRunnerEnv(
       makeSession({ activeAgentName: "github-access" }),

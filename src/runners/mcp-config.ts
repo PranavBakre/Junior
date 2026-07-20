@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { ThreadSession } from "../session/types.ts";
 import { buildMongoMcpUrl, buildSlackMcpUrl } from "../mcp/context.ts";
+import { hasCapability } from "../agents/capabilities.ts";
 
 export type McpServerName = "slack-bot" | "playwright" | "mixpanel" | "mongodb" | "figma" | "notion";
 
@@ -11,7 +12,7 @@ export interface StdioMcpCommand {
 
 export function allowedMcpServers(session: ThreadSession): Set<McpServerName> {
   const declared = session.agentPermissions?.mcp ?? [];
-  return new Set(
+  const allowed = new Set(
     declared.filter((name): name is McpServerName =>
       name === "slack-bot" ||
       name === "playwright" ||
@@ -21,6 +22,15 @@ export function allowedMcpServers(session: ThreadSession): Set<McpServerName> {
       name === "notion"
     ),
   );
+  if (
+    hasCapability(
+      session.activeAgentName ?? session.agentType,
+      "github-review-comment",
+    )
+  ) {
+    allowed.add("slack-bot");
+  }
+  return allowed;
 }
 
 export function wantsMcp(session: ThreadSession, name: McpServerName): boolean {

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { ThreadSession } from "../session/types.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
@@ -7,6 +7,7 @@ const DEFAULT_MONGODB_MCP_URL = `http://localhost:${MCP_PORT}/mcp/mongodb`;
 
 /** Default token lifetime for signed MCP run context (2 hours). */
 const MCP_CONTEXT_TTL_MS = 2 * 60 * 60 * 1000;
+const EPHEMERAL_MCP_CONTEXT_SECRET = randomBytes(32).toString("hex");
 
 export interface SlackMcpRunContext {
   agent: string;
@@ -24,16 +25,15 @@ export function slackMcpAgentForSession(session: ThreadSession): string {
 }
 
 /**
- * Secret used to sign MCP run-context URLs. Prefer MCP_CONTEXT_SECRET; fall back
- * to SLACK_BOT_TOKEN so production always has a key when the bot is configured.
- * Returns null only in tests/dev with neither set (unsigned mode for local unit tests).
+ * Secret used to sign MCP run-context URLs. Prefer a stable operator-provided
+ * MCP_CONTEXT_SECRET; otherwise use a process-local random secret. The fallback
+ * intentionally does not use SLACK_BOT_TOKEN because that token is available to
+ * spawned runners and therefore cannot authenticate their claimed agent identity.
  */
-export function mcpContextSecret(): string | null {
+export function mcpContextSecret(): string {
   const explicit = process.env.MCP_CONTEXT_SECRET?.trim();
   if (explicit) return explicit;
-  const bot = process.env.SLACK_BOT_TOKEN?.trim();
-  if (bot) return bot;
-  return null;
+  return EPHEMERAL_MCP_CONTEXT_SECRET;
 }
 
 export function buildSlackMcpUrl(session: ThreadSession): string {
@@ -64,7 +64,6 @@ function applySignedRunContext(
   url.searchParams.set("channel", ctx.channel);
   url.searchParams.set("thread", ctx.threadId);
   const secret = mcpContextSecret();
-  if (!secret) return;
   const exp = String(Date.now() + MCP_CONTEXT_TTL_MS);
   url.searchParams.set("exp", exp);
   url.searchParams.set("sig", signRunContext(secret, ctx.agent, ctx.channel, ctx.threadId, exp));
@@ -85,12 +84,8 @@ export function signRunContext(
 /**
  * Parse and authenticate MCP run context from the request URL.
  *
- * When MCP_CONTEXT_SECRET or SLACK_BOT_TOKEN is set, a valid HMAC `sig` +
- * unexpired `exp` is required. Spoofed agent/channel/thread query params alone
- * are rejected.
- *
- * When no secret is configured (unit tests), falls back to unsigned query params
- * and marks `signed: false`.
+ * A valid HMAC `sig` plus unexpired `exp` is always required. Spoofed
+ * agent/channel/thread query params alone are rejected.
  */
 export function parseSlackMcpRunContext(
   requestUrl: string | undefined,
@@ -103,11 +98,6 @@ export function parseSlackMcpRunContext(
   if (!agent || !channel || !threadId) return null;
 
   const secret = mcpContextSecret();
-  if (!secret) {
-    // Dev/test without a secret: accept query params but mark unsigned so
-    // pipeline tools can still require signed contexts when a secret exists.
-    return { agent, channel, threadId, signed: false };
-  }
 
   const exp = url.searchParams.get("exp")?.trim();
   const sig = url.searchParams.get("sig")?.trim();

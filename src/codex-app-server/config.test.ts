@@ -28,6 +28,21 @@ describe("buildCodexMcpConfig", () => {
     expect(buildCodexMcpConfig(makeConfig(), session, true)).toBeNull();
   });
 
+  it("injects only Slack MCP for the trusted reviewer comment capability", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toEqual({
+      "slack-bot": {
+        transport: "http",
+        url: expect.stringContaining(
+          "http://localhost:3456/mcp?agent=review&channel=c&thread=t",
+        ),
+      },
+    });
+  });
+
   it("limits MCP servers to explicitly declared agent permissions", () => {
     const session = createSession("t", "c");
     session.agentPermissions = { intent: "normal", mcp: ["playwright"], tools: [] };

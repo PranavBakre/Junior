@@ -32,24 +32,34 @@ describe("Slack MCP run context", () => {
     expect(parsed.searchParams.get("thread")).toBe("thread-1");
   });
 
-  it("parses unsigned run context when no secret is configured", () => {
+  it("uses a process-local secret and rejects unsigned context when no stable secret is configured", () => {
     const prevSecret = process.env.MCP_CONTEXT_SECRET;
     const prevToken = process.env.SLACK_BOT_TOKEN;
     delete process.env.MCP_CONTEXT_SECRET;
     delete process.env.SLACK_BOT_TOKEN;
     try {
-      expect(mcpContextSecret()).toBeNull();
+      expect(mcpContextSecret()).toHaveLength(64);
       expect(
         parseSlackMcpRunContext("/mcp?agent=review&channel=C01&thread=thread-1"),
-      ).toEqual({
-        agent: "review",
-        channel: "C01",
-        threadId: "thread-1",
-        signed: false,
-      });
+      ).toBeNull();
     } finally {
       if (prevSecret !== undefined) process.env.MCP_CONTEXT_SECRET = prevSecret;
       if (prevToken !== undefined) process.env.SLACK_BOT_TOKEN = prevToken;
+    }
+  });
+
+  it("does not use the runner-visible Slack token as the signing secret", () => {
+    const prevSecret = process.env.MCP_CONTEXT_SECRET;
+    const prevToken = process.env.SLACK_BOT_TOKEN;
+    delete process.env.MCP_CONTEXT_SECRET;
+    process.env.SLACK_BOT_TOKEN = "runner-visible-token";
+    try {
+      expect(mcpContextSecret()).not.toBe("runner-visible-token");
+    } finally {
+      if (prevSecret !== undefined) process.env.MCP_CONTEXT_SECRET = prevSecret;
+      else delete process.env.MCP_CONTEXT_SECRET;
+      if (prevToken !== undefined) process.env.SLACK_BOT_TOKEN = prevToken;
+      else delete process.env.SLACK_BOT_TOKEN;
     }
   });
 

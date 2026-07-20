@@ -138,6 +138,22 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.permissionMode).toBe("plan");
     expect(policy.disallowedTools).toContain("Edit");
     expect(policy.disallowedTools).toContain("Write");
+    expect(policy.allowedTools).toContain(
+      "mcp__slack-bot__github_post_review",
+    );
+  });
+
+  test("does not grant the review-comment write surface to other read-only roles", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "reproducer";
+    session.agentPermissions = { intent: null, mcp: [], tools: ["Read"] };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.allowedTools).not.toContain(
+      "mcp__slack-bot__github_post_review",
+    );
   });
 
   test("missing intent fails closed for pm/architect roles", () => {

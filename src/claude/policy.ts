@@ -4,6 +4,8 @@ import {
   type AgentPermissions,
 } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
+import { hasCapability } from "../agents/capabilities.ts";
+import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
 
 /**
  * Claude-runner mirror of `mapCodexRunPolicy` (`src/codex-app-server/policy.ts`).
@@ -71,6 +73,13 @@ export function mapClaudeRunPolicy(options: {
     session.activeAgentName ?? session.agentType,
   );
   const declaredTools = permissions?.tools ?? [];
+  const agentName = session.activeAgentName ?? session.agentType;
+  const capabilityTools = hasCapability(
+    agentName,
+    "github-review-comment",
+  )
+    ? [GITHUB_POST_REVIEW_TOOL]
+    : [];
 
   if (intent === "read-only") {
     // Critical safety case: review / reproducer-validation agents must not
@@ -80,7 +89,7 @@ export function mapClaudeRunPolicy(options: {
     // primary enforcer. Don't loosen plan mode assuming the deny list confines.
     return {
       permissionMode: "plan",
-      allowedTools: declaredTools,
+      allowedTools: [...new Set([...declaredTools, ...capabilityTools])],
       disallowedTools: [...READ_ONLY_DISALLOWED],
       addDirs: [],
     };
