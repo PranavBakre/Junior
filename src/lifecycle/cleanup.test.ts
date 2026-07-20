@@ -8,6 +8,54 @@ import { SqliteSessionStore } from "../session/store/sqlite.ts";
 import { createSession } from "../session/types.ts";
 
 describe("cleanupStaleSessions", () => {
+  it("keeps stale idle sessions that still own a pipeline run", async () => {
+    const store = new InMemorySessionStore();
+    const session = createSession("pipeline-thread", "C1");
+    session.lastActivity = Date.now() - 100_000;
+    session.activePipelineRunId = "run-active";
+    await store.set(session.threadId, session);
+
+    expect(await cleanupStaleSessions(store, 50_000)).toEqual([]);
+    expect(await store.get(session.threadId)).toBeDefined();
+  });
+
+  it("deletes a stale idle session whose pipeline run is also stale", async () => {
+    const store = new InMemorySessionStore();
+    const session = createSession("wedged-pipeline-thread", "C1");
+    session.lastActivity = Date.now() - 100_000;
+    session.activePipelineRunId = "run-wedged";
+    await store.set(session.threadId, session);
+
+    const cleaned = await cleanupStaleSessions(
+      store,
+      50_000,
+      async (_runId, staleBefore) => {
+        const runUpdatedAt = Date.now() - 100_000;
+        return runUpdatedAt >= staleBefore;
+      },
+    );
+
+    expect(cleaned).toEqual([session.threadId]);
+    expect(await store.get(session.threadId)).toBeUndefined();
+  });
+
+  it("keeps a stale idle session when its pipeline run was updated recently", async () => {
+    const store = new InMemorySessionStore();
+    const session = createSession("live-pipeline-thread", "C1");
+    session.lastActivity = Date.now() - 100_000;
+    session.activePipelineRunId = "run-live";
+    await store.set(session.threadId, session);
+
+    const cleaned = await cleanupStaleSessions(
+      store,
+      50_000,
+      async (_runId, staleBefore) => Date.now() >= staleBefore,
+    );
+
+    expect(cleaned).toEqual([]);
+    expect(await store.get(session.threadId)).toBeDefined();
+  });
+
   function makeStore() {
     return new InMemorySessionStore();
   }

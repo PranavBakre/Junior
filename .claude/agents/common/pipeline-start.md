@@ -20,6 +20,9 @@ small work expands into coordinated work, upgrade at that point. Honor an
 explicit human request for a quick/no-pipeline path.
 
 Choose `product` with `pm` or `build`, or `bug` with `debug` or `reproducer`.
+For a product `build`, pass `required_workstreams` explicitly from the actual
+change scope: `backend`, `frontend`, or both. Do not infer full-stack work just
+because the request mentions an existing API while asking for a UI change.
 State the concrete coordination reason and use a stable idempotency key for
 this source turn. After the tool accepts the upgrade, do not also emit a legacy
 `!build`, `!debug`, or duplicate worker directive. The durable initial

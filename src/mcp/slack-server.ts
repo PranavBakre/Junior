@@ -63,7 +63,10 @@ import {
   pipelineStartRun,
   pipelineWriteArtifact,
 } from "../pipelines/tools.ts";
-import { postGitHubReview } from "../github/review-comments.ts";
+import {
+  postGitHubReview,
+  readGitHubReviewState,
+} from "../github/review-comments.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -129,6 +132,34 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         : null;
     },
   });
+  server.registerTool(
+    "github_read_pr_review_state",
+    {
+      description:
+        "Read a PR head, reviews, and inline review comments through fixed GET-only GitHub endpoints. " +
+        "Use this instead of gh api when checking prior findings or verifying review comment counts.",
+      inputSchema: {
+        owner: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+        repo: z.string().regex(/^[A-Za-z0-9_.-]+$/),
+        pr_number: z.number().int().positive(),
+        review_id: z.number().int().positive().optional(),
+      },
+    },
+    async ({ owner, repo, pr_number, review_id }) => {
+      const result = await readGitHubReviewState(runContext, {
+        owner,
+        repo,
+        prNumber: pr_number,
+        ...(review_id === undefined ? {} : { reviewId: review_id }),
+      });
+      return {
+        content: [
+          { type: "text" as const, text: JSON.stringify(result, null, 2) },
+        ],
+        ...(result.ok ? {} : { isError: true }),
+      };
+    },
+  );
   server.registerTool(
     "github_post_review",
     {
@@ -964,6 +995,14 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         bug_mode: z
           .enum(["expected-behavior", "focused-debug", "full-investigation"])
           .optional(),
+        required_workstreams: z
+          .array(z.enum(["backend", "frontend"]))
+          .min(1)
+          .max(2)
+          .optional()
+          .describe(
+            "Product build scope chosen by the orchestrator. Prefer this over keyword inference.",
+          ),
       },
     },
     async (args) => {

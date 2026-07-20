@@ -22,7 +22,7 @@ function sessionWith(
 }
 
 describe("mapClaudeRunPolicy", () => {
-  test("read-only locks down writes and uses plan mode", () => {
+  test("generic read-only locks down writes and uses plan mode", () => {
     const session = sessionWith({
       intent: "read-only",
       mcp: [],
@@ -135,12 +135,81 @@ describe("mapClaudeRunPolicy", () => {
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
-    expect(policy.permissionMode).toBe("plan");
+    expect(policy.permissionMode).toBe("default");
     expect(policy.disallowedTools).toContain("Edit");
     expect(policy.disallowedTools).toContain("Write");
     expect(policy.allowedTools).toContain(
       "mcp__slack-bot__github_post_review",
     );
+    expect(policy.allowedTools).toContain("Bash(gh pr view *)");
+    expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
+  });
+
+  test("review may run allowlisted checks only in a registered worktree", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.worktreePath = "/repo/.junior-worktrees/review";
+    session.worktreePaths = {
+      backend: "/repo/.junior-worktrees/review",
+      expo: "/expo/.junior-worktrees/review",
+    };
+    session.verificationPackageManager = "pnpm";
+    session.agentPermissions = {
+      intent: "read-only",
+      mcp: [],
+      tools: ["Read", "Write", "Bash(git *)"],
+    };
+
+    const policy = mapClaudeRunPolicy({
+      config,
+      session,
+      cwd: session.worktreePath,
+    });
+
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("Bash(pnpm test *)");
+    expect(policy.allowedTools).not.toContain("Bash(npm test *)");
+    expect(policy.allowedTools).not.toContain("Bash(bun test *)");
+    expect(policy.allowedTools).not.toContain("Bash(git *)");
+    expect(policy.allowedTools).not.toContain("Write");
+    expect(policy.disallowedTools).toContain("Write");
+    expect(policy.addDirs).toContain("/expo/.junior-worktrees/review");
+  });
+
+  test("review gets safe inspection only when cwd is not a registered worktree", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.worktreePath = "/registered-worktree";
+    session.verificationPackageManager = "npm";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: ["Read"] };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/shared-repo" });
+
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("Bash(gh pr view *)");
+    expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
+    expect(policy.allowedTools).not.toContain("Bash(gh pr checkout *)");
+    expect(policy.allowedTools).not.toContain("Bash(npm test *)");
+  });
+
+  test("review keeps inspection tools when package-manager metadata is ambiguous", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.worktreePath = "/registered-worktree";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: ["Read"] };
+
+    const policy = mapClaudeRunPolicy({
+      config,
+      session,
+      cwd: session.worktreePath,
+    });
+
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("Bash(git blame *)");
+    expect(policy.allowedTools).toContain("Bash(gh pr list *)");
+    expect(policy.allowedTools.some((tool) => tool.startsWith("Bash(gh api"))).toBe(false);
+    expect(policy.allowedTools).not.toContain("Bash(gh pr checkout *)");
+    expect(policy.allowedTools).not.toContain("Bash(npm test *)");
   });
 
   test("does not grant the review-comment write surface to other read-only roles", () => {
@@ -175,7 +244,7 @@ describe("mapClaudeRunPolicy", () => {
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
-    expect(policy.permissionMode).toBe("plan");
+    expect(policy.permissionMode).toBe("default");
     expect(policy.disallowedTools).toContain("Edit");
   });
 

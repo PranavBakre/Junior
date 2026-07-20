@@ -62,6 +62,8 @@ export type CreateProductRunInput = {
   targetAgent?: string;
   acceptanceCriteria?: string[];
   provenance?: PipelineStartProvenance;
+  /** Orchestrator-declared implementation scope; preferred over inference. */
+  requiredWorkstreams?: Array<"backend" | "frontend">;
 };
 
 export type CreateProductRunResult = {
@@ -95,7 +97,28 @@ export async function createProductRun(
     existing.status !== "terminal"
   ) {
     const skipReasons = await loadSkipReasons(store, existing.id);
-    const assignments = await store.listAssignments(existing.id);
+    let assignments = await store.listAssignments(existing.id);
+    const existingWorkstreams = await loadWorkstreams(store, existing.id);
+    if (input.startKind === "build" && existingWorkstreams.length > 1) {
+      const parent = assignments.find((assignment) =>
+        assignment.parentAssignmentId === null
+      );
+      if (parent) {
+        await fanOutBuilders(config, {
+          runId: existing.id,
+          parentAssignmentId: parent.id,
+          expectedRunVersion: existing.stateVersion,
+          sourceAgent: input.ownerAgent ?? existing.ownerAgent,
+          objective: input.objective,
+          idempotencyKey: `product-start-fanout:${input.threadId}:${input.messageTs}`,
+          workstreams: existingWorkstreams.map((workstream) => ({
+            agent: workstream === "frontend" ? "frontend" as const : "build" as const,
+            workstreamKey: workstream,
+          })),
+        });
+        assignments = await store.listAssignments(existing.id);
+      }
+    }
     const open =
       assignments.find(
         (a) =>
@@ -106,7 +129,9 @@ export async function createProductRun(
     if (!open) {
       throw new Error(`active product run ${existing.id} has no assignments`);
     }
-    await ensureProductStartDelivery(store, existing, open, input);
+    if (existingWorkstreams.length <= 1) {
+      await ensureProductStartDelivery(store, existing, open, input);
+    }
     return {
       run: existing,
       assignment: open,
@@ -120,16 +145,25 @@ export async function createProductRun(
     objective: input.objective,
     forceDiscovery: input.forceDiscovery,
   });
-  const targetAgent = input.targetAgent ?? start.targetAgent;
+  const requestedTargetAgent = input.targetAgent ?? start.targetAgent;
   const ownerAgent = input.ownerAgent ?? start.ownerAgent;
+  const workstreams = input.startKind === "build"
+    ? inferProductWorkstreams(
+        input.objective,
+        input.repoRefs ?? [],
+        input.requiredWorkstreams,
+      )
+    : [];
+  const fullStack = workstreams.length > 1;
+  // Multi-stream starts use a coordinator parent and fan out immediately.
+  // Single-stream starts retain the existing phase progression while routing
+  // directly to the correct specialist.
+  const targetAgent = fullStack
+    ? ownerAgent
+    : workstreams[0] === "frontend"
+      ? "frontend"
+      : requestedTargetAgent;
   const runId = input.runId ?? crypto.randomUUID();
-
-  const fullStack = detectFullStackIntent(input.objective);
-  const workstreams = fullStack
-    ? ["backend", "frontend"]
-    : input.startKind === "build"
-      ? ["backend"]
-      : [];
 
   const run: ProductRun = {
     id: runId,
@@ -286,19 +320,72 @@ export async function createProductRun(
     });
   }
 
-  await ensureProductStartDelivery(store, run, assignment, input);
+  let returnedRun = run;
+  if (input.startKind === "build" && fullStack) {
+    const fanout = await fanOutBuilders(config, {
+      runId,
+      parentAssignmentId: assignment.id,
+      expectedRunVersion: run.stateVersion,
+      sourceAgent: ownerAgent,
+      objective: input.objective,
+      idempotencyKey: `product-start-fanout:${input.threadId}:${input.messageTs}`,
+      workstreams: workstreams.map((workstream) => ({
+        agent: workstream === "frontend" ? "frontend" as const : "build" as const,
+        workstreamKey: workstream,
+      })),
+    });
+    if (fanout.receipt.status === "rejected" || fanout.assignments.length === 0) {
+      throw new Error(
+        `product build fan-out failed: ${fanout.receipt.reason ?? fanout.receipt.status}`,
+      );
+    }
+    assignment = fanout.assignments[0]!;
+    const advancedRun = await store.getRun(runId);
+    if (advancedRun?.kind === "product") returnedRun = advancedRun;
+  } else {
+    await ensureProductStartDelivery(store, run, assignment, input);
+  }
 
   log.info(
     "product-controller",
-    `created run=${runId.slice(0, 8)} start=${input.startKind} phase=${start.phase} target=${targetAgent} skip=${start.skipReasons.length}`,
+    `created run=${runId.slice(0, 8)} start=${input.startKind} phase=${returnedRun.phase} target=${assignment.targetAgent} skip=${start.skipReasons.length}`,
   );
 
   return {
-    run,
+    run: returnedRun,
     assignment,
     skipReasons: start.skipReasons,
     created: true,
   };
+}
+
+export function inferProductWorkstreams(
+  objective: string,
+  repoRefs: string[],
+  explicit?: Array<"backend" | "frontend">,
+): Array<"backend" | "frontend"> {
+  if (explicit && explicit.length > 0) {
+    return [...new Set(explicit)];
+  }
+  const repos = repoRefs.map((repoRef) => repoRef.toLowerCase());
+  const hasFrontendRepo = repos.some((repo) =>
+    /(?:^|[-_/])(client|frontend|web|admin)(?:$|[-_/])/.test(repo)
+  );
+  const hasBackendRepo = repos.some((repo) =>
+    /(?:^|[-_/])(backend|api|service|server)(?:$|[-_/])/.test(repo)
+  );
+  if (hasFrontendRepo && hasBackendRepo) return ["backend", "frontend"];
+  if (hasFrontendRepo) return ["frontend"];
+  if (hasBackendRepo) return ["backend"];
+
+  const text = objective.toLowerCase();
+  if (detectFullStackIntent(objective) || /\bfull[ -]?stack\b/.test(text)) {
+    return ["backend", "frontend"];
+  }
+  if (/\b(ui|ux|frontend|client|react|css|component|page|screen)\b/.test(text)) {
+    return ["frontend"];
+  }
+  return ["backend"];
 }
 
 async function ensureProductStartDelivery(
@@ -683,13 +770,21 @@ export async function fanOutBuilders(
     },
   };
 
-  const receipt = await store.recordOutcomeTransaction({
-    outcome,
-    toPhase: "building",
-    actorType: "agent",
-    actorId: input.sourceAgent,
-    idempotencyKey: input.idempotencyKey,
-  });
+  const parent = await store.getAssignment(input.parentAssignmentId);
+  const receipt: TransitionReceipt = parent?.status === "completed"
+    ? {
+        status: "duplicate",
+        runVersion: run.stateVersion,
+        assignmentId: input.parentAssignmentId,
+        reason: "fan-out parent already completed; repairing topology",
+      }
+    : await store.recordOutcomeTransaction({
+        outcome,
+        toPhase: "building",
+        actorType: "agent",
+        actorId: input.sourceAgent,
+        idempotencyKey: input.idempotencyKey,
+      });
 
   // Never spawn siblings when the parent handoff did not commit.
   if (
@@ -700,7 +795,13 @@ export async function fanOutBuilders(
   }
 
   const assignments: Assignment[] = [];
-  const firstAsg = await store.getAssignment(firstId);
+  const firstAsg =
+    (await store.getAssignment(firstId)) ??
+    (await store.listAssignments(run.id)).find(
+      (assignment) =>
+        assignment.idempotencyKey ===
+          `${input.idempotencyKey}:${first.workstreamKey}`,
+    );
   if (firstAsg) assignments.push(firstAsg);
 
   for (const stream of rest) {
@@ -738,47 +839,56 @@ export async function fanOutBuilders(
     });
   }
 
-  await store.appendEvent({
-    id: crypto.randomUUID(),
-    runId: run.id,
-    eventType: FANOUT_EVENT,
-    actorType: "agent",
-    actorId: input.sourceAgent,
-    assignmentId: input.parentAssignmentId,
-    outcomeId: null,
-    fromPhase: run.phase,
-    toPhase: "building",
-    payloadVersion: 1,
-    payload: {
-      kind: "started",
-      workstreams: streams.map((s) => s.workstreamKey),
-      agents: streams.map((s) => s.agent),
-    },
-    idempotencyKey: `fanout-start:${input.idempotencyKey}`,
-    occurredAt: clock.now(),
-    observedAt: clock.now(),
-  });
+  const existingEvents = await store.listEvents(run.id);
+  if (!existingEvents.some((event) =>
+    event.idempotencyKey === `fanout-start:${input.idempotencyKey}`
+  )) {
+    await store.appendEvent({
+      id: crypto.randomUUID(),
+      runId: run.id,
+      eventType: FANOUT_EVENT,
+      actorType: "agent",
+      actorId: input.sourceAgent,
+      assignmentId: input.parentAssignmentId,
+      outcomeId: null,
+      fromPhase: run.phase,
+      toPhase: "building",
+      payloadVersion: 1,
+      payload: {
+        kind: "started",
+        workstreams: streams.map((s) => s.workstreamKey),
+        agents: streams.map((s) => s.agent),
+      },
+      idempotencyKey: `fanout-start:${input.idempotencyKey}`,
+      occurredAt: clock.now(),
+      observedAt: clock.now(),
+    });
+  }
 
   // Persist required workstreams for rejoin.
-  await store.appendEvent({
-    id: crypto.randomUUID(),
-    runId: run.id,
-    eventType: WORKSTREAM_EVENT,
-    actorType: "agent",
-    actorId: input.sourceAgent,
-    assignmentId: input.parentAssignmentId,
-    outcomeId: null,
-    fromPhase: run.phase,
-    toPhase: "building",
-    payloadVersion: 1,
-    payload: {
-      workstreams: streams.map((s) => s.workstreamKey),
-      fullStack: true,
-    },
-    idempotencyKey: `product.workstreams.fanout:${input.idempotencyKey}`,
-    occurredAt: clock.now(),
-    observedAt: clock.now(),
-  });
+  if (!existingEvents.some((event) =>
+    event.idempotencyKey === `product.workstreams.fanout:${input.idempotencyKey}`
+  )) {
+    await store.appendEvent({
+      id: crypto.randomUUID(),
+      runId: run.id,
+      eventType: WORKSTREAM_EVENT,
+      actorType: "agent",
+      actorId: input.sourceAgent,
+      assignmentId: input.parentAssignmentId,
+      outcomeId: null,
+      fromPhase: run.phase,
+      toPhase: "building",
+      payloadVersion: 1,
+      payload: {
+        workstreams: streams.map((s) => s.workstreamKey),
+        fullStack: streams.length > 1,
+      },
+      idempotencyKey: `product.workstreams.fanout:${input.idempotencyKey}`,
+      occurredAt: clock.now(),
+      observedAt: clock.now(),
+    });
+  }
 
   return { assignments, receipt };
 }

@@ -64,6 +64,48 @@ describe("mapCodexRunPolicy", () => {
     });
   });
 
+  it("gives review workspace-write only inside registered worktrees", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.worktreePath = "/repo.junior-worktrees/slack-t";
+    session.worktreePaths = {
+      backend: "/repo.junior-worktrees/slack-t",
+      expo: "/expo.junior-worktrees/slack-t",
+    };
+    session.verificationPackageManager = "bun";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
+
+    expect(
+      mapCodexRunPolicy({ config, session, cwd: session.worktreePath }),
+    ).toEqual({
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [
+          "/repo.junior-worktrees/slack-t",
+          "/expo.junior-worktrees/slack-t",
+        ],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+      mcpAllowed: true,
+    });
+  });
+
+  it("does not widen review when cwd is outside the registered worktree", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.worktreePath = "/registered-worktree";
+    session.verificationPackageManager = "npm";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
+
+    expect(
+      mapCodexRunPolicy({ config, session, cwd: "/shared-repo" }),
+    ).toMatchObject({ sandbox: "read-only" });
+  });
+
   it("fails closed for no-tools agents", () => {
     const session = createSession("t", "c");
     session.agentPermissions = { intent: "no-tools", mcp: [], tools: [] };

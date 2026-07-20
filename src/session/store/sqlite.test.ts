@@ -78,6 +78,36 @@ describe("SqliteSessionStore", () => {
     );
   });
 
+  it("round-trips active pipeline invocations through parent JSON and agent rows", async () => {
+    const session = createSession("pipeline-thread", "channel-1");
+    session.activePipelineInvocation = {
+      runId: "run-top",
+      assignmentId: "asg-top",
+      dispatchKey: "dispatch-top",
+      outcomeCountAtDispatch: 2,
+      retryCount: 1,
+    };
+    session.agentSessions.build = makeAgent("build", {
+      activePipelineInvocation: {
+        runId: "run-agent",
+        assignmentId: "asg-agent",
+        dispatchKey: "dispatch-agent",
+        outcomeCountAtDispatch: 4,
+        retryCount: 2,
+      },
+    });
+
+    await store.set(session.threadId, session);
+
+    const retrieved = await store.get(session.threadId);
+    expect(retrieved?.activePipelineInvocation).toEqual(
+      session.activePipelineInvocation,
+    );
+    expect(retrieved?.agentSessions.build?.activePipelineInvocation).toEqual(
+      session.agentSessions.build.activePipelineInvocation,
+    );
+  });
+
   it("persists provider beside thread and agent session ids", async () => {
     const session = createSession("thread-1", "channel-1");
     session.provider = "opencode";

@@ -34,12 +34,23 @@ import {
 } from "../codex-app-server/policy.ts";
 import type { OpenCodePermissionConfig } from "../opencode/config.ts";
 import { hasCapability } from "../agents/capabilities.ts";
-import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
+import {
+  GITHUB_POST_REVIEW_TOOL,
+  GITHUB_READ_REVIEW_STATE_TOOL,
+} from "../github/review-comments.ts";
+import {
+  reviewInspectionCommandPatterns,
+  worktreeInspectionCommandPatterns,
+  worktreeVerificationCommandPatterns,
+} from "../agents/verification.ts";
 
 export interface PermissionSubject {
   agentPermissions?: AgentPermissions;
   activeAgentName?: string | null;
   agentType?: string | null;
+  worktreePath?: string | null;
+  worktreePaths?: Record<string, string>;
+  verificationPackageManager?: ThreadSession["verificationPackageManager"];
 }
 
 /**
@@ -67,6 +78,7 @@ export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
   "mcp__slack-bot__memory_recall": "allow",
   "mcp__slack-bot__register_worktree": "allow",
   "mcp__slack-bot__pipeline_get_state": "allow",
+  [GITHUB_READ_REVIEW_STATE_TOOL]: "allow",
   "mcp__playwright__*": "allow",
 };
 
@@ -77,11 +89,13 @@ export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
  * - human-gated: ask on mutating tools
  * - normal / utility / null: use the configured fallback (typically "allow")
  *
- * Reviewers do not receive arbitrary Bash merely to run tests — verification
- * should go through a pipeline-owned allowlisted runner (Phase 4+).
+ * Reviewers receive granular verification commands only when a managed
+ * worktree is registered and its package manager is unambiguous; arbitrary
+ * Bash remains denied.
  */
 export function compileOpenCodePermission(options: {
   subject: PermissionSubject;
+  cwd?: string;
   fallback?: OpenCodePermissionConfig;
 }): OpenCodePermissionConfig {
   const intent = resolveRunPermissionIntent(options.subject);
@@ -94,6 +108,14 @@ export function compileOpenCodePermission(options: {
   )
     ? { [GITHUB_POST_REVIEW_TOOL]: "allow" }
     : {};
+  const worktreeRoots = [
+    options.subject.worktreePath,
+    ...Object.values(options.subject.worktreePaths ?? {}),
+  ].filter((root): root is string => Boolean(root));
+  const mayInspect = hasCapability(agentName, "worktree-verify");
+  const hasRegisteredWorktreeCwd =
+    Boolean(options.cwd) &&
+    worktreeRoots.includes(options.cwd!);
 
   if (intent === "no-tools") {
     return {
@@ -117,9 +139,21 @@ export function compileOpenCodePermission(options: {
       list: "allow",
       edit: "deny",
       write: "deny",
-      // Best-effort: deny shell. Review uses git/gh via provider-specific
-      // allowlists on Claude; OpenCode has no equivalent command patterns here.
-      bash: "deny",
+      bash: mayInspect
+        ? Object.fromEntries([
+            ["*", "deny"],
+            ...(hasRegisteredWorktreeCwd && options.subject.verificationPackageManager
+              ? worktreeVerificationCommandPatterns(
+                  options.subject.verificationPackageManager,
+                )
+              : hasRegisteredWorktreeCwd
+                ? worktreeInspectionCommandPatterns()
+                : reviewInspectionCommandPatterns()
+            ).map(
+              (pattern) => [pattern, "allow"],
+            ),
+          ])
+        : "deny",
       task: "deny",
       // Explicit read-safe MCP surface only — never blanket mcp__*.
       ...READ_SAFE_MCP_PERMISSIONS,
@@ -219,6 +253,7 @@ export function buildPermissionMatrix(options: {
     });
     const openCode = compileOpenCodePermission({
       subject: threadSession,
+      cwd,
       fallback: options.openCodeFallback ?? "allow",
     });
 

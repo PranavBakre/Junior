@@ -4,7 +4,7 @@
  */
 
 import type { SlackMessageEvent } from "../slack/events.ts";
-import type { ThreadSession } from "../session/types.ts";
+import type { PipelineInvocationRef, ThreadSession } from "../session/types.ts";
 import type { Assignment, PipelineRun } from "./types.ts";
 import {
   buildAssignmentContext,
@@ -25,6 +25,7 @@ export type PipelineSessionDispatcher = {
 /** Optional session store for busy detection before dispatch. */
 export type PipelineSessionReader = {
   get: (threadId: string) => Promise<ThreadSession | undefined>;
+  getAll?: () => Promise<Map<string, ThreadSession>>;
 };
 
 export type SlackAuditCallback = (args: {
@@ -42,6 +43,7 @@ export type DispatchAssignmentInput = {
   userId?: string;
   /** Shared idempotency / dedupe key for the synthetic Slack event. */
   dedupeKey?: string;
+  pipelineInvocation?: PipelineInvocationRef;
 };
 
 export type DispatchAssignmentResult = {
@@ -152,6 +154,7 @@ export async function dispatchAssignment(
     isSelfBot: true,
     botUsername: "pipeline",
     dedupeKey,
+    pipelineInvocation: input.pipelineInvocation,
   };
 
   const alwaysEnqueue = deps.alwaysEnqueue !== false;

@@ -193,6 +193,8 @@ describe("capabilities", () => {
     expect(checkCapability("build", "merge").ok).toBe(false);
     expect(hasCapability("build", "worktree-mutate")).toBe(true);
     expect(hasCapability("review", "worktree-mutate")).toBe(false);
+    expect(hasCapability("review", "worktree-verify")).toBe(true);
+    expect(hasCapability("reproducer", "worktree-verify")).toBe(false);
   });
 
   it("grants pipeline starts only to trusted orchestrators", () => {

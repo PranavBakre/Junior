@@ -199,12 +199,22 @@ async function handleOutboxItem(
         run,
         assignment,
         // Resume from devserver.ready includes the ready URL in the prompt.
-        prompt:
-          item.eventType === "assignment.resume" &&
-          typeof item.payload.readyUrl === "string"
+        prompt: item.eventType === "assignment.resume"
+          ? typeof item.payload.readyUrl === "string"
             ? `${assignment.objective}\n\n[devserver.ready] ${item.payload.readyUrl}`
-            : undefined,
+            : `${assignment.objective}\n\n[pipeline.recovery] Resume from durable state without repeating completed mutations. Report a typed outcome before ending.`
+          : undefined,
         dedupeKey: `pipeline-outbox:${item.idempotencyKey}`,
+        pipelineInvocation: {
+          runId: run.id,
+          assignmentId: assignment.id,
+          dispatchKey: item.idempotencyKey,
+          outcomeCountAtDispatch: (await store.listOutcomes(assignment.id)).length,
+          retryCount:
+            typeof item.payload.recoveryAttempt === "number"
+              ? item.payload.recoveryAttempt
+              : 0,
+        },
       },
     );
 

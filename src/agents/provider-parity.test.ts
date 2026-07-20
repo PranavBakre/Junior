@@ -246,7 +246,9 @@ describe("provider parity — prompt body soft budget", () => {
 
   it("routes reviewer GitHub writes through the scoped MCP tool", async () => {
     const review = await fs.readFile(path.join(agentsDir, "review.md"), "utf-8");
+    expect(review).toContain("mcp__slack-bot__github_read_pr_review_state");
     expect(review).toContain("mcp__slack-bot__github_post_review");
+    expect(review).toMatch(/Never use raw `gh api`/);
     expect(review).toMatch(/Do not use `gh` or `gh api` for\s+GitHub writes/);
   });
 });

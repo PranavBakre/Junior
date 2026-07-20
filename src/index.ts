@@ -48,7 +48,10 @@ import {
 } from "./workflows/store.ts";
 import { createPipelineStore } from "./pipelines/store/factory.ts";
 import { pumpOutbox } from "./pipelines/pump.ts";
-import { recoverPipelineRuntime } from "./pipelines/recovery.ts";
+import {
+  reconcileStalePipelineAssignments,
+  recoverPipelineRuntime,
+} from "./pipelines/recovery.ts";
 import { gcTerminalPipelineHistory } from "./pipelines/gc.ts";
 import type { PipelineToolRuntime } from "./pipelines/tools.ts";
 
@@ -363,6 +366,22 @@ const pipelineBoot = (async () => {
     );
   }
 
+  if (pipelineRuntimeMode === "active") {
+    try {
+      await reconcileStalePipelineAssignments({
+        store: pipelineStore,
+        sessionReader: store,
+        audit: ({ channelId, threadId, text }) =>
+          responder.postResponse(channelId, threadId, text).then(() => undefined),
+      });
+    } catch (err) {
+      log.warn(
+        "pipeline",
+        `boot assignment recovery failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   // GitHub observation is independent of pipeline runtime mode, but wakes
   // still require eventWakeEnabled + active controllers in the reconciler.
   if (config.github?.reconcileEnabled) {
@@ -463,14 +482,22 @@ const pipelineBoot = (async () => {
 
   if (pipelineRuntimeMode === "active") {
     setInterval(() => {
-      pumpOutbox({
-        store: pipelineStore,
-        dispatcher: sessionManager,
-        sessionReader: store,
-      }).catch((err) => {
+      void (async () => {
+        await reconcileStalePipelineAssignments({
+          store: pipelineStore,
+          sessionReader: store,
+          audit: ({ channelId, threadId, text }) =>
+            responder.postResponse(channelId, threadId, text).then(() => undefined),
+        });
+        await pumpOutbox({
+          store: pipelineStore,
+          dispatcher: sessionManager,
+          sessionReader: store,
+        });
+      })().catch((err) => {
         log.warn(
           "pipeline",
-          `periodic outbox pump failed: ${err instanceof Error ? err.message : String(err)}`,
+          `periodic recovery/pump failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       });
     }, 15_000);
@@ -513,7 +540,18 @@ setInterval(() => {
 }, 60_000);
 
 setInterval(() => {
-  cleanupStaleSessions(store, config.session.staleTimeoutMs).then((cleaned) => {
+  cleanupStaleSessions(
+    store,
+    config.session.staleTimeoutMs,
+    async (runId, staleBefore) => {
+      const run = await pipelineStore.getRun(runId);
+      return Boolean(
+        run &&
+        run.status !== "terminal" &&
+        run.updatedAt >= staleBefore,
+      );
+    },
+  ).then((cleaned) => {
     if (cleaned.length > 0) {
       log.info("cleanup", `Removed ${cleaned.length} stale sessions: ${cleaned.join(", ")}`);
     }

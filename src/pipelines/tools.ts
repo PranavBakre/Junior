@@ -90,6 +90,7 @@ export type PipelineStartRunArgs = {
   repo_refs?: string[];
   acceptance_criteria?: string[];
   bug_mode?: BugMode;
+  required_workstreams?: Array<"backend" | "frontend">;
 };
 
 /**
@@ -206,6 +207,7 @@ export async function pipelineStartRun(
             repoRefs,
             ownerAgent: runContext.agent,
             acceptanceCriteria: args.acceptance_criteria,
+            requiredWorkstreams: args.required_workstreams,
             provenance,
           },
         )

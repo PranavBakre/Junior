@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   postGitHubReview,
+  readGitHubReviewState,
   type GitHubApiRequest,
   type GitHubApiRunner,
   type GitHubReviewInput,
@@ -208,5 +209,128 @@ describe("postGitHubReview", () => {
       ok: false,
       reason: expect.stringContaining("verified 0 inline comments instead of 1"),
     });
+  });
+});
+
+describe("readGitHubReviewState", () => {
+  it("uses only fixed GET endpoints and returns bounded review state", async () => {
+    const { runner, calls } = scriptedRunner([
+      { body: { head: { sha: SHA } } },
+      {
+        body: [[{
+          id: 10,
+          user: { login: "reviewer" },
+          state: "COMMENTED",
+          body: "review body",
+          commit_id: SHA,
+          submitted_at: "2026-07-20T00:00:00Z",
+          html_url: "https://example.test/review/10",
+        }]],
+      },
+      {
+        body: [[{
+          id: 20,
+          user: { login: "reviewer" },
+          body: "inline finding",
+          path: "src/index.ts",
+          line: 12,
+          commit_id: SHA,
+          created_at: "2026-07-20T00:00:00Z",
+          html_url: "https://example.test/comment/20",
+        }]],
+      },
+    ]);
+
+    await expect(readGitHubReviewState(reviewContext, {
+      owner: "GrowthX-Club",
+      repo: "gx-backend",
+      prNumber: 123,
+    }, runner)).resolves.toMatchObject({
+      ok: true,
+      headSha: SHA,
+      reviewCount: 1,
+      inlineCommentCount: 1,
+      reviewIdFilter: null,
+      reviews: [{ author: "reviewer", body: "review body" }],
+      inlineComments: [{
+        author: "reviewer",
+        body: "inline finding",
+        path: "src/index.ts",
+        line: 12,
+      }],
+    });
+
+    expect(calls).toEqual([
+      {
+        method: "GET",
+        endpoint: "repos/GrowthX-Club/gx-backend/pulls/123",
+      },
+      {
+        method: "GET",
+        endpoint: "repos/GrowthX-Club/gx-backend/pulls/123/reviews?per_page=100",
+        paginate: true,
+      },
+      {
+        method: "GET",
+        endpoint: "repos/GrowthX-Club/gx-backend/pulls/123/comments?per_page=100",
+        paginate: true,
+      },
+    ]);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("can verify comments for one exact review id", async () => {
+    const { runner, calls } = scriptedRunner([
+      { body: { head: { sha: SHA } } },
+      { body: [[]] },
+      { body: [[{ id: 20 }]] },
+    ]);
+
+    await expect(readGitHubReviewState(reviewContext, {
+      owner: "GrowthX-Club",
+      repo: "gx-backend",
+      prNumber: 123,
+      reviewId: 99,
+    }, runner)).resolves.toMatchObject({
+      ok: true,
+      reviewIdFilter: 99,
+      inlineCommentCount: 1,
+    });
+    expect(calls[2]?.endpoint).toBe(
+      "repos/GrowthX-Club/gx-backend/pulls/123/reviews/99/comments?per_page=100",
+    );
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("fails closed for unsigned, unauthorized, and invalid targets", async () => {
+    const never: GitHubApiRunner = async () => {
+      throw new Error("API should not be called");
+    };
+    const target = {
+      owner: "GrowthX-Club",
+      repo: "gx-backend",
+      prNumber: 123,
+    };
+
+    await expect(readGitHubReviewState(
+      { ...reviewContext, signed: false },
+      target,
+      never,
+    )).resolves.toEqual({ ok: false, reason: "signed MCP run context required" });
+    await expect(readGitHubReviewState(
+      { ...reviewContext, agent: "reproducer" },
+      target,
+      never,
+    )).resolves.toMatchObject({ ok: false });
+    await expect(readGitHubReviewState(
+      reviewContext,
+      { ...target, repo: "gx-backend --method POST" },
+      never,
+    )).resolves.toEqual({ ok: false, reason: "invalid GitHub repository" });
+    await expect(readGitHubReviewState(
+      reviewContext,
+      { ...target, reviewId: -1 },
+      never,
+    )).resolves.toEqual({ ok: false, reason: "reviewId must be a positive integer" });
   });
 });

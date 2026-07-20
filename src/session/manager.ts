@@ -55,6 +55,8 @@ import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
 import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
+import { inferReviewRepo } from "../worktree/review-routing.ts";
+import { detectJavaScriptPackageManager } from "../worktree/package-manager.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
 import { createPreRecall, type PreRecallFn } from "../memory/pre-recall.ts";
 import { clearThreadJuniorMessages } from "../slack/thread-archive.ts";
@@ -464,6 +466,7 @@ export class SessionManager {
         return;
       }
       agentSession.status = "busy";
+      agentSession.activePipelineInvocation = event.pipelineInvocation ?? null;
       agentSession.lastActivity = Date.now();
       s.lastActivity = agentSession.lastActivity;
       outcome.action = "run";
@@ -527,6 +530,7 @@ export class SessionManager {
         return;
       }
       s.status = "busy";
+      s.activePipelineInvocation = event.pipelineInvocation ?? null;
       s.activeAgentName = agentName;
       s.activeTopLevelMessageTs = event.ts;
       s.slackIdentity = identityForAgent(agentName);
@@ -696,6 +700,7 @@ export class SessionManager {
         s.sessionId = null;
         s.leadSessionId = null;
         s.pendingMessages = [];
+        s.activePipelineInvocation = null;
         s.status = "idle";
         s.pid = null;
         s.tmuxSessionName = null;
@@ -1268,9 +1273,39 @@ export class SessionManager {
         ? null
         : this.getOrCreateAgentSession(session, agentName);
       const agentIdentity = identityForAgent(agentName);
-      const runSession = this.buildRunSession(session, agentName, agentIdentity);
-      runSession.currentMessageTs = latestTs ?? null;
       const rawMessage = prompt;
+
+      // Reviewers run checks only in Junior-managed worktrees. Route each PR
+      // URL to its repo-specific worktree, and fall back to a pipeline repo ref
+      // only when the run names exactly one configured repo. This also lets one
+      // Slack session review PRs across different repositories without reusing
+      // the wrong checkout.
+      if (agentName === "review" && this.worktreeManager) {
+        let pipelineRepoRefs: string[] = [];
+        if (session.activePipelineRunId && this.pipelineStore) {
+          try {
+            const activeRun = await this.pipelineStore.getRun(
+              session.activePipelineRunId,
+            );
+            pipelineRepoRefs = activeRun?.repoRefs ?? [];
+          } catch (err) {
+            _log.warn(
+              "manager",
+              `review repo inference failed for pipeline ${session.activePipelineRunId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        const inferredRepo = inferReviewRepo(
+          this.config.repos,
+          prompt,
+          pipelineRepoRefs,
+        );
+        if (inferredRepo && session.targetRepo !== inferredRepo.name) {
+          session.targetRepo = inferredRepo.name;
+          session.worktreePath = session.worktreePaths[inferredRepo.name] ?? null;
+          await this.store.set(session.threadId, session);
+        }
+      }
 
       // Resolve target repo before building the preamble so workspace info can be injected.
       let targetRepo: { name: string; path: string } | undefined;
@@ -1296,6 +1331,10 @@ export class SessionManager {
             session.threadId,
             session.baseRef ?? undefined,
           );
+          session.worktreePaths = {
+            ...session.worktreePaths,
+            [targetRepo.name]: session.worktreePath,
+          };
           await this.store.set(session.threadId, session);
         } catch (err) {
           _log.warn(
@@ -1324,6 +1363,12 @@ export class SessionManager {
         session.worktreePaths && Object.keys(session.worktreePaths).length > 0
           ? session.worktreePaths
           : undefined;
+
+      // Build after worktree routing/creation so provider policy and cwd see
+      // the newly registered isolated checkout on this same turn.
+      const runSession = this.buildRunSession(session, agentName, agentIdentity);
+      runSession.currentMessageTs = latestTs ?? null;
+      await this.attachReviewVerificationPolicy(runSession, agentName);
 
       // Resolve the agent definition early so its declared context profile
       // gates the preamble. Default agent (no .md) and missing-flag cases
@@ -1660,6 +1705,7 @@ export class SessionManager {
             "Continue from the last completed step.",
           ].join("\n");
           const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
+          await this.attachReviewVerificationPolicy(retryRunSession, agentName);
 
           // Re-spawn with the continue prompt. Reuse the same rawHandle
           // creation path (driver.send for tmux, spawnRunner otherwise).
@@ -1734,6 +1780,15 @@ export class SessionManager {
           continue;
         }
 
+        const pipelineResolution = await this.resolvePipelineInvocation(
+          session,
+          agentName,
+          result,
+          attemptHandle,
+        );
+        if (pipelineResolution === null) return;
+        result = pipelineResolution;
+
         // Normal completion (or idle-interrupted but out of retries).
         const exhaustedRetries = idleInterrupted && session.idleInterruptCount >= maxIdleInterrupts;
         // Reset idle interrupt count so the next turn starts fresh.
@@ -1763,6 +1818,158 @@ export class SessionManager {
         session.lastError.message,
       );
     }
+  }
+
+  /**
+   * A pipeline invocation is complete only after its exact assignment gains a
+   * new durable outcome. Claude/process completion is merely a transport
+   * signal. Missing outcomes resume quietly; exhaustion records one durable
+   * escalation and lets the normal error path post one concise failure.
+   */
+  private async resolvePipelineInvocation(
+    session: ThreadSession,
+    agentName: string,
+    result: SpawnResult,
+    ownHandle: SpawnHandle,
+  ): Promise<SpawnResult | null> {
+    if (!this.pipelineStore) return result;
+    const fresh = (await this.store.get(session.threadId)) ?? session;
+    const isTopLevel = agentName === "lead" || agentName === "default";
+    const invocation = isTopLevel
+      ? fresh.activePipelineInvocation
+      : fresh.agentSessions?.[agentName]?.activePipelineInvocation;
+    if (!invocation) return result;
+
+    const [run, assignment, outcomes] = await Promise.all([
+      this.pipelineStore.getRun(invocation.runId),
+      this.pipelineStore.getAssignment(invocation.assignmentId),
+      this.pipelineStore.listOutcomes(invocation.assignmentId),
+    ]);
+    if (!run || !assignment) {
+      return {
+        ...result,
+        response: "",
+        error: `Pipeline settlement state is missing for run ${invocation.runId.slice(0, 8)} / assignment ${invocation.assignmentId.slice(0, 8)}.`,
+        completion: {
+          status: "failure",
+          reason: "provider_error",
+          retryable: false,
+        },
+      };
+    }
+    const durable =
+      run.status === "terminal" ||
+      !["pending", "leased"].includes(assignment.status) ||
+      outcomes.length > invocation.outcomeCountAtDispatch;
+
+    if (durable) {
+      // The typed outcome is authoritative. A provider may hit its turn cap
+      // immediately after committing it; that must not become a Slack error.
+      return result.error
+        ? {
+            ...result,
+            response: "",
+            error: null,
+            completion: {
+              status: "success",
+              reason: "completed",
+              retryable: false,
+              providerSubtype: result.completion?.providerSubtype,
+              turns: result.completion?.turns,
+            },
+          }
+        : result;
+    }
+
+    const sessionId = isTopLevel
+      ? fresh.sessionId
+      : fresh.agentSessions?.[agentName]?.sessionId;
+    const maxRetries = 2;
+    if (invocation.retryCount < maxRetries && (result.sessionId || sessionId)) {
+      const retryCount = invocation.retryCount + 1;
+      const continued = await this.mutateSession(fresh.threadId, (current) => {
+        const owner = isTopLevel
+          ? current
+          : this.getOrCreateAgentSession(current, agentName);
+        const active = owner.activePipelineInvocation;
+        if (!active || active.dispatchKey !== invocation.dispatchKey) {
+          throw new Error("pipeline invocation ownership changed");
+        }
+        owner.activePipelineInvocation = { ...active, retryCount };
+        if (result.sessionId) {
+          owner.sessionId = result.sessionId;
+          owner.provider = result.provider;
+          if (isTopLevel) current.leadSessionId = result.sessionId;
+        }
+        owner.status = "busy";
+        owner.pid = null;
+      });
+      if (this.handles.get(this.handleKey(fresh.threadId, agentName)) === ownHandle) {
+        this.handles.delete(this.handleKey(fresh.threadId, agentName));
+      }
+      const continuation = [
+        "The pipeline assignment has not recorded a typed outcome yet.",
+        `Recovery continuation ${retryCount} of ${maxRetries}. Resume this same session from durable state; do not repeat completed mutations.`,
+        "Finish any remaining work, then call pipeline_report_outcome for the active assignment before ending this invocation.",
+      ].join("\n");
+      _log.warn(
+        "pipeline",
+        `settlement.resume thread=${fresh.threadId} agent=${agentName} assignment=${invocation.assignmentId} attempt=${retryCount}/${maxRetries} reason=${result.completion?.reason ?? (result.error ? "runner-error" : "missing-outcome")}`,
+      );
+      this.runRunnerWithAgent(
+        continued,
+        continuation,
+        undefined,
+        undefined,
+        agentName,
+      ).catch((err) => {
+        _log.error(
+          "pipeline",
+          `settlement.resume.fail thread=${fresh.threadId} assignment=${invocation.assignmentId} err=${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+      return null;
+    }
+
+    const latestRun = await this.pipelineStore.getRun(invocation.runId);
+    const recoverySummary = invocation.retryCount === 0
+      ? "without a recovery continuation"
+      : `after ${invocation.retryCount} recovery continuation${invocation.retryCount === 1 ? "" : "s"}`;
+    if (latestRun && latestRun.status !== "terminal") {
+      await this.pipelineStore.recordOutcomeTransaction({
+        outcome: {
+          assignmentId: invocation.assignmentId,
+          expectedRunVersion: latestRun.stateVersion,
+          action: "escalate",
+          status: "blocked",
+          reason: `Pipeline invocation ended without a typed outcome ${recoverySummary}.`,
+          evidenceRefs: [],
+          artifactRefs: [],
+          blockers: [{
+            kind: "infra_failure",
+            detail: result.error ?? "runner completed without reporting an outcome",
+          }],
+          checks: [],
+          progressFingerprint: `settlement-exhausted:${invocation.dispatchKey}`,
+        },
+        toPhase: "needs-human",
+        actorType: "system",
+        actorId: "pipeline-settlement",
+        idempotencyKey: `pipeline-settlement-exhausted:${invocation.dispatchKey}`,
+      });
+    }
+    return {
+      ...result,
+      response: "",
+      error: `Pipeline assignment ${invocation.assignmentId.slice(0, 8)} stopped without reporting a typed outcome ${recoverySummary}. The run was escalated for human attention.`,
+      completion: {
+        status: "failure",
+        reason: result.completion?.reason ?? "provider_error",
+        retryable: false,
+        providerSubtype: result.completion?.providerSubtype,
+        turns: result.completion?.turns,
+      },
+    };
   }
 
   private async persistRunProcessDetails(
@@ -1980,18 +2187,22 @@ export class SessionManager {
           const pendingMessages = s.pendingMessages;
           if (pendingMessages.length > 0 && s.muted) {
             s.pendingMessages = [];
+            s.activePipelineInvocation = null;
             s.status = "idle";
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
+            const drained = this.takePendingBatch(pendingMessages);
             s.activeTopLevelMessageTs =
-              pendingMessages[pendingMessages.length - 1]?.ts ??
+              drained.messages[drained.messages.length - 1]?.ts ??
               s.activeTopLevelMessageTs ??
               null;
-            settle.drainPrompt = this.buildDrainPrompt(pendingMessages);
-            s.pendingMessages = [];
+            settle.drainPrompt = this.buildDrainPrompt(drained.messages);
+            s.pendingMessages = drained.remaining;
+            s.activePipelineInvocation = drained.pipelineInvocation;
             s.status = "draining";
             settle.action = "drain";
           } else {
+            s.activePipelineInvocation = null;
             s.status = "idle";
             settle.action = "settle";
           }
@@ -2013,14 +2224,18 @@ export class SessionManager {
           const pendingMessages = agentSession.pendingMessages;
           if (pendingMessages.length > 0 && s.muted) {
             agentSession.pendingMessages = [];
+            agentSession.activePipelineInvocation = null;
             agentSession.status = "idle";
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
-            settle.drainPrompt = this.buildDrainPrompt(pendingMessages);
-            agentSession.pendingMessages = [];
+            const drained = this.takePendingBatch(pendingMessages);
+            settle.drainPrompt = this.buildDrainPrompt(drained.messages);
+            agentSession.pendingMessages = drained.remaining;
+            agentSession.activePipelineInvocation = drained.pipelineInvocation;
             agentSession.status = "busy";
             settle.action = "drain";
           } else {
+            agentSession.activePipelineInvocation = null;
             agentSession.status = result.error ? "failed" : "done";
             agentSession.lastActivity = Date.now();
             settle.action = "settle";
@@ -2071,6 +2286,32 @@ export class SessionManager {
         internalDispatchDirectives,
       );
     }
+  }
+
+  /** Keep control-plane dispatches individually attributable while retaining
+   * legacy batching for ordinary chat messages. */
+  private takePendingBatch(messages: PendingMessage[]): {
+    messages: PendingMessage[];
+    remaining: PendingMessage[];
+    pipelineInvocation: PendingMessage["pipelineInvocation"] | null;
+  } {
+    const firstPipeline = messages.findIndex((m) => m.pipelineInvocation);
+    if (firstPipeline === 0) {
+      const [first, ...remaining] = messages;
+      return {
+        messages: first ? [first] : [],
+        remaining,
+        pipelineInvocation: first?.pipelineInvocation ?? null,
+      };
+    }
+    if (firstPipeline > 0) {
+      return {
+        messages: messages.slice(0, firstPipeline),
+        remaining: messages.slice(firstPipeline),
+        pipelineInvocation: null,
+      };
+    }
+    return { messages: [...messages], remaining: [], pipelineInvocation: null };
   }
 
   private allowedInternalDirectivesForResponse(
@@ -2280,6 +2521,21 @@ export class SessionManager {
     };
   }
 
+  private async attachReviewVerificationPolicy(
+    runSession: ThreadSession,
+    agentName: string,
+  ): Promise<void> {
+    if (agentName !== "review" || !runSession.worktreePath) return;
+    runSession.verificationPackageManager =
+      await detectJavaScriptPackageManager(runSession.worktreePath);
+    if (!runSession.verificationPackageManager) {
+      _log.warn(
+        "manager",
+        `review verification disabled: package manager is absent or ambiguous in ${runSession.worktreePath}`,
+      );
+    }
+  }
+
   private withAgentIdentityPrompt(
     systemPrompt: string | null,
     agentName: string,
@@ -2353,6 +2609,7 @@ export class SessionManager {
       ts: event.ts,
       command: event.command ?? undefined,
       dedupeKey: event.dedupeKey,
+      pipelineInvocation: event.pipelineInvocation,
     };
   }
 

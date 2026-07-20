@@ -4,7 +4,12 @@ import type { Config } from "../config.ts";
 import { resolveEffectivePermissionIntent } from "../agents/loader.ts";
 import type { AgentIdentity, ThreadSession } from "../session/types.ts";
 import type { ContentBlockToolUse, StreamEvent, StreamEventResult } from "./types.ts";
-import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
+import type {
+  RunnerCompletion,
+  RunnerEvent,
+  SpawnHandle,
+  SpawnResult,
+} from "../runners/types.ts";
 import { buildRunnerRuntime } from "../runners/runtime.ts";
 import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
@@ -63,6 +68,8 @@ export function spawnClaude(
   let sessionId: string | null = null;
   let resultText = "";
   let lastAssistantText = "";
+  let terminalResult: StreamEventResult | null = null;
+  let streamError: string | null = null;
 
   const result = (async (): Promise<SpawnResult> => {
     const parser = createStreamParser();
@@ -98,6 +105,7 @@ export function spawnClaude(
           }
 
           if (event.type === "result") {
+            terminalResult = event;
             resultText = event.result ?? event.text ?? "";
           }
 
@@ -114,27 +122,41 @@ export function spawnClaude(
         }
       }
     } catch (err) {
+      streamError = err instanceof Error ? err.message : String(err);
       console.error("[spawner] Error reading stdout:", err);
     }
 
     const exitCode = await proc.exited;
 
-    let error: string | null = null;
+    let processError: string | null = streamError;
     if (exitCode !== 0) {
       try {
-        error = await new Response(proc.stderr).text();
+        processError = await new Response(proc.stderr).text();
       } catch {
-        error = `Process exited with code ${exitCode}`;
+        processError = `Process exited with code ${exitCode}`;
       }
     }
+
+    const completion = classifyClaudeCompletion(
+      terminalResult,
+      exitCode,
+      processError,
+    );
+    const error = completion.status === "success"
+      ? null
+      : claudeCompletionError(completion, processError);
 
     return {
       provider: "claude",
       sessionId,
-      response: resultText || lastAssistantText,
+      // Pipeline invocations suppress incomplete prose in the settlement
+      // layer. Ordinary turns still need their last useful assistant text when
+      // Claude reaches a turn cap or otherwise returns an incomplete result.
+      response: selectClaudeResponse(resultText, lastAssistantText),
       events,
       exitCode,
       error,
+      completion,
     };
   })();
 
@@ -149,6 +171,13 @@ export function spawnClaude(
     },
     pid: proc.pid,
   };
+}
+
+export function selectClaudeResponse(
+  resultText: string,
+  lastAssistantText: string,
+): string {
+  return resultText || lastAssistantText;
 }
 
 export function shouldUseClaudeMcpConfig(
@@ -234,11 +263,79 @@ export function mapClaudeEvent(event: StreamEvent): RunnerEvent[] {
     }
     case "result": {
       const usage = claudeDoneUsage(event);
-      return [{ type: "done", provider: "claude", ...(usage ? { usage } : {}) }];
+      const completion = classifyClaudeCompletion(event, 0, null);
+      return [{
+        type: "done",
+        provider: "claude",
+        ...(usage ? { usage } : {}),
+        completion,
+      }];
     }
     default:
       return [];
   }
+}
+
+export function classifyClaudeCompletion(
+  event: StreamEventResult | null,
+  exitCode: number | null,
+  processError: string | null,
+): RunnerCompletion {
+  if (exitCode !== 0 || processError) {
+    return {
+      status: "failure",
+      reason: "process_error",
+      retryable: false,
+      ...(event?.subtype ? { providerSubtype: event.subtype } : {}),
+      ...(event?.num_turns != null ? { turns: event.num_turns } : {}),
+    };
+  }
+  if (!event) {
+    return {
+      status: "incomplete",
+      reason: "missing_result",
+      retryable: true,
+    };
+  }
+  if (event.subtype === "success") {
+    return {
+      status: "success",
+      reason: "completed",
+      retryable: false,
+      providerSubtype: event.subtype,
+      ...(event.num_turns != null ? { turns: event.num_turns } : {}),
+    };
+  }
+  if (event.subtype === "error_max_turns") {
+    return {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+      providerSubtype: event.subtype,
+      ...(event.num_turns != null ? { turns: event.num_turns } : {}),
+    };
+  }
+  return {
+    status: "failure",
+    reason: "provider_error",
+    retryable: false,
+    providerSubtype: event.subtype,
+    ...(event.num_turns != null ? { turns: event.num_turns } : {}),
+  };
+}
+
+function claudeCompletionError(
+  completion: RunnerCompletion,
+  processError: string | null,
+): string {
+  if (processError?.trim()) return processError.trim();
+  if (completion.reason === "max_turns") {
+    return `Claude reached its ${completion.turns ?? "configured"} turn limit before completing the invocation.`;
+  }
+  if (completion.reason === "missing_result") {
+    return "Claude exited without a terminal result event.";
+  }
+  return `Claude invocation failed (${completion.providerSubtype ?? completion.reason}).`;
 }
 
 function claudeDoneUsage(
