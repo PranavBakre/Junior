@@ -72,6 +72,7 @@ describe("mapCodexRunPolicy", () => {
       backend: "/repo.junior-worktrees/slack-t",
       expo: "/expo.junior-worktrees/slack-t",
     };
+    session.verificationPackageManager = "bun";
     session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
 
     expect(
@@ -97,6 +98,7 @@ describe("mapCodexRunPolicy", () => {
     const session = createSession("t", "c");
     session.activeAgentName = "review";
     session.worktreePath = "/registered-worktree";
+    session.verificationPackageManager = "npm";
     session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
 
     expect(

@@ -71,11 +71,11 @@ Use the worktree to:
 - verify whether changed function signatures break callers
 - run focused checks when they are needed to confirm a finding
 
-Verification commands are intentionally limited to test/typecheck/lint/build
-scripts for the repository's package manager (npm for most product repos, pnpm
-for gx-client-expo, Bun for Junior) plus read-only git/PR inspection. Tests may
-write caches and generated output inside the disposable worktree. Never install
-dependencies, edit source, commit, push, publish, or deploy.
+Verification commands are generated from the package manager declared by the
+active worktree's `package.json` or lockfile. They are limited to
+test/typecheck/lint/build/check scripts plus read-only git/PR inspection. Tests
+may write caches and generated output inside the disposable worktree. Never
+install dependencies, edit source, commit, push, publish, or deploy.
 
 ## Re-review behavior
 

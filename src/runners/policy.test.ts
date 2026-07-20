@@ -57,6 +57,7 @@ describe("compileOpenCodePermission", () => {
       subject: {
         activeAgentName: "review",
         worktreePath: "/repo.junior-worktrees/slack-t",
+        verificationPackageManager: "npm",
         agentPermissions: { intent: "read-only", mcp: [], tools: [] },
       },
     }) as Record<string, unknown>;
@@ -66,10 +67,22 @@ describe("compileOpenCodePermission", () => {
     expect(permission.bash).toMatchObject({
       "*": "deny",
       "npm test *": "allow",
-      "pnpm test *": "allow",
-      "bun test *": "allow",
     });
+    expect(permission.bash).not.toMatchObject({ "pnpm test *": "allow" });
+    expect(permission.bash).not.toMatchObject({ "bun test *": "allow" });
     expect(permission.bash).not.toMatchObject({ "npm install *": "allow" });
+  });
+
+  it("keeps bash denied when a review worktree has no detected manager", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "review",
+        worktreePath: "/repo.junior-worktrees/slack-t",
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, unknown>;
+
+    expect(permission.bash).toBe("deny");
   });
 
   it("uses an explicit read-safe MCP allowlist for read-only roles", () => {

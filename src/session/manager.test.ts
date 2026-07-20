@@ -238,7 +238,7 @@ function cloneConfig(overrides: Partial<Config> = {}): Config {
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs: number = 100,
+  timeoutMs: number = 1000,
 ): Promise<void> {
   const started = Date.now();
   while (!(await predicate())) {
@@ -367,7 +367,9 @@ describe("SessionManager", () => {
   });
 
   it("switches to and registers the PR repo worktree before starting review", async () => {
-    const createWorktree = mock(async () => "/tmp/frontend.junior-worktrees/slack-thread-1");
+    const reviewWorktree = mkdtempSync(join(tmpdir(), "junior-review-worktree-"));
+    writeFileSync(join(reviewWorktree, "package-lock.json"), "{}");
+    const createWorktree = mock(async () => reviewWorktree);
     manager.worktreeManager = {
       createWorktree,
       getBranchName: () => "slack/thread-1",
@@ -386,7 +388,7 @@ describe("SessionManager", () => {
       }),
       "review",
     );
-    await waitFor(() => createWorktree.mock.calls.length === 1);
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
 
     expect(createWorktree).toHaveBeenCalledWith(
       "frontend",
@@ -394,14 +396,14 @@ describe("SessionManager", () => {
       undefined,
     );
     const runSession = mockSpawnFn.mock.calls[0][0];
-    expect(runSession.worktreePath).toBe(
-      "/tmp/frontend.junior-worktrees/slack-thread-1",
-    );
+    expect(runSession.worktreePath).toBe(reviewWorktree);
     expect(runSession.worktreePaths).toEqual({
       junior: "/tmp/junior.junior-worktrees/slack-thread-1",
-      frontend: "/tmp/frontend.junior-worktrees/slack-thread-1",
+      frontend: reviewWorktree,
     });
     expect(runSession.targetRepo).toBe("frontend");
+    expect(runSession.verificationPackageManager).toBe("npm");
+    rmSync(reviewWorktree, { recursive: true, force: true });
   });
 
   it("adds downloaded non-image Slack file paths to the prompt", async () => {

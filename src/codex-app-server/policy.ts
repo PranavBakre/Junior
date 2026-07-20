@@ -51,7 +51,8 @@ export function mapCodexRunPolicy(options: {
     if (
       intent === "read-only" &&
       hasCapability(agentName, "worktree-verify") &&
-      worktreeRoots.includes(cwd)
+      worktreeRoots.includes(cwd) &&
+      Boolean(session.verificationPackageManager)
     ) {
       return {
         // Tests need to write caches, coverage, and generated output. The cwd

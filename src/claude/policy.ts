@@ -5,7 +5,7 @@ import {
 } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
 import { hasCapability } from "../agents/capabilities.ts";
-import { WORKTREE_VERIFICATION_COMMAND_PATTERNS } from "../agents/verification.ts";
+import { worktreeVerificationCommandPatterns } from "../agents/verification.ts";
 import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
 
 /**
@@ -87,16 +87,17 @@ export function mapClaudeRunPolicy(options: {
   ].filter((root): root is string => Boolean(root));
   const mayVerifyWorktree =
     hasCapability(agentName, "worktree-verify") &&
-    worktreeRoots.includes(cwd);
+    worktreeRoots.includes(cwd) &&
+    Boolean(session.verificationPackageManager);
 
   if (intent === "read-only") {
     if (mayVerifyWorktree) {
       const readOnlyDeclaredTools = declaredTools.filter(
         (tool) => !isMutatingToolSpec(tool),
       );
-      const verificationTools = WORKTREE_VERIFICATION_COMMAND_PATTERNS.map(
-        (pattern) => `Bash(${pattern})`,
-      );
+      const verificationTools = worktreeVerificationCommandPatterns(
+        session.verificationPackageManager!,
+      ).map((pattern) => `Bash(${pattern})`);
       return {
         // Headless default mode denies commands that are neither explicitly
         // allowed nor approved. Review has no approval round-trip, so this is

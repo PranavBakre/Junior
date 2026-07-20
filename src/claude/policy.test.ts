@@ -151,6 +151,7 @@ describe("mapClaudeRunPolicy", () => {
       backend: "/repo/.junior-worktrees/review",
       expo: "/expo/.junior-worktrees/review",
     };
+    session.verificationPackageManager = "pnpm";
     session.agentPermissions = {
       intent: "read-only",
       mcp: [],
@@ -164,9 +165,9 @@ describe("mapClaudeRunPolicy", () => {
     });
 
     expect(policy.permissionMode).toBe("default");
-    expect(policy.allowedTools).toContain("Bash(npm test *)");
     expect(policy.allowedTools).toContain("Bash(pnpm test *)");
-    expect(policy.allowedTools).toContain("Bash(bun test *)");
+    expect(policy.allowedTools).not.toContain("Bash(npm test *)");
+    expect(policy.allowedTools).not.toContain("Bash(bun test *)");
     expect(policy.allowedTools).not.toContain("Bash(git *)");
     expect(policy.allowedTools).not.toContain("Write");
     expect(policy.disallowedTools).toContain("Write");
@@ -177,9 +178,26 @@ describe("mapClaudeRunPolicy", () => {
     const session = createSession("t", "c");
     session.activeAgentName = "review";
     session.worktreePath = "/registered-worktree";
+    session.verificationPackageManager = "npm";
     session.agentPermissions = { intent: "read-only", mcp: [], tools: ["Read"] };
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/shared-repo" });
+
+    expect(policy.permissionMode).toBe("plan");
+    expect(policy.allowedTools).not.toContain("Bash(npm test *)");
+  });
+
+  test("review stays in plan mode when package-manager metadata is ambiguous", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.worktreePath = "/registered-worktree";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: ["Read"] };
+
+    const policy = mapClaudeRunPolicy({
+      config,
+      session,
+      cwd: session.worktreePath,
+    });
 
     expect(policy.permissionMode).toBe("plan");
     expect(policy.allowedTools).not.toContain("Bash(npm test *)");

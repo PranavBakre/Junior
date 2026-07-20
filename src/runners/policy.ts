@@ -35,7 +35,7 @@ import {
 import type { OpenCodePermissionConfig } from "../opencode/config.ts";
 import { hasCapability } from "../agents/capabilities.ts";
 import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
-import { WORKTREE_VERIFICATION_COMMAND_PATTERNS } from "../agents/verification.ts";
+import { worktreeVerificationCommandPatterns } from "../agents/verification.ts";
 
 export interface PermissionSubject {
   agentPermissions?: AgentPermissions;
@@ -43,6 +43,7 @@ export interface PermissionSubject {
   agentType?: string | null;
   worktreePath?: string | null;
   worktreePaths?: Record<string, string>;
+  verificationPackageManager?: ThreadSession["verificationPackageManager"];
 }
 
 /**
@@ -81,7 +82,8 @@ export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
  * - normal / utility / null: use the configured fallback (typically "allow")
  *
  * Reviewers receive granular verification commands only when a managed
- * worktree is registered; arbitrary Bash remains denied.
+ * worktree is registered and its package manager is unambiguous; arbitrary
+ * Bash remains denied.
  */
 export function compileOpenCodePermission(options: {
   subject: PermissionSubject;
@@ -102,7 +104,8 @@ export function compileOpenCodePermission(options: {
     Boolean(
       options.subject.worktreePath ||
         Object.keys(options.subject.worktreePaths ?? {}).length > 0,
-    );
+    ) &&
+    Boolean(options.subject.verificationPackageManager);
 
   if (intent === "no-tools") {
     return {
@@ -129,7 +132,9 @@ export function compileOpenCodePermission(options: {
       bash: mayVerifyWorktree
         ? Object.fromEntries([
             ["*", "deny"],
-            ...WORKTREE_VERIFICATION_COMMAND_PATTERNS.map(
+            ...worktreeVerificationCommandPatterns(
+              options.subject.verificationPackageManager!,
+            ).map(
               (pattern) => [pattern, "allow"],
             ),
           ])

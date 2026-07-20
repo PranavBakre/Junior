@@ -103,6 +103,11 @@ export interface ThreadSession {
   worktreePath: string | null;
   /** Per-repo worktree paths for bug-pipeline threads. Keys are repo names (from RepoConfig.name). */
   worktreePaths: Record<string, string>;
+  /**
+   * Ephemeral package manager detected from the active review worktree.
+   * Set only on the run-session copy; never treated as durable repo metadata.
+   */
+  verificationPackageManager?: import("../worktree/package-manager.ts").JavaScriptPackageManager | null;
   targetRepo: string | null;
   baseRef: string | null;
   agentType: string | null;

@@ -1,14 +1,7 @@
-/**
- * Shell commands a read-only reviewer may execute inside a Junior-managed
- * worktree. These are verification commands only: no dependency installation,
- * publishing, product-code edits, commits, or pushes.
- *
- * Repositories currently use npm by default, pnpm for gx-client-expo, and Bun
- * for Junior itself. Keep the patterns provider-neutral; Claude wraps them in
- * `Bash(...)` while OpenCode uses them as granular bash permission rules.
- */
-export const WORKTREE_VERIFICATION_COMMAND_PATTERNS = [
-  // Read-only repository and PR inspection.
+import type { JavaScriptPackageManager } from "../worktree/package-manager.ts";
+
+/** Read-only repository and PR inspection available to every reviewer. */
+const REVIEW_INSPECTION_COMMAND_PATTERNS = [
   "git status",
   "git status *",
   "git diff",
@@ -24,50 +17,41 @@ export const WORKTREE_VERIFICATION_COMMAND_PATTERNS = [
   "gh pr diff *",
   "gh pr checks *",
   "gh pr checkout *",
-
-  // npm repositories.
-  "npm test",
-  "npm test *",
-  "npm run test",
-  "npm run test *",
-  "npm run test:*",
-  "npm run test:* *",
-  "npm run typecheck",
-  "npm run typecheck *",
-  "npm run lint",
-  "npm run lint *",
-  "npm run build",
-  "npm run build *",
-  "npm run check",
-  "npm run check *",
-  // gx-client-expo.
-  "pnpm test",
-  "pnpm test *",
-  "pnpm run test",
-  "pnpm run test *",
-  "pnpm run test:*",
-  "pnpm run test:* *",
-  "pnpm run typecheck",
-  "pnpm run typecheck *",
-  "pnpm run lint",
-  "pnpm run lint *",
-  "pnpm run build",
-  "pnpm run build *",
-  "pnpm run check",
-  "pnpm run check *",
-  // Junior.
-  "bun test",
-  "bun test *",
-  "bun run test",
-  "bun run test *",
-  "bun run test:*",
-  "bun run test:* *",
-  "bun run typecheck",
-  "bun run typecheck *",
-  "bun run lint",
-  "bun run lint *",
-  "bun run build",
-  "bun run build *",
-  "bun run check",
-  "bun run check *",
 ] as const;
+
+const VERIFICATION_SCRIPTS = [
+  "test",
+  "typecheck",
+  "lint",
+  "build",
+  "check",
+] as const;
+
+/**
+ * Build the shell allowlist for the package manager detected from the active
+ * worktree. No repository names or organization-specific mappings belong in
+ * this policy layer.
+ */
+export function worktreeVerificationCommandPatterns(
+  packageManager: JavaScriptPackageManager,
+): string[] {
+  const commands: string[] = [...REVIEW_INSPECTION_COMMAND_PATTERNS];
+
+  for (const script of VERIFICATION_SCRIPTS) {
+    if (script === "test") {
+      commands.push(`${packageManager} test`, `${packageManager} test *`);
+    }
+    commands.push(
+      `${packageManager} run ${script}`,
+      `${packageManager} run ${script} *`,
+    );
+    if (script === "test") {
+      commands.push(
+        `${packageManager} run test:*`,
+        `${packageManager} run test:* *`,
+      );
+    }
+  }
+
+  return commands;
+}

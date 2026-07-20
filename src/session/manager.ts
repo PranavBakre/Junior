@@ -55,6 +55,7 @@ import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loa
 import { downloadSlackFiles } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import { inferReviewRepo } from "../worktree/review-routing.ts";
+import { detectJavaScriptPackageManager } from "../worktree/package-manager.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
 import { createPreRecall, type PreRecallFn } from "../memory/pre-recall.ts";
 import { clearThreadJuniorMessages } from "../slack/thread-archive.ts";
@@ -1321,6 +1322,7 @@ export class SessionManager {
       // the newly registered isolated checkout on this same turn.
       const runSession = this.buildRunSession(session, agentName, agentIdentity);
       runSession.currentMessageTs = latestTs ?? null;
+      await this.attachReviewVerificationPolicy(runSession, agentName);
 
       // Resolve the agent definition early so its declared context profile
       // gates the preamble. Default agent (no .md) and missing-flag cases
@@ -1653,6 +1655,7 @@ export class SessionManager {
             "Continue from the last completed step.",
           ].join("\n");
           const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
+          await this.attachReviewVerificationPolicy(retryRunSession, agentName);
 
           // Re-spawn with the continue prompt. Reuse the same rawHandle
           // creation path (driver.send for tmux, spawnRunner otherwise).
@@ -2448,6 +2451,21 @@ export class SessionManager {
       activeAgentName: agentName,
       slackIdentity: agentIdentity,
     };
+  }
+
+  private async attachReviewVerificationPolicy(
+    runSession: ThreadSession,
+    agentName: string,
+  ): Promise<void> {
+    if (agentName !== "review" || !runSession.worktreePath) return;
+    runSession.verificationPackageManager =
+      await detectJavaScriptPackageManager(runSession.worktreePath);
+    if (!runSession.verificationPackageManager) {
+      _log.warn(
+        "manager",
+        `review verification disabled: package manager is absent or ambiguous in ${runSession.worktreePath}`,
+      );
+    }
   }
 
   private withAgentIdentityPrompt(
