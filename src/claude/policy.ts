@@ -94,6 +94,11 @@ export function mapClaudeRunPolicy(options: {
 
   if (intent === "read-only") {
     if (mayInspect) {
+      // Review runs in `default`, not `plan`, so this allowlist is the primary
+      // shell boundary: declared Bash specs are stripped, every generated
+      // pattern comes from trusted constants, and ref/file mutations are
+      // admitted only for an exact registered-worktree cwd. Keep
+      // READ_ONLY_DISALLOWED as defense in depth, never as the sole gate.
       const readOnlyDeclaredTools = declaredTools.filter(
         (tool) => !isMutatingToolSpec(tool),
       );

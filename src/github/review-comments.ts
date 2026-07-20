@@ -9,6 +9,10 @@ const inFlightReviews = new Map<string, Promise<PostGitHubReviewResult>>();
 
 export const GITHUB_POST_REVIEW_TOOL =
   "mcp__slack-bot__github_post_review";
+export const GITHUB_READ_REVIEW_STATE_TOOL =
+  "mcp__slack-bot__github_read_pr_review_state";
+
+const MAX_READ_REVIEW_ITEMS = 100;
 
 export interface GitHubInlineReviewComment {
   path: string;
@@ -57,6 +61,120 @@ export type PostGitHubReviewResult =
       headSha: string;
     }
   | { ok: false; reason: string };
+
+export interface GitHubReviewStateInput {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  reviewId?: number;
+}
+
+export type ReadGitHubReviewStateResult =
+  | {
+      ok: true;
+      headSha: string;
+      reviewCount: number;
+      inlineCommentCount: number;
+      reviewIdFilter: number | null;
+      reviews: Array<{
+        id: number | null;
+        author: string | null;
+        state: string | null;
+        body: string;
+        commitId: string | null;
+        submittedAt: string | null;
+        url: string | null;
+      }>;
+      inlineComments: Array<{
+        id: number | null;
+        author: string | null;
+        body: string;
+        path: string | null;
+        line: number | null;
+        commitId: string | null;
+        createdAt: string | null;
+        url: string | null;
+      }>;
+    }
+  | { ok: false; reason: string };
+
+/**
+ * Read bounded PR review state through fixed GET endpoints. No caller input is
+ * ever interpreted as a gh flag or HTTP method.
+ */
+export async function readGitHubReviewState(
+  runContext: SlackMcpRunContext | null,
+  input: GitHubReviewStateInput,
+  runApi: GitHubApiRunner = runGitHubApi,
+): Promise<ReadGitHubReviewStateResult> {
+  if (!runContext?.signed) {
+    return { ok: false, reason: "signed MCP run context required" };
+  }
+  const capability = checkCapability(runContext.agent, "github-review-read");
+  if (!capability.ok) return { ok: false, reason: capability.reason };
+
+  const validationError = validateReviewTarget(input);
+  if (validationError) return { ok: false, reason: validationError };
+
+  const pullEndpoint = `repos/${input.owner}/${input.repo}/pulls/${input.prNumber}`;
+  const commentsEndpoint = input.reviewId
+    ? `${pullEndpoint}/reviews/${input.reviewId}/comments?per_page=100`
+    : `${pullEndpoint}/comments?per_page=100`;
+  const [pullResult, reviewsResult, commentsResult] = await Promise.all([
+    runApi({ method: "GET", endpoint: pullEndpoint }),
+    runApi({
+      method: "GET",
+      endpoint: `${pullEndpoint}/reviews?per_page=100`,
+      paginate: true,
+    }),
+    runApi({
+      method: "GET",
+      endpoint: commentsEndpoint,
+      paginate: true,
+    }),
+  ]);
+  if (!pullResult.ok) return apiFailure("read PR head", pullResult);
+  if (!reviewsResult.ok) return apiFailure("read PR reviews", reviewsResult);
+  if (!commentsResult.ok) {
+    return apiFailure("read PR inline comments", commentsResult);
+  }
+
+  const headSha = nestedString(parseJsonObject(pullResult.stdout), "head", "sha");
+  if (!headSha) {
+    return { ok: false, reason: "GitHub response omitted pull request head SHA" };
+  }
+  const reviews = parseJsonPages(reviewsResult.stdout);
+  const inlineComments = parseJsonPages(commentsResult.stdout);
+
+  return {
+    ok: true,
+    headSha,
+    reviewCount: reviews.length,
+    inlineCommentCount: inlineComments.length,
+    reviewIdFilter: input.reviewId ?? null,
+    reviews: reviews.slice(-MAX_READ_REVIEW_ITEMS).map((review) => ({
+      id: positiveInteger(review.id),
+      author: nestedString(review, "user", "login"),
+      state: optionalString(review.state),
+      body: boundedString(review.body),
+      commitId: optionalString(review.commit_id),
+      submittedAt: optionalString(review.submitted_at),
+      url: optionalString(review.html_url),
+    })),
+    inlineComments: inlineComments
+      .slice(-MAX_READ_REVIEW_ITEMS)
+      .map((comment) => ({
+        id: positiveInteger(comment.id),
+        author: nestedString(comment, "user", "login"),
+        body: boundedString(comment.body),
+        path: optionalString(comment.path),
+        line: positiveInteger(comment.line),
+        commitId: optionalString(comment.commit_id),
+        createdAt: optionalString(comment.created_at),
+        url: optionalString(comment.html_url),
+      })),
+  };
+}
 
 /**
  * Post one COMMENT review at an exact PR head through a capability-scoped API.
@@ -211,12 +329,8 @@ async function summarizeReview(
 }
 
 function validateReviewInput(input: GitHubReviewInput): string | null {
-  const coord = /^[A-Za-z0-9_.-]+$/;
-  if (!coord.test(input.owner)) return "invalid GitHub owner";
-  if (!coord.test(input.repo)) return "invalid GitHub repository";
-  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0) {
-    return "prNumber must be a positive integer";
-  }
+  const targetError = validateReviewTarget(input);
+  if (targetError) return targetError;
   if (!/^[a-f0-9]{40}$/i.test(input.headSha)) {
     return "headSha must be a full 40-character Git SHA";
   }
@@ -259,6 +373,30 @@ function validateReviewInput(input: GitHubReviewInput): string | null {
     }
   }
   return null;
+}
+
+function validateReviewTarget(input: GitHubReviewStateInput): string | null {
+  const coord = /^[A-Za-z0-9_.-]+$/;
+  if (!coord.test(input.owner)) return "invalid GitHub owner";
+  if (!coord.test(input.repo)) return "invalid GitHub repository";
+  if (!Number.isInteger(input.prNumber) || input.prNumber <= 0) {
+    return "prNumber must be a positive integer";
+  }
+  if (
+    input.reviewId !== undefined &&
+    (!Number.isInteger(input.reviewId) || input.reviewId <= 0)
+  ) {
+    return "reviewId must be a positive integer";
+  }
+  return null;
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function boundedString(value: unknown): string {
+  return typeof value === "string" ? value.slice(0, 10_000) : "";
 }
 
 function validRepoPath(path: string): boolean {

@@ -207,7 +207,8 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.permissionMode).toBe("default");
     expect(policy.allowedTools).toContain("Bash(git blame *)");
     expect(policy.allowedTools).toContain("Bash(gh pr list *)");
-    expect(policy.allowedTools).toContain("Bash(gh api --method GET *)");
+    expect(policy.allowedTools.some((tool) => tool.startsWith("Bash(gh api"))).toBe(false);
+    expect(policy.allowedTools).not.toContain("Bash(gh pr checkout *)");
     expect(policy.allowedTools).not.toContain("Bash(npm test *)");
   });
 

@@ -34,7 +34,10 @@ import {
 } from "../codex-app-server/policy.ts";
 import type { OpenCodePermissionConfig } from "../opencode/config.ts";
 import { hasCapability } from "../agents/capabilities.ts";
-import { GITHUB_POST_REVIEW_TOOL } from "../github/review-comments.ts";
+import {
+  GITHUB_POST_REVIEW_TOOL,
+  GITHUB_READ_REVIEW_STATE_TOOL,
+} from "../github/review-comments.ts";
 import {
   reviewInspectionCommandPatterns,
   worktreeInspectionCommandPatterns,
@@ -75,6 +78,7 @@ export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
   "mcp__slack-bot__memory_recall": "allow",
   "mcp__slack-bot__register_worktree": "allow",
   "mcp__slack-bot__pipeline_get_state": "allow",
+  [GITHUB_READ_REVIEW_STATE_TOOL]: "allow",
   "mcp__playwright__*": "allow",
 };
 

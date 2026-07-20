@@ -76,7 +76,9 @@ describe("compileOpenCodePermission", () => {
     expect(permission.bash).toMatchObject({
       "*": "deny",
       "npm test *": "allow",
+      "git fetch *": "allow",
     });
+    expect(permission.bash).not.toMatchObject({ "gh pr checkout *": "allow" });
     expect(permission.bash).not.toMatchObject({ "pnpm test *": "allow" });
     expect(permission.bash).not.toMatchObject({ "bun test *": "allow" });
     expect(permission.bash).not.toMatchObject({ "npm install *": "allow" });
@@ -96,8 +98,12 @@ describe("compileOpenCodePermission", () => {
       "*": "deny",
       "git blame *": "allow",
       "gh pr list *": "allow",
-      "gh api --method GET *": "allow",
     });
+    expect(
+      Object.keys(permission.bash as Record<string, string>).some((pattern) =>
+        pattern.startsWith("gh api")
+      ),
+    ).toBe(false);
     expect(permission.bash).not.toMatchObject({ "npm test *": "allow" });
   });
 
@@ -134,6 +140,7 @@ describe("compileOpenCodePermission", () => {
     expect(permission["mcp__*"]).toBe("deny");
     expect(permission["mcp__slack-bot__memory_recall"]).toBe("allow");
     expect(permission["mcp__slack-bot__slack_read_thread"]).toBe("allow");
+    expect(permission["mcp__slack-bot__github_read_pr_review_state"]).toBe("allow");
     expect(permission["mcp__slack-bot__github_post_review"]).toBe("allow");
     // Mutating MCP tools must not ride a blanket allow.
     expect(permission["mcp__slack-bot__agent_dispatch"]).not.toBe("allow");

@@ -13,8 +13,6 @@ const REVIEW_SAFE_INSPECTION_COMMAND_PATTERNS = [
   "git branch --show-current",
   "git blame *",
   "git ls-files *",
-  "gh api --method GET *",
-  "gh api -X GET *",
   "gh pr list *",
   "gh pr view *",
   "gh pr diff *",
@@ -24,7 +22,6 @@ const REVIEW_SAFE_INSPECTION_COMMAND_PATTERNS = [
 /** Commands that change refs/files and therefore require an isolated worktree. */
 const REVIEW_WORKTREE_INSPECTION_COMMAND_PATTERNS = [
   "git fetch *",
-  "gh pr checkout *",
 ] as const;
 
 const VERIFICATION_SCRIPTS = [
