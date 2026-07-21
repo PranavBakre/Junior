@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-junior is a Slack bot that acts as the control plane for coding agent sessions. OpenCode is the default runner provider for automated Slack turns; Claude Code remains available through the Claude adapter and tmux driver. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents).
+junior is a Slack bot that acts as the control plane for coding-agent sessions. OpenCode is the default runner provider; OpenCode SDK, Claude Code, and Codex app-server are also implemented. Claude tmux is an opt-in interactive driver. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents).
 
 The server owns the lifecycle. When a Slack message arrives in a thread, the bot spawns a runner turn through the selected provider. Headless OpenCode/Claude turns are short-lived subprocesses; Claude tmux mode keeps an interactive process alive behind a per-thread driver flag. Each thread gets its own isolated session and optional target-repo worktree.
 
-**Stack:** Node.js / Bun, TypeScript, Slack Event API, OpenCode (default) / Claude Code CLI.
+**Stack:** Bun, TypeScript, Slack Event API, OpenCode CLI/SDK, Claude Code CLI, Codex app-server, SQLite, dynamic workflows, and durable product/bug pipeline state.
 
-**Key architectural choice:** CLI subprocess, not SDK. Headless turns spawn one provider CLI process per Slack turn; provider-native resume (`--session` for OpenCode, `--resume` for Claude) carries conversation context.
+**Key architectural choice:** providers are behind one normalized runner boundary. Headless CLI turns spawn one short-lived process per turn; server-attached providers keep their own runtime connection. Provider-native resume carries conversation context, but durable session/pipeline/artifact state remains authoritative after restart or recovery.
 
 ## Where to Look
 
@@ -36,11 +36,14 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How are bug-pipeline worktrees laid out? | [docs/features/bug-pipeline-worktrees.md](docs/features/bug-pipeline-worktrees.md) |
 | How do sessions persist across restarts? | [docs/features/session-persistence.md](docs/features/session-persistence.md) |
 | How does the localhost HTTP dashboard work? | [docs/features/http-dashboard.md](docs/features/http-dashboard.md) |
+| How do dynamic workflows load, schedule, and run? | [docs/features/dynamic-workflows.md](docs/features/dynamic-workflows.md) |
+| How do durable product/bug pipelines dispatch and recover? | [docs/features/agent-product-debugging-pipeline-implementation-plan.md](docs/features/agent-product-debugging-pipeline-implementation-plan.md) |
+| How does GitHub PR/resource reconciliation work? | [docs/code_index/github-reconciliation.md](docs/code_index/github-reconciliation.md) |
+| How do provider-neutral agent capabilities and handoffs work? | [docs/code_index/agent-catalog.md](docs/code_index/agent-catalog.md) |
 | Project setup, config, directory structure? | [docs/features/project-setup.md](docs/features/project-setup.md) |
 | Known limitations and open questions? | [docs/features/v2-backlog.md](docs/features/v2-backlog.md) |
 | Code index for a specific module? | `docs/code_index/<module>.md` (matches feature doc names) |
-| Ideation and planning workflow? | [docs/workflows/ideation.md](docs/workflows/ideation.md) |
-| Building and iteration workflow? | [docs/workflows/building.md](docs/workflows/building.md) |
+| Current workflow definitions and docs map? | [docs/README.md](docs/README.md) and [`workflows/`](workflows/) |
 
 ## Architecture
 
@@ -48,10 +51,10 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 Slack Event API (message.channels, app_mention)
     |
     v
-Slack Bot Server (Node.js / Bun)
+Slack Bot Server (Bun)
     |
-    +-- Session Manager: Map<thread_id, session>
-    |     session = { sessionId, worktreePath, status, pendingMessages, skillSet }
+    +-- Session Manager: durable ThreadSession per thread
+    |     session = { sessionId, worktreePaths, status, pendingMessages, pipeline state }
     |
     +-- On message:
     |     1. Look up thread_id
@@ -59,9 +62,12 @@ Slack Bot Server (Node.js / Bun)
     |     3. If idle -> spawn selected runner provider
     |     4. On exit -> post response to Slack, drain buffer
     |
-    +-- Runner CLI Process (short-lived, one per message turn)
-          opencode run --format json --dir "<worktree>" --session <id> --agent build "<prompt>"
-          claude -p "<prompt>" --output-format stream-json --resume <id> --mcp-config .mcp.json
+    +-- Runner provider boundary
+          OpenCode CLI / OpenCode SDK / Claude CLI / Codex app-server
+          normalized events + provider-native resume
+    +-- Durable workflows and product/bug pipelines
+          markdown definitions → scheduler/executor
+          typed runs → assignments → outbox → agent sessions
 ```
 
 ## Prerequisites
@@ -69,25 +75,46 @@ Slack Bot Server (Node.js / Bun)
 Install and authenticate the tools required by the provider and agents you enable:
 - **OpenCode** (default runner provider)
 - **Claude Code CLI** (Claude provider and tmux driver)
-- **Vercel CLI** (required by `vercel-status`)
-- **New Relic CLI** (required by `nr-research`)
-- **Sentry CLI** (required by `sentry-fetch`)
+- **Codex CLI/app-server** (Codex provider)
+- Observability CLIs such as Vercel, New Relic, or Sentry only when the
+  private overlay agents that use them are enabled.
 - **tmux 3.4+** (required only for `DEFAULT_CLAUDE_DRIVER=tmux`)
 
 ## Critical Rules
 
-1. **CLI subprocess, not SDK.** Spawn `opencode` or `claude -p` as a child process. Never use `@anthropic-ai/claude-code` as a library — that requires API keys.
-2. **One process per message turn.** Each Slack message spawns a short-lived runner process. The process exits after responding. No long-lived processes between messages (except in experimental TMUX mode).
-3. **Native resume for continuity.** Use `--session` (OpenCode) or `--resume` (Claude) to pick up conversation context. Session IDs are extracted from the first stream event on stdout.
+1. **Use the provider boundary.** OpenCode CLI is the default; OpenCode SDK,
+   Claude, and Codex app-server are implemented adapters. Keep provider-specific
+   arguments, parsing, and policy inside their adapter modules.
+2. **Match lifecycle to the provider.** Headless CLI turns are short-lived
+   processes; server-attached OpenCode SDK/Codex providers own their connection;
+   Claude tmux is an explicit interactive exception.
+3. **Use native resume when enabled.** Provider-native continuity uses
+   OpenCode sessions, Claude `--resume`, or Codex app-server thread state.
+   Durable session and pipeline state remains authoritative.
 4. **Buffer, don't interrupt.** If a runner is mid-execution and new messages arrive, buffer them. Do not kill the running turn except through the explicit stop/driver interrupt path. Drain the buffer as a combined prompt after the current turn exits.
 5. **Worktrees for target repos only.** Junior's workspace is shared across all threads (learnings accumulate). Worktrees are created in TARGET repos (example-backend, example-frontend) when threads need code isolation. Threads that only read or discuss don't need worktrees.
-6. **Stream events for status.** Parse provider-native JSON streams (`opencode run --format json`, Claude `--output-format stream-json`) into normalized runner events and post incremental Slack updates.
-7. **Session state is authoritative.** The session map (thread_id -> session) is the single source of truth for whether a thread is idle/busy, what its session ID is, and what messages are pending.
+6. **Stream events for status.** Parse provider-native streams from OpenCode,
+   Claude, and Codex into normalized runner events and post incremental Slack
+   updates. `SpawnHandle.onEvent` is the in-process callback boundary.
+7. **Durable state is authoritative.** Session, action, workflow, pipeline, and
+   artifact stores are the source of truth for restart/recovery. In-memory maps
+   are caches or test implementations, not the production contract.
 8. **Cleanup stale sessions.** The cleanup job deletes stale idle/draining session rows (24h default). Worktree removal is separate and must dirty-check before destructive cleanup.
-9. **Runner MCP contract.** Worktree-backed target-repo runs get Junior's local MCP wiring. Claude receives the project `.mcp.json` via `--mcp-config`; OpenCode receives generated MCP config through `OPENCODE_CONFIG_CONTENT`. Runs with an explicit `session.cwd` skip Junior's project MCP wiring because utility commands need their own cloud integrations. Keep this aligned with [docs/features/runner-providers.md](docs/features/runner-providers.md).
+9. **Runner MCP contract.** Worktree-backed target-repo runs get Junior's local
+   MCP wiring. Claude receives the project `.mcp.json` via `--mcp-config`; OpenCode
+   and Codex receive generated MCP config. Runs with an explicit `session.cwd`
+   skip Junior's project MCP wiring because utility commands need their own cloud
+   integrations. Run context is signed and scoped per spawn.
 10. **No `--input-format stream-json` in production.** The bidirectional streaming flag exists but is undocumented and unstable. Use `--resume` for multi-turn until the protocol is specified.
-11. **SQLite for persistence.** Sessions persist in a SQLite file via `bun:sqlite` (`data/sessions.db` by default, `SESSION_DB_PATH` to override). Single-writer, no extra service, survives restarts. `SESSION_STORE=memory` switches to the in-memory store for tests/dev. The home tab shows only sessions active in the last `HOME_WINDOW_MS` (2 days default); cleanup and health still scan all rows. Pending messages are persisted but treated as stale on restart — the Claude process they were queued behind is dead.
-12. **Always handle zombie processes.** Set a timeout guard (5 min default). Kill with SIGINT on timeout. Handle process errors. Clear the timeout on exit.
+11. **SQLite for persistence.** Sessions, actions, workflow runs, pipeline state,
+   and memory use SQLite-backed stores by default. `SESSION_STORE=memory` is for
+   tests/dev. The home tab shows only sessions active in `HOME_WINDOW_MS`; cleanup
+   and health still scan all rows. Pending messages are persisted but stale after
+   restart because the process they were queued behind is dead.
+12. **Handle stalled processes and recovery.** Keep a hard timeout guard, use
+   provider-specific idle recovery where supported, handle process errors, and
+   clear timers/handles on exit. Server-attached providers manage their own
+   connection lifecycle.
 13. **Design for swappability.** When adding infrastructure that could have multiple implementations (persistence, message queue, notification), use a provider/factory pattern. Each provider gets its own file, a factory selects the right one.
 14. **Pure functions over framework ceremony.** If a library's core value is bypassed, replace it with the simplest implementation. A 20-line function beats a dependency you're working around.
 15. **Test against real infrastructure, mock at boundaries.** Mock Slack API and runner CLIs at system boundaries. Don't mock internal session management or message routing.
@@ -121,22 +148,28 @@ junior/
         memory.ts         -- InMemorySessionStore (tests, dev)
         sqlite.ts         -- SqliteSessionStore (production)
     runners/
-      index.ts            -- select OpenCode/Claude provider
+      index.ts            -- select the normalized runner provider
       runtime.ts          -- shared cwd/env/MCP runtime contract
+      mcp-config.ts       -- generated OpenCode/Codex MCP configuration
     opencode/
-      spawner.ts          -- spawn opencode run, parse JSON events
+      spawner.ts          -- spawn OpenCode CLI, parse JSON events
+      sdk-provider.ts     -- OpenCode SDK provider
     claude/
       spawner.ts          -- spawn claude -p for headless mode
       tmux-driver.ts      -- interactive Claude driver behind tmux
       args.ts             -- build CLI args from session state
       parser.ts           -- stream-json line parser
       types.ts            -- stream-json event types
+    codex-app-server/     -- Codex app-server adapter, parser, policy, config
     worktree/
       manager.ts          -- create/remove/check worktrees in target repos
       types.ts            -- RepoConfig
     agents/
-      router.ts           -- load agent definitions, pick agent type
-      loader.ts           -- read .md files, parse frontmatter
+      router.ts           -- load definitions and build prompts
+      loader.ts           -- read .md files and parse frontmatter
+      manifest.ts         -- catalog capabilities and handoff policy
+      registry.ts         -- reloadable public/private definition registry
+      verification.ts     -- definition and policy checks
     memory/               -- v3 long-term memory (see docs/features/memory-system-v3.md)
       sqlite.ts           -- SqliteMemoryStore: source records, claims, episodes, decay
       store.ts            -- MemoryStore interface
@@ -151,6 +184,13 @@ junior/
       timeout.ts          -- process timeout guard
       health.ts           -- orphan detection
       shutdown.ts         -- graceful bot shutdown
+      dev-server.ts       -- per-repo dev-server manager
+      dev-server-queue.ts -- single-flight dev-server activation
+    pipelines/             -- durable product/bug runs, outbox, recovery, GC
+    workflows/             -- markdown workflow registry, scheduler, executor
+    github/                -- optional GitHub reconciliation and review writes
+    whatsapp/              -- optional passive WhatsApp archive
+    time/                  -- injectable clock for deterministic behavior
   .claude/
     agents/               -- agent definitions (junior's own, not target repo's)
       common/
@@ -167,17 +207,17 @@ junior/
   docs/
     features/             -- feature design docs with iteration plans
     code_index/           -- code indexes per module
-    workflows/            -- ideation and building workflows
+  workflows/              -- executable workflow definitions (worklog, release notes, memory consolidation, worktree prune)
   CLAUDE.md
   learnings.md
 ```
 
 ## Origin: OpenClaw Agent System
 
-This project replaces the OpenClaw-based agent workspace at PranavBakre/openclaw-agents. Key things that carry over:
+This project replaces the OpenClaw-based agent workspace at PranavBakre/openclaw-agents. The older identity names are historical context, not the current Junior dispatch contract. Current public identities are `default`, `lead`, `reproducer`, `review`, and `echo`; private/org identities are loaded from `agents-org`.
 
-- **Agent squad:** Junior (orchestrator), Scotty (backend builder), Uhura (frontend builder), Bones (code reviewer) — Star Trek naming.
-- **Junior's role:** Architect, orchestrator, rubber duck. Plans, reviews, coordinates — agents code. Does not write production code directly for non-trivial work.
+- **Agent roles:** The trusted catalog includes orchestrators plus `build`, `frontend`, `architect`, `pm`, `review`, and `reproducer` capabilities. It is separate from Slack persona identities.
+- **Junior's role:** Orchestrator, architect, and coordinator. It plans, reviews, and dispatches implementation work; non-trivial product edits are delegated to the appropriate trusted role.
 - **Sub-agent dispatch pattern:** Share relevant conventions and past mistakes in the prompt when spawning sub-agents. They don't have memory — if you don't share it, they repeat mistakes.
 - **Build -> Review loop:** Build via agent -> push -> Bones reviews -> fix -> re-review -> ship. 3-round escalation to Pranav if Bones keeps finding blockers.
 
@@ -187,7 +227,11 @@ What changes:
 - Agent dispatch uses Claude Code's `--resume` and worktrees in target repos instead of OpenClaw's agent workspace system.
 - Agent definitions live in target repos' `.claude/agents/` — don't duplicate them in junior.
 
-## Build Order
+## Historical build order
+
+The original feature-first build order is retained below as project history;
+the runtime now includes additional provider, workflow, pipeline, and
+reconciliation surfaces.
 
 Features depend on each other. Build in this order:
 
@@ -209,11 +253,14 @@ Items 3-5 can partially parallelize. Items 6-9 can be built in any order once se
 ```bash
 # Development
 bun run dev                     # Start bot server with hot reload (--watch)
+bun run start                   # Start the production entry point
 bun run build                   # Build for production
 bun run typecheck               # Type checking without emit
+bun test                        # Run the Bun test suite
 
 # Slack bot management
 bun run cleanup                 # Delete stale idle/draining session rows
+bun run migrate:prune-routing-logs # One-shot memory routing-log cleanup
 
 # Upload files/screenshots to the current Slack thread
 bin/slack-upload.sh <file-path> [comment]  # Uses SLACK_BOT_TOKEN, SLACK_CHANNEL, SLACK_THREAD_TS env vars (auto-set)

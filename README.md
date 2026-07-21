@@ -1,22 +1,20 @@
 # junior
 
-A Slack bot that acts as the control plane for headless coding-agent sessions. OpenCode is the default runner provider; Claude Code remains available as a fallback provider. Each Slack thread maps to its own short-lived runner subprocess, and continuity comes from the provider's native resume session ID rather than a long-lived process.
+A Slack bot that acts as the control plane for coding-agent sessions. OpenCode is the default runner provider; Claude Code, OpenCode SDK, and Codex app-server are also supported. Headless CLI turns are short-lived, while Claude tmux mode is an opt-in interactive driver. Each Slack thread has durable session state and provider-native resume continuity.
 
 Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](https://github.com/PranavBakre/openclaw-agents) — same role (orchestrator + sub-agent dispatcher), rebuilt on top of coding-agent CLIs.
 
-**Stack:** Bun, TypeScript, [@slack/bolt](https://github.com/slackapi/bolt-js) (Socket Mode), OpenCode by default with Claude Code as an alternate provider, native session-resume for cross-turn continuity, SQLite for session + long-term memory persistence, and on-device vector embeddings (local ONNX model — no remote embedding API).
+**Stack:** Bun, TypeScript, [@slack/bolt](https://github.com/slackapi/bolt-js) (Socket Mode), provider adapters for OpenCode/Claude/Codex, SQLite persistence, dynamic markdown workflows, durable product/bug pipeline state, and on-device vector embeddings (local ONNX model — no remote embedding API).
 
 For deep architecture and the canonical "critical rules" list, see [CLAUDE.md](./CLAUDE.md). This README is the on-ramp.
 
 ## Prerequisites
 
-Junior orchestrates external coding agents and observability tools. Ensure the following are installed and authenticated on your host:
+Junior orchestrates external coding agents and optional observability integrations. Install the tools required by the providers, workflows, and private `agents-org` overlay you enable:
 
 - **[OpenCode](https://opencode.ai)** (default runner provider)
 - **[Claude Code CLI](https://anthropic.com)** (Claude provider and tmux driver)
-- **[Vercel CLI](https://vercel.com/docs/cli)** (required by `vercel-status`)
-- **[New Relic CLI](https://github.com/newrelic/newrelic-cli)** (required by `nr-research`)
-- **[Sentry CLI](https://docs.sentry.io/product/cli/)** (required by `sentry-fetch`)
+- **Vercel, New Relic, and Sentry CLIs** only if the private overlay's support agents use them
 - **tmux 3.4+** (required only for `DEFAULT_CLAUDE_DRIVER=tmux`)
 
 ---
@@ -25,7 +23,7 @@ Junior orchestrates external coding agents and observability tools. Ensure the f
 
 A Slack message in a configured channel triggers one of three things:
 
-1. **A persistent-agent dispatch** — `!review`, `!reproducer`, `!thinker`, `!echo`, or (implicit, in support channels) `!lead`. Each persistent agent gets its own `sessionId`, its own Slack username + emoji, and runs as a logically separate Claude conversation in the same thread.
+1. **A persistent-agent dispatch** — `!review`, `!reproducer`, `!echo`, or (implicit, in support channels) `!lead`. `default`/`lead` are orchestrators; `review` and `reproducer` are core workers. `thinker` is a legacy session alias, not a current directive. Each persistent agent gets its own `sessionId`, Slack identity, and logically separate conversation in the same thread.
 2. **A built-in directive** — e.g. `!devserver <branch>`, `!build`, `!status`, `!mute`. Directives are handled by junior itself or routed to a one-shot agent; they don't spawn a persistent agent.
 3. **A plain message** — buffered to the active session in that thread (or starts a new one). If a turn is in progress, the message is queued and drained as a combined prompt after the current turn exits — junior never interrupts a running process.
 
@@ -35,11 +33,13 @@ A single Slack thread can host multiple agents at once. The dispatcher is in [`s
 
 | Agent | Username | Emoji | Use |
 | --- | --- | --- | --- |
-| `lead` | Junior | 🤠 | Default in support channels — orchestrator / rubber duck |
+| `default` | Junior | app profile | Default orchestrator for ordinary channels |
+| `lead` | Junior (Lead) | :face_with_cowboy_hat: | Orchestrator marker for support channels |
 | `reproducer` | Reproducer | :mag: | Reproduce a reported bug deterministically |
-| `thinker` | Thinker | :wrench: | Form and mock-test a hypothesis |
 | `review` | Reviewer | :eyes: | Code review |
 | `echo` | Echo | :speech_balloon: | Reads/writes back — used as a coordination test bed |
+
+The trusted catalog also defines internal `pm`, `architect`, `build`, and `frontend` roles. They are selected by commands or pipeline assignments and do not need public Slack identities. See [agent routing](docs/features/agent-routing.md).
 
 Each agent stores its own row in the `agent_sessions` SQLite table so threading can fan out without losing per-agent `--resume` continuity.
 
@@ -47,10 +47,14 @@ Each agent stores its own row in the `agent_sessions` SQLite table so threading 
 
 While a runner is active, it can post to and read from Slack autonomously through an in-process HTTP MCP server ([`src/mcp/slack-server.ts`](src/mcp/slack-server.ts)). Tools exposed:
 
-- `slack_send_message`, `slack_read_channel`, `slack_read_thread`
-- `slack_search`, `slack_search_users`
-- `slack_upload_file`
+- Slack read/post/search/upload tools
 - `register_worktree` — let an agent claim a worktree path mid-turn
+- agent dispatch and definition search
+- memory recall/add/consolidation
+- pipeline start/state/assignment/outcome/check tools when pipeline mode is active
+- optional MongoDB and WhatsApp read tools
+
+The authoritative list and capability gates live in [the MCP server docs](docs/features/mcp-server.md).
 
 This is what enables agents to talk back to other agents (or to the human) within a single turn instead of waiting for the turn to end.
 
@@ -60,7 +64,7 @@ Junior keeps a long-term memory in `data/memory.db` (separate from the session D
 
 - **Capture (hot path).** Slack messages, routing decisions, and runner outputs are appended as raw **source records** by `MemoryIngestor` — cheap provenance, not yet recallable.
 - **Consolidate (offline).** A `claude -p` pass reads the unconsolidated source records and derives durable memory: **episodes** (affect-tagged raw log), keyed entity **profiles** (person/repo/situation, stored as markdown under `data/profiles/`, gitignored), and atomic **claims** (lessons/facts) embedded for semantic recall. Run it via the `consolidate-v3` CLI, the `memory-consolidation` workflow, or the `memory_consolidate` MCP tool — all share `runConsolidationSweep`.
-- **Recall (two channels).** `memory_recall` fetches keyed profiles verbatim by `entity_ref` and cosine-ranks the atomic claim store against a locally embedded query. Recall is **cosine-only** — there is no FTS channel.
+- **Recall (two surfaces).** `memory_recall` fetches keyed profiles verbatim by `entity_ref` and cosine-ranks the atomic claim store against a locally embedded query. Recall is **cosine-only** — there is no FTS channel. Optional pre-recall is off by default and must be enabled explicitly.
 - **Local embeddings.** Claims and queries are embedded in-process with `onnx-community/harrier-oss-v1-270m-ONNX` (640-dim, last-token pooling), co-located with the text in SQLite as a Float32 BLOB. Nothing leaves for a remote API.
 - **Decay.** Claims/episodes/profiles track `last_used_at`; an offline pass archives stale **and** low-value claims (`active = 0`, never hard-deleted). `memoryHealth` reports the fade candidates.
 
@@ -85,7 +89,7 @@ Each thread that touches a target repo gets its own git worktree at `<repo>.juni
 
 ### SQLite persistence
 
-Sessions and per-agent sessions persist in `data/sessions.db` (`bun:sqlite`, single-writer). The schema is created on boot — no migration tooling needed yet. `SESSION_STORE=memory` switches to the in-memory store for tests.
+Sessions, per-agent sessions, action records, workflow state, and pipeline state use SQLite stores under `data/` (`bun:sqlite`, single-writer). Each store creates or extends its tables on boot; there is no standalone migration CLI for session/workflow/pipeline state. `SESSION_STORE=memory` switches the session/workflow/pipeline stores to in-memory implementations for tests.
 
 ### Slack home tab
 
@@ -111,8 +115,11 @@ Binds `127.0.0.1` only. Junior is intentionally insecure as a networked product:
 | `GET /api/sessions` | All threads with their agent sessions |
 | `GET /api/sessions/:threadId` | Full session detail |
 | `GET /api/dev-server` | Per-repo manager state + queue depth |
+| `GET /api/workflows` | Loaded workflow definitions, runtime state, and recent runs |
 | `GET /api/logs?date=&tail=&tag=&level=` | Tail of structured logs |
 | `GET /api/memory` / `GET /api/memory/<path>` | Browse `docs/**/*.md` |
+| `GET /api/memory/recall` | Read-only claim/profile recall for the dashboard |
+| `GET /api/memory/projection` | Read-only memory-cloud projection data |
 
 Ported from [Friday](https://github.com/anmolm-growthx/Friday)'s `src/http/`. Junior-specific extensions: `/api/dev-server` exposes `DevServerQueue` state, and `/api/sessions` joins `agent_sessions` so the UI can render multi-agent threads.
 
@@ -149,7 +156,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
-| `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode`, `opencode-sdk`, `codex-app-server`, or `claude` (`codex` is reserved for a future CLI fallback) |
+| `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode`, `opencode-sdk`, `codex-app-server`, or `claude` |
 | `CLAUDE_MAX_TURNS` | `25` | Max turns per `claude -p` invocation |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Per-turn timeout before SIGINT |
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |
@@ -159,12 +166,21 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `JUNIOR_OPENCODE_PERMISSION` | `allow` | OpenCode permission mode for generated agent config |
 | `OPENCODE_MCP_ENABLED` | `true` | Enables generated OpenCode MCP config for normal non-utility runs |
 | `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | `true` | Include Playwright MCP in generated OpenCode config; set `false` to disable |
+| `OPENCODE_SLACK_MCP_ENABLED` | `true` | Include Slack MCP in generated OpenCode config |
+| `OPENCODE_MIXPANEL_MCP_ENABLED` | `true` | Include Mixpanel MCP when configured |
+| `OPENCODE_MONGODB_MCP_ENABLED` | `true` | Include MongoDB MCP when configured |
+| `CODEX_MODE` | `app-server` | Codex transport: `app-server` or the isolated `cli` fallback |
 | `CODEX_MODEL` | *(unset)* | Override default Codex app-server model |
 | `CODEX_TIMEOUT_MS` | `300000` | Per-turn Codex timeout before SIGINT |
 | `CODEX_SANDBOX` | `workspace-write` | Codex app-server sandbox. Set `danger-full-access` for YOLO-style full filesystem/network access. |
 | `CODEX_ASK_FOR_APPROVAL` | `never` | Codex app-server approval policy |
 | `CODEX_APP_SERVER_CONTINUITY_ENABLED` | `false` | Enables Codex app-server idle-timeout recovery: native `turn/interrupt` plus automatic continue turn. Normal `thread/resume` across app restarts stays enabled. |
 | `CODEX_ISOLATED_HOME_PATH` | `data/codex-home` | Junior-owned Codex home with generated config and symlinked auth |
+| `PRE_RECALL_ENABLED` | `false` | Run the optional cheap-model recall query extractor before runner turns |
+| `WHATSAPP_ENABLED` | `false` | Enable the read-only WhatsApp archive and MCP tools |
+| `PIPELINE_RUNTIME_MODE` | `off` | Durable pipeline mode: `off`, `shadow`, or `active` |
+| `BUG_PIPELINE_ENABLED` / `PRODUCT_PIPELINE_ENABLED` | `false` | Enable typed bug/product starts; requires `PIPELINE_RUNTIME_MODE=active` |
+| `GITHUB_RECONCILE_ENABLED` | `false` | Enable outbound PR/resource reconciliation |
 
 `REPOS` example:
 
@@ -192,8 +208,9 @@ Slash-style commands are parsed in [`src/slack/commands.ts`](src/slack/commands.
 !build [prompt]            -- spawn the build one-shot agent
 !frontend [prompt]         -- spawn the frontend one-shot agent
 !architect [prompt]        -- spawn the architect one-shot agent
+!pm [prompt]               -- spawn the PM one-shot agent
 !review                    -- dispatch to the review persistent agent
-!reproducer / !thinker     -- ditto
+!reproducer                -- dispatch to the reproducer persistent agent
 !echo / !lead              -- ditto
 
 !cancel                    -- cancel the in-flight turn
@@ -205,7 +222,12 @@ Slash-style commands are parsed in [`src/slack/commands.ts`](src/slack/commands.
 !provider <name>           -- switch this thread's runner provider
 !quiet | !normal | !verbose -- per-thread verbosity
 !mute | !unmute            -- silence/unsilence this thread
+!aside [text]              -- discard one message without waking a runner
+!listen                    -- wake an auto-dormant thread
 !adhoc / !bugs / !help     -- channel-specific entry points
+
+!workflow <show|run|start|stop|logs|reload> [name]
+!workflows                 -- list workflow definitions and state
 
 !devserver <branch> [repo] -- acquire dev-server slot
 !devserver status          -- queue depth
@@ -241,7 +263,8 @@ AgentDispatcher (src/support/router.ts)
                           |
                           v
                   Spawn runner provider
-                    claude -p / opencode run      (per-thread provider)
+                    claude -p / opencode run / Codex app-server
+                    (per-thread provider)
                     native resume id              (continuity)
                     normalized runner events      (tool/text/result events)
                     project MCP config            (worktree-backed runs)
@@ -275,13 +298,17 @@ src/
   agents/               agent loader (.md frontmatter)
   support/              AgentDispatcher, persistent-agent identities
   lifecycle/            dev-server manager + queue, timeouts, shutdown, health
-  mcp/                  in-process Slack MCP server
-  http/                 localhost dashboard (this PR)
+  mcp/                  in-process Slack/MongoDB/WhatsApp MCP server + approvals
+  pipelines/             durable product/bug runs, assignments, outcomes, outbox
+  github/                read-only PR/resource reconciliation
+  workflows/             markdown workflow registry, scheduler, executor, store
+  time/                  injectable clock seams for durable state tests
+  http/                  localhost dashboard
 public/                 static dashboard assets
 docs/                   feature design docs, code indexes, workflows
 ```
 
-For per-feature deep dives, see the [`docs/`](docs/) tree — `docs/architecture.md` and `docs/features/<name>.md`.
+For per-feature deep dives and source maps, start with [`docs/README.md`](docs/README.md), then use `docs/features/<name>.md` and `docs/code_index/<name>.md`.
 
 ---
 
@@ -299,4 +326,4 @@ bun run cleanup     # delete stale idle/draining session rows
 
 ## Origin and naming
 
-Junior is the orchestrator in a Star-Trek-named agent squad: Scotty (backend), Uhura (frontend), Bones (reviewer). Sub-agent dispatch is shared-context — agents don't have memory across runs, so the dispatcher passes relevant conventions and prior mistakes in the prompt. See the "Origin: OpenClaw Agent System" section in [CLAUDE.md](./CLAUDE.md) for what carried over from the previous incarnation and what changed.
+Junior is the orchestrator in a Star-Trek-named agent squad. The current public runtime uses `default`/`lead`, `reproducer`, and `review`; private overlays may add organization-specific identities. Agent dispatch is shared-context — agents don't have memory across runs, so the dispatcher passes relevant conventions and prior mistakes in the prompt. See the "Origin: OpenClaw Agent System" section in [CLAUDE.md](./CLAUDE.md) for historical context.

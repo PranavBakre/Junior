@@ -1,6 +1,8 @@
-# Code Index: Bot Slack MCP Server
+# Code Index: Bot MCP Server
 
-Shared HTTP MCP server running inside Junior's process. All spawned Claude instances connect to it for Slack operations using the bot token.
+Shared loopback HTTP MCP server running inside Junior's process. All spawned
+runners connect to it for Slack, memory, agent, and (when enabled) pipeline
+operations using the bot token and signed run context.
 
 ## Code Index
 
@@ -8,7 +10,7 @@ Shared HTTP MCP server running inside Junior's process. All spawned Claude insta
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `startMcpServer(botToken, store?, worktreeManager?)` | `slack-server.ts` | Starts HTTP server on `MCP_PORT` (default 3456). Called once from `index.ts`. |
+| `startMcpServer(deps)` | `slack-server.ts` | Starts HTTP server on `MCP_PORT` (default 3456), binding `127.0.0.1` and best-effort `::1`. Optional dependencies wire stores and pipeline services. |
 | `registerTools(server)` (internal) | `slack-server.ts` | Registers Slack, worktree, and agent-registry tools on a fresh `McpServer` per request. |
 | `handleMongoMcpRequest(req, res)` | `mongodb-proxy.ts` | Serves `/mcp/mongodb` as a stateless HTTP MCP proxy to one shared read-only MongoDB stdio backend. |
 | `closeMongoMcpBackend()` | `mongodb-proxy.ts` | Closes the shared backend immediately; also used by the idle TTL. |
@@ -27,12 +29,18 @@ Shared HTTP MCP server running inside Junior's process. All spawned Claude insta
 | `register_worktree` | Junior internal | `thread_id`, `repo` | `branch` (branch-name override) |
 | `agent_search` | Junior internal | — | `query`, `include_public`, `include_private`, `limit` |
 | `reload_agent_registry` | Junior internal | — | — |
+| `slack_send_dm` | Slack Web API | `user_id`, `text` | identity fields |
+| `agent_dispatch` | Junior internal | agent, prompt, thread context | synthetic user/timestamp |
+| `memory_recall` / `memory_add` / `memory_consolidate` | Memory v3 | tool-specific | filters/options |
+| `github_read_pr_review_state` / `github_post_review` | Fixed GitHub API surface | review-specific | inline comments |
+| `pipeline_*` | Durable pipeline store | tool-specific | artifact/check fields |
+| `whatsapp_*` | Read-only archive | tool-specific | time/group filters |
 
 ### Configuration
 
 | File | What |
 |---|---|
-| `.mcp.json` | Root Claude config contains only Junior's `slack-bot` HTTP MCP. Per-agent generated configs add Playwright/MongoDB as needed. |
+| `.mcp.json` | Root config contains `slack-bot`, Figma, and Notion servers. Per-agent generated configs add Playwright/MongoDB as needed. |
 | `.claude/settings.json` | `permissions.allow: ["mcp__slack-bot__*"]` |
 | `src/claude/spawner.ts` | Passes `--mcp-config` for worktree spawns |
 
@@ -40,7 +48,7 @@ Shared HTTP MCP server running inside Junior's process. All spawned Claude insta
 
 ### Stateless per request
 
-Each HTTP request creates a fresh `McpServer` + `StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`). No sessions, no state between HTTP requests. Slack requests share the same `WebClient` (module-level singleton). MongoDB proxy requests share one lazily started wrapped stdio backend and close it after an idle TTL.
+Each HTTP request creates a fresh `McpServer` + `StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`). No MCP session state is kept between requests. Slack requests share the same `WebClient` (module-level singleton). MongoDB proxy requests share one lazily started wrapped stdio backend and close it after an idle TTL. Run context is HMAC-signed per spawn and validated before thread/agent-sensitive tools execute.
 
 ### Identity model
 
@@ -56,5 +64,5 @@ Called by lead/intake to create a per-thread worktree for a repo and persist its
 
 ## Dependencies
 
-- **Uses**: `@modelcontextprotocol/sdk` (`McpServer`, `StreamableHTTPServerTransport`), `@slack/web-api`, `zod`, `SessionStore`, `WorktreeManager`
-- **Used by**: spawned Claude instances (HTTP), `src/index.ts` (startup)
+- **Uses**: `@modelcontextprotocol/sdk` (`McpServer`, `StreamableHTTPServerTransport`), `@slack/web-api`, `zod`, session/worktree/action/memory/pipeline stores
+- **Used by**: spawned Claude/OpenCode/Codex instances (HTTP), `src/index.ts` (startup)

@@ -18,8 +18,11 @@ Spawns `claude -p` as a child process, parses stream-json output, and collects s
 |---|---|---|
 | `StreamEvent` | `types.ts` | Union: `StreamEventInit \| StreamEventAssistant \| StreamEventResult \| StreamEventUser \| StreamEventRateLimit` |
 | `ContentBlock` | `types.ts` | Union: `ContentBlockText \| ContentBlockToolUse \| ContentBlockThinking` |
-| `SpawnResult` | `types.ts` | `{ sessionId, response, events, exitCode, error }` |
-| `SpawnHandle` | `types.ts` | `{ result: Promise<SpawnResult>, onEvent(cb), kill(), pid }` |
+| `SpawnResult` | `src/runners/types.ts` | Provider-neutral `{ provider, sessionId, response, events, exitCode, error }` |
+| `SpawnHandle` | `src/runners/types.ts` | Provider-neutral `{ result: Promise<SpawnResult>, onEvent(cb), kill(), pid }` |
+
+`src/claude/types.ts` contains Claude-native stream-json event/content types;
+the app-facing result and handle types live in `src/runners/types.ts`.
 
 ## Data Flow
 

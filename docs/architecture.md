@@ -10,7 +10,7 @@ System architecture for junior — the Slack bot that orchestrates coding-agent 
 | Slack SDK | @slack/bolt (Socket Mode) | Official SDK. Socket Mode = no public URL needed, works from a laptop. |
 | Language | TypeScript (strict, ESM) | Type safety across the session state machine and stream parser. |
 | Persistence | SQLite (`bun:sqlite`) | Survives restarts without an external service; memory store remains available for tests/dev. |
-| Runner providers | OpenCode by default, Claude as fallback | Provider adapters normalize CLI args, events, resume semantics, cwd, env, and MCP wiring. |
+| Runner providers | OpenCode CLI by default; OpenCode SDK, Claude, and Codex app-server | Provider adapters normalize args, events, resume semantics, cwd, env, policy, and MCP wiring. |
 | Driver modes | Headless by default, Claude tmux opt-in | Headless uses one subprocess per turn; tmux keeps an interactive Claude session alive behind a flag. |
 
 ## System Diagram
@@ -30,7 +30,7 @@ Slack (Socket Mode)
 │  Session Manager                                  │
 │  (manager.ts)                                     │
 │                                                   │
-│  Map<threadId, ThreadSession>                     │
+│  Durable ThreadSession + store                    │
 │                                                   │
 │  States: idle ──► busy ──► draining ──► idle     │
 │                   ▲  buffer    │  drain           │
@@ -43,11 +43,12 @@ Slack (Socket Mode)
 │   Agent    │  │  Worktree  │  │  Runner    │
 │   Router   │  │  Manager   │  │ Providers   │
 │            │  │            │  │            │
-│ Load .md   │  │ git work-  │  │ spawn      │
-│ from target│  │ tree in    │  │ opencode /│
-│ repo's     │  │ TARGET     │  │ claude     │
-│ .claude/   │  │ repos      │  │ parse JSON │
-│ agents/    │  │ (not here) │  │            │
+│ Load .md   │  │ git work-  │  │ normalized │
+│ from target│  │ tree in    │  │ OpenCode / │
+│ repo's     │  │ TARGET     │  │ Claude /   │
+│ .claude/   │  │ repos      │  │ Codex      │
+│ agents/    │  │ (not here) │  │ parse JSON │
+│            │  │            │  │            │
 └─────┬──────┘  └─────┬──────┘  └──────┬─────┘
       │               │                │
       │   systemPrompt│   cwd          │  runner events
@@ -87,11 +88,13 @@ Every feature touches `ThreadSession`. It's the shared entity, like `jobs` in in
 | `status` | Session Manager | All (guards behavior) |
 | `sessionId` | Runner provider (from provider event stream) | Runner provider (for native resume) |
 | `worktreePath` | Worktree Manager | Runner provider (for cwd) |
+| `worktreePaths` | Worktree Manager / pipeline intake | Runner providers and workspace prompt |
 | `agentType` | Thread Commands / Agent Router | Agent Router (to load definition) |
 | `systemPrompt` | Agent Router | Runner provider (Claude append-system-prompt or generated OpenCode config) |
 | `pendingMessages` | Session Manager (buffer) | Session Manager (drain) |
 | `verbosity` | Thread Commands | Stream-to-Slack |
 | `targetRepo` | Thread Commands | Worktree Manager, Agent Router |
+| `pipeline` / workflow state | Pipeline/workflow controllers | Dispatch, dashboard, recovery |
 
 **Implication:** `ThreadSession` is the integration contract. Changes to its shape affect every module. Keep it stable early.
 
@@ -143,7 +146,7 @@ Four boundaries need swappable implementations:
 |---|---|---|
 | Session persistence | `SessionStore` | `InMemorySessionStore`, `SqliteSessionStore` |
 | Slack posting | `SlackClient` | Real Bolt client, mock for tests |
-| Runner spawning | `spawnRunner` / driver interfaces | OpenCode adapter, Claude headless adapter, Claude tmux driver |
+| Runner spawning | `spawnRunner` / driver interfaces | OpenCode CLI/SDK adapters, Claude headless/tmux drivers, Codex app-server adapter |
 | Worktree operations | `WorktreeManager` | Real git commands, mock for tests |
 
 Factory selects the implementation at startup based on config. Consumer code only sees the interface.
@@ -161,9 +164,11 @@ draining          → busy     (spawn with combined buffer)
 
 This is simple enough for a pure `validateTransition()` function — no XState needed. Hiring-platform learned this: XState was removed because pure validation functions did the same thing without the ceremony. Same applies here.
 
-### 8. Event-driven internal flow (EventEmitter, not queue)
+### 8. Event-driven internal flow (callbacks, not a queue)
 
-The runner handle emits normalized events as it parses provider output. Stream-to-Slack subscribes to these events. This is in-process pub/sub, not RabbitMQ.
+The runner handle invokes `onEvent` callbacks as it parses provider output.
+Stream-to-Slack subscribes through that callback boundary. This is in-process
+delivery, not RabbitMQ or a Node `EventEmitter`.
 
 ```typescript
 // runner emits

@@ -16,11 +16,15 @@ This module handles loading, parsing, and routing of agent definitions from mark
 | Symbol | File | Purpose |
 |---|---|---|
 | `loadAgentDefinition(filePath)` | `src/agents/loader.ts` | Reads an agent markdown file, parses flat frontmatter, strips quotes, and returns the body prompt. |
-| `parseAgentFrontmatter(...)` | `src/agents/loader.ts` | Parses `name`, `description`, `tools`, `model`, `common`, `username`, `iconEmoji`, and `context.*` flags. |
+| `loadAgentDefinition(...)` (private `parseFrontmatter`) | `src/agents/loader.ts` | Parses `name`, `description`, `tools`, `model`, `model.claude`, `common`, `permissions.*`, identity fields, and context profile flags. |
 | `AgentRouter.resolveAgent(session)` | `src/agents/router.ts` | Resolves target repo -> org overlay -> public fallback, first match wins. |
 | `AgentRouter.composeSystemPrompt(session)` | `src/agents/router.ts` | Prepends selected common prompt files and appends the resolved agent body. |
 | `loadOverlayIdentities(...)` | `src/support/agents.ts` | Loads Slack identity frontmatter for overlay/private persistent agents. |
 | `loadOpenCodeSupportSubagents()` | `src/opencode/support-agents.ts` | Loads stateless support prompts into generated OpenCode config. |
+
+The trusted operational catalog is separate from prompt content. See
+[`agent-catalog.md`](agent-catalog.md) for capabilities, mutation policy, and
+handoff rules; target-repo frontmatter cannot widen those catalog ceilings.
 
 ## Data Flow
 

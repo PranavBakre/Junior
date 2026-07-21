@@ -1,6 +1,8 @@
 # Code Index: Persistent Agents & Dispatch
 
-Multi-agent dispatch layer: registry of agent slack identities, orchestrator/worker classification, dispatch-allow rules, and the universal message router that parses `!<agent>` and `!devserver` directives and routes each to the right session slice.
+Multi-agent dispatch layer: registry of agent Slack identities, trusted catalog/orchestrator-worker classification, legacy compatibility rules, and the universal message router that parses `!<agent>` and `!devserver` directives and routes each to the right session slice.
+
+> **Current status (2026-07-21):** Core identities are `default`, `lead`, `reproducer`, `review`, and `echo`; private overlay agents are loaded from `agents-org`. `thinker` is retained only for compatibility with old sessions. See [`agent-catalog.md`](agent-catalog.md) for the trusted role registry.
 
 ## Code Index
 
@@ -8,14 +10,14 @@ Multi-agent dispatch layer: registry of agent slack identities, orchestrator/wor
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `AGENT_IDENTITIES` | `agents.ts` | Mutable registry of `agentName → { username, iconEmoji }`. Core agents (`default`, `lead`, `reproducer`, `thinker`, `review`, `echo`) seeded in code. |
+| `AGENT_IDENTITIES` | `agents.ts` | Mutable registry of `agentName → { username, iconEmoji }`. Core agents (`default`, `lead`, `reproducer`, `review`, `echo`) seeded in code; overlays add private identities. |
 | `registerAgentIdentity(name, identity)` | `agents.ts` | Add an overlay agent identity. Refuses to overwrite existing entries. |
 | `loadOverlayIdentities(dirPath)` | `agents.ts` | Scan `agents-org/*.md` and register identities for agents with both `username` + `iconEmoji` frontmatter. |
 | `isOrchestratorAgent(name)` | `agents.ts` | `name ∈ {lead, default, junior}`. Orchestrators may dispatch any worker. |
 | `isPersistentAgent(name)` | `agents.ts` | Membership check in `AGENT_IDENTITIES`. |
 | `identityForAgent(name)` | `agents.ts` | Lookup; undefined if not registered. |
 | `agentForUsername(username)` | `agents.ts` | Reverse lookup, used to classify self-bot posts. |
-| `WORKER_DISPATCH_ALLOW` | `agents.ts` | Worker → worker dispatch exceptions. Empty after the 3-way merge retired thinker — the orchestrator emits `!reproducer`/`!review` itself; no worker→worker chain remains. |
+| `WORKER_DISPATCH_ALLOW` | `agents.ts` | Legacy worker → worker compatibility map. Its `thinker` entry supports resumed pre-merge sessions; live routing uses the trusted catalog and orchestrator. |
 | `workerMayDispatch(src, target)` | `agents.ts` | Gate for worker self-bot directives. |
 | `dispatchableAgentsFor(name)` | `agents.ts` | Returns allowed dispatch targets for an agent. |
 | `buildDispatchAllowBlock(name)` | `agents.ts` | `<dispatch-allow>` system-prompt block injected into every agent. |
@@ -54,7 +56,7 @@ AgentDispatcher.handleMessage(event)
 
 ### Orchestrator vs Worker
 
-Orchestrators (`lead`, `default`, `junior`) may emit any `!<agent>` directive. Workers may emit only entries in `WORKER_DISPATCH_ALLOW` (currently `thinker → {review, reproducer}`). Disallowed worker directives are stripped and the message is re-routed to lead as plain text.
+Orchestrators (`lead`, `default`, `junior`) may emit any registered worker directive. Workers are constrained by the trusted catalog; the legacy `WORKER_DISPATCH_ALLOW` entry (`thinker → {review, reproducer}`) exists only for resumed pre-merge sessions. Disallowed worker directives are stripped and the message is re-routed to the orchestrator as plain text.
 
 ### Self-bot routing
 

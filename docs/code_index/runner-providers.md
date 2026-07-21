@@ -1,6 +1,6 @@
 # Code Index: Runner Providers
 
-Provider boundary for Claude/OpenCode spawning. App code talks to normalized
+Provider boundary for Claude/OpenCode/Codex spawning. App code talks to normalized
 runner events; provider adapters own CLI args, config, parsing, resume, cwd, env,
 and MCP wiring.
 
@@ -10,7 +10,7 @@ and MCP wiring.
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `spawnRunner(session, prompt, config, ...)` | `index.ts` | Selects Claude/OpenCode provider and dispatches to the adapter. |
+| `spawnRunner(session, prompt, config, ...)` | `index.ts` | Selects `claude`, `opencode`, `opencode-sdk`, or `codex-app-server` and dispatches to the adapter. |
 | `buildOpenCodeMcpConfig(config)` | `index.ts` | Builds OpenCode MCP entries (`slack-bot`, `playwright` by default unless disabled). |
 | `buildRunnerRuntime(options)` | `runtime.ts` | Shared cwd/env contract for provider adapters. |
 | `resolveRunnerCwd(session, targetRepoCwd?)` | `runtime.ts` | Cwd priority: `session.cwd` → `worktreePath` → target repo → Junior root. |
@@ -40,7 +40,6 @@ and MCP wiring.
   `session.cwd` runs and use a constrained read/search/MCP permission surface.
 - Persistent workers (`reproducer`, `review`) are not generated as
   OpenCode Task subagents; they are Slack-dispatched persistent sessions.
-- Future OpenCode SDK/server support should be added as a separate provider or
-  driver. Its interrupt path should call OpenCode's `session.abort` API and then
-  prompt the same session to continue, rather than sending Escape bytes or
-  changing the current CLI adapter's stdin policy.
+- `opencode-sdk` is the separate OpenCode server/SDK provider. It uses the
+  native session abort/attach path and is tested independently from the CLI
+  adapter.
