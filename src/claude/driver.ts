@@ -58,4 +58,11 @@ export interface ClaudeDriver {
    * Tmux: `tmux kill-session` for the corresponding session name.
    */
   close(threadId: string, agentName: string): Promise<void>;
+
+  /** Close only when the live driver state still belongs to the expected provider session. */
+  closeIfSessionId(
+    threadId: string,
+    agentName: string,
+    expectedSessionId: string,
+  ): Promise<boolean>;
 }

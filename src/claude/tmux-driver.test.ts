@@ -156,6 +156,102 @@ describe("TmuxDriver with stubbed exec", () => {
     expect(calls.filter((c) => c.args[0] === "new-session").length).toBe(1);
   });
 
+  it("recreates a live tmux session when routing changes cwd", async () => {
+    const { driver, calls, projectsRoot } = setup();
+    const firstCwd = mkdtempSync(join(tmpdir(), "junior-cwd-a-"));
+    const secondCwd = mkdtempSync(join(tmpdir(), "junior-cwd-b-"));
+    const session = makeSession({
+      worktreePath: firstCwd,
+      sessionId: "old-repo-session",
+      sessionCwd: firstCwd,
+    });
+    const transcriptDir = join(projectsRoot, firstCwd.replace(/\//g, "-"));
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(join(transcriptDir, "old-repo-session.jsonl"), "");
+
+    const first = driver.send({
+      session,
+      prompt: "first repo",
+      config: claudeConfig(),
+      threadId: session.threadId,
+      agentName: "review",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    first.kill();
+
+    session.worktreePath = secondCwd;
+    const second = driver.send({
+      session,
+      prompt: "second repo",
+      config: claudeConfig(),
+      threadId: session.threadId,
+      agentName: "review",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    second.kill();
+
+    expect(calls.filter((c) => c.args[0] === "kill-session")).toHaveLength(1);
+    const starts = calls.filter((c) => c.args[0] === "new-session");
+    expect(starts).toHaveLength(2);
+    expect(starts[0]?.args).toContain("old-repo-session");
+    expect(starts[1]?.args).not.toContain("old-repo-session");
+    expect(driver.listSessions()[0]?.sessionId).toBeNull();
+  });
+
+  it("cold-starts tmux when the cwd matches but the transcript is missing", async () => {
+    const { driver, calls } = setup();
+    const cwd = mkdtempSync(join(tmpdir(), "junior-cwd-missing-transcript-"));
+    const session = makeSession({
+      worktreePath: cwd,
+      sessionId: "missing-transcript-session",
+      sessionCwd: cwd,
+    });
+
+    const handle = driver.send({
+      session,
+      prompt: "continue",
+      config: claudeConfig(),
+      threadId: session.threadId,
+      agentName: "review",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    handle.kill();
+
+    const start = calls.find((c) => c.args[0] === "new-session");
+    expect(start?.args).not.toContain("missing-transcript-session");
+    expect(driver.listSessions()[0]?.sessionId).toBeNull();
+  });
+
+  it("resumes against targetRepoCwd when no worktree path is set", async () => {
+    const { driver, calls, projectsRoot } = setup();
+    const targetRepoCwd = mkdtempSync(join(tmpdir(), "junior-target-repo-"));
+    const session = makeSession({
+      sessionId: "target-repo-session",
+      sessionCwd: targetRepoCwd,
+    });
+    const transcriptDir = join(
+      projectsRoot,
+      targetRepoCwd.replace(/\//g, "-"),
+    );
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(join(transcriptDir, "target-repo-session.jsonl"), "");
+
+    const handle = driver.send({
+      session,
+      prompt: "continue",
+      config: claudeConfig(),
+      targetRepoCwd,
+      threadId: session.threadId,
+      agentName: "review",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    handle.kill();
+
+    const start = calls.find((c) => c.args[0] === "new-session");
+    expect(start?.args).toContain("target-repo-session");
+    expect(start?.args[start.args.indexOf("-c") + 1]).toBe(targetRepoCwd);
+  });
+
   it("starts Claude tmux with a per-run contextual MCP config", async () => {
     const { driver, calls } = setup();
     const cwd = mkdtempSync(join(tmpdir(), "junior-cwd-"));

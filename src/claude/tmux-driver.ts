@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { mkdirSync, existsSync, readdirSync, statSync, watch as fsWatch } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { open } from "node:fs/promises";
@@ -9,7 +9,10 @@ import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts"
 import { buildClaudeArgs } from "./args.ts";
 import { mapClaudeEvent, writeClaudeMcpConfig } from "./spawner.ts";
 import { adaptTranscriptLine } from "./transcript-adapter.ts";
-import { buildRunnerRuntime } from "../runners/runtime.ts";
+import {
+  buildRunnerRuntime,
+  providerSessionMatchesCwd,
+} from "../runners/runtime.ts";
 
 /**
  * Test seam — let unit tests inject a fake tmux invoker and override the
@@ -192,7 +195,25 @@ export class TmuxDriver implements ClaudeDriver {
     if (sess.pollTimer) clearInterval(sess.pollTimer);
     sess.activeTurn = null;
     await this.killTmuxSession(sess.name).catch(() => undefined);
-    this.sessions.delete(key);
+    if (this.sessions.get(key) === sess) {
+      this.sessions.delete(key);
+    }
+  }
+
+  async closeIfSessionId(
+    threadId: string,
+    agentName: string,
+    expectedSessionId: string,
+  ): Promise<boolean> {
+    const session = this.sessions.get(handleKey(threadId, agentName));
+    if (!session || session.sessionId !== expectedSessionId) return false;
+    await this.close(threadId, agentName);
+    return true;
+  }
+
+  /** Kill an unadopted persisted tmux session during fail-closed reconciliation. */
+  async discardPersistedSession(tmuxSessionName: string): Promise<void> {
+    await this.killTmuxSession(tmuxSessionName).catch(() => undefined);
   }
 
   /**
@@ -293,9 +314,30 @@ export class TmuxDriver implements ClaudeDriver {
   private async ensureSession(input: DriverSendInput): Promise<void> {
     const key = handleKey(input.threadId, input.agentName);
     const existing = this.sessions.get(key);
+    const runtime = buildRunnerRuntime(input);
+    const cwd = runtime.cwd;
+    const affinityResumeId = providerSessionMatchesCwd({
+      provider: "claude",
+      sessionId: input.session.sessionId,
+      sessionCwd: input.session.sessionCwd,
+      cwd,
+    })
+      ? input.session.sessionId
+      : null;
+    // Interactive Claude can fall back to a shell without exposing the
+    // headless "No conversation found" stderr. Only cold-resume a tmux process
+    // when the cwd-scoped transcript actually exists; otherwise start fresh.
+    const effectiveResumeId = affinityResumeId &&
+      existsSync(this.transcriptPathFor(cwd, affinityResumeId))
+      ? affinityResumeId
+      : null;
     // tmuxSessionUsable rejects panes where claude has exited and the pane is
     // sitting at a shell — keeps us from pasting into a dead shell each turn.
-    if (existing && (await this.tmuxSessionUsable(existing.name))) {
+    if (
+      existing &&
+      resolve(existing.cwd) === resolve(cwd) &&
+      (await this.tmuxSessionUsable(existing.name))
+    ) {
       return;
     }
     if (existing) {
@@ -307,14 +349,22 @@ export class TmuxDriver implements ClaudeDriver {
       this.sessions.delete(key);
     }
 
-    const runtime = buildRunnerRuntime(input);
-    const cwd = runtime.cwd;
     mkdirSync(cwd, { recursive: true });
 
     const sessionName = computeSessionName(input.threadId, input.agentName);
     const startedAt = Date.now();
 
-    const claudeArgs = buildInteractiveClaudeArgs(input, runtime.needsProjectMcp);
+    const effectiveInput = effectiveResumeId === input.session.sessionId
+      ? input
+      : {
+          ...input,
+          session: { ...input.session, sessionId: effectiveResumeId },
+        };
+    const claudeArgs = buildInteractiveClaudeArgs(
+      effectiveInput,
+      runtime.needsProjectMcp,
+      cwd,
+    );
     await this.execImpl(this.tmuxBin, [
       "new-session",
       "-d",
@@ -329,9 +379,9 @@ export class TmuxDriver implements ClaudeDriver {
     const sess: TmuxSession = {
       name: sessionName,
       cwd,
-      sessionId: input.session.sessionId,
-      transcriptPath: input.session.sessionId
-        ? this.transcriptPathFor(cwd, input.session.sessionId)
+      sessionId: effectiveResumeId,
+      transcriptPath: effectiveResumeId
+        ? this.transcriptPathFor(cwd, effectiveResumeId)
         : null,
       transcriptOffset: 0,
       watcher: null,
@@ -577,11 +627,13 @@ function encodeCwd(cwd: string): string {
   return cwd.replace(/\//g, "-");
 }
 
-function buildInteractiveClaudeArgs(input: DriverSendInput, needsProjectMcp: boolean): string[] {
+function buildInteractiveClaudeArgs(
+  input: DriverSendInput,
+  needsProjectMcp: boolean,
+  cwd: string,
+): string[] {
   // Lean on the existing arg builder but strip the `-p <prompt>` and
   // `--output-format` flags — those are headless-only.
-  const cwd =
-    input.session.cwd ?? input.session.worktreePath ?? process.cwd();
   const all = buildClaudeArgs(
     input.session,
     /*prompt*/ "",

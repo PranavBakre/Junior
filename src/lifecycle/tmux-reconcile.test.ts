@@ -20,15 +20,21 @@ interface AdoptCall {
 function fakeDriver(liveTmux: Set<string>): {
   driver: TmuxDriver;
   adoptCalls: AdoptCall[];
+  discardCalls: string[];
 } {
   const adoptCalls: AdoptCall[] = [];
+  const discardCalls: string[] = [];
   const driver = {
     tmuxHasSession: async (name: string) => liveTmux.has(name),
     adoptExistingSession: async (input: AdoptCall) => {
       adoptCalls.push(input);
     },
+    discardPersistedSession: async (name: string) => {
+      discardCalls.push(name);
+      liveTmux.delete(name);
+    },
   } as unknown as TmuxDriver;
-  return { driver, adoptCalls };
+  return { driver, adoptCalls, discardCalls };
 }
 
 describe("reconcileTmuxSessions", () => {
@@ -38,6 +44,7 @@ describe("reconcileTmuxSessions", () => {
     session.tmuxSessionName = "junior-T1-default";
     session.topLevelTmuxAgent = "default";
     session.worktreePath = "/tmp/T1";
+    session.sessionCwd = "/tmp/T1";
     await store.set("T1", session);
 
     const { driver, adoptCalls } = fakeDriver(new Set(["junior-T1-default"]));
@@ -61,6 +68,7 @@ describe("reconcileTmuxSessions", () => {
     session.tmuxSessionName = "junior-T1-default";
     session.topLevelTmuxAgent = "default";
     session.worktreePath = "/tmp/T1";
+    session.sessionCwd = "/tmp/T1";
     session.status = "busy";
     await store.set("T1", session);
 
@@ -81,6 +89,7 @@ describe("reconcileTmuxSessions", () => {
     session.tmuxSessionName = "junior-T1-lead";
     session.topLevelTmuxAgent = "lead";
     session.worktreePath = "/tmp/T1";
+    session.sessionCwd = "/tmp/T1";
     session.status = "busy";
     await store.set("T1", session);
 
@@ -97,6 +106,7 @@ describe("reconcileTmuxSessions", () => {
     const store = new InMemorySessionStore();
     const session = createSession("T1", "C1", "quiet", "headless");
     session.worktreePath = "/tmp/T1";
+    session.sessionCwd = "/tmp/T1";
     await store.set("T1", session);
 
     const { driver, adoptCalls } = fakeDriver(new Set());
@@ -112,10 +122,12 @@ describe("reconcileTmuxSessions", () => {
     session.tmuxSessionName = "junior-T1-default";
     session.topLevelTmuxAgent = "default";
     session.worktreePath = "/tmp/T1";
+    session.sessionCwd = "/tmp/T1";
     session.agentSessions = {
       reviewer: {
         agentName: "reviewer",
         sessionId: "rev-1",
+        sessionCwd: "/tmp/reviewer-T1",
         status: "idle",
         pendingMessages: [],
         lastActivity: Date.now(),
@@ -133,5 +145,33 @@ describe("reconcileTmuxSessions", () => {
     expect(result.adopted).toBe(2);
     const adoptedAgents = adoptCalls.map((c) => c.agentName).sort();
     expect(adoptedAgents).toEqual(["default", "reviewer"]);
+    expect(adoptCalls.find((c) => c.agentName === "reviewer")?.cwd).toBe(
+      "/tmp/reviewer-T1",
+    );
+  });
+
+  it("discards legacy tmux state without recorded cwd affinity", async () => {
+    const store = new InMemorySessionStore();
+    const session = createSession("T1", "C1", "quiet", "tmux");
+    session.tmuxSessionName = "junior-T1-default";
+    session.topLevelTmuxAgent = "default";
+    session.sessionId = "legacy-session";
+    session.leadSessionId = "legacy-session";
+    session.worktreePath = "/tmp/current-worktree";
+    session.sessionCwd = null;
+    await store.set("T1", session);
+
+    const { driver, adoptCalls, discardCalls } = fakeDriver(
+      new Set(["junior-T1-default"]),
+    );
+    const result = await reconcileTmuxSessions(store, driver);
+
+    expect(result).toEqual({ adopted: 0, downgraded: 1 });
+    expect(adoptCalls).toEqual([]);
+    expect(discardCalls).toEqual(["junior-T1-default"]);
+    const after = (await store.get("T1"))!;
+    expect(after.tmuxSessionName).toBeNull();
+    expect(after.sessionId).toBeNull();
+    expect(after.leadSessionId).toBeNull();
   });
 });

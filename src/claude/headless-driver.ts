@@ -38,4 +38,12 @@ export class HeadlessDriver implements ClaudeDriver {
   async close(_threadId: string, _agentName: string): Promise<void> {
     // No persistent state between turns; nothing to tear down.
   }
+
+  async closeIfSessionId(
+    _threadId: string,
+    _agentName: string,
+    _expectedSessionId: string,
+  ): Promise<boolean> {
+    return false;
+  }
 }
