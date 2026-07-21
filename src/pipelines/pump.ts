@@ -198,11 +198,14 @@ async function handleOutboxItem(
       {
         run,
         assignment,
-        // Resume from devserver.ready includes the ready URL in the prompt.
+        // Resume wakes can carry a human follow-up, a dev-server URL, or a
+        // generic recovery instruction. All retain the exact assignment.
         prompt: item.eventType === "assignment.resume"
-          ? typeof item.payload.readyUrl === "string"
-            ? `${assignment.objective}\n\n[devserver.ready] ${item.payload.readyUrl}`
-            : `${assignment.objective}\n\n[pipeline.recovery] Resume from durable state without repeating completed mutations. Report a typed outcome before ending.`
+          ? typeof item.payload.prompt === "string"
+            ? `${assignment.objective}\n\n[task-follow-up]\n${item.payload.prompt}`
+            : typeof item.payload.readyUrl === "string"
+              ? `${assignment.objective}\n\n[devserver.ready] ${item.payload.readyUrl}`
+              : `${assignment.objective}\n\n[pipeline.recovery] Resume from durable state without repeating completed mutations. Report a typed outcome before ending.`
           : undefined,
         dedupeKey: `pipeline-outbox:${item.idempotencyKey}`,
         pipelineInvocation: {
@@ -230,13 +233,52 @@ async function handleOutboxItem(
     return "delivered";
   }
 
-  if (
-    item.eventType === "assignment.wait" ||
-    item.eventType === "assignment.escalate"
-  ) {
-    // Wait/escalate wakes are informational for Phase 4 — audit only via
-    // optional payload. Controllers in later phases reduce these into resumes.
-    return "skipped";
+  if (item.eventType === "assignment.wait") {
+    const assignmentId = item.assignmentId ??
+      (typeof item.payload.assignmentId === "string"
+        ? item.payload.assignmentId
+        : null);
+    if (!assignmentId) return "skipped";
+    const assignment = await store.getAssignment(assignmentId);
+    if (!assignment || assignment.status !== "waiting") return "skipped";
+    const run = await store.getRun(assignment.runId);
+    if (!run || run.status === "terminal") return "skipped";
+    const condition = typeof item.payload.conditionName === "string"
+      ? item.payload.conditionName
+      : "external condition";
+    const reason = `Wait deadline expired before ${condition} was satisfied`;
+    const receipt = await store.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: assignment.id,
+        expectedRunVersion: run.stateVersion,
+        action: "escalate",
+        status: "blocked",
+        reason,
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [{ kind: "human_gate", detail: reason }],
+        checks: [],
+        progressFingerprint: `wait-timeout:${item.idempotencyKey}`,
+      },
+      toPhase: "needs-human",
+      actorType: "system",
+      actorId: "pipeline-wait-timeout",
+      idempotencyKey: `wait-timeout:${item.idempotencyKey}`,
+      suppressDispatch: true,
+    });
+    if (receipt.status === "rejected") return "failed";
+    await auditOutbox(deps.audit, run.channelId, run.threadId, `:warning: ${reason}. Assignment \`${assignment.id.slice(0, 8)}\` needs human attention.`);
+    return "delivered";
+  }
+
+  if (item.eventType === "assignment.escalate") {
+    const run = await store.getRun(item.runId);
+    if (!run) return "skipped";
+    const reason = typeof item.payload.reason === "string"
+      ? item.payload.reason
+      : "The assignment needs human attention";
+    await auditOutbox(deps.audit, run.channelId, run.threadId, `:raising_hand: ${reason}`);
+    return "delivered";
   }
 
   // Unknown event types: mark delivered so they don't block the queue forever.
@@ -245,4 +287,21 @@ async function handleOutboxItem(
     `skipping unknown outbox eventType=${item.eventType} id=${item.id}`,
   );
   return "skipped";
+}
+
+async function auditOutbox(
+  audit: SlackAuditCallback | undefined,
+  channelId: string,
+  threadId: string,
+  text: string,
+): Promise<void> {
+  if (!audit) return;
+  try {
+    await audit({ channelId, threadId, text });
+  } catch (err) {
+    log.warn(
+      "pipeline-pump",
+      `audit post failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }

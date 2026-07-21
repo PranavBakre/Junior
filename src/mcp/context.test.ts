@@ -13,6 +13,13 @@ describe("Slack MCP run context", () => {
     const session = createSession("thread-1", "C01");
     session.activeAgentName = "default";
     session.currentMessageTs = "1711111111.000002";
+    session.activePipelineInvocation = {
+      runId: "run-1",
+      assignmentId: "asg-1",
+      dispatchKey: "dispatch-1",
+      outcomeCountAtDispatch: 0,
+      retryCount: 0,
+    };
 
     const parsed = new URL(buildSlackMcpUrl(session));
 
@@ -20,6 +27,9 @@ describe("Slack MCP run context", () => {
     expect(parsed.searchParams.get("channel")).toBe("C01");
     expect(parsed.searchParams.get("thread")).toBe("thread-1");
     expect(parsed.searchParams.get("message_ts")).toBe("1711111111.000002");
+    expect(parsed.searchParams.get("run_id")).toBe("run-1");
+    expect(parsed.searchParams.get("assignment_id")).toBe("asg-1");
+    expect(parsed.searchParams.get("dispatch_key")).toBe("dispatch-1");
     expect(parseSlackMcpRunContext(parsed.toString())?.messageTs).toBe(
       "1711111111.000002",
     );
@@ -123,6 +133,9 @@ describe("Slack MCP run context", () => {
         channel: "C01",
         threadId: "thread-1",
         messageTs: null,
+        runId: null,
+        assignmentId: null,
+        dispatchKey: null,
         signed: true,
       });
 

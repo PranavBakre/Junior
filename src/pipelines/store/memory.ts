@@ -21,6 +21,7 @@ import type {
   DevServerJob,
   DevServerJobCreate,
   DevServerJobStatus,
+  DefaultRunPromotionInput,
   GitHubResourceRegistration,
   OutboxCreate,
   PipelineAttempt,
@@ -35,6 +36,7 @@ import type {
 } from "../types.ts";
 import type { PipelineStore } from "./interface.ts";
 import { decideOutcomeTransaction } from "./outcome-tx.ts";
+import { decideDefaultPromotion } from "./promotion-tx.ts";
 import {
   isTerminalDevServerStatus,
   releaseStatusForReason,
@@ -89,6 +91,7 @@ export class InMemoryPipelineStore implements PipelineStore {
     run: PipelineRun;
     assignment: AssignmentCreate;
     events?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
+    outbox?: OutboxCreate[];
   }): Promise<Assignment> {
     // Mirror sqlite: resolve assignment idempotency before mutating state.
     let assignmentInput = input.assignment;
@@ -155,6 +158,9 @@ export class InMemoryPipelineStore implements PipelineStore {
       for (const event of input.events ?? []) {
         await this.appendEvent(event);
       }
+      for (const record of input.outbox ?? []) {
+        await this.enqueueOutbox(record);
+      }
       return cloneAssignment(assignment);
     } catch (err) {
       // Roll back only this run's records — never another run's assignment/events.
@@ -176,6 +182,11 @@ export class InMemoryPipelineStore implements PipelineStore {
       }
       this.assignments.delete(asgId);
       this.events.delete(runId);
+      for (const [id, record] of this.outbox) {
+        if (record.runId !== runId) continue;
+        this.outbox.delete(id);
+        this.outboxByIdempotency.delete(record.idempotencyKey);
+      }
       throw err;
     }
   }
@@ -227,6 +238,33 @@ export class InMemoryPipelineStore implements PipelineStore {
     this.assignments.set(assignment.id, assignment);
     this.assignmentByIdempotency.set(assignment.idempotencyKey, assignment.id);
     return cloneAssignment(assignment);
+  }
+
+  async createAssignmentWithOutbox(input: {
+    assignment: AssignmentCreate;
+    outbox: OutboxCreate;
+  }): Promise<Assignment> {
+    const existingId = this.assignmentByIdempotency.get(
+      input.assignment.idempotencyKey,
+    );
+    const existing = existingId ? this.assignments.get(existingId) : undefined;
+    const assignment = existing
+      ? cloneAssignment(existing)
+      : await this.createAssignment(input.assignment);
+    try {
+      await this.enqueueOutbox({
+        ...input.outbox,
+        runId: assignment.runId,
+        assignmentId: assignment.id,
+      });
+      return assignment;
+    } catch (err) {
+      if (!existing) {
+        this.assignments.delete(assignment.id);
+        this.assignmentByIdempotency.delete(assignment.idempotencyKey);
+      }
+      throw err;
+    }
   }
 
   async getAssignment(id: string): Promise<Assignment | undefined> {
@@ -288,6 +326,7 @@ export class InMemoryPipelineStore implements PipelineStore {
     const decision = decideOutcomeTransaction({
       run,
       assignment,
+      waitingAncestor: this.findWaitingAncestor(assignment),
       recentFingerprints,
       nextEventSequence,
       now: this.clock.now(),
@@ -340,6 +379,13 @@ export class InMemoryPipelineStore implements PipelineStore {
       );
     }
 
+    if (decision.resumedAssignment) {
+      this.assignments.set(
+        decision.resumedAssignment.id,
+        cloneAssignment(decision.resumedAssignment),
+      );
+    }
+
     if (decision.outbox && !input.suppressDispatch) {
       if (!this.outboxByIdempotency.has(decision.outbox.idempotencyKey)) {
         this.outbox.set(decision.outbox.id, { ...decision.outbox });
@@ -350,6 +396,100 @@ export class InMemoryPipelineStore implements PipelineStore {
       }
     }
 
+    return decision.receipt;
+  }
+
+  private findWaitingAncestor(assignment: Assignment): Assignment | null {
+    let parentId = assignment.parentAssignmentId;
+    const visited = new Set<string>();
+    while (parentId && !visited.has(parentId)) {
+      visited.add(parentId);
+      const parent = this.assignments.get(parentId);
+      if (!parent) return null;
+      if (parent.status === "waiting") return parent;
+      parentId = parent.parentAssignmentId;
+    }
+    return null;
+  }
+
+  async promoteDefaultRunTransaction(
+    input: DefaultRunPromotionInput,
+  ): Promise<TransitionReceipt> {
+    const run = this.runs.get(input.runId);
+    const source = this.assignments.get(input.sourceAssignmentId);
+    if (!run || run.kind !== "default") {
+      const promoted = run && run.kind === input.targetRun.kind
+        ? this.assignments.get(
+            this.assignmentByIdempotency.get(input.childAssignment.idempotencyKey) ?? "",
+          )
+        : undefined;
+      return {
+        status: promoted ? "duplicate" : "rejected",
+        runVersion: run?.stateVersion ?? 0,
+        assignmentId: promoted?.id ?? input.sourceAssignmentId,
+        reason: promoted ? "promotion already committed" : "active run is not default",
+      };
+    }
+    if (!source) {
+      return {
+        status: "rejected",
+        runVersion: run.stateVersion,
+        assignmentId: input.sourceAssignmentId,
+        reason: "source assignment not found",
+      };
+    }
+    const priorEventId = this.eventByIdempotency.get(input.idempotencyKey);
+    if (priorEventId) {
+      const childId = this.assignmentByIdempotency.get(
+        input.childAssignment.idempotencyKey,
+      );
+      return {
+        status: "duplicate",
+        runVersion: run.stateVersion,
+        assignmentId: childId ?? input.sourceAssignmentId,
+        eventId: priorEventId,
+        reason: "promotion already committed",
+      };
+    }
+    const decision = decideDefaultPromotion({
+      run,
+      sourceAssignment: source,
+      request: input,
+      nextEventSequence: (this.events.get(run.id)?.length ?? 0) + 1,
+      now: this.clock.now(),
+      generateId: () => crypto.randomUUID(),
+    });
+    if (decision.kind === "receipt") return decision.receipt;
+    if (this.runs.get(run.id)?.stateVersion !== run.stateVersion) {
+      return {
+        status: "rejected",
+        runVersion: this.runs.get(run.id)?.stateVersion ?? run.stateVersion,
+        assignmentId: source.id,
+        reason: "state version conflict",
+      };
+    }
+
+    this.runs.set(run.id, cloneRun(decision.updatedRun));
+    this.assignments.set(source.id, cloneAssignment(decision.updatedSource));
+    for (const child of decision.childAssignments) {
+      this.assignments.set(child.id, cloneAssignment(child));
+      this.assignmentByIdempotency.set(child.idempotencyKey, child.id);
+    }
+    const outcomes = this.outcomes.get(source.id) ?? [];
+    outcomes.push({ ...decision.sourceOutcome });
+    this.outcomes.set(source.id, outcomes);
+    const events = this.events.get(run.id) ?? [];
+    for (const event of decision.events) {
+      events.push({ ...event, payload: { ...event.payload } });
+      if (event.idempotencyKey) {
+        this.eventByIdempotency.set(event.idempotencyKey, event.id);
+      }
+    }
+    this.events.set(run.id, events);
+    for (const outbox of decision.outbox) {
+      this.outbox.set(outbox.id, { ...outbox });
+      this.outboxByIdempotency.set(outbox.idempotencyKey, outbox.id);
+    }
     return decision.receipt;
   }
 

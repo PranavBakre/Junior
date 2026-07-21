@@ -109,6 +109,7 @@ export function validateOutcome(ctx: PolicyContext): PolicyResult {
   switch (outcome.action) {
     case "wait":
       return validateWait(outcome, now);
+    case "delegate":
     case "handoff":
       return validateHandoff(outcome);
     case "escalate":

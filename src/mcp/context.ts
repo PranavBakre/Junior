@@ -15,6 +15,10 @@ export interface SlackMcpRunContext {
   threadId: string;
   /** Authenticated Slack message timestamp for this runner turn, when present. */
   messageTs?: string | null;
+  /** Exact durable invocation this MCP URL belongs to, when present. */
+  runId?: string | null;
+  assignmentId?: string | null;
+  dispatchKey?: string | null;
   /**
    * True when the context was verified via HMAC signature (or internal bypass).
    * Unsigned/spoofable query-only contexts are rejected when a secret is configured.
@@ -56,6 +60,9 @@ export function buildSlackMcpUrl(session: ThreadSession): string {
     threadId: session.threadId,
     messageTs:
       session.currentMessageTs ?? session.activeTopLevelMessageTs ?? null,
+    runId: session.activePipelineInvocation?.runId ?? null,
+    assignmentId: session.activePipelineInvocation?.assignmentId ?? null,
+    dispatchKey: session.activePipelineInvocation?.dispatchKey ?? null,
   });
   return url.toString();
 }
@@ -68,6 +75,9 @@ export function buildMongoMcpUrl(session: ThreadSession): string {
     threadId: session.threadId,
     messageTs:
       session.currentMessageTs ?? session.activeTopLevelMessageTs ?? null,
+    runId: session.activePipelineInvocation?.runId ?? null,
+    assignmentId: session.activePipelineInvocation?.assignmentId ?? null,
+    dispatchKey: session.activePipelineInvocation?.dispatchKey ?? null,
   });
   return url.toString();
 }
@@ -79,12 +89,18 @@ function applySignedRunContext(
     channel: string;
     threadId: string;
     messageTs: string | null;
+    runId: string | null;
+    assignmentId: string | null;
+    dispatchKey: string | null;
   },
 ): void {
   url.searchParams.set("agent", ctx.agent);
   url.searchParams.set("channel", ctx.channel);
   url.searchParams.set("thread", ctx.threadId);
   if (ctx.messageTs) url.searchParams.set("message_ts", ctx.messageTs);
+  if (ctx.runId) url.searchParams.set("run_id", ctx.runId);
+  if (ctx.assignmentId) url.searchParams.set("assignment_id", ctx.assignmentId);
+  if (ctx.dispatchKey) url.searchParams.set("dispatch_key", ctx.dispatchKey);
   const secret = mcpContextSecret();
   const exp = String(Date.now() + MCP_CONTEXT_TTL_MS);
   url.searchParams.set("exp", exp);
@@ -97,6 +113,9 @@ function applySignedRunContext(
       ctx.threadId,
       exp,
       ctx.messageTs,
+      ctx.runId,
+      ctx.assignmentId,
+      ctx.dispatchKey,
     ),
   );
 }
@@ -108,9 +127,14 @@ export function signRunContext(
   threadId: string,
   exp: string,
   messageTs: string | null = null,
+  runId: string | null = null,
+  assignmentId: string | null = null,
+  dispatchKey: string | null = null,
 ): string {
   return createHmac("sha256", secret)
-    .update(`${agent}\n${channel}\n${threadId}\n${exp}\n${messageTs ?? ""}`)
+    .update(
+      `${agent}\n${channel}\n${threadId}\n${exp}\n${messageTs ?? ""}\n${runId ?? ""}\n${assignmentId ?? ""}\n${dispatchKey ?? ""}`,
+    )
     .digest("hex");
 }
 
@@ -129,6 +153,9 @@ export function parseSlackMcpRunContext(
   const channel = url.searchParams.get("channel")?.trim();
   const threadId = url.searchParams.get("thread")?.trim();
   const messageTs = url.searchParams.get("message_ts")?.trim() || null;
+  const runId = url.searchParams.get("run_id")?.trim() || null;
+  const assignmentId = url.searchParams.get("assignment_id")?.trim() || null;
+  const dispatchKey = url.searchParams.get("dispatch_key")?.trim() || null;
   if (!agent || !channel || !threadId) return null;
 
   const secret = mcpContextSecret();
@@ -146,10 +173,22 @@ export function parseSlackMcpRunContext(
     threadId,
     exp,
     messageTs,
+    runId,
+    assignmentId,
+    dispatchKey,
   );
   if (!safeEqualHex(sig, expected)) return null;
 
-  return { agent, channel, threadId, messageTs, signed: true };
+  return {
+    agent,
+    channel,
+    threadId,
+    messageTs,
+    runId,
+    assignmentId,
+    dispatchKey,
+    signed: true,
+  };
 }
 
 function safeEqualHex(a: string, b: string): boolean {

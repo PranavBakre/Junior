@@ -19,6 +19,17 @@ describe("cleanupStaleSessions", () => {
     expect(await store.get(session.threadId)).toBeDefined();
   });
 
+  it("keeps stale idle sessions that own a default durable run", async () => {
+    const store = new InMemorySessionStore();
+    const session = createSession("default-run-thread", "C1");
+    session.lastActivity = Date.now() - 100_000;
+    session.activeRunId = "run-default";
+    await store.set(session.threadId, session);
+
+    expect(await cleanupStaleSessions(store, 50_000)).toEqual([]);
+    expect(await store.get(session.threadId)).toBeDefined();
+  });
+
   it("deletes a stale idle session whose pipeline run is also stale", async () => {
     const store = new InMemorySessionStore();
     const session = createSession("wedged-pipeline-thread", "C1");

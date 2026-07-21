@@ -131,6 +131,7 @@ const ORCHESTRATOR_HANDOFF: HandoffPolicy = {
 const PLANNER_CAPABILITIES: readonly AgentCapability[] = [
   "repo-read",
   "pipeline-artifact-write",
+  "dispatch",
 ];
 
 const BUILDER_CAPABILITIES: readonly AgentCapability[] = [
@@ -255,6 +256,7 @@ export const TRUSTED_AGENT_CATALOG: readonly AgentManifest[] = [
       "github-review-comment",
       "pipeline-artifact-write",
       "worktree-verify",
+      "dispatch",
     ],
     // No product-code edits or push.
     mutationPolicy: "none",
@@ -274,6 +276,7 @@ export const TRUSTED_AGENT_CATALOG: readonly AgentManifest[] = [
       "repo-read",
       "browser-read",
       "pipeline-artifact-write",
+      "dispatch",
     ],
     // Browser/read-only product access + pipeline artifacts; no product-code edits.
     mutationPolicy: "none",

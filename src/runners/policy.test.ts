@@ -142,8 +142,9 @@ describe("compileOpenCodePermission", () => {
     expect(permission["mcp__slack-bot__slack_read_thread"]).toBe("allow");
     expect(permission["mcp__slack-bot__github_read_pr_review_state"]).toBe("allow");
     expect(permission["mcp__slack-bot__github_post_review"]).toBe("allow");
-    // Mutating MCP tools must not ride a blanket allow.
-    expect(permission["mcp__slack-bot__agent_dispatch"]).not.toBe("allow");
+    // Control-plane transitions are explicitly capability-scoped, not blanket MCP.
+    expect(permission["mcp__slack-bot__agent_dispatch"]).toBe("allow");
+    expect(permission["mcp__slack-bot__pipeline_report_outcome"]).toBe("allow");
     expect(permission["mcp__slack-bot__memory_add"]).not.toBe("allow");
   });
 
@@ -213,14 +214,13 @@ describe("provider permission compilation matrix", () => {
       expect(byName.has(name)).toBe(true);
     }
 
-    // Review / reproducer: hard read-only where enforceable. Review also gets
-    // a non-mutating shell inspection surface; reproducer remains in plan.
+    // Review / reproducer: hard read-only where enforceable. Both use Claude
+    // default mode so the trusted pipeline-control MCP allowlist can settle
+    // assignments; repository mutations remain explicitly denied.
     for (const name of ["review", "reproducer"] as const) {
       const row = byName.get(name)!;
       expect(row.intent).toBe("read-only");
-      expect(row.claudePermissionMode).toBe(
-        name === "review" ? "default" : "plan",
-      );
+      expect(row.claudePermissionMode).toBe("default");
       expect(row.codexSandbox).toBe("read-only");
       expect(row.openCode).toMatchObject({ edit: "deny", write: "deny" });
     }
@@ -231,7 +231,7 @@ describe("provider permission compilation matrix", () => {
     for (const name of ["pm", "architect"] as const) {
       const row = byName.get(name)!;
       expect(row.intent).toBe("human-gated");
-      expect(row.claudePermissionMode).toBe("plan");
+      expect(row.claudePermissionMode).toBe("default");
       expect(row.codexSandbox).toBe("read-only");
       expect(row.openCode).toMatchObject({ edit: "ask", write: "ask" });
     }

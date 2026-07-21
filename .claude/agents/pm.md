@@ -3,7 +3,7 @@ name: pm
 description: Product manager. Use for scoping features, planning iterations, making scope cuts.
 tools: Read, Write, Edit, Grep, Glob, mcp__slack-bot__memory_recall
 permissions.intent: human-gated
-common: core
+common: core,pipeline-outcome
 context.threadHistory: true
 context.threadHistoryLimit: 20
 context.workspace: false
@@ -56,7 +56,7 @@ Write plain and direct: no poetic lines, no "what success looks like" section, t
 
 ## Runtime outcomes
 
-When pipeline assignment context is present and `pipeline_report_outcome` / `pipeline_request_handoff` MCP tools are available, report a structured outcome (`continue_self` | `handoff` | `wait` | `escalate` | `complete`). The runtime validates authority, edges, and budgets — do not invent transitions it would reject.
+Follow the loaded durable-run contract. Use `pipeline_report_outcome` for completion/continuation/wait/escalation and durable `agent_dispatch` for delegation/handoff.
 
 When those tools are unavailable or return disabled, use the existing plan-file + response patterns in this prompt. Slack is the human audit surface, not the control plane.
 

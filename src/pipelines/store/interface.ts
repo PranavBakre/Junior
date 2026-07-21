@@ -14,6 +14,7 @@ import type {
   DevServerJob,
   DevServerJobCreate,
   DevServerJobStatus,
+  DefaultRunPromotionInput,
   GitHubResourceRegistration,
   PipelineAttempt,
   PipelineEvent,
@@ -40,9 +41,15 @@ export interface PipelineStore {
     run: PipelineRun;
     assignment: AssignmentCreate;
     events?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
+    outbox?: OutboxCreate[];
   }): Promise<Assignment>;
 
   createAssignment(assignment: AssignmentCreate): Promise<Assignment>;
+  /** Atomically create/reuse an assignment and persist its first wake. */
+  createAssignmentWithOutbox(input: {
+    assignment: AssignmentCreate;
+    outbox: OutboxCreate;
+  }): Promise<Assignment>;
   getAssignment(id: string): Promise<Assignment | undefined>;
   listAssignments(runId: string): Promise<Assignment[]>;
 
@@ -51,6 +58,11 @@ export interface PipelineStore {
    * and run (CAS on state_version), append event, enqueue outbox successor.
    */
   recordOutcomeTransaction(input: RecordOutcomeInput): Promise<TransitionReceipt>;
+
+  /** Atomically promote a live default run and dispatch its first typed child. */
+  promoteDefaultRunTransaction(
+    input: DefaultRunPromotionInput,
+  ): Promise<TransitionReceipt>;
 
   appendEvent(event: Omit<PipelineEvent, "sequence"> & { sequence?: number }): Promise<PipelineEvent>;
   listEvents(runId: string): Promise<PipelineEvent[]>;

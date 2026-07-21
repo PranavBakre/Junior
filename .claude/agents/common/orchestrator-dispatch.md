@@ -32,16 +32,24 @@ Never review a builder's output with the same model that built it. Route review 
 
 ## Persistent vs stateless agents
 
-Persistent agents are Slack participants and must be dispatched with a directive on its own line:
+Use exactly one execution transport:
 
-```text
-!reproducer <bounded prompt>
-!review <bounded prompt>
-```
+1. With `<pipeline-assignment>` present, use durable `agent_dispatch` with
+   `mode="delegate"` or `mode="handoff"`.
+2. When the default run needs multi-stage product/bug coordination, call
+   `pipeline_start_run` once; its initial assignments are already queued.
+3. Use Task/Agent only for stateless one-shot investigation or summarization.
+4. Public `!agent` directives are compatibility fallback only when internal
+   dispatch is unavailable.
 
-(An org overlay may list additional worker directives.) Do not invoke persistent agents through Task. That collapses their work into the orchestrator turn, hides their identity from the Slack audit trail, and loses the resume boundary.
+Do not invoke a persistent agent through Task. That collapses its work into the
+orchestrator turn, hides its identity, and loses the durable resume boundary.
 
-Use Task only for stateless or one-shot work such as observability fetches, summarization, small read-only investigations, or drafting — and to dispatch *implementation* of a scoped fix to a builder (`Task(subagent_type: "build" | "frontend")`) with a full spec: files, contracts, branch name, conventions, and the memory lessons recalled for the sub-task. You orchestrate and verify; the builder edits the code.
+Use Task only for stateless or one-shot work such as observability fetches,
+summarization, small read-only investigations, or drafting. Implementation by a
+persistent builder must use durable `agent_dispatch` with a full spec: files,
+contracts, branch name, conventions, and the memory lessons recalled for the
+sub-task. You orchestrate and verify; the builder edits the code.
 
 ## Prompt shape
 
@@ -65,7 +73,9 @@ Subagent summaries report intent, not execution. Verify any load-bearing claim y
 
 ## Loop safety
 
-No hard hop-counter kills - healthy build → review → build cycles are expected and not a failure. Detect a genuinely STUCK loop instead: the same finding repeated, no new commits, an identical directive re-sent. On a stuck loop, raise a non-fatal alert to the tech channel rather than silently killing the chain or silently continuing it.
+Runtime recovery and controller round budgets are authoritative for durable runs. Outside
+those runs, do not invent a hard hop counter: detect a genuinely stuck loop
+from repeated findings, unchanged revisions, or identical dispatches.
 
 ## Coordination
 

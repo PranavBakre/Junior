@@ -383,6 +383,158 @@ describe("SessionManager", () => {
     expect(callArgs[1]).toBe("Build me a feature");
   });
 
+  it("routes an ordinary task through a durable default run", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    manager = createTestManager(store, cloneConfig({
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+
+    await manager.handleMessage(makeEvent({ text: "make the small config change" }));
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    const run = await pipelineStore.getRunByThread("thread-1");
+    const session = await store.get("thread-1");
+    expect(run?.kind).toBe("default");
+    expect(run?.phase).toBe("working");
+    expect(session?.activeRunId).toBe(run?.id);
+    expect(session?.activePipelineRunId).toBeNull();
+    expect(session?.activePipelineInvocation?.runId).toBe(run?.id);
+    expect(mockSpawnFn.mock.calls[0][1]).toContain("<pipeline-assignment>");
+    expect(mockSpawnFn.mock.calls[0][1]).toContain("make the small config change");
+  });
+
+  it("routes a CHANNEL_DEFAULTS lead through a default run owned by lead", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    manager = createTestManager(store, cloneConfig({
+      channelDefaults: { C123: { agentType: "lead" } },
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+
+    await manager.handleLeadMessage(makeEvent({ text: "investigate this support request" }));
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    const run = await pipelineStore.getRunByThread("thread-1");
+    const assignments = run ? await pipelineStore.listAssignments(run.id) : [];
+    const session = await store.get("thread-1");
+    expect(run?.kind).toBe("default");
+    expect(run?.ownerAgent).toBe("lead");
+    expect(assignments[0]?.targetAgent).toBe("lead");
+    expect(session?.activePipelineInvocation).toMatchObject({
+      runId: run?.id,
+      assignmentId: assignments[0]?.id,
+    });
+  });
+
+  it("buffers a human follow-up with the same default assignment identity", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    manager = createTestManager(store, cloneConfig({
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+
+    await manager.handleMessage(makeEvent({ text: "start the task" }));
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+    const before = await store.get("thread-1");
+    const assignmentId = before?.activePipelineInvocation?.assignmentId;
+
+    await manager.handleMessage(makeEvent({
+      text: "also preserve the compatibility alias",
+      ts: "1234567890.223456",
+    }));
+
+    const after = await store.get("thread-1");
+    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
+    expect(after?.pendingMessages).toHaveLength(1);
+    expect(after?.pendingMessages[0]?.pipelineInvocation?.assignmentId).toBe(
+      assignmentId,
+    );
+    expect(after?.pendingMessages[0]?.text).toContain("[task-follow-up]");
+    expect(after?.pendingMessages[0]?.text).toContain(
+      "also preserve the compatibility alias",
+    );
+  });
+
+  it("creates a resumable child assignment for human input after a durable wait", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    manager = createTestManager(store, cloneConfig({
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+
+    await manager.handleMessage(makeEvent({ text: "start the task" }));
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+    const session = await store.get("thread-1");
+    const invocation = session?.activePipelineInvocation;
+    expect(invocation).toBeDefined();
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: invocation!.assignmentId,
+        expectedRunVersion: 0,
+        action: "wait",
+        status: "blocked",
+        reason: "Need the user's decision",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "wait:user-decision",
+        wait: {
+          conditionName: "user decision",
+          deadlineAt: Date.now() + 60_000,
+        },
+      },
+      actorType: "agent",
+      actorId: "default",
+      idempotencyKey: "wait:user-decision",
+    });
+    await store.mutateThread("thread-1", (current) => {
+      current.status = "idle";
+      current.activePipelineInvocation = null;
+    });
+
+    await manager.handleMessage(makeEvent({
+      text: "use option B",
+      ts: "1234567890.323456",
+    }));
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+
+    const assignments = await pipelineStore.listAssignments(invocation!.runId);
+    const child = assignments.find((candidate) =>
+      candidate.contextRefs.includes("control-branch:human-input")
+    );
+    expect(child).toBeDefined();
+    expect(child?.parentAssignmentId).toBe(invocation?.assignmentId);
+    expect(child?.status).toBe("pending");
+    expect(mockSpawnFn.mock.calls[1][1]).toContain("use option B");
+    expect(mockSpawnFn.mock.calls[1][1]).toContain(child!.id);
+  });
+
   it("switches to and registers the PR repo worktree before starting review", async () => {
     const reviewWorktree = mkdtempSync(join(tmpdir(), "junior-review-worktree-"));
     writeFileSync(join(reviewWorktree, "package-lock.json"), "{}");

@@ -3,7 +3,7 @@ name: architect
 description: System architect. Use for design specs, data models, state machines, API contracts.
 tools: Read, Write, Edit, Grep, Glob, Bash(git *), mcp__slack-bot__memory_recall
 permissions.intent: human-gated
-common: core
+common: core,pipeline-outcome
 context.threadHistory: true
 context.threadHistoryLimit: 20
 context.workspace: false
@@ -60,7 +60,7 @@ Write plain and direct: no poetic framing, no "what success looks like" section,
 
 ## Runtime outcomes
 
-When pipeline assignment context is present and `pipeline_report_outcome` / `pipeline_request_handoff` MCP tools are available, report a structured outcome (`continue_self` | `handoff` | `wait` | `escalate` | `complete`). The runtime validates authority, edges, and budgets — do not invent transitions it would reject.
+Follow the loaded durable-run contract. Use `pipeline_report_outcome` for completion/continuation/wait/escalation and durable `agent_dispatch` for delegation/handoff.
 
 When those tools are unavailable or return disabled, use the existing spec-file + response patterns in this prompt. Slack is the human audit surface, not the control plane.
 

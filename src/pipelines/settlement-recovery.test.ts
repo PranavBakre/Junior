@@ -71,4 +71,38 @@ describe("pipeline settlement recovery", () => {
     expect(repeated.escalationsRecorded).toBe(0);
     expect(audit).toHaveBeenCalledTimes(1);
   });
+
+  it("recovers assignments through the universal activeRunId binding", async () => {
+    const clock = fakeClock(1_000);
+    const pipelineStore = new InMemoryPipelineStore(clock);
+    const sessionStore = new InMemorySessionStore();
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-universal",
+      targetAgent: "build",
+      idempotencyKey: "asg-universal-key",
+    }));
+    await pipelineStore.enqueueOutbox({
+      id: "dispatch-universal",
+      runId: "run-1",
+      assignmentId: "asg-universal",
+      eventType: "assignment.dispatch",
+      payload: { assignmentId: "asg-universal" },
+      idempotencyKey: "dispatch-universal-key",
+    });
+    const [initial] = await pipelineStore.claimOutbox("pump", 1, 1_000);
+    await pipelineStore.markOutboxDelivered(initial!.id);
+
+    const session = createSession("T1", "C1");
+    session.activeRunId = "run-1";
+    await sessionStore.set(session.threadId, session);
+    clock.advance(5 * 60_000 + 1);
+
+    const report = await reconcileStalePipelineAssignments({
+      store: pipelineStore,
+      sessionReader: sessionStore,
+      now: clock.now(),
+    });
+    expect(report.resumesEnqueued).toBe(1);
+  });
 });

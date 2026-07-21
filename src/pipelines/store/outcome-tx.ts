@@ -28,12 +28,15 @@ export type OutcomeTxDecision =
       outcome: StoredOutcome;
       event: PipelineEvent;
       nextAssignment: Assignment | null;
+      resumedAssignment: Assignment | null;
       outbox: PipelineOutboxRecord | null;
     };
 
 export type OutcomeTxContext = {
   run: PipelineRun;
   assignment: Assignment;
+  /** Closest waiting ancestor that should resume when this branch completes. */
+  waitingAncestor?: Assignment | null;
   recentFingerprints: string[];
   nextEventSequence: number;
   now: number;
@@ -50,7 +53,15 @@ export type OutcomeTxContext = {
 export function decideOutcomeTransaction(
   ctx: OutcomeTxContext,
 ): OutcomeTxDecision {
-  const { run, assignment, input, now, generateId, nextEventSequence } = ctx;
+  const {
+    run,
+    assignment,
+    waitingAncestor,
+    input,
+    now,
+    generateId,
+    nextEventSequence,
+  } = ctx;
   const { outcome } = input;
 
   if (assignment.id !== outcome.assignmentId) {
@@ -79,6 +90,14 @@ export function decideOutcomeTransaction(
       runVersion: run.stateVersion,
       assignmentId: assignment.id,
       reason: "assignment already completed",
+    });
+  }
+  if (assignment.status === "waiting" && input.actorType === "agent") {
+    return receiptOnly({
+      status: "rejected",
+      runVersion: run.stateVersion,
+      assignmentId: assignment.id,
+      reason: "assignment is waiting on delegated or external work",
     });
   }
 
@@ -120,9 +139,17 @@ export function decideOutcomeTransaction(
     }
   }
 
+  const resumesParent =
+    outcome.action === "complete" && waitingAncestor?.status === "waiting";
+  const defaultCompletionPhase =
+    run.kind === "default" &&
+      outcome.action === "complete" &&
+      !resumesParent
+      ? "completed"
+      : run.phase;
   const toPhase = forcedEscalate
     ? "needs-human"
-    : ((input.toPhase ?? run.phase) as string);
+    : ((input.toPhase ?? defaultCompletionPhase) as string);
   if (
     !forcedEscalate &&
     toPhase !== run.phase &&
@@ -164,6 +191,8 @@ export function decideOutcomeTransaction(
   const assignmentStatus =
     effectiveOutcome.action === "wait"
       ? ("waiting" as const)
+      : effectiveOutcome.action === "delegate"
+        ? ("waiting" as const)
       : effectiveOutcome.action === "continue_self"
         ? assignment.status === "pending"
           ? ("leased" as const)
@@ -214,10 +243,12 @@ export function decideOutcomeTransaction(
   } as PipelineRun;
 
   let nextAssignment: Assignment | null = null;
+  let resumedAssignment: Assignment | null = null;
   let outbox: PipelineOutboxRecord | null = null;
 
   if (
-    effectiveOutcome.action === "handoff" &&
+    (effectiveOutcome.action === "handoff" ||
+      effectiveOutcome.action === "delegate") &&
     effectiveOutcome.nextAssignment
   ) {
     const nextId = effectiveOutcome.nextAssignment.id ?? generateId();
@@ -248,6 +279,37 @@ export function decideOutcomeTransaction(
         input.idempotencyKey != null
           ? `dispatch:${input.idempotencyKey}`
           : `dispatch:${nextAssignment.idempotencyKey}`,
+      createdAt: now,
+      deliveredAt: null,
+      lastError: null,
+    };
+  } else if (
+    effectiveOutcome.action === "complete" &&
+    waitingAncestor?.status === "waiting"
+  ) {
+    resumedAssignment = {
+      ...waitingAncestor,
+      status: "pending",
+      updatedAt: now,
+    };
+    outbox = {
+      id: generateId(),
+      runId: run.id,
+      assignmentId: waitingAncestor.id,
+      eventType: "assignment.resume",
+      payload: {
+        assignmentId: waitingAncestor.id,
+        completedChildAssignmentId: assignment.id,
+      },
+      status: "pending",
+      attempts: 0,
+      availableAt: now,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      idempotencyKey:
+        input.idempotencyKey != null
+          ? `resume-parent:${input.idempotencyKey}`
+          : `resume-parent:${waitingAncestor.id}:${assignment.id}:${newVersion}`,
       createdAt: now,
       deliveredAt: null,
       lastError: null,
@@ -374,6 +436,7 @@ export function decideOutcomeTransaction(
     outcome: storedOutcome,
     event,
     nextAssignment,
+    resumedAssignment,
     outbox,
   };
 }
@@ -436,6 +499,7 @@ function deriveTerminalOutcome(
   toPhase: string,
 ): TerminalOutcome {
   if (toPhase === "shipped") return "shipped";
+  if (toPhase === "completed") return "completed";
   if (toPhase === "merged" || toPhase === "cleanup") return "merged";
   if (toPhase === "expected-behavior" || outcome.status === "expected_behavior") {
     return "expected-behavior";

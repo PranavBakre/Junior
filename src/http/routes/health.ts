@@ -16,7 +16,7 @@ export async function handleHealth(
     else if (s.status === "draining") draining++;
     else idle++;
     if (s.lastError) errors++;
-    if (s.activePipelineRunId) activePipelineRuns++;
+    if (s.activeRunId ?? s.activePipelineRunId) activePipelineRuns++;
 
     for (const agent of Object.values(s.agentSessions ?? {})) {
       totalAgents++;

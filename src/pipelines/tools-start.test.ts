@@ -5,6 +5,7 @@ import type { SessionStore } from "../session/store/interface.ts";
 import type { PipelineStore } from "./store/interface.ts";
 import { InMemoryPipelineStore } from "./store/memory.ts";
 import { pumpOutbox } from "./pump.ts";
+import { createDefaultRun } from "./default/controller.ts";
 import {
   pipelineStartRun,
   type PipelineStartRunArgs,
@@ -58,6 +59,56 @@ const productArgs: PipelineStartRunArgs = {
 };
 
 describe("pipeline_start_run", () => {
+  it("promotes the caller's active default run in place", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const started = await createDefaultRun(
+      { store: pipelineStore },
+      {
+        channelId: CHANNEL,
+        threadId: THREAD,
+        objective: productArgs.objective,
+        messageTs: context().messageTs,
+        targetAgent: "default",
+      },
+    );
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    const result = payload(await pipelineStartRun(runtime, {
+      ...context(),
+      runId: started.run.id,
+      assignmentId: started.assignment.id,
+      dispatchKey: "default-dispatch",
+    }, productArgs));
+    expect(result.ok).toBe(true);
+    expect(result.created).toBe(false);
+    expect(result.promoted).toBe(true);
+    expect((result.run as { id: string; kind: string })).toMatchObject({
+      id: started.run.id,
+      kind: "product",
+    });
+    expect(await pipelineStore.getAssignment(started.assignment.id)).toMatchObject({
+      status: "completed",
+    });
+    expect(await pipelineStore.listOutcomes(started.assignment.id)).toHaveLength(1);
+    expect(await sessionStore.get(THREAD)).toMatchObject({
+      activeRunId: started.run.id,
+      activePipelineRunId: started.run.id,
+      activePipelineKind: "product",
+    });
+  });
+
   it("does nothing until an authorized orchestrator deliberately calls it", async () => {
     const { pipelineStore } = await setup();
     expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();

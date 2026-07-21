@@ -102,12 +102,23 @@ export function compileOpenCodePermission(options: {
   const fallback = options.fallback ?? "allow";
   const agentName =
     options.subject.activeAgentName ?? options.subject.agentType;
-  const capabilityPermissions = hasCapability(
-    agentName,
-    "github-review-comment",
-  )
-    ? { [GITHUB_POST_REVIEW_TOOL]: "allow" }
-    : {};
+  const capabilityPermissions: Record<string, string> = {
+    ...(hasCapability(agentName, "github-review-comment")
+      ? { [GITHUB_POST_REVIEW_TOOL]: "allow" }
+      : {}),
+    ...(hasCapability(agentName, "pipeline-artifact-write")
+      ? {
+          "mcp__slack-bot__pipeline_get_state": "allow",
+          "mcp__slack-bot__pipeline_report_outcome": "allow",
+        }
+      : {}),
+    ...(hasCapability(agentName, "dispatch")
+      ? { "mcp__slack-bot__agent_dispatch": "allow" }
+      : {}),
+    ...(hasCapability(agentName, "pipeline-run-start")
+      ? { "mcp__slack-bot__pipeline_start_run": "allow" }
+      : {}),
+  };
   const worktreeRoots = [
     options.subject.worktreePath,
     ...Object.values(options.subject.worktreePaths ?? {}),
@@ -177,6 +188,7 @@ export function compileOpenCodePermission(options: {
       "mcp__slack-bot__slack_send_message": "ask",
       "mcp__slack-bot__agent_dispatch": "ask",
       "mcp__slack-bot__memory_add": "ask",
+      ...capabilityPermissions,
       "mcp__*": "ask",
     };
   }

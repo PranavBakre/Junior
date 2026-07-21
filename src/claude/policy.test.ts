@@ -145,6 +145,27 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
   });
 
+  test("reproducer control-plane access does not pre-allow declared Write or Bash", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "reproducer";
+    session.agentPermissions = {
+      intent: "read-only",
+      mcp: [],
+      tools: ["Read", "Write", "Bash", "Bash(curl *)"],
+    };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("Read");
+    expect(policy.allowedTools).toContain(
+      "mcp__slack-bot__pipeline_report_outcome",
+    );
+    expect(policy.allowedTools).not.toContain("Write");
+    expect(policy.allowedTools).not.toContain("Bash");
+    expect(policy.allowedTools).not.toContain("Bash(curl *)");
+  });
+
   test("review may run allowlisted checks only in a registered worktree", () => {
     const session = createSession("t", "c");
     session.activeAgentName = "review";
@@ -219,7 +240,7 @@ describe("mapClaudeRunPolicy", () => {
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
-    expect(policy.permissionMode).toBe("plan");
+    expect(policy.permissionMode).toBe("default");
     expect(policy.allowedTools).not.toContain(
       "mcp__slack-bot__github_post_review",
     );
@@ -232,9 +253,16 @@ describe("mapClaudeRunPolicy", () => {
 
     const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
 
-    expect(policy.permissionMode).toBe("plan");
+    expect(policy.permissionMode).toBe("default");
     // Write is declared but human-gated must not pre-allow it.
-    expect(policy.allowedTools).toEqual(["Read"]);
+    expect(policy.allowedTools).toEqual([
+      "Read",
+      "mcp__slack-bot__pipeline_get_state",
+      "mcp__slack-bot__pipeline_report_outcome",
+      "mcp__slack-bot__agent_dispatch",
+    ]);
+    expect(policy.disallowedTools).toContain("Write");
+    expect(policy.disallowedTools).toContain("Bash(rm *)");
   });
 
   test("declared intent cannot widen catalog ceiling for restricted roles", () => {

@@ -581,6 +581,7 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   // Pipeline substrate (Phase 2): pre-existing rows default to no active run.
   session.activePipelineRunId ??= null;
   session.activePipelineKind ??= null;
+  session.activeRunId ??= session.activePipelineRunId ?? null;
   return session;
 }
 

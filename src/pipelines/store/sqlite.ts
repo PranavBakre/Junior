@@ -27,6 +27,9 @@ import type {
   DevServerJob,
   DevServerJobCreate,
   DevServerJobStatus,
+  DefaultPhase,
+  DefaultRun,
+  DefaultRunPromotionInput,
   OutboxCreate,
   PipelineAttempt,
   PipelineEvent,
@@ -44,6 +47,7 @@ import type {
 } from "../types.ts";
 import type { PipelineStore } from "./interface.ts";
 import { decideOutcomeTransaction } from "./outcome-tx.ts";
+import { decideDefaultPromotion } from "./promotion-tx.ts";
 import {
   isTerminalDevServerStatus,
   releaseStatusForReason,
@@ -283,7 +287,7 @@ export class SqlitePipelineStore implements PipelineStore {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS pipeline_runs (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('product', 'bug')),
+        kind TEXT NOT NULL CHECK (kind IN ('default', 'product', 'bug')),
         definition_version INTEGER NOT NULL,
         channel_id TEXT NOT NULL,
         thread_id TEXT NOT NULL,
@@ -303,6 +307,7 @@ export class SqlitePipelineStore implements PipelineStore {
         updated_at INTEGER NOT NULL
       )
     `);
+    this.migratePipelineRunsKindConstraint();
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_pipeline_runs_thread
       ON pipeline_runs (thread_id)
@@ -585,6 +590,72 @@ export class SqlitePipelineStore implements PipelineStore {
     `);
   }
 
+  /** Rebuild the parent table once so existing installs can store default runs. */
+  private migratePipelineRunsKindConstraint(): void {
+    const schema = this.db
+      .query<{ sql: string | null }, []>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pipeline_runs'",
+      )
+      .get()?.sql ?? "";
+    if (/kind\s+IN\s*\([^)]*'default'/i.test(schema)) return;
+
+    this.db.run("PRAGMA foreign_keys = OFF");
+    try {
+      const migrate = this.db.transaction(() => {
+        this.db.run(`
+          CREATE TABLE pipeline_runs_new (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('default', 'product', 'bug')),
+            definition_version INTEGER NOT NULL,
+            channel_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active', 'waiting', 'needs-human', 'terminal')),
+            owner_agent TEXT NOT NULL,
+            repo_refs_json TEXT NOT NULL DEFAULT '[]',
+            acceptance_json TEXT NOT NULL DEFAULT '[]',
+            artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+            blocker_refs_json TEXT NOT NULL DEFAULT '[]',
+            active_attempt_id TEXT,
+            state_version INTEGER NOT NULL DEFAULT 0,
+            deadline_at INTEGER,
+            terminal_outcome TEXT,
+            terminal_reason TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `);
+        this.db.run(`
+          INSERT INTO pipeline_runs_new (
+            id, kind, definition_version, channel_id, thread_id, phase, status,
+            owner_agent, repo_refs_json, acceptance_json, artifact_refs_json,
+            blocker_refs_json, active_attempt_id, state_version, deadline_at,
+            terminal_outcome, terminal_reason, created_at, updated_at
+          )
+          SELECT
+            id, kind, definition_version, channel_id, thread_id, phase, status,
+            owner_agent, repo_refs_json, acceptance_json, artifact_refs_json,
+            blocker_refs_json, active_attempt_id, state_version, deadline_at,
+            terminal_outcome, terminal_reason, created_at, updated_at
+          FROM pipeline_runs
+        `);
+        this.db.run("DROP TABLE pipeline_runs");
+        this.db.run("ALTER TABLE pipeline_runs_new RENAME TO pipeline_runs");
+        const violations = this.db
+          .query<Record<string, unknown>, []>("PRAGMA foreign_key_check")
+          .all();
+        if (violations.length > 0) {
+          throw new Error(
+            `pipeline_runs kind migration produced ${violations.length} foreign-key violation(s)`,
+          );
+        }
+      });
+      migrate();
+    } finally {
+      this.db.run("PRAGMA foreign_keys = ON");
+    }
+  }
+
   /**
    * Terminal-mark older non-terminal runs that share a thread_id, keeping the
    * newest (by created_at, then id). Required before creating the partial
@@ -756,6 +827,7 @@ export class SqlitePipelineStore implements PipelineStore {
     run: PipelineRun;
     assignment: AssignmentCreate;
     events?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
+    outbox?: OutboxCreate[];
   }): Promise<Assignment> {
     // Resolve assignment idempotency before the TX so a start-message replay
     // after the prior run went terminal does not hit UNIQUE and roll back.
@@ -870,6 +942,25 @@ export class SqlitePipelineStore implements PipelineStore {
           payload: { ...event.payload },
         });
       }
+      for (const record of input.outbox ?? []) {
+        const full: PipelineOutboxRecord = {
+          id: record.id,
+          runId: record.runId,
+          assignmentId: record.assignmentId,
+          eventType: record.eventType,
+          payload: { ...record.payload },
+          status: record.status ?? "pending",
+          attempts: record.attempts ?? 0,
+          availableAt: record.availableAt ?? now,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          idempotencyKey: record.idempotencyKey,
+          createdAt: now,
+          deliveredAt: null,
+          lastError: null,
+        };
+        this.insertOutbox(full);
+      }
       return assignment;
     });
     return create();
@@ -938,6 +1029,57 @@ export class SqlitePipelineStore implements PipelineStore {
     };
     this.insertAssignment(assignment);
     return assignment;
+  }
+
+  async createAssignmentWithOutbox(input: {
+    assignment: AssignmentCreate;
+    outbox: OutboxCreate;
+  }): Promise<Assignment> {
+    const create = this.db.transaction(() => {
+      const existing = this.db
+        .query<AssignmentRow, [string]>(
+          "SELECT * FROM pipeline_assignments WHERE idempotency_key = ?",
+        )
+        .get(input.assignment.idempotencyKey);
+      const now = this.clock.now();
+      const assignment = existing
+        ? assignmentFromRow(existing)
+        : {
+            ...input.assignment,
+            status: input.assignment.status ?? ("pending" as const),
+            leaseOwner: input.assignment.leaseOwner ?? null,
+            leaseExpiresAt: input.assignment.leaseExpiresAt ?? null,
+            createdAt: now,
+            updatedAt: now,
+          } satisfies Assignment;
+      if (!existing) this.insertAssignment(assignment);
+
+      const priorOutbox = this.db
+        .query<OutboxRow, [string]>(
+          "SELECT * FROM pipeline_outbox WHERE idempotency_key = ?",
+        )
+        .get(input.outbox.idempotencyKey);
+      if (!priorOutbox) {
+        this.insertOutbox({
+          id: input.outbox.id,
+          runId: assignment.runId,
+          assignmentId: assignment.id,
+          eventType: input.outbox.eventType,
+          payload: { ...input.outbox.payload },
+          status: input.outbox.status ?? "pending",
+          attempts: input.outbox.attempts ?? 0,
+          availableAt: input.outbox.availableAt ?? now,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          idempotencyKey: input.outbox.idempotencyKey,
+          createdAt: now,
+          deliveredAt: null,
+          lastError: null,
+        });
+      }
+      return assignment;
+    });
+    return create();
   }
 
   async getAssignment(id: string): Promise<Assignment | undefined> {
@@ -1019,6 +1161,7 @@ export class SqlitePipelineStore implements PipelineStore {
     const decision = decideOutcomeTransaction({
       run,
       assignment,
+      waitingAncestor: await this.findWaitingAncestor(assignment),
       recentFingerprints,
       nextEventSequence,
       now: this.clock.now(),
@@ -1113,6 +1256,21 @@ export class SqlitePipelineStore implements PipelineStore {
         this.insertAssignment(decision.nextAssignment);
       }
 
+      if (decision.resumedAssignment) {
+        this.db
+          .query(
+            `UPDATE pipeline_assignments SET
+              status = ?,
+              updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(
+            decision.resumedAssignment.status,
+            decision.resumedAssignment.updatedAt,
+            decision.resumedAssignment.id,
+          );
+      }
+
       if (decision.outbox && !input.suppressDispatch) {
         this.insertOutbox(decision.outbox);
       }
@@ -1127,6 +1285,178 @@ export class SqlitePipelineStore implements PipelineStore {
           status: "rejected",
           runVersion: err.actualVersion,
           assignmentId: assignment.id,
+          reason: "state version conflict",
+        };
+      }
+      throw err;
+    }
+  }
+
+  private async findWaitingAncestor(
+    assignment: Assignment,
+  ): Promise<Assignment | null> {
+    let parentId = assignment.parentAssignmentId;
+    const visited = new Set<string>();
+    while (parentId && !visited.has(parentId)) {
+      visited.add(parentId);
+      const parent = await this.getAssignment(parentId);
+      if (!parent) return null;
+      if (parent.status === "waiting") return parent;
+      parentId = parent.parentAssignmentId;
+    }
+    return null;
+  }
+
+  async promoteDefaultRunTransaction(
+    input: DefaultRunPromotionInput,
+  ): Promise<TransitionReceipt> {
+    const prior = this.db
+      .query<EventRow, [string]>(
+        "SELECT * FROM pipeline_events WHERE idempotency_key = ?",
+      )
+      .get(input.idempotencyKey);
+    if (prior) {
+      const child = this.db
+        .query<AssignmentRow, [string]>(
+          "SELECT * FROM pipeline_assignments WHERE idempotency_key = ?",
+        )
+        .get(input.childAssignment.idempotencyKey);
+      const run = await this.getRun(input.runId);
+      return {
+        status: "duplicate",
+        runVersion: run?.stateVersion ?? input.expectedRunVersion,
+        assignmentId: child?.id ?? input.sourceAssignmentId,
+        eventId: prior.id,
+        reason: "promotion already committed",
+      };
+    }
+
+    const run = await this.getRun(input.runId);
+    if (!run || run.kind !== "default") {
+      const child = this.db
+        .query<AssignmentRow, [string]>(
+          "SELECT * FROM pipeline_assignments WHERE idempotency_key = ?",
+        )
+        .get(input.childAssignment.idempotencyKey);
+      return {
+        status: child && run?.kind === input.targetRun.kind ? "duplicate" : "rejected",
+        runVersion: run?.stateVersion ?? 0,
+        assignmentId: child?.id ?? input.sourceAssignmentId,
+        reason: child ? "promotion already committed" : "active run is not default",
+      };
+    }
+    const source = await this.getAssignment(input.sourceAssignmentId);
+    if (!source) {
+      return {
+        status: "rejected",
+        runVersion: run.stateVersion,
+        assignmentId: input.sourceAssignmentId,
+        reason: "source assignment not found",
+      };
+    }
+    const maxSeq = this.db
+      .query<{ max_seq: number | null }, [string]>(
+        "SELECT MAX(sequence) AS max_seq FROM pipeline_events WHERE run_id = ?",
+      )
+      .get(run.id);
+    const decision = decideDefaultPromotion({
+      run,
+      sourceAssignment: source,
+      request: input,
+      nextEventSequence: (maxSeq?.max_seq ?? 0) + 1,
+      now: this.clock.now(),
+      generateId: () => crypto.randomUUID(),
+    });
+    if (decision.kind === "receipt") return decision.receipt;
+
+    const tx = this.db.transaction(() => {
+      const updated = decision.updatedRun;
+      const cas = this.db
+        .query(
+          `UPDATE pipeline_runs SET
+            kind = ?, definition_version = ?, phase = ?, status = ?,
+            owner_agent = ?, repo_refs_json = ?, acceptance_json = ?,
+            artifact_refs_json = ?, blocker_refs_json = ?, active_attempt_id = ?,
+            state_version = ?, deadline_at = ?, terminal_outcome = ?,
+            terminal_reason = ?, updated_at = ?
+           WHERE id = ? AND kind = 'default' AND state_version = ?`,
+        )
+        .run(
+          updated.kind,
+          updated.definitionVersion,
+          updated.phase,
+          updated.status,
+          updated.ownerAgent,
+          JSON.stringify(updated.repoRefs),
+          JSON.stringify(updated.acceptanceCriteria),
+          JSON.stringify(updated.artifactRefs),
+          JSON.stringify(updated.blockerRefs),
+          updated.activeAttemptId,
+          updated.stateVersion,
+          updated.deadlineAt,
+          updated.terminalOutcome,
+          updated.terminalReason,
+          updated.updatedAt,
+          run.id,
+          run.stateVersion,
+        );
+      if (cas.changes !== 1) {
+        throw new CasConflictError(
+          this.db
+            .query<{ state_version: number }, [string]>(
+              "SELECT state_version FROM pipeline_runs WHERE id = ?",
+            )
+            .get(run.id)?.state_version ?? run.stateVersion,
+        );
+      }
+
+      this.db
+        .query(
+          `UPDATE pipeline_assignments SET status = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(
+          decision.updatedSource.status,
+          decision.updatedSource.updatedAt,
+          decision.updatedSource.id,
+        );
+      for (const child of decision.childAssignments) {
+        this.insertAssignment(child);
+      }
+      this.db
+        .query(
+          `INSERT INTO pipeline_outcomes (
+            id, assignment_id, action, status, reason,
+            evidence_refs_json, artifact_refs_json, blockers_json,
+            checks_json, confidence, progress_fingerprint, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          decision.sourceOutcome.id,
+          decision.sourceOutcome.assignmentId,
+          decision.sourceOutcome.action,
+          decision.sourceOutcome.status,
+          decision.sourceOutcome.reason,
+          JSON.stringify(decision.sourceOutcome.evidenceRefs),
+          JSON.stringify(decision.sourceOutcome.artifactRefs),
+          JSON.stringify(decision.sourceOutcome.blockers),
+          JSON.stringify(decision.sourceOutcome.checks),
+          decision.sourceOutcome.confidence,
+          decision.sourceOutcome.progressFingerprint,
+          decision.sourceOutcome.createdAt,
+        );
+      for (const event of decision.events) this.insertEventRow(event);
+      for (const outbox of decision.outbox) this.insertOutbox(outbox);
+    });
+
+    try {
+      tx();
+      return decision.receipt;
+    } catch (err) {
+      if (err instanceof CasConflictError) {
+        return {
+          status: "rejected",
+          runVersion: err.actualVersion,
+          assignmentId: source.id,
           reason: "state version conflict",
         };
       }
@@ -2493,6 +2823,14 @@ function runFromRow(row: RunRow): PipelineRun {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+  if (row.kind === "default") {
+    const run: DefaultRun = {
+      ...base,
+      kind: "default",
+      phase: row.phase as DefaultPhase,
+    };
+    return run;
+  }
   if (row.kind === "product") {
     const run: ProductRun = {
       ...base,
@@ -2501,12 +2839,15 @@ function runFromRow(row: RunRow): PipelineRun {
     };
     return run;
   }
-  const run: BugRun = {
-    ...base,
-    kind: "bug",
-    phase: row.phase as BugPhase,
-  };
-  return run;
+  if (row.kind === "bug") {
+    const run: BugRun = {
+      ...base,
+      kind: "bug",
+      phase: row.phase as BugPhase,
+    };
+    return run;
+  }
+  throw new Error(`unknown pipeline run kind: ${row.kind}`);
 }
 
 function assignmentFromRow(row: AssignmentRow): Assignment {

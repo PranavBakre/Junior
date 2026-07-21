@@ -3,7 +3,7 @@ name: frontend
 description: Frontend engineer. Use for UI work, component building, styling, frontend features.
 tools: Read, Edit, Write, Bash, Grep, Glob, Agent, mcp__slack-bot__memory_recall
 permissions.intent: normal
-common: core,building-philosophy
+common: core,building-philosophy,pipeline-outcome
 context.threadHistory: true
 context.threadHistoryLimit: 20
 context.workspace: true
@@ -62,7 +62,7 @@ Interrogate the spec: if the prompt doesn't answer "which files does this touch,
 
 ## Runtime outcomes
 
-When pipeline assignment context is present and `pipeline_report_outcome` / `pipeline_request_handoff` MCP tools are available, report a structured outcome (`continue_self` | `handoff` | `wait` | `escalate` | `complete`). The runtime validates authority, edges, and budgets — do not invent transitions it would reject.
+Follow the loaded durable-run contract. Use `pipeline_report_outcome` for completion/continuation/wait/escalation and durable `agent_dispatch` for delegation/handoff.
 
 When those tools are unavailable or return disabled, use the existing response patterns in this prompt (Done/Verified report, screenshots on disk, Slack if you have it). Slack is the human audit surface, not the control plane.
 ## Rules

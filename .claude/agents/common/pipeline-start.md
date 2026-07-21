@@ -1,8 +1,8 @@
 # Deliberate pipeline upgrade
 
-An ordinary Slack thread is not a pipeline by default. You may deliberately
-upgrade the current thread with `mcp__slack-bot__pipeline_start_run` when
-durable coordination is now useful.
+Every ordinary task already has a lightweight `default` run. Deliberately
+promote that same run in place with `mcp__slack-bot__pipeline_start_run` when a
+product or bug controller is now useful.
 
 Upgrade when one or more of these is true:
 
@@ -24,6 +24,7 @@ For a product `build`, pass `required_workstreams` explicitly from the actual
 change scope: `backend`, `frontend`, or both. Do not infer full-stack work just
 because the request mentions an existing API while asking for a UI change.
 State the concrete coordination reason and use a stable idempotency key for
-this source turn. After the tool accepts the upgrade, do not also emit a legacy
+this source turn. An accepted or reused receipt means the typed assignments are
+already durably queued. After the tool accepts the upgrade, do not also emit a legacy
 `!build`, `!debug`, or duplicate worker directive. The durable initial
 assignment has already been queued; yield after a concise acknowledgement.

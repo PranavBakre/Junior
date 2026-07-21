@@ -16,6 +16,7 @@ import {
   type AttemptRevisionMember,
   type BugPhase,
   type BugRun,
+  type DefaultRun,
   type PipelineEvent,
   type PipelineGate,
   type PipelineStartProvenance,
@@ -84,6 +85,8 @@ export type CreateBugRunInput = {
   /** Initial target: debug → lead/orchestrator; reproducer → reproducer. */
   targetAgent?: string;
   provenance?: PipelineStartProvenance;
+  /** Exact authenticated default assignment being promoted. */
+  sourceAssignmentId?: string;
 };
 
 export type CreateBugRunResult = {
@@ -91,6 +94,7 @@ export type CreateBugRunResult = {
   assignment: Assignment;
   mode: BugMode;
   created: boolean;
+  promoted?: boolean;
 };
 
 const MODE_EVENT = "bug.mode_selected";
@@ -110,6 +114,9 @@ export async function createBugRun(
   const now = clock.now();
 
   const existing = await store.getRunByThread(input.threadId);
+  if (existing && existing.kind === "default" && existing.status !== "terminal") {
+    return promoteDefaultToBug(config, existing, input);
+  }
   if (existing && existing.kind === "bug" && existing.status !== "terminal") {
     const mode = await loadBugMode(store, existing.id);
     const assignments = await store.listAssignments(existing.id);
@@ -302,6 +309,136 @@ export async function createBugRun(
   );
 
   return { run, assignment, mode, created: true };
+}
+
+async function promoteDefaultToBug(
+  config: BugControllerConfig,
+  existing: DefaultRun,
+  input: CreateBugRunInput,
+): Promise<CreateBugRunResult> {
+  const store = config.store;
+  const now = (config.clock ?? systemClock).now();
+  const sources = await store.listAssignments(existing.id);
+  const source = input.sourceAssignmentId
+    ? sources.find((assignment) => assignment.id === input.sourceAssignmentId)
+    : sources.find((assignment) =>
+        assignment.status === "pending" || assignment.status === "leased"
+      );
+  if (!source) throw new Error(`active default run ${existing.id} has no open assignment`);
+  if (source.status !== "pending" && source.status !== "leased") {
+    throw new Error(`default assignment ${source.id} cannot be promoted from ${source.status}`);
+  }
+
+  const mode = selectBugMode({
+    explicitMode: input.explicitMode,
+    hint: input.modeHint ?? input.objective,
+    systemic: input.systemic,
+    likelyExpected: input.likelyExpected,
+  });
+  const targetAgent = input.targetAgent ??
+    (input.startKind === "reproducer" ? "reproducer" : "lead");
+  const ownerAgent = input.ownerAgent ?? "lead";
+  const childId = crypto.randomUUID();
+  const child = {
+    id: childId,
+    runId: existing.id,
+    parentAssignmentId: source.id,
+    sourceAgent: source.targetAgent,
+    targetAgent,
+    objective: input.objective,
+    contextRefs: [`mode:${mode}`, `start:${input.startKind}`],
+    artifactRefs: [],
+    acceptanceCriteria: existing.acceptanceCriteria,
+    mutationScope: mode === "expected-behavior" ? [] : ["worktree-code"],
+    dependsOn: [],
+    attempt: 1,
+    attemptId: null,
+    candidateRevisionDigest: null,
+    deadlineAt: input.deadlineAt ?? existing.deadlineAt,
+    idempotencyKey: `bug-promote:${existing.id}:${input.messageTs}:${input.startKind}`,
+  };
+  const targetRun: BugRun = {
+    ...existing,
+    kind: "bug",
+    definitionVersion: PIPELINE_DEFINITION_VERSION,
+    phase: "intake",
+    status: "active",
+    ownerAgent,
+    repoRefs: input.repoRefs ?? existing.repoRefs,
+    deadlineAt: input.deadlineAt ?? existing.deadlineAt,
+    terminalOutcome: null,
+    terminalReason: null,
+    updatedAt: now,
+  };
+  const promotionKey = input.provenance?.idempotencyKey ??
+    `bug-promote:${input.threadId}:${input.messageTs}:${input.startKind}`;
+  const receipt = await store.promoteDefaultRunTransaction({
+    runId: existing.id,
+    sourceAssignmentId: source.id,
+    expectedRunVersion: existing.stateVersion,
+    targetRun,
+    childAssignment: child,
+    reason: input.provenance?.reason ?? `upgrade default run to bug/${input.startKind}`,
+    progressFingerprint: `promote:bug:${input.startKind}:${input.messageTs}`,
+    actorType: input.provenance?.actorType ?? "agent",
+    actorId: input.provenance?.actorId ?? ownerAgent,
+    startKind: input.startKind,
+    sourceMessageTs: input.messageTs,
+    idempotencyKey: `pipeline.promoted:${promotionKey}`,
+    seedEvents: [
+      {
+        id: crypto.randomUUID(),
+        runId: existing.id,
+        eventType: MODE_EVENT,
+        actorType: "system",
+        actorId: "bug-controller",
+        assignmentId: childId,
+        outcomeId: null,
+        fromPhase: existing.phase,
+        toPhase: "intake",
+        payloadVersion: 1,
+        payload: {
+          mode,
+          startKind: input.startKind,
+          riskClass: input.riskClass ?? null,
+        },
+        idempotencyKey: `bug.mode:${existing.id}`,
+        occurredAt: now,
+        observedAt: now,
+      },
+      ...(input.riskClass
+        ? [{
+            id: crypto.randomUUID(),
+            runId: existing.id,
+            eventType: RISK_EVENT,
+            actorType: "system" as const,
+            actorId: "bug-controller",
+            assignmentId: childId,
+            outcomeId: null,
+            fromPhase: existing.phase,
+            toPhase: "intake",
+            payloadVersion: 1,
+            payload: { riskClass: input.riskClass },
+            idempotencyKey: `bug.risk:${existing.id}`,
+            occurredAt: now,
+            observedAt: now,
+          }]
+        : []),
+    ],
+    dispatchPayload: { mode, startKind: input.startKind },
+  });
+  if (receipt.status !== "accepted" && receipt.status !== "duplicate") {
+    throw new Error(receipt.reason ?? `bug promotion ${receipt.status}`);
+  }
+  const promoted = await store.getRun(existing.id);
+  const assignment = receipt.assignmentId
+    ? await store.getAssignment(receipt.assignmentId)
+    : undefined;
+  if (!promoted || promoted.kind !== "bug" || !assignment) {
+    throw new Error("bug promotion committed without readable run/assignment");
+  }
+  await maybeWriteProjection(config, promoted, mode, [assignment]);
+  return { run: promoted, assignment, mode, created: false, promoted: true };
 }
 
 async function ensureBugStartDelivery(

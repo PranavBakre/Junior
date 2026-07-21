@@ -6,7 +6,7 @@
 /** Bump only when the controller contract itself changes incompatibly. */
 export const PIPELINE_DEFINITION_VERSION = 1;
 
-export type PipelineKind = "product" | "bug";
+export type PipelineKind = "default" | "product" | "bug";
 
 export type PipelineRunStatus =
   | "active"
@@ -15,6 +15,7 @@ export type PipelineRunStatus =
   | "terminal";
 
 export type TerminalOutcome =
+  | "completed"
   | "merged"
   | "shipped"
   | "expected-behavior"
@@ -60,7 +61,9 @@ export type BugPhase =
   | "needs-human"
   | "abandoned";
 
-export type PipelinePhase = ProductPhase | BugPhase;
+export type DefaultPhase = "working" | "needs-human" | "completed" | "abandoned";
+
+export type PipelinePhase = DefaultPhase | ProductPhase | BugPhase;
 
 // ---------------------------------------------------------------------------
 // Runs
@@ -93,12 +96,17 @@ export type ProductRun = Omit<PipelineRunBase, "kind" | "phase"> & {
   phase: ProductPhase;
 };
 
+export type DefaultRun = Omit<PipelineRunBase, "kind" | "phase"> & {
+  kind: "default";
+  phase: DefaultPhase;
+};
+
 export type BugRun = Omit<PipelineRunBase, "kind" | "phase"> & {
   kind: "bug";
   phase: BugPhase;
 };
 
-export type PipelineRun = ProductRun | BugRun;
+export type PipelineRun = DefaultRun | ProductRun | BugRun;
 
 // ---------------------------------------------------------------------------
 // Bug adaptive modes (Phase 6)
@@ -284,6 +292,7 @@ export type AssignmentCreate = Omit<
 
 export type OutcomeAction =
   | "continue_self"
+  | "delegate"
   | "handoff"
   | "wait"
   | "escalate"
@@ -470,4 +479,24 @@ export type RecordOutcomeInput = {
    * without waking agents.
    */
   suppressDispatch?: boolean;
+};
+
+/** Atomic in-place promotion of a default run into a typed controller run. */
+export type DefaultRunPromotionInput = {
+  runId: string;
+  sourceAssignmentId: string;
+  expectedRunVersion: number;
+  targetRun: ProductRun | BugRun;
+  childAssignment: AssignmentCreate;
+  additionalAssignments?: AssignmentCreate[];
+  reason: string;
+  progressFingerprint: string;
+  actorType: "agent" | "human" | "system";
+  actorId: string;
+  startKind: "pm" | "build" | "debug" | "reproducer";
+  sourceMessageTs: string;
+  idempotencyKey: string;
+  seedEvents?: Array<Omit<PipelineEvent, "sequence"> & { sequence?: number }>;
+  dispatchPayload?: Record<string, unknown>;
+  additionalDispatchPayloads?: Record<string, unknown>[];
 };

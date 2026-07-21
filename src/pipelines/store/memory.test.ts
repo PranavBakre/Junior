@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { fakeClock } from "../../time/clock.ts";
 import { InMemoryPipelineStore } from "./memory.ts";
-import { makeAssignmentCreate, makeProductRun } from "./test-helpers.ts";
+import {
+  makeAssignmentCreate,
+  makeDefaultPromotionInput,
+  makeDefaultRun,
+  makeProductRun,
+} from "./test-helpers.ts";
 import type { AgentOutcome, PipelineAttempt, PipelineGate } from "../types.ts";
 
 function baseOutcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
@@ -21,6 +26,252 @@ function baseOutcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
 }
 
 describe("InMemoryPipelineStore", () => {
+  it("promotes a default run in place with source outcome, child, and dispatch", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(2_000));
+    await store.createRun(makeDefaultRun());
+    await store.createAssignment(makeAssignmentCreate({
+      id: "default-asg-1",
+      runId: "default-run-1",
+      targetAgent: "default",
+      idempotencyKey: "default-asg-key",
+    }));
+
+    const receipt = await store.promoteDefaultRunTransaction(
+      makeDefaultPromotionInput(),
+    );
+    expect(receipt.status).toBe("accepted");
+    expect(await store.getRun("default-run-1")).toMatchObject({
+      id: "default-run-1",
+      kind: "product",
+      stateVersion: 1,
+      createdAt: 1_000,
+    });
+    expect(await store.getAssignment("default-asg-1")).toMatchObject({ status: "completed" });
+    expect(await store.getAssignment("product-asg-1")).toMatchObject({
+      parentAssignmentId: "default-asg-1",
+      targetAgent: "build",
+    });
+    expect(await store.listOutcomes("default-asg-1")).toHaveLength(1);
+    expect((await store.listEvents("default-run-1")).map((event) => event.eventType)).toEqual([
+      "outcome.handoff",
+      "pipeline.promoted",
+    ]);
+    expect(await store.listOutbox("default-run-1")).toHaveLength(1);
+
+    const duplicate = await store.promoteDefaultRunTransaction(
+      makeDefaultPromotionInput(),
+    );
+    expect(duplicate.status).toBe("duplicate");
+    expect(await store.listOutcomes("default-asg-1")).toHaveLength(1);
+  });
+
+  it("delegates to a child and resumes the waiting parent on child completion", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(2_000));
+    await store.createRun(makeDefaultRun());
+    await store.createAssignment(makeAssignmentCreate({
+      id: "default-asg-1",
+      runId: "default-run-1",
+      targetAgent: "default",
+      idempotencyKey: "default-asg-key",
+    }));
+    const delegated = await store.recordOutcomeTransaction({
+      outcome: {
+        ...baseOutcome({
+          assignmentId: "default-asg-1",
+          action: "delegate",
+          targetAgent: "review",
+          progressFingerprint: "delegate-review",
+        }),
+        nextAssignment: makeAssignmentCreate({
+          id: "review-asg-1",
+          runId: "default-run-1",
+          parentAssignmentId: "default-asg-1",
+          sourceAgent: "default",
+          targetAgent: "review",
+          idempotencyKey: "review-child-key",
+        }),
+      },
+      actorType: "agent",
+      actorId: "default",
+      idempotencyKey: "delegate-review",
+    });
+    expect(delegated.status).toBe("accepted");
+    expect(await store.getAssignment("default-asg-1")).toMatchObject({ status: "waiting" });
+
+    const duplicateDelegation = await store.recordOutcomeTransaction({
+      outcome: {
+        ...baseOutcome({
+          assignmentId: "default-asg-1",
+          expectedRunVersion: 1,
+          action: "delegate",
+          targetAgent: "build",
+          progressFingerprint: "delegate-again",
+        }),
+        nextAssignment: makeAssignmentCreate({
+          id: "unexpected-asg",
+          runId: "default-run-1",
+          parentAssignmentId: "default-asg-1",
+          targetAgent: "build",
+          idempotencyKey: "unexpected-child-key",
+        }),
+      },
+      actorType: "agent",
+      actorId: "default",
+      idempotencyKey: "delegate-again",
+    });
+    expect(duplicateDelegation.status).toBe("rejected");
+
+    const completed = await store.recordOutcomeTransaction({
+      outcome: baseOutcome({
+        assignmentId: "review-asg-1",
+        expectedRunVersion: 1,
+        action: "complete",
+        status: "succeeded",
+        reason: "review complete",
+        progressFingerprint: "review-complete",
+      }),
+      actorType: "agent",
+      actorId: "review",
+      idempotencyKey: "review-complete",
+    });
+    expect(completed.status).toBe("accepted");
+    expect(await store.getAssignment("default-asg-1")).toMatchObject({ status: "pending" });
+    expect((await store.listOutbox("default-run-1")).at(-1)).toMatchObject({
+      eventType: "assignment.resume",
+      assignmentId: "default-asg-1",
+    });
+    expect(await store.getRun("default-run-1")).toMatchObject({
+      phase: "working",
+      status: "active",
+    });
+  });
+
+  it("completes a default run when the final handoff owner completes", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(2_000));
+    await store.createRun(makeDefaultRun());
+    await store.createAssignment(makeAssignmentCreate({
+      id: "default-asg-1",
+      runId: "default-run-1",
+      targetAgent: "default",
+      idempotencyKey: "default-asg-key",
+    }));
+    const handoff = await store.recordOutcomeTransaction({
+      outcome: {
+        ...baseOutcome({
+          assignmentId: "default-asg-1",
+          action: "handoff",
+          targetAgent: "build",
+          progressFingerprint: "handoff-build",
+        }),
+        nextAssignment: makeAssignmentCreate({
+          id: "build-asg",
+          runId: "default-run-1",
+          parentAssignmentId: "default-asg-1",
+          sourceAgent: "default",
+          targetAgent: "build",
+          idempotencyKey: "build-asg-key",
+        }),
+      },
+      actorType: "agent",
+      actorId: "default",
+      idempotencyKey: "handoff-build",
+    });
+    expect(handoff.status).toBe("accepted");
+
+    const completed = await store.recordOutcomeTransaction({
+      outcome: baseOutcome({
+        assignmentId: "build-asg",
+        expectedRunVersion: 1,
+        action: "complete",
+        status: "succeeded",
+        reason: "build completed",
+        progressFingerprint: "build-completed",
+      }),
+      actorType: "agent",
+      actorId: "build",
+      idempotencyKey: "build-completed",
+    });
+    expect(completed.status).toBe("accepted");
+    expect(await store.getRun("default-run-1")).toMatchObject({
+      phase: "completed",
+      status: "terminal",
+      terminalOutcome: "completed",
+    });
+  });
+
+  it("resumes the waiting delegator after a descendant handoff completes", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(2_000));
+    await store.createRun(makeDefaultRun());
+    await store.createAssignment(makeAssignmentCreate({
+      id: "root-asg",
+      runId: "default-run-1",
+      targetAgent: "default",
+      idempotencyKey: "root-key",
+    }));
+    await store.recordOutcomeTransaction({
+      outcome: {
+        ...baseOutcome({
+          assignmentId: "root-asg",
+          action: "delegate",
+          targetAgent: "review",
+          progressFingerprint: "root-delegates",
+        }),
+        nextAssignment: makeAssignmentCreate({
+          id: "review-asg",
+          runId: "default-run-1",
+          parentAssignmentId: "root-asg",
+          sourceAgent: "default",
+          targetAgent: "review",
+          idempotencyKey: "review-key",
+        }),
+      },
+      actorType: "agent",
+      actorId: "default",
+      idempotencyKey: "root-delegates",
+    });
+    await store.recordOutcomeTransaction({
+      outcome: {
+        ...baseOutcome({
+          assignmentId: "review-asg",
+          expectedRunVersion: 1,
+          action: "handoff",
+          targetAgent: "build",
+          progressFingerprint: "review-handoff",
+        }),
+        nextAssignment: makeAssignmentCreate({
+          id: "build-asg",
+          runId: "default-run-1",
+          parentAssignmentId: "review-asg",
+          sourceAgent: "review",
+          targetAgent: "build",
+          idempotencyKey: "build-key",
+        }),
+      },
+      actorType: "agent",
+      actorId: "review",
+      idempotencyKey: "review-handoff",
+    });
+
+    const completed = await store.recordOutcomeTransaction({
+      outcome: baseOutcome({
+        assignmentId: "build-asg",
+        expectedRunVersion: 2,
+        action: "complete",
+        status: "succeeded",
+        progressFingerprint: "build-complete",
+      }),
+      actorType: "agent",
+      actorId: "build",
+      idempotencyKey: "build-complete",
+    });
+
+    expect(completed.status).toBe("accepted");
+    expect(await store.getAssignment("root-asg")).toMatchObject({ status: "pending" });
+    expect((await store.listOutbox("default-run-1")).at(-1)).toMatchObject({
+      eventType: "assignment.resume",
+      assignmentId: "root-asg",
+    });
+  });
   it("creates and fetches runs by id and thread", async () => {
     const store = new InMemoryPipelineStore(fakeClock(1000));
     const run = makeProductRun();
