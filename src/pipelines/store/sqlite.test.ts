@@ -149,6 +149,91 @@ describe("SqlitePipelineStore", () => {
     expect(stale.reason).toMatch(/state version conflict/i);
   });
 
+  it("atomically invalidates gates with an accepted rework transition", async () => {
+    await store.createRun(
+      makeProductRun({ phase: "reviewing", activeAttemptId: "att-rework" }),
+    );
+    await store.createAssignment(makeAssignmentCreate());
+    await store.createAttempt({
+      id: "att-rework",
+      runId: "run-1",
+      ordinal: 1,
+      revisionDigest: "digest-1",
+      status: "open",
+      invalidatedAt: null,
+      invalidationReason: null,
+      createdAt: clock.now(),
+      finishedAt: null,
+    });
+    await store.upsertGate({
+      id: "gate-review",
+      runId: "run-1",
+      attemptId: "att-rework",
+      memberKey: null,
+      githubResourceId: null,
+      gateKind: "review",
+      status: "passed",
+      subjectSha: "sha-1",
+      evidenceRef: "review:approved",
+      provider: null,
+      model: null,
+      agentName: "review",
+      updatedAt: clock.now(),
+    });
+    await store.commitPrRegistration({
+      registration: {
+        runId: "run-1",
+        assignmentId: "asg-1",
+        owner: "acme",
+        repo: "backend",
+        number: 17,
+        role: "dev-pr",
+        workstreamKey: "backend",
+        attemptId: "att-rework",
+        expectedHeadSha: "sha-1",
+      },
+      actorId: "default",
+      runPhase: "reviewing",
+      now: clock.now(),
+    });
+
+    const stale = await store.recordOutcomeTransaction({
+      outcome: baseOutcome({ expectedRunVersion: 1 }),
+      toPhase: "fixing",
+      actorType: "agent",
+      actorId: "review",
+      invalidateAttemptGates: { attemptId: "att-rework" },
+      deactivateGitHubResourceRoles: ["dev-pr"],
+    });
+    expect(stale.status).toBe("rejected");
+    expect((await store.listGates("att-rework"))[0]?.status).toBe("passed");
+    expect(await store.listPipelineGitHubResources("run-1", true)).toHaveLength(
+      1,
+    );
+
+    const accepted = await store.recordOutcomeTransaction({
+      outcome: baseOutcome({
+        action: "complete",
+        status: "failed",
+        reason: "changes requested",
+      }),
+      toPhase: "fixing",
+      actorType: "agent",
+      actorId: "review",
+      invalidateAttemptGates: { attemptId: "att-rework" },
+      deactivateGitHubResourceRoles: ["dev-pr"],
+    });
+    expect(accepted.status).toBe("accepted");
+    expect((await store.getRun("run-1"))?.phase).toBe("fixing");
+    expect((await store.listGates("att-rework"))[0]).toMatchObject({
+      status: "invalidated",
+      evidenceRef: "review:approved",
+    });
+    expect(await store.listPipelineGitHubResources("run-1", true)).toHaveLength(
+      0,
+    );
+  });
+
   it("rejects mutation on terminal runs (immutability)", async () => {
     await store.createRun(
       makeProductRun({ phase: "ready-for-human-merge" }),
@@ -334,7 +419,11 @@ describe("SqlitePipelineStore", () => {
     await store.createRun(makeProductRun({ id: "run-a", threadId: "T-a" }));
     await store.createRun(makeProductRun({ id: "run-b", threadId: "T-b" }));
 
-    const register = (runId: string, assignmentId: string) =>
+    const register = (
+      runId: string,
+      assignmentId: string,
+      expectedHeadSha = "a".repeat(40),
+    ) =>
       store.commitPrRegistration({
         registration: {
           runId,
@@ -345,7 +434,7 @@ describe("SqlitePipelineStore", () => {
           role: "candidate",
           workstreamKey: "backend",
           attemptId: null,
-          expectedHeadSha: "a".repeat(40),
+          expectedHeadSha,
         },
         actorId: "default",
         runPhase: "pr-open",
@@ -354,14 +443,20 @@ describe("SqlitePipelineStore", () => {
 
     const first = await register("run-a", "asg-a");
     const second = await register("run-b", "asg-b");
+    const revised = await register("run-a", "asg-a", "b".repeat(40));
 
     expect(second.eventId).not.toBe(first.eventId);
+    expect(revised.eventId).not.toBe(first.eventId);
     expect(await store.listPipelineGitHubResources("run-a", true)).toHaveLength(
       1,
     );
     expect(await store.listPipelineGitHubResources("run-b", true)).toHaveLength(
       1,
     );
+    expect(
+      (await store.listPipelineGitHubResources("run-a", true))[0]
+        ?.expectedHeadSha,
+    ).toBe("b".repeat(40));
   });
 
   it("claims and reclaims outbox with fake clock", async () => {

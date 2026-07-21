@@ -10,6 +10,7 @@ import {
   ensureProductRevisionGates,
   fanOutBuilders,
   loadSkipReasons,
+  mergedDevPrCoverage,
   reduceProductOutcome,
   registerProductPr,
   shouldCreateProductRun,
@@ -515,6 +516,54 @@ describe("backend feature → ready-for-human-merge", () => {
     version = r.runVersion;
     expect((await store.getRun(run.id))?.phase).toBe("approved");
 
+    await store.commitPrRegistration({
+      registration: {
+        runId: run.id,
+        assignmentId: reviewer.id,
+        owner: "acme",
+        repo: "example-backend",
+        number: 43,
+        role: "dev-pr",
+        workstreamKey: "backend",
+        attemptId,
+        expectedHeadSha: "sha-be-1",
+      },
+      actorId: "default",
+      runPhase: "approved",
+      now: clock.now(),
+    });
+    expect(
+      (await store.listPipelineGitHubResources(run.id, true)).some(
+        (association) => association.role === "dev-pr",
+      ),
+    ).toBe(true);
+    const devAssociation = (
+      await store.listPipelineGitHubResources(run.id, true)
+    ).find((association) => association.role === "dev-pr")!;
+    const devResource = await store.getGitHubResource(
+      devAssociation.resourceId,
+    );
+    if (!devResource) throw new Error("missing dev PR resource");
+    await store.upsertGitHubResource({
+      ...devResource,
+      snapshot: {
+        state: "MERGED",
+        isDraft: false,
+        baseRefName: "dev",
+        headRefName: "feat/invites",
+        headRefOid: "sha-be-1",
+        reviewDecision: "APPROVED",
+        mergeable: "MERGEABLE",
+        mergedAt: "2026-07-21T00:00:00Z",
+        closedAt: null,
+        checkRollup: "SUCCESS",
+        checkRollupSha: "sha-be-1",
+        updatedAt: "2026-07-21T00:00:00Z",
+      },
+      terminalAt: clock.now(),
+      updatedAt: clock.now(),
+    });
+
     const mergeCoord = await store.createAssignment(
       makeAssignmentCreate({
         id: "asg-merge-gate",
@@ -541,6 +590,131 @@ describe("backend feature → ready-for-human-merge", () => {
     });
     expect(r.status).toBe("accepted");
     expect((await store.getRun(run.id))?.phase).toBe("ready-for-human-merge");
+
+    const qaReopen = await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-dev-qa",
+        runId: run.id,
+        sourceAgent: "human",
+        targetAgent: "default",
+        objective: "investigate a regression discovered after the dev merge",
+        attemptId,
+        candidateRevisionDigest: "d1",
+        idempotencyKey: "dev-qa-1",
+        status: "leased",
+      }),
+    );
+
+    const devRegressionOutcome = (expectedRunVersion: number) =>
+      baseOutcome({
+        assignmentId: qaReopen.id,
+        expectedRunVersion,
+        action: "handoff",
+        status: "progress",
+        targetAgent: "build",
+        reason: "dev verification found a regression",
+        evidenceRefs: ["dev-verification:slack:dev-regression-1"],
+        progressFingerprint: "dev-regression-1",
+        checks: [
+          {
+            name: "dev-verification",
+            status: "failed",
+            evidenceRef: "slack:dev-regression-1",
+          },
+        ],
+        nextAssignment: {
+          parentAssignmentId: qaReopen.id,
+          targetAgent: "build",
+          objective: "fix the regression discovered in dev verification",
+          contextRefs: [],
+          artifactRefs: [],
+          acceptanceCriteria: ["dev regression no longer reproduces"],
+          mutationScope: ["worktree-code"],
+          dependsOn: [],
+          attempt: 1,
+          attemptId,
+          candidateRevisionDigest: "d1",
+          deadlineAt: null,
+          idempotencyKey: "dev-regression-1:next",
+        },
+      });
+
+    const untypedFailure = await reduceProductOutcome(cfg(store, clock), {
+      actorId: "default",
+      toPhase: "fixing",
+      outcome: baseOutcome({
+        assignmentId: qaReopen.id,
+        expectedRunVersion: r.runVersion,
+        action: "handoff",
+        status: "progress",
+        targetAgent: "build",
+        reason: "a tool failed",
+        progressFingerprint: "untyped-tool-failure",
+        nextAssignment: {
+          parentAssignmentId: qaReopen.id,
+          targetAgent: "build",
+          objective: "retry after tool failure",
+          contextRefs: [],
+          artifactRefs: [],
+          acceptanceCriteria: [],
+          mutationScope: ["worktree-code"],
+          dependsOn: [],
+          attempt: 1,
+          attemptId,
+          candidateRevisionDigest: "d1",
+          deadlineAt: null,
+          idempotencyKey: "untyped-tool-failure:next",
+        },
+      }),
+    });
+    expect(untypedFailure.status).toBe("rejected");
+    expect(untypedFailure.reason).toMatch(/dev-verification/i);
+    expect((await store.getRun(run.id))?.phase).toBe("ready-for-human-merge");
+
+    const stale = await reduceProductOutcome(cfg(store, clock), {
+      actorId: "default",
+      toPhase: "fixing",
+      outcome: devRegressionOutcome(r.runVersion - 1),
+    });
+    expect(stale.status).toBe("rejected");
+    expect(
+      (await store.listGates(attemptId)).every(
+        (gate) => gate.status === "passed",
+      ),
+    ).toBe(true);
+
+    r = await reduceProductOutcome(cfg(store, clock), {
+      actorId: "default",
+      toPhase: "fixing",
+      outcome: devRegressionOutcome(r.runVersion),
+    });
+
+    expect(r.status).toBe("accepted");
+    expect((await store.getRun(run.id))?.phase).toBe("fixing");
+    expect(
+      (await store.listAssignments(run.id)).some(
+        (candidate) =>
+          candidate.parentAssignmentId === qaReopen.id &&
+          candidate.targetAgent === "build" &&
+          candidate.status === "pending",
+      ),
+    ).toBe(true);
+    expect(
+      (await store.listGates(attemptId)).every(
+        (gate) => gate.status === "invalidated",
+      ),
+    ).toBe(true);
+    expect(
+      (await store.listPipelineGitHubResources(run.id, true)).some(
+        (association) => association.role === "dev-pr",
+      ),
+    ).toBe(false);
+    expect(
+      (await store.listPipelineGitHubResources(run.id)).some(
+        (association) =>
+          association.role === "dev-pr" && association.active === false,
+      ),
+    ).toBe(true);
   });
 });
 
@@ -756,22 +930,10 @@ describe("review → fix → new revision → re-review", () => {
     expect(rev2.digest).not.toBe(rev1.digest);
     expect(rev2.invalidatedGateCount).toBeGreaterThanOrEqual(0);
 
-    await ensureProductRevisionGates(store, {
-      runId: created.run.id,
-      attemptId,
-      subjectSha: "bbb222",
-    });
-    for (const g of await store.listGates(attemptId)) {
-      if (g.status !== "invalidated") {
-        await store.upsertGate({ ...g, status: "passed", subjectSha: "bbb222" });
-      }
-    }
-    // Fresh gates for re-review
     const freshGates = await ensureProductRevisionGates(store, {
       runId: created.run.id,
       attemptId,
       subjectSha: "bbb222",
-      memberKey: "rework",
     });
     for (const g of freshGates) {
       await store.upsertGate({ ...g, status: "passed" });
@@ -959,6 +1121,50 @@ describe("unchanged findings escalate", () => {
 });
 
 describe("multi-PR same repo tracked separately", () => {
+  it("does not let dev PR workstreams satisfy each other's revision SHA", () => {
+    const members = [
+      {
+        memberKey: "backend",
+        repoRef: "example-backend",
+        branch: "feat/x",
+        headSha: "sha-backend",
+      },
+      {
+        memberKey: "frontend",
+        repoRef: "example-frontend",
+        branch: "feat/x",
+        headSha: "sha-frontend",
+      },
+    ];
+    const swapped = mergedDevPrCoverage(members, [
+      {
+        workstreamKey: "backend",
+        expectedHeadSha: "sha-frontend",
+        mergedHeadSha: "sha-frontend",
+      },
+      {
+        workstreamKey: "frontend",
+        expectedHeadSha: "sha-backend",
+        mergedHeadSha: "sha-backend",
+      },
+    ]);
+    expect(swapped.size).toBe(0);
+
+    const exact = mergedDevPrCoverage(members, [
+      {
+        workstreamKey: "backend",
+        expectedHeadSha: "sha-backend",
+        mergedHeadSha: "sha-backend",
+      },
+      {
+        workstreamKey: "frontend",
+        expectedHeadSha: "sha-frontend",
+        mergedHeadSha: "sha-frontend",
+      },
+    ]);
+    expect([...exact].sort()).toEqual(["backend", "frontend"]);
+  });
+
   it("registers two PRs in one repo with distinct workstream keys", async () => {
     const clock = fakeClock(1000);
     const store = new InMemoryPipelineStore(clock);
@@ -1060,7 +1266,7 @@ describe("multi-PR same repo tracked separately", () => {
       createdAt: 1000,
       finishedAt: null,
     });
-    await updateProductRevision(cfg(store), {
+    const initialRevision = await updateProductRevision(cfg(store), {
       attemptId,
       members: [
         {
@@ -1082,12 +1288,25 @@ describe("multi-PR same repo tracked separately", () => {
       attemptId,
       subjectSha: "aaa",
     });
+    expect(revisionGatesConsistent([]).ok).toBe(false);
+    const currentMembers = await store.listRevisionMembers(attemptId);
+    expect(
+      revisionGatesConsistent(
+        gates,
+        currentMembers,
+        initialRevision.digest,
+      ).ok,
+    ).toBe(false);
     for (const g of gates) {
       await store.upsertGate({ ...g, status: "passed" });
     }
-    expect(revisionGatesConsistent(await store.listGates(attemptId)).ok).toBe(
-      true,
-    );
+    expect(
+      revisionGatesConsistent(
+        await store.listGates(attemptId),
+        currentMembers,
+        initialRevision.digest,
+      ).ok,
+    ).toBe(true);
 
     // Change one member in same repo
     const result = await updateProductRevision(cfg(store), {
@@ -1163,6 +1382,22 @@ describe("phase suggestions", () => {
         reviewVerdict: "changes_requested",
       }),
     ).toBe("fixing");
+  });
+
+  it("suggests fixing when dev verification fails after approval", () => {
+    expect(
+      suggestPhaseAfterOutcome({
+        currentPhase: "ready-for-human-merge",
+        outcomeStatus: "failed",
+        devVerificationFailed: true,
+      }),
+    ).toBe("fixing");
+    expect(
+      suggestPhaseAfterOutcome({
+        currentPhase: "ready-for-human-merge",
+        outcomeStatus: "failed",
+      }),
+    ).toBeNull();
   });
 
   it("stays building when fan-out incomplete", () => {

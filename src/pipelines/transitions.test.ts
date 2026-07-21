@@ -47,6 +47,14 @@ describe("product transitions", () => {
     expect(isTerminalPhase("product", "needs-human")).toBe(false);
   });
 
+  it("reopens an approved candidate when dev verification finds a bug", () => {
+    expect(canTransition("product", "approved", "fixing")).toBe(true);
+    expect(
+      canTransition("product", "ready-for-human-merge", "fixing"),
+    ).toBe(true);
+    expect(canTransition("product", "shipped", "fixing")).toBe(false);
+  });
+
   it("assertTransition throws on illegal edges", () => {
     expect(() => assertTransition("product", "shipped", "building")).toThrow(
       /Illegal product phase transition/,
