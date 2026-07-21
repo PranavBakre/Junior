@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fakeClock } from "../../time/clock.ts";
 import { SqlitePipelineStore } from "./sqlite.ts";
-import { makeAssignmentCreate, makeProductRun } from "./test-helpers.ts";
+import {
+  makeAssignmentCreate,
+  makeDefaultPromotionInput,
+  makeDefaultRun,
+  makeProductRun,
+} from "./test-helpers.ts";
 import type { AgentOutcome, PipelineAttempt, PipelineGate } from "../types.ts";
 
 function baseOutcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
@@ -37,6 +42,37 @@ describe("SqlitePipelineStore", () => {
   afterEach(() => {
     store.close();
     rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("promotes a default run in place atomically and replays idempotently", async () => {
+    await store.createRun(makeDefaultRun());
+    await store.createAssignment(makeAssignmentCreate({
+      id: "default-asg-1",
+      runId: "default-run-1",
+      targetAgent: "default",
+      idempotencyKey: "default-asg-key",
+    }));
+    const first = await store.promoteDefaultRunTransaction(
+      makeDefaultPromotionInput(),
+    );
+    expect(first.status).toBe("accepted");
+    expect(await store.getRun("default-run-1")).toMatchObject({
+      kind: "product",
+      stateVersion: 1,
+      createdAt: 1_000,
+    });
+    expect(await store.getAssignment("default-asg-1")).toMatchObject({ status: "completed" });
+    expect(await store.getAssignment("product-asg-1")).toMatchObject({
+      parentAssignmentId: "default-asg-1",
+    });
+    expect(await store.listOutcomes("default-asg-1")).toHaveLength(1);
+    expect(await store.listOutbox("default-run-1")).toHaveLength(1);
+
+    const replay = await store.promoteDefaultRunTransaction(
+      makeDefaultPromotionInput(),
+    );
+    expect(replay.status).toBe("duplicate");
+    expect(await store.listOutcomes("default-asg-1")).toHaveLength(1);
   });
 
   it("round-trips runs and assignments", async () => {
@@ -380,6 +416,63 @@ describe("SqlitePipelineStore", () => {
     );
     const active = await store.getRunByThread("T-term");
     expect(active?.id).toBe("run-after-term");
+  });
+
+  it("migrates a populated legacy run table without breaking child foreign keys", async () => {
+    const legacyPath = join(tmpDir, "legacy-run-kind.db");
+    const { Database } = await import("bun:sqlite");
+    const legacy = new Database(legacyPath);
+    legacy.run("PRAGMA foreign_keys = ON");
+    legacy.run(`
+      CREATE TABLE pipeline_runs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('product', 'bug')),
+        definition_version INTEGER NOT NULL, channel_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL, phase TEXT NOT NULL, status TEXT NOT NULL,
+        owner_agent TEXT NOT NULL, repo_refs_json TEXT NOT NULL,
+        acceptance_json TEXT NOT NULL, artifact_refs_json TEXT NOT NULL,
+        blocker_refs_json TEXT NOT NULL, active_attempt_id TEXT,
+        state_version INTEGER NOT NULL, deadline_at INTEGER,
+        terminal_outcome TEXT, terminal_reason TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      )
+    `);
+    legacy.run(`
+      CREATE TABLE pipeline_assignments (
+        id TEXT PRIMARY KEY, run_id TEXT NOT NULL, parent_assignment_id TEXT,
+        source_agent TEXT NOT NULL, target_agent TEXT NOT NULL,
+        status TEXT NOT NULL, objective TEXT NOT NULL,
+        context_refs_json TEXT NOT NULL, artifact_refs_json TEXT NOT NULL,
+        acceptance_json TEXT NOT NULL, mutation_scope_json TEXT NOT NULL,
+        dependencies_json TEXT NOT NULL, attempt_number INTEGER NOT NULL,
+        attempt_id TEXT, candidate_revision_digest TEXT, deadline_at INTEGER,
+        lease_owner TEXT, lease_expires_at INTEGER,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        FOREIGN KEY (run_id) REFERENCES pipeline_runs(id)
+      )
+    `);
+    legacy.run(`
+      INSERT INTO pipeline_runs VALUES (
+        'legacy-run', 'product', 1, 'C', 'T-legacy', 'building', 'active',
+        'lead', '[]', '[]', '[]', '[]', NULL, 0, NULL, NULL, NULL, 1000, 1000
+      )
+    `);
+    legacy.run(`
+      INSERT INTO pipeline_assignments VALUES (
+        'legacy-asg', 'legacy-run', NULL, 'lead', 'build', 'pending', 'Build',
+        '[]', '[]', '[]', '[]', '[]', 1, NULL, NULL, NULL, NULL, NULL,
+        'legacy-asg-key', 1000, 1000
+      )
+    `);
+    legacy.close();
+
+    const migrated = new SqlitePipelineStore(legacyPath, clock);
+    expect((await migrated.getRun("legacy-run"))?.kind).toBe("product");
+    expect((await migrated.getAssignment("legacy-asg"))?.runId).toBe("legacy-run");
+    await migrated.createRun(makeDefaultRun({ id: "default-after-migration", threadId: "T-default" }));
+    expect((await migrated.getRun("default-after-migration"))?.kind).toBe("default");
+    migrated.close();
   });
 
   it("migrates legacy UNIQUE(assignment_id) so multi-repo jobs can coexist", async () => {

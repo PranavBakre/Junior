@@ -94,13 +94,14 @@ export function parseAgentOutcome(raw: unknown): AgentOutcome {
   const action = o.action;
   if (
     action !== "continue_self" &&
+    action !== "delegate" &&
     action !== "handoff" &&
     action !== "wait" &&
     action !== "escalate" &&
     action !== "complete"
   ) {
     throw new Error(
-      `invalid action: ${String(action)} (expected continue_self|handoff|wait|escalate|complete)`,
+      `invalid action: ${String(action)} (expected continue_self|delegate|handoff|wait|escalate|complete)`,
     );
   }
   const status = o.status;
@@ -242,7 +243,7 @@ export async function reportOutcome(
   }
 
   // Handoff edge authority (catalog graph).
-  if (outcome.action === "handoff") {
+  if (outcome.action === "handoff" || outcome.action === "delegate") {
     const target =
       outcome.targetAgent ?? outcome.nextAssignment?.targetAgent ?? "";
     const source = assignment.targetAgent;
@@ -399,6 +400,7 @@ export async function requestHandoff(
     deadlineAt?: number | null;
     idempotencyKey: string;
     nextIdempotencyKey: string;
+    action?: "handoff" | "delegate";
     toPhase?: string;
     auth: OutcomeAuthContext;
   },
@@ -406,7 +408,7 @@ export async function requestHandoff(
   const outcome: AgentOutcome = {
     assignmentId: args.assignmentId,
     expectedRunVersion: args.expectedRunVersion,
-    action: "handoff",
+    action: args.action ?? "handoff",
     status: "progress",
     targetAgent: args.targetAgent,
     reason: args.reason,

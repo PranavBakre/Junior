@@ -269,6 +269,7 @@ export function suggestPhaseAfterOutcome(input: {
     | "failed";
   outcomeAction?:
     | "continue_self"
+    | "delegate"
     | "handoff"
     | "wait"
     | "escalate"

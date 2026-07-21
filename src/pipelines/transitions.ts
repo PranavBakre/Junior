@@ -1,4 +1,16 @@
-import type { BugPhase, PipelineKind, ProductPhase } from "./types.ts";
+import type {
+  BugPhase,
+  DefaultPhase,
+  PipelineKind,
+  ProductPhase,
+} from "./types.ts";
+
+const DEFAULT_TRANSITIONS: Record<DefaultPhase, readonly DefaultPhase[]> = {
+  working: ["needs-human", "completed", "abandoned"],
+  "needs-human": ["working", "completed", "abandoned"],
+  completed: [],
+  abandoned: [],
+};
 
 /**
  * Legal product-phase edges. Terminal phases have empty outbound sets.
@@ -148,6 +160,15 @@ const BUG_TERMINAL: ReadonlySet<BugPhase> = new Set([
   "abandoned",
 ]);
 
+const DEFAULT_TERMINAL: ReadonlySet<DefaultPhase> = new Set([
+  "completed",
+  "abandoned",
+]);
+
+export function isDefaultPhase(value: string): value is DefaultPhase {
+  return Object.prototype.hasOwnProperty.call(DEFAULT_TRANSITIONS, value);
+}
+
 export function isProductPhase(value: string): value is ProductPhase {
   return Object.prototype.hasOwnProperty.call(PRODUCT_TRANSITIONS, value);
 }
@@ -157,6 +178,9 @@ export function isBugPhase(value: string): value is BugPhase {
 }
 
 export function isTerminalPhase(kind: PipelineKind, phase: string): boolean {
+  if (kind === "default") {
+    return isDefaultPhase(phase) && DEFAULT_TERMINAL.has(phase);
+  }
   if (kind === "product") {
     return isProductPhase(phase) && PRODUCT_TERMINAL.has(phase);
   }
@@ -169,6 +193,10 @@ export function canTransition(
   to: string,
 ): boolean {
   if (from === to) return true;
+  if (kind === "default") {
+    if (!isDefaultPhase(from) || !isDefaultPhase(to)) return false;
+    return DEFAULT_TRANSITIONS[from].includes(to);
+  }
   if (kind === "product") {
     if (!isProductPhase(from) || !isProductPhase(to)) return false;
     return PRODUCT_TRANSITIONS[from].includes(to);

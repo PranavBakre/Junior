@@ -13,6 +13,7 @@ import {
   type AgentOutcome,
   type Assignment,
   type AttemptRevisionMember,
+  type DefaultRun,
   type PipelineGate,
   type PipelineStartProvenance,
   type ProductPhase,
@@ -62,6 +63,8 @@ export type CreateProductRunInput = {
   targetAgent?: string;
   acceptanceCriteria?: string[];
   provenance?: PipelineStartProvenance;
+  /** Exact authenticated default assignment being promoted. */
+  sourceAssignmentId?: string;
   /** Orchestrator-declared implementation scope; preferred over inference. */
   requiredWorkstreams?: Array<"backend" | "frontend">;
 };
@@ -71,6 +74,7 @@ export type CreateProductRunResult = {
   assignment: Assignment;
   skipReasons: SkipStageReason[];
   created: boolean;
+  promoted?: boolean;
 };
 
 const SKIP_EVENT = "product.stages_skipped";
@@ -91,6 +95,9 @@ export async function createProductRun(
   const now = clock.now();
 
   const existing = await store.getRunByThread(input.threadId);
+  if (existing && existing.kind === "default" && existing.status !== "terminal") {
+    return promoteDefaultToProduct(config, existing, input);
+  }
   if (
     existing &&
     existing.kind === "product" &&
@@ -356,6 +363,177 @@ export async function createProductRun(
     assignment,
     skipReasons: start.skipReasons,
     created: true,
+  };
+}
+
+async function promoteDefaultToProduct(
+  config: ProductControllerConfig,
+  existing: DefaultRun,
+  input: CreateProductRunInput,
+): Promise<CreateProductRunResult> {
+  const store = config.store;
+  const now = (config.clock ?? systemClock).now();
+  const sources = await store.listAssignments(existing.id);
+  const source = input.sourceAssignmentId
+    ? sources.find((assignment) => assignment.id === input.sourceAssignmentId)
+    : sources.find((assignment) =>
+        assignment.status === "pending" || assignment.status === "leased"
+      );
+  if (!source) throw new Error(`active default run ${existing.id} has no open assignment`);
+  if (source.status !== "pending" && source.status !== "leased") {
+    throw new Error(`default assignment ${source.id} cannot be promoted from ${source.status}`);
+  }
+
+  const start = initialProductStart({
+    startKind: input.startKind,
+    objective: input.objective,
+    forceDiscovery: input.forceDiscovery,
+  });
+  const ownerAgent = input.ownerAgent ?? start.ownerAgent;
+  const workstreams = input.startKind === "build"
+    ? inferProductWorkstreams(
+        input.objective,
+        input.repoRefs ?? existing.repoRefs,
+        input.requiredWorkstreams,
+      )
+    : [];
+  const targets = workstreams.length > 0
+    ? workstreams.map((workstream) => ({
+        agent: workstream === "frontend" ? "frontend" : "build",
+        workstream,
+      }))
+    : [{ agent: input.targetAgent ?? start.targetAgent, workstream: null }];
+  const makeChild = (
+    target: (typeof targets)[number],
+    index: number,
+  ) => ({
+    id: crypto.randomUUID(),
+    runId: existing.id,
+    parentAssignmentId: source.id,
+    sourceAgent: source.targetAgent,
+    targetAgent: target.agent,
+    objective: target.workstream
+      ? `${input.objective} [${target.workstream}]`
+      : input.objective,
+    contextRefs: [
+      `start:${input.startKind}`,
+      `phase:${start.phase}`,
+      ...(target.workstream ? [`workstream:${target.workstream}`] : []),
+      ...(targets.length > 1 ? ["fanout:true"] : []),
+      ...start.skipReasons.map((reason) => `skip:${reason.stage}`),
+    ],
+    artifactRefs: [],
+    acceptanceCriteria: input.acceptanceCriteria ?? existing.acceptanceCriteria,
+    mutationScope:
+      target.agent === "build" || target.agent === "frontend"
+        ? ["worktree-code"]
+        : target.agent === "pm" || target.agent === "architect"
+          ? ["pipeline-artifact"]
+          : [],
+    dependsOn: [],
+    attempt: 1,
+    attemptId: null,
+    candidateRevisionDigest: null,
+    deadlineAt: input.deadlineAt ?? existing.deadlineAt,
+    idempotencyKey: `product-promote:${existing.id}:${input.messageTs}:${input.startKind}:${target.workstream ?? index}`,
+  });
+  const children = targets.map(makeChild);
+  const targetRun: ProductRun = {
+    ...existing,
+    kind: "product",
+    definitionVersion: PIPELINE_DEFINITION_VERSION,
+    phase: start.phase,
+    status: "active",
+    ownerAgent,
+    repoRefs: input.repoRefs ?? existing.repoRefs,
+    acceptanceCriteria: input.acceptanceCriteria ?? existing.acceptanceCriteria,
+    deadlineAt: input.deadlineAt ?? existing.deadlineAt,
+    terminalOutcome: null,
+    terminalReason: null,
+    updatedAt: now,
+  };
+  const promotionKey = input.provenance?.idempotencyKey ??
+    `product-promote:${input.threadId}:${input.messageTs}:${input.startKind}`;
+  const seedEvents = [
+    ...(start.skipReasons.length > 0
+      ? [{
+          id: crypto.randomUUID(),
+          runId: existing.id,
+          eventType: SKIP_EVENT,
+          actorType: "system" as const,
+          actorId: "product-controller",
+          assignmentId: children[0]!.id,
+          outcomeId: null,
+          fromPhase: existing.phase,
+          toPhase: start.phase,
+          payloadVersion: 1,
+          payload: { reasons: start.skipReasons },
+          idempotencyKey: `product.skip:${existing.id}`,
+          occurredAt: now,
+          observedAt: now,
+        }]
+      : []),
+    ...(workstreams.length > 0
+      ? [{
+          id: crypto.randomUUID(),
+          runId: existing.id,
+          eventType: WORKSTREAM_EVENT,
+          actorType: "system" as const,
+          actorId: "product-controller",
+          assignmentId: children[0]!.id,
+          outcomeId: null,
+          fromPhase: existing.phase,
+          toPhase: start.phase,
+          payloadVersion: 1,
+          payload: { workstreams, fullStack: workstreams.length > 1 },
+          idempotencyKey: `product.workstreams:${existing.id}`,
+          occurredAt: now,
+          observedAt: now,
+        }]
+      : []),
+  ];
+  const receipt = await store.promoteDefaultRunTransaction({
+    runId: existing.id,
+    sourceAssignmentId: source.id,
+    expectedRunVersion: existing.stateVersion,
+    targetRun,
+    childAssignment: children[0]!,
+    additionalAssignments: children.slice(1),
+    reason: input.provenance?.reason ?? `upgrade default run to product/${input.startKind}`,
+    progressFingerprint: `promote:product:${input.startKind}:${input.messageTs}`,
+    actorType: input.provenance?.actorType ?? "agent",
+    actorId: input.provenance?.actorId ?? ownerAgent,
+    startKind: input.startKind,
+    sourceMessageTs: input.messageTs,
+    idempotencyKey: `pipeline.promoted:${promotionKey}`,
+    seedEvents,
+    dispatchPayload: {
+      startKind: input.startKind,
+      phase: start.phase,
+      workstreamKey: targets[0]!.workstream,
+    },
+    additionalDispatchPayloads: targets.slice(1).map((target) => ({
+      startKind: input.startKind,
+      phase: start.phase,
+      workstreamKey: target.workstream,
+    })),
+  });
+  if (receipt.status !== "accepted" && receipt.status !== "duplicate") {
+    throw new Error(receipt.reason ?? `product promotion ${receipt.status}`);
+  }
+  const promoted = await store.getRun(existing.id);
+  const assignment = receipt.assignmentId
+    ? await store.getAssignment(receipt.assignmentId)
+    : undefined;
+  if (!promoted || promoted.kind !== "product" || !assignment) {
+    throw new Error("product promotion committed without readable run/assignment");
+  }
+  return {
+    run: promoted,
+    assignment,
+    skipReasons: start.skipReasons,
+    created: false,
+    promoted: true,
   };
 }
 
