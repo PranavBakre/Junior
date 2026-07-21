@@ -23,63 +23,80 @@ export async function reconcileTmuxSessions(
   for (const [threadId, session] of sessions) {
     if (session.driverMode !== "tmux") continue;
 
-    // tmux sessions were always launched with a concrete cwd; reuse the
-    // session's recorded worktreePath. If the worktree is gone the
-    // session can't be safely adopted — leave it for the next send to
-    // cold-start.
-    const cwd = session.cwd ?? session.worktreePath;
-    if (!cwd) continue;
-
     if (session.tmuxSessionName) {
-      const live = await driver.tmuxHasSession(session.tmuxSessionName);
-      if (live) {
-        await driver.adoptExistingSession({
-          threadId,
-          agentName: session.topLevelTmuxAgent ?? "lead",
-          cwd,
-          tmuxSessionName: session.tmuxSessionName,
-          sessionId: session.sessionId,
-        });
-        // The bot died mid-turn but tmux survived. We have no activeTurn to
-        // resolve, so the next `turn_duration` event would be silently dropped
-        // and the row stays busy forever — flip back to idle so new messages
-        // can drain. Symmetric to the dead-tmux branch below.
-        if (session.status === "busy") {
-          session.status = "idle";
-          session.lastError = {
-            type: "tmux-adopted-mid-turn",
-            message: "bot restarted mid-turn; tmux session adopted, in-flight turn dropped",
-            timestamp: Date.now(),
-          };
-          await store.set(threadId, session);
-        }
-        adopted++;
-      } else {
-        // The tmux session is gone but we kept the transcript — next send()
-        // will cold-start a fresh tmux with --resume <sessionId>.
+      const cwd = session.sessionCwd;
+      if (!cwd) {
+        await driver.discardPersistedSession(session.tmuxSessionName);
         session.tmuxSessionName = null;
-        if (session.status === "busy") {
-          session.status = "idle";
-          session.lastError = {
-            type: "tmux-lost",
-            message: "tmux session died while bot was down",
-            timestamp: Date.now(),
-          };
-        }
+        session.topLevelTmuxAgent = null;
+        session.sessionId = null;
+        session.leadSessionId = null;
+        session.sessionCwd = null;
+        if (session.status === "busy") session.status = "idle";
         await store.set(threadId, session);
         downgraded++;
+      } else {
+        const live = await driver.tmuxHasSession(session.tmuxSessionName);
+        if (live) {
+          await driver.adoptExistingSession({
+            threadId,
+            agentName: session.topLevelTmuxAgent ?? "lead",
+            cwd,
+            tmuxSessionName: session.tmuxSessionName,
+            sessionId: session.sessionId,
+          });
+          // The bot died mid-turn but tmux survived. We have no activeTurn to
+          // resolve, so the next `turn_duration` event would be silently dropped
+          // and the row stays busy forever — flip back to idle so new messages
+          // can drain. Symmetric to the dead-tmux branch below.
+          if (session.status === "busy") {
+            session.status = "idle";
+            session.lastError = {
+              type: "tmux-adopted-mid-turn",
+              message: "bot restarted mid-turn; tmux session adopted, in-flight turn dropped",
+              timestamp: Date.now(),
+            };
+            await store.set(threadId, session);
+          }
+          adopted++;
+        } else {
+          // The tmux session is gone but we kept the transcript — next send()
+          // will cold-start a fresh tmux with --resume <sessionId>.
+          session.tmuxSessionName = null;
+          if (session.status === "busy") {
+            session.status = "idle";
+            session.lastError = {
+              type: "tmux-lost",
+              message: "tmux session died while bot was down",
+              timestamp: Date.now(),
+            };
+          }
+          await store.set(threadId, session);
+          downgraded++;
+        }
       }
     }
 
     // Per-agent persistent agents
     for (const agentSession of Object.values(session.agentSessions ?? {})) {
       if (!agentSession.tmuxSessionName) continue;
+      const agentCwd = agentSession.sessionCwd;
+      if (!agentCwd) {
+        await driver.discardPersistedSession(agentSession.tmuxSessionName);
+        agentSession.tmuxSessionName = null;
+        agentSession.sessionId = null;
+        agentSession.sessionCwd = null;
+        if (agentSession.status === "busy") agentSession.status = "idle";
+        await store.set(threadId, session);
+        downgraded++;
+        continue;
+      }
       const live = await driver.tmuxHasSession(agentSession.tmuxSessionName);
       if (live) {
         await driver.adoptExistingSession({
           threadId,
           agentName: agentSession.agentName,
-          cwd,
+          cwd: agentCwd,
           tmuxSessionName: agentSession.tmuxSessionName,
           sessionId: agentSession.sessionId,
         });

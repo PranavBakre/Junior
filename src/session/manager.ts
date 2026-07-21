@@ -30,7 +30,12 @@ import {
   sessionProvider,
   spawnRunner as defaultSpawnRunner,
 } from "../runners/index.ts";
-import { willResume } from "../runners/runtime.ts";
+import {
+  isProviderSessionUnavailable,
+  providerSessionMatchesCwd,
+  resolveRunnerCwd,
+  willResume,
+} from "../runners/runtime.ts";
 import { createDrivers, type DriverMap } from "../claude/factory.ts";
 import { tmuxSessionNameFor } from "../claude/tmux-driver.ts";
 import {
@@ -64,6 +69,11 @@ import {
   formatPipelineStatusLines,
   projectRunSummary,
 } from "../pipelines/projection.ts";
+import { buildAssignmentContext } from "../pipelines/context.ts";
+import { bugContextForAssignment } from "../pipelines/bug/controller.ts";
+import { composeBugDispatchPrompt } from "../pipelines/bug/context.ts";
+import { productContextForAssignment } from "../pipelines/product/controller.ts";
+import { composeProductDispatchPrompt } from "../pipelines/product/context.ts";
 
 export class SessionManager {
   private store: SessionStore;
@@ -474,13 +484,16 @@ export class SessionManager {
 
     if (outcome.action === "muted") return;
 
-    await this.onAgentDispatched?.(session, agentName);
-
     if (outcome.action === "buffer") {
       this.onMessageBuffered?.(event);
       return;
     }
 
+    const reservation = createRunSetupReservation(
+      sessionProvider(this.buildRunSession(session, agentName), this.config),
+    );
+    this.handles.set(this.handleKey(session.threadId, agentName), reservation);
+    await this.onAgentDispatched?.(session, agentName);
     this.runRunnerWithAgent(
       session,
       event.text,
@@ -488,6 +501,7 @@ export class SessionManager {
       event.files,
       agentName,
       event.user,
+      reservation,
     );
   }
 
@@ -543,6 +557,10 @@ export class SessionManager {
       return;
     }
 
+    const reservation = createRunSetupReservation(
+      sessionProvider(this.buildRunSession(session, agentName), this.config),
+    );
+    this.handles.set(this.handleKey(session.threadId, agentName), reservation);
     this.runRunnerWithAgent(
       session,
       event.text,
@@ -550,6 +568,7 @@ export class SessionManager {
       event.files,
       agentName,
       event.user,
+      reservation,
     );
   }
 
@@ -699,6 +718,7 @@ export class SessionManager {
       await this.mutateSession(threadId, (s) => {
         s.sessionId = null;
         s.leadSessionId = null;
+        s.sessionCwd = null;
         s.pendingMessages = [];
         s.activePipelineInvocation = null;
         s.status = "idle";
@@ -1266,10 +1286,18 @@ export class SessionManager {
     files: SlackFileAttachment[] | undefined,
     agentName: string,
     senderUserId?: string,
+    expectedHandle?: SpawnHandle,
   ): Promise<void> {
     const isTopLevel = agentName === "lead" || agentName === "default";
+    const reservationKey = this.handleKey(session.threadId, agentName);
+    const assertRunOwnership = () => {
+      if (expectedHandle && this.handles.get(reservationKey) !== expectedHandle) {
+        throw new RunOwnershipChangedError();
+      }
+    };
     try {
-      const agentSession = isTopLevel
+      assertRunOwnership();
+      let agentSession = isTopLevel
         ? null
         : this.getOrCreateAgentSession(session, agentName);
       const agentIdentity = identityForAgent(agentName);
@@ -1295,15 +1323,18 @@ export class SessionManager {
             );
           }
         }
+        assertRunOwnership();
         const inferredRepo = inferReviewRepo(
           this.config.repos,
           prompt,
           pipelineRepoRefs,
         );
         if (inferredRepo && session.targetRepo !== inferredRepo.name) {
-          session.targetRepo = inferredRepo.name;
-          session.worktreePath = session.worktreePaths[inferredRepo.name] ?? null;
-          await this.store.set(session.threadId, session);
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            fresh.targetRepo = inferredRepo.name;
+            fresh.worktreePath = fresh.worktreePaths[inferredRepo.name] ?? null;
+          });
         }
       }
 
@@ -1326,16 +1357,22 @@ export class SessionManager {
         !session.worktreePath
       ) {
         try {
+          const targetRepoName = targetRepo.name;
           session.worktreePath = await this.worktreeManager.createWorktree(
-            targetRepo.name,
+            targetRepoName,
             session.threadId,
             session.baseRef ?? undefined,
           );
-          session.worktreePaths = {
-            ...session.worktreePaths,
-            [targetRepo.name]: session.worktreePath,
-          };
-          await this.store.set(session.threadId, session);
+          assertRunOwnership();
+          const createdPath = session.worktreePath;
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            fresh.worktreePath = createdPath;
+            fresh.worktreePaths = {
+              ...fresh.worktreePaths,
+              [targetRepoName]: createdPath,
+            };
+          });
         } catch (err) {
           _log.warn(
             "manager",
@@ -1364,11 +1401,56 @@ export class SessionManager {
           ? session.worktreePaths
           : undefined;
 
+      // cwd fallback: only used when no worktree exists. With the always-worktree
+      // policy above, this only fires for read-only/discussion threads with no
+      // targetRepo — never inside the shared origin repo.
+      const targetRepoCwd: string | undefined = session.worktreePath
+        ? undefined
+        : targetRepo?.path;
+
       // Build after worktree routing/creation so provider policy and cwd see
       // the newly registered isolated checkout on this same turn.
-      const runSession = this.buildRunSession(session, agentName, agentIdentity);
+      let runSession = this.buildRunSession(session, agentName, agentIdentity);
+      let provider = sessionProvider(runSession, this.config);
+      const invocationCwd = resolveRunnerCwd(runSession, targetRepoCwd);
+      if (
+        runSession.sessionId &&
+        !providerSessionMatchesCwd({
+          provider,
+          sessionId: runSession.sessionId,
+          sessionCwd: runSession.sessionCwd,
+          cwd: invocationCwd,
+        })
+      ) {
+        const staleSessionId = runSession.sessionId;
+        const invalidation = await this.invalidateProviderSession(
+          session.threadId,
+          agentName,
+          staleSessionId,
+        );
+        session = invalidation.session;
+        agentSession = isTopLevel
+          ? null
+          : this.getOrCreateAgentSession(session, agentName);
+        runSession = this.buildRunSession(session, agentName, agentIdentity);
+        provider = sessionProvider(runSession, this.config);
+        if (invalidation.invalidated) {
+          _log.warn(
+            "session",
+            `provider-session.cold-start thread=${session.threadId} agent=${agentName} provider=${provider} reason=cwd-affinity`,
+          );
+          if (!latestTs) {
+            prompt = await this.buildProviderColdStartPrompt(
+              session,
+              agentName,
+              rawMessage,
+            );
+          }
+        }
+      }
       runSession.currentMessageTs = latestTs ?? null;
       await this.attachReviewVerificationPolicy(runSession, agentName);
+      assertRunOwnership();
 
       // Resolve the agent definition early so its declared context profile
       // gates the preamble. Default agent (no .md) and missing-flag cases
@@ -1376,6 +1458,7 @@ export class SessionManager {
       const agentDefinition = this.agentRouter
         ? await this.agentRouter.resolveAgent(runSession)
         : null;
+      assertRunOwnership();
       const contextProfile: AgentContextProfile =
         agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
 
@@ -1387,16 +1470,20 @@ export class SessionManager {
       if (agentDefinition?.model) {
         runSession.model = agentDefinition.model;
         if (isTopLevel) {
-          session.model = agentDefinition.model;
-          await this.store.set(session.threadId, session);
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            fresh.model = agentDefinition.model ?? null;
+          });
         }
       }
       // Per-agent Claude-runner model override (`model.claude` frontmatter).
       // Resolved by resolveClaudeModel at spawn; carried the same way as `model`.
       runSession.modelClaude = agentDefinition?.modelClaude ?? null;
       if (isTopLevel && agentDefinition?.modelClaude) {
-        session.modelClaude = agentDefinition.modelClaude;
-        await this.store.set(session.threadId, session);
+        session = await this.mutateSession(session.threadId, (fresh) => {
+          assertRunOwnership();
+          fresh.modelClaude = agentDefinition.modelClaude ?? null;
+        });
       }
       runSession.agentPermissions = agentDefinition?.permissions;
 
@@ -1433,6 +1520,11 @@ export class SessionManager {
             provider,
             sessionId: runSession.sessionId,
             opencodeContinuityEnabled: this.config.opencode.continuityEnabled,
+          }) && providerSessionMatchesCwd({
+            provider,
+            sessionId: runSession.sessionId,
+            sessionCwd: runSession.sessionCwd,
+            cwd: invocationCwd,
           });
           const isFirstTurn = !resumes;
           const needsThreadCatchup = !!session.needsThreadCatchup;
@@ -1460,10 +1552,13 @@ export class SessionManager {
               this.config.repos,
               preambleProfile,
             );
+            assertRunOwnership();
             prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
             if (needsThreadCatchup) {
-              session.needsThreadCatchup = false;
-              await this.store.set(session.threadId, session);
+              session = await this.mutateSession(session.threadId, (fresh) => {
+                assertRunOwnership();
+                fresh.needsThreadCatchup = false;
+              });
             }
           } else if (contextProfile.workspace) {
             const workspaceBlock = buildWorkspaceBlock(
@@ -1520,18 +1615,16 @@ export class SessionManager {
           agentName,
           agentIdentity,
         );
+        assertRunOwnership();
         if (isTopLevel) {
-          session.systemPrompt = runSession.systemPrompt;
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            fresh.systemPrompt = runSession.systemPrompt;
+          });
+        } else {
+          assertRunOwnership();
         }
-        await this.store.set(session.threadId, session);
       }
-
-      // cwd fallback: only used when no worktree exists. With the always-worktree
-      // policy above, this only fires for read-only/discussion threads with no
-      // targetRepo — never inside the shared origin repo.
-      const targetRepoCwd: string | undefined = session.worktreePath
-        ? undefined
-        : targetRepo?.path;
 
       if (contextProfile.agentState) {
         const agentStateBlock = this.buildAgentStateBlock(session);
@@ -1546,6 +1639,7 @@ export class SessionManager {
         const preRecallBlock = await this.preRecall(rawMessage, {
           repo: session.targetRepo,
         });
+        assertRunOwnership();
         if (preRecallBlock) {
           prompt = `${preRecallBlock}\n\n${prompt}`;
         }
@@ -1554,7 +1648,6 @@ export class SessionManager {
       // We don't log the prompt to avoid spamming the logs. unless we are debugging it
       // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
 
-      const provider = sessionProvider(runSession, this.config);
       let rawHandle: SpawnHandle;
       if (provider === "claude") {
         const driver = this.driverFor(session.driverMode);
@@ -1563,14 +1656,17 @@ export class SessionManager {
         // same name; storing it here lets reconciliation find it later.
         if (session.driverMode === "tmux") {
           const tmuxName = tmuxSessionNameFor(session.threadId, agentName);
-          if (isTopLevel) {
-            session.tmuxSessionName = tmuxName;
-            session.topLevelTmuxAgent = agentName;
-          } else if (agentSession) {
-            agentSession.tmuxSessionName = tmuxName;
-          }
-          await this.store.set(session.threadId, session);
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            if (isTopLevel) {
+              fresh.tmuxSessionName = tmuxName;
+              fresh.topLevelTmuxAgent = agentName;
+            } else {
+              this.getOrCreateAgentSession(fresh, agentName).tmuxSessionName = tmuxName;
+            }
+          });
         }
+        assertRunOwnership();
         rawHandle = driver.send({
           session: runSession,
           prompt,
@@ -1582,6 +1678,7 @@ export class SessionManager {
           agentName,
         });
       } else {
+        assertRunOwnership();
         rawHandle = this.spawnRunner(
           runSession,
           prompt,
@@ -1592,6 +1689,7 @@ export class SessionManager {
           imagePaths,
         );
       }
+      let attemptedResumeId = runSession.sessionId;
       const handle = withTimeout(
         rawHandle,
         runnerTimeoutMs(this.config, provider),
@@ -1602,6 +1700,7 @@ export class SessionManager {
         },
       );
       const handleKey = this.handleKey(session.threadId, agentName);
+      assertRunOwnership();
       this.handles.set(handleKey, handle);
       if (isTopLevel) {
         session.pid = handle.pid;
@@ -1650,9 +1749,11 @@ export class SessionManager {
           if (isTopLevel) {
             session.sessionId = event.sessionId;
             session.leadSessionId = event.sessionId;
+            session.sessionCwd = invocationCwd;
             session.provider = event.provider;
           } else if (agentSession) {
             agentSession.sessionId = event.sessionId;
+            agentSession.sessionCwd = invocationCwd;
             agentSession.provider = event.provider;
           }
           void this.persistRunSessionId(
@@ -1660,6 +1761,7 @@ export class SessionManager {
             agentName,
             event.provider,
             event.sessionId,
+            invocationCwd,
           );
         }
         this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
@@ -1686,6 +1788,77 @@ export class SessionManager {
           clearIdleTimers();
         }
 
+        // Claude can lose an otherwise persisted conversation (most commonly
+        // after cwd/worktree routing changes). Repair that transport failure
+        // once as a fresh provider session before pipeline settlement sees it;
+        // this retry must not consume an assignment recovery continuation.
+        if (
+          attemptedResumeId &&
+          isProviderSessionUnavailable(provider, result.error)
+        ) {
+          if (this.handles.get(handleKey) !== attemptHandle) return;
+          let invalidation: { session: ThreadSession; invalidated: boolean };
+          try {
+            invalidation = await this.invalidateProviderSession(
+              session.threadId,
+              agentName,
+              attemptedResumeId,
+            );
+          } catch (err) {
+            if (err instanceof Error && err.message.startsWith("session not found:")) {
+              return;
+            }
+            throw err;
+          }
+          // A reset or newer dispatch can take ownership while invalidation is
+          // awaiting storage/tmux. Never spawn from the old result afterward.
+          if (this.handles.get(handleKey) !== attemptHandle) return;
+          if (!invalidation.invalidated) {
+            // The persisted provider id moved forward independently. Settle
+            // this old owning invocation without writing its stale id back.
+            result = { ...result, sessionId: null };
+          } else {
+            _log.warn(
+              "session",
+              `provider-session.cold-start thread=${session.threadId} agent=${agentName} provider=${provider} reason=session-unavailable`,
+            );
+            const coldStartPrompt = await this.buildProviderColdStartPrompt(
+              invalidation.session,
+              agentName,
+              rawMessage,
+            );
+            // Prompt reconstruction may await pipeline context. Re-check the
+            // slot before launching so a concurrent reset cannot be replaced.
+            if (this.handles.get(handleKey) !== attemptHandle) return;
+            const restartSession = await this.store.get(session.threadId);
+            if (!restartSession || this.handles.get(handleKey) !== attemptHandle) return;
+            const restartOwner = this.buildRunSession(
+              restartSession,
+              agentName,
+              agentIdentity,
+            );
+            if (restartOwner.sessionId) {
+              result = { ...result, sessionId: null };
+            } else {
+              this.runRunnerWithAgent(
+                restartSession,
+                coldStartPrompt,
+                latestTs ?? restartSession.activeTopLevelMessageTs ?? restartSession.threadId,
+                files,
+                agentName,
+                senderUserId,
+                attemptHandle,
+              ).catch((err) => {
+                _log.error(
+                  "session",
+                  `provider-session.cold-start.fail thread=${session.threadId} agent=${agentName} err=${err instanceof Error ? err.message : String(err)}`,
+                );
+              });
+              return;
+            }
+          }
+        }
+
         if (
           idleInterrupted &&
           this.idleResumeEnabled(provider) &&
@@ -1706,6 +1879,7 @@ export class SessionManager {
           ].join("\n");
           const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
           await this.attachReviewVerificationPolicy(retryRunSession, agentName);
+          attemptedResumeId = retryRunSession.sessionId;
 
           // Re-spawn with the continue prompt. Reuse the same rawHandle
           // creation path (driver.send for tmux, spawnRunner otherwise).
@@ -1757,9 +1931,11 @@ export class SessionManager {
               if (isTopLevel) {
                 session.sessionId = event.sessionId;
                 session.leadSessionId = event.sessionId;
+                session.sessionCwd = invocationCwd;
                 session.provider = event.provider;
               } else if (agentSession) {
                 agentSession.sessionId = event.sessionId;
+                agentSession.sessionCwd = invocationCwd;
                 agentSession.provider = event.provider;
               }
               void this.persistRunSessionId(
@@ -1767,6 +1943,7 @@ export class SessionManager {
                 agentName,
                 event.provider,
                 event.sessionId,
+                invocationCwd,
               );
             }
             this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
@@ -1785,6 +1962,7 @@ export class SessionManager {
           agentName,
           result,
           attemptHandle,
+          invocationCwd,
         );
         if (pipelineResolution === null) return;
         result = pipelineResolution;
@@ -1796,26 +1974,46 @@ export class SessionManager {
         if (result.error && exhaustedRetries) {
           result.error = `Idle interrupts exhausted after ${maxIdleInterrupts} attempts. ${result.error}`;
         }
-        return this.onRunComplete(session, result, agentName, attemptHandle);
+        return this.onRunComplete(
+          session,
+          result,
+          agentName,
+          attemptHandle,
+          invocationCwd,
+        );
       }
     } catch (err) {
-      // Agent prompt composition or worktree creation failed fatally
-      if (isTopLevel) {
-        session.status = "idle";
-      } else {
-        const agentSession = this.getOrCreateAgentSession(session, agentName);
-        agentSession.status = "failed";
-        agentSession.pid = null;
+      if (err instanceof RunOwnershipChangedError) return;
+      if (expectedHandle && this.handles.get(reservationKey) !== expectedHandle) {
+        return;
       }
-      session.lastError = {
-        type: "setup",
-        message: err instanceof Error ? err.message : String(err),
-        timestamp: Date.now(),
-      };
-      await this.store.set(session.threadId, session);
+      if (expectedHandle) this.handles.delete(reservationKey);
+      // Agent prompt composition or worktree creation failed fatally
+      try {
+        session = await this.mutateSession(session.threadId, (fresh) => {
+          if (isTopLevel) {
+            fresh.status = "idle";
+          } else {
+            const failedAgent = this.getOrCreateAgentSession(fresh, agentName);
+            failedAgent.status = "failed";
+            failedAgent.pid = null;
+          }
+          fresh.lastError = {
+            type: "setup",
+            message: err instanceof Error ? err.message : String(err),
+            timestamp: Date.now(),
+          };
+        });
+      } catch (persistErr) {
+        if (
+          persistErr instanceof Error &&
+          persistErr.message.startsWith("session not found:")
+        ) return;
+        throw persistErr;
+      }
       this.onError?.(
         this.buildRunSession(session, agentName, identityForAgent(agentName)),
-        session.lastError.message,
+        session.lastError?.message ?? "runner setup failed",
       );
     }
   }
@@ -1831,9 +2029,13 @@ export class SessionManager {
     agentName: string,
     result: SpawnResult,
     ownHandle: SpawnHandle,
+    invocationCwd: string,
   ): Promise<SpawnResult | null> {
     if (!this.pipelineStore) return result;
-    const fresh = (await this.store.get(session.threadId)) ?? session;
+    const handleKey = this.handleKey(session.threadId, agentName);
+    if (this.handles.get(handleKey) !== ownHandle) return null;
+    const fresh = await this.store.get(session.threadId);
+    if (!fresh) return null;
     const isTopLevel = agentName === "lead" || agentName === "default";
     const invocation = isTopLevel
       ? fresh.activePipelineInvocation
@@ -1885,28 +2087,46 @@ export class SessionManager {
       ? fresh.sessionId
       : fresh.agentSessions?.[agentName]?.sessionId;
     const maxRetries = 2;
-    if (invocation.retryCount < maxRetries && (result.sessionId || sessionId)) {
+    const canContinueProviderSession =
+      !result.error || result.completion?.retryable === true;
+    if (
+      invocation.retryCount < maxRetries &&
+      (result.sessionId || sessionId) &&
+      canContinueProviderSession
+    ) {
+      if (this.handles.get(handleKey) !== ownHandle) return null;
       const retryCount = invocation.retryCount + 1;
-      const continued = await this.mutateSession(fresh.threadId, (current) => {
-        const owner = isTopLevel
-          ? current
-          : this.getOrCreateAgentSession(current, agentName);
-        const active = owner.activePipelineInvocation;
-        if (!active || active.dispatchKey !== invocation.dispatchKey) {
-          throw new Error("pipeline invocation ownership changed");
+      let continued: ThreadSession;
+      try {
+        continued = await this.mutateSession(fresh.threadId, (current) => {
+          const owner = isTopLevel
+            ? current
+            : this.getOrCreateAgentSession(current, agentName);
+          const active = owner.activePipelineInvocation;
+          if (!active || active.dispatchKey !== invocation.dispatchKey) {
+            throw new Error("pipeline invocation ownership changed");
+          }
+          owner.activePipelineInvocation = { ...active, retryCount };
+          if (result.sessionId) {
+            owner.sessionId = result.sessionId;
+            owner.sessionCwd = invocationCwd;
+            owner.provider = result.provider;
+            if (isTopLevel) current.leadSessionId = result.sessionId;
+          }
+          owner.status = "busy";
+          owner.pid = null;
+        });
+      } catch (err) {
+        if (
+          err instanceof Error &&
+          (err.message === "pipeline invocation ownership changed" ||
+            err.message.startsWith("session not found:"))
+        ) {
+          return null;
         }
-        owner.activePipelineInvocation = { ...active, retryCount };
-        if (result.sessionId) {
-          owner.sessionId = result.sessionId;
-          owner.provider = result.provider;
-          if (isTopLevel) current.leadSessionId = result.sessionId;
-        }
-        owner.status = "busy";
-        owner.pid = null;
-      });
-      if (this.handles.get(this.handleKey(fresh.threadId, agentName)) === ownHandle) {
-        this.handles.delete(this.handleKey(fresh.threadId, agentName));
+        throw err;
       }
+      if (this.handles.get(handleKey) !== ownHandle) return null;
       const continuation = [
         "The pipeline assignment has not recorded a typed outcome yet.",
         `Recovery continuation ${retryCount} of ${maxRetries}. Resume this same session from durable state; do not repeat completed mutations.`,
@@ -1922,6 +2142,8 @@ export class SessionManager {
         undefined,
         undefined,
         agentName,
+        undefined,
+        ownHandle,
       ).catch((err) => {
         _log.error(
           "pipeline",
@@ -1931,12 +2153,42 @@ export class SessionManager {
       return null;
     }
 
-    const latestRun = await this.pipelineStore.getRun(invocation.runId);
     const recoverySummary = invocation.retryCount === 0
       ? "without a recovery continuation"
       : `after ${invocation.retryCount} recovery continuation${invocation.retryCount === 1 ? "" : "s"}`;
-    if (latestRun && latestRun.status !== "terminal") {
-      await this.pipelineStore.recordOutcomeTransaction({
+    let escalationPersisted = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (this.handles.get(handleKey) !== ownHandle) return null;
+      const [latestRun, latestAssignment, latestOutcomes] = await Promise.all([
+        this.pipelineStore.getRun(invocation.runId),
+        this.pipelineStore.getAssignment(invocation.assignmentId),
+        this.pipelineStore.listOutcomes(invocation.assignmentId),
+      ]);
+      if (
+        !latestRun ||
+        !latestAssignment ||
+        latestRun.status === "terminal" ||
+        !["pending", "leased"].includes(latestAssignment.status) ||
+        latestOutcomes.length > invocation.outcomeCountAtDispatch
+      ) {
+        // Another actor durably settled or advanced this assignment while the
+        // exhausted invocation was finishing. Trust that durable state.
+        return result.error
+          ? {
+              ...result,
+              response: "",
+              error: null,
+              completion: {
+                status: "success",
+                reason: "completed",
+                retryable: false,
+                providerSubtype: result.completion?.providerSubtype,
+                turns: result.completion?.turns,
+              },
+            }
+          : result;
+      }
+      const receipt = await this.pipelineStore.recordOutcomeTransaction({
         outcome: {
           assignmentId: invocation.assignmentId,
           expectedRunVersion: latestRun.stateVersion,
@@ -1957,11 +2209,57 @@ export class SessionManager {
         actorId: "pipeline-settlement",
         idempotencyKey: `pipeline-settlement-exhausted:${invocation.dispatchKey}`,
       });
+      if (
+        receipt.status === "accepted" ||
+        receipt.status === "escalated" ||
+        receipt.status === "duplicate"
+      ) {
+        escalationPersisted = true;
+        break;
+      }
+      if (!/state version conflict/i.test(receipt.reason ?? "")) break;
+    }
+    if (!escalationPersisted) {
+      if (this.handles.get(handleKey) !== ownHandle) return null;
+      this.handles.delete(handleKey);
+      const persistenceError =
+        `Pipeline assignment ${invocation.assignmentId.slice(0, 8)} exhausted recovery, but its escalation could not be persisted. The assignment remains active for retry.`;
+      let preserved: ThreadSession;
+      try {
+        preserved = await this.mutateSession(fresh.threadId, (current) => {
+          const owner = isTopLevel
+            ? current
+            : this.getOrCreateAgentSession(current, agentName);
+          const active = owner.activePipelineInvocation;
+          if (!active || active.dispatchKey !== invocation.dispatchKey) return;
+          owner.status = isTopLevel ? "idle" : "failed";
+          owner.pid = null;
+          current.lastError = {
+            type: "pipeline-settlement",
+            message: persistenceError,
+            timestamp: Date.now(),
+          };
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("session not found:")) {
+          return null;
+        }
+        throw err;
+      }
+      this.onError?.(
+        this.buildRunSession(preserved, agentName, identityForAgent(agentName)),
+        persistenceError,
+      );
+      return null;
     }
     return {
       ...result,
       response: "",
-      error: `Pipeline assignment ${invocation.assignmentId.slice(0, 8)} stopped without reporting a typed outcome ${recoverySummary}. The run was escalated for human attention.`,
+      error: formatPipelineSettlementError(
+        invocation.assignmentId,
+        recoverySummary,
+        result.error,
+      ),
       completion: {
         status: "failure",
         reason: result.completion?.reason ?? "provider_error",
@@ -2003,6 +2301,7 @@ export class SessionManager {
     agentName: string,
     provider: RunnerProvider,
     sessionId: string,
+    sessionCwd: string,
   ): Promise<void> {
     try {
       await this.mutateSession(threadId, (fresh) => {
@@ -2010,12 +2309,14 @@ export class SessionManager {
           if (fresh.status === "busy" || fresh.status === "draining") {
             fresh.sessionId = sessionId;
             fresh.leadSessionId = sessionId;
+            fresh.sessionCwd = sessionCwd;
             fresh.provider = provider;
           }
         } else {
           const agentSession = fresh.agentSessions?.[agentName];
           if (agentSession?.status === "busy") {
             agentSession.sessionId = sessionId;
+            agentSession.sessionCwd = sessionCwd;
             agentSession.provider = provider;
           }
         }
@@ -2028,11 +2329,104 @@ export class SessionManager {
     }
   }
 
+  private async invalidateProviderSession(
+    threadId: string,
+    agentName: string,
+    expectedSessionId: string,
+  ): Promise<{ session: ThreadSession; invalidated: boolean }> {
+    const before = await this.store.get(threadId);
+    let invalidated = false;
+    const session = await this.mutateSession(threadId, (fresh) => {
+      // mutateThread may re-run this callback after a CAS conflict.
+      invalidated = false;
+      if (agentName === "lead" || agentName === "default") {
+        const currentSessionId = fresh.leadSessionId ?? fresh.sessionId;
+        if (currentSessionId !== expectedSessionId) return;
+        invalidated = true;
+        fresh.sessionId = null;
+        fresh.leadSessionId = null;
+        fresh.sessionCwd = null;
+        fresh.tmuxSessionName = null;
+        fresh.topLevelTmuxAgent = null;
+        return;
+      }
+
+      const agentSession = fresh.agentSessions?.[agentName];
+      if (!agentSession || agentSession.sessionId !== expectedSessionId) return;
+      invalidated = true;
+      agentSession.sessionId = null;
+      agentSession.sessionCwd = null;
+      agentSession.tmuxSessionName = null;
+    });
+    if (invalidated && before?.driverMode === "tmux") {
+      await this.driverFor("tmux")
+        .closeIfSessionId(threadId, agentName, expectedSessionId)
+        .catch(() => false);
+    }
+    return { session, invalidated };
+  }
+
+  private async buildProviderColdStartPrompt(
+    session: ThreadSession,
+    agentName: string,
+    fallbackPrompt: string,
+  ): Promise<string> {
+    if (!this.pipelineStore) return fallbackPrompt;
+    const invocation = agentName === "lead" || agentName === "default"
+      ? session.activePipelineInvocation
+      : session.agentSessions?.[agentName]?.activePipelineInvocation;
+    if (!invocation) return fallbackPrompt;
+
+    const [run, assignment] = await Promise.all([
+      this.pipelineStore.getRun(invocation.runId),
+      this.pipelineStore.getAssignment(invocation.assignmentId),
+    ]);
+    if (!run || !assignment) return fallbackPrompt;
+
+    const assignmentContext = buildAssignmentContext({ run, assignment });
+    const objective = [
+      assignment.objective,
+      "[provider-session-recovery]",
+      fallbackPrompt,
+    ].join("\n\n");
+    try {
+      if (run.kind === "bug") {
+        const bugContext = await bugContextForAssignment(
+          { store: this.pipelineStore, workspaceRoot: process.cwd() },
+          run,
+          assignment,
+        );
+        return composeBugDispatchPrompt({
+          bugContext,
+          assignmentContext,
+          objective,
+        });
+      }
+      const productContext = await productContextForAssignment(
+        { store: this.pipelineStore, workspaceRoot: process.cwd() },
+        run,
+        assignment,
+      );
+      return composeProductDispatchPrompt({
+        productContext,
+        assignmentContext,
+        objective,
+      });
+    } catch (err) {
+      _log.warn(
+        "session",
+        `provider-session.context-rebuild.fail thread=${session.threadId} agent=${agentName} run=${run.id} assignment=${assignment.id} err=${err instanceof Error ? err.message : String(err)}`,
+      );
+      return `${assignmentContext}\n\n${objective}`;
+    }
+  }
+
   private async onRunComplete(
     session: ThreadSession,
     result: SpawnResult,
     agentName: string,
     ownHandle?: SpawnHandle,
+    invocationCwd?: string,
   ): Promise<void> {
     const isTopLevel = agentName === "lead" || agentName === "default";
     const agentIdentity = identityForAgent(agentName);
@@ -2046,13 +2440,16 @@ export class SessionManager {
     if (ownHandle && this.handles.get(handleKey) !== ownHandle) {
       return;
     }
-    this.handles.delete(handleKey);
+    const stillOwnsRun = () =>
+      !ownHandle || this.handles.get(handleKey) === ownHandle;
 
     // Snapshot for read-only side effects (validation, onResponse). All
     // durable mutations go through mutateSession so parallel agents cannot
     // clobber each other via a stale full-row write.
-    const snapshot = (await this.store.get(session.threadId)) ?? session;
+    const snapshot = await this.store.get(session.threadId);
+    if (!snapshot || !stillOwnsRun()) return;
     await this.captureRunnerMemory(snapshot.threadId, agentName, result);
+    if (!stillOwnsRun()) return;
     let internalDispatchDirectives: AgentDirective[] = [];
     let pipelineGuardRetryReset = false;
 
@@ -2076,12 +2473,15 @@ export class SessionManager {
         snapshot.pipelineGuardRetryCount ?? 0,
       );
       if (validation.action === "continue") {
+        if (!stillOwnsRun()) return;
         let continued: ThreadSession;
         try {
           continued = await this.mutateSession(snapshot.threadId, (s) => {
+            if (!stillOwnsRun()) throw new RunOwnershipChangedError();
             if (result.sessionId) {
               s.sessionId = result.sessionId;
               s.leadSessionId = result.sessionId;
+              s.sessionCwd = invocationCwd ?? s.sessionCwd ?? null;
               s.provider = result.provider;
             }
             s.pipelineGuardRetryCount = (s.pipelineGuardRetryCount ?? 0) + 1;
@@ -2090,8 +2490,8 @@ export class SessionManager {
           });
         } catch (err) {
           if (
-            err instanceof Error &&
-            err.message.startsWith("session not found:")
+            err instanceof RunOwnershipChangedError ||
+            (err instanceof Error && err.message.startsWith("session not found:"))
           ) {
             return;
           }
@@ -2107,6 +2507,8 @@ export class SessionManager {
           undefined,
           undefined,
           agentName,
+          undefined,
+          ownHandle,
         ).catch(async (err) => {
           _log.error(
             "pipeline",
@@ -2153,6 +2555,7 @@ export class SessionManager {
           this.buildRunSession(snapshot, agentName, agentIdentity),
           result.response,
         );
+        if (!stillOwnsRun()) return;
       }
     }
 
@@ -2164,7 +2567,9 @@ export class SessionManager {
 
     let settled: ThreadSession;
     try {
+      if (!stillOwnsRun()) return;
       settled = await this.mutateSession(snapshot.threadId, (s) => {
+        if (!stillOwnsRun()) throw new RunOwnershipChangedError();
         if (pipelineGuardRetryReset) {
           s.pipelineGuardRetryCount = 0;
         }
@@ -2174,6 +2579,7 @@ export class SessionManager {
           if (result.sessionId) {
             s.sessionId = result.sessionId;
             s.leadSessionId = result.sessionId;
+            s.sessionCwd = invocationCwd ?? s.sessionCwd ?? null;
             s.provider = result.provider;
           }
           if (result.error) {
@@ -2211,6 +2617,7 @@ export class SessionManager {
           agentSession.pid = null;
           if (result.sessionId) {
             agentSession.sessionId = result.sessionId;
+            agentSession.sessionCwd = invocationCwd ?? agentSession.sessionCwd ?? null;
             agentSession.provider = result.provider;
           }
           if (result.error) {
@@ -2244,8 +2651,8 @@ export class SessionManager {
       });
     } catch (err) {
       if (
-        err instanceof Error &&
-        err.message.startsWith("session not found:")
+        err instanceof RunOwnershipChangedError ||
+        (err instanceof Error && err.message.startsWith("session not found:"))
       ) {
         // Row deleted (e.g. !reset) — nothing left to settle.
         return;
@@ -2260,6 +2667,8 @@ export class SessionManager {
         undefined,
         undefined,
         agentName,
+        undefined,
+        ownHandle,
       ).catch(async (err) => {
         console.error("[manager] Drain failed:", err);
         try {
@@ -2275,7 +2684,12 @@ export class SessionManager {
           // Session may have been reset during the failed drain.
         }
       });
-    } else if (settle.action === "settle") {
+    } else {
+      if (ownHandle && this.handles.get(handleKey) === ownHandle) {
+        this.handles.delete(handleKey);
+      }
+    }
+    if (settle.action === "settle") {
       await this.onAgentSettled?.(settled, agentName, result.response ?? null);
     }
 
@@ -2442,6 +2856,7 @@ export class SessionManager {
     }
 
     session.leadSessionId ??= session.sessionId;
+    session.sessionCwd ??= null;
     session.agentSessions ??= {};
     session.provider ??= "claude";
     session.humanParticipants ??= [];
@@ -2460,6 +2875,7 @@ export class SessionManager {
       agentName,
       provider: session.provider ?? this.config.runner.provider,
       sessionId: null,
+      sessionCwd: null,
       status: "idle",
       pendingMessages: [],
       lastActivity: Date.now(),
@@ -2509,6 +2925,7 @@ export class SessionManager {
     return {
       ...session,
       sessionId: agentSession.sessionId,
+      sessionCwd: agentSession.sessionCwd ?? null,
       provider: agentSession.provider ?? session.provider ?? this.config.runner.provider,
       agentType: agentName,
       systemPrompt: null,
@@ -2654,3 +3071,32 @@ const defaultSpawnRunnerForRuntime: SpawnRunnerFn =
         );
       }
     : defaultSpawnRunner;
+
+function formatPipelineSettlementError(
+  assignmentId: string,
+  recoverySummary: string,
+  providerError: string | null,
+): string {
+  const base =
+    `Pipeline assignment ${assignmentId.slice(0, 8)} stopped without reporting a typed outcome ${recoverySummary}. The run was escalated for human attention.`;
+  const detail = providerError?.replace(/\s+/g, " ").trim();
+  if (!detail) return base;
+  return `${base} Provider error: ${detail.slice(0, 500)}`;
+}
+
+class RunOwnershipChangedError extends Error {
+  constructor() {
+    super("runner ownership changed during setup");
+    this.name = "RunOwnershipChangedError";
+  }
+}
+
+function createRunSetupReservation(provider: RunnerProvider): SpawnHandle {
+  return {
+    provider,
+    result: new Promise<SpawnResult>(() => undefined),
+    onEvent: () => undefined,
+    kill: () => undefined,
+    pid: null,
+  };
+}

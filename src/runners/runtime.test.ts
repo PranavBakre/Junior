@@ -3,6 +3,9 @@ import type { ThreadSession } from "../session/types.ts";
 import {
   buildRunnerEnv,
   needsProjectMcp,
+  isProviderSessionUnavailable,
+  normalizeProviderSessionCwd,
+  providerSessionMatchesCwd,
   resolveRunnerCwd,
   willResume,
 } from "./runtime.ts";
@@ -93,6 +96,39 @@ describe("willResume", () => {
 });
 
 describe("runner runtime", () => {
+  it("matches Claude sessions only to their creation cwd", () => {
+    expect(providerSessionMatchesCwd({
+      provider: "claude",
+      sessionId: "ses_1",
+      sessionCwd: "/tmp/repo/.",
+      cwd: "/tmp/repo",
+    })).toBe(true);
+    expect(providerSessionMatchesCwd({
+      provider: "claude",
+      sessionId: "ses_1",
+      sessionCwd: "/tmp/repo-a",
+      cwd: "/tmp/repo-b",
+    })).toBe(false);
+    expect(providerSessionMatchesCwd({
+      provider: "claude",
+      sessionId: "ses_1",
+      sessionCwd: null,
+      cwd: "/tmp/repo",
+    })).toBe(false);
+  });
+
+  it("recognizes only provider-originated missing Claude conversations", () => {
+    expect(isProviderSessionUnavailable(
+      "claude",
+      "No conversation found with session ID: ses_1",
+    )).toBe(true);
+    expect(isProviderSessionUnavailable(
+      "opencode",
+      "No conversation found with session ID: ses_1",
+    )).toBe(false);
+    expect(normalizeProviderSessionCwd("/tmp/repo/.")).toBe("/tmp/repo");
+  });
+
   it("resolves cwd using session override first", () => {
     const session = makeSession({
       cwd: "/tmp/junior-utility",

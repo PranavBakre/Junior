@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import type { AgentIdentity, RunnerProvider, ThreadSession } from "../session/types.ts";
 
 export interface RunnerRuntimeOptions {
@@ -61,6 +62,43 @@ export function resolveRunnerCwd(
   targetRepoCwd?: string,
 ): string {
   return session.cwd ?? session.worktreePath ?? targetRepoCwd ?? process.cwd();
+}
+
+/**
+ * Claude stores conversations under a cwd-derived project directory. A
+ * session id that exists under one checkout is not resumable from another.
+ * Unknown legacy affinity fails closed so the next turn establishes a fresh,
+ * correctly-scoped provider session.
+ */
+export function providerSessionMatchesCwd(options: {
+  provider: RunnerProvider;
+  sessionId: string | null | undefined;
+  sessionCwd: string | null | undefined;
+  cwd: string;
+}): boolean {
+  if (!options.sessionId?.trim()) return true;
+  if (options.provider !== "claude") return true;
+  if (!options.sessionCwd?.trim()) return false;
+  return normalizeProviderSessionCwd(options.sessionCwd) ===
+    normalizeProviderSessionCwd(options.cwd);
+}
+
+export function normalizeProviderSessionCwd(cwd: string): string {
+  const absolute = resolve(cwd);
+  try {
+    return realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+export function isProviderSessionUnavailable(
+  provider: RunnerProvider,
+  error: string | null | undefined,
+): boolean {
+  const normalized = (error ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+  return provider === "claude" &&
+    /No conversation found with session ID\b\s*:?/i.test(normalized);
 }
 
 export function needsProjectMcp(session: ThreadSession, cwd: string): boolean {

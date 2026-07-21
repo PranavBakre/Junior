@@ -19,6 +19,7 @@ type AgentSessionRow = {
   agent_name: string;
   provider: string | null;
   session_id: string | null;
+  session_cwd: string | null;
   status: AgentSession["status"];
   last_activity: number | null;
   state_version: number | null;
@@ -57,6 +58,7 @@ export class SqliteSessionStore implements SessionStore {
         agent_name TEXT NOT NULL,
         provider TEXT DEFAULT 'claude',
         session_id TEXT,
+        session_cwd TEXT,
         status TEXT DEFAULT 'idle',
         last_activity INTEGER,
         state_version INTEGER NOT NULL DEFAULT 0,
@@ -339,7 +341,7 @@ export class SqliteSessionStore implements SessionStore {
   private loadAgentSessions(session: ThreadSession): void {
     const rows = this.db
       .query<AgentSessionRow, [string]>(
-        `SELECT agent_name, provider, session_id, status, last_activity,
+        `SELECT agent_name, provider, session_id, session_cwd, status, last_activity,
                 state_version, pending_json, pid, tmux_session_name
          FROM agent_sessions WHERE thread_id = ?`,
       )
@@ -364,6 +366,7 @@ export class SqliteSessionStore implements SessionStore {
           row.provider ?? existing?.provider,
         ),
         sessionId: row.session_id,
+        sessionCwd: row.session_cwd ?? existing?.sessionCwd ?? null,
         status: row.status,
         pendingMessages: pendingFromRow ?? existing?.pendingMessages ?? [],
         lastActivity: row.last_activity ?? existing?.lastActivity ?? Date.now(),
@@ -402,12 +405,13 @@ export class SqliteSessionStore implements SessionStore {
   ): void {
     const upsert = this.db.query(
       `INSERT INTO agent_sessions
-         (thread_id, agent_name, provider, session_id, status, last_activity,
+         (thread_id, agent_name, provider, session_id, session_cwd, status, last_activity,
           state_version, pending_json, pid, tmux_session_name)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(thread_id, agent_name) DO UPDATE SET
          provider = excluded.provider,
          session_id = excluded.session_id,
+         session_cwd = excluded.session_cwd,
          status = excluded.status,
          last_activity = excluded.last_activity,
          state_version = excluded.state_version,
@@ -425,6 +429,7 @@ export class SqliteSessionStore implements SessionStore {
         agentSession.agentName,
         normalizePersistedRunnerProvider(agentSession.provider),
         agentSession.sessionId,
+        agentSession.sessionCwd ?? null,
         agentSession.status,
         agentSession.lastActivity,
         nextAgentVersion,
@@ -525,6 +530,7 @@ export class SqliteSessionStore implements SessionStore {
     this.ensureColumn("agent_sessions", "pending_json", "TEXT");
     this.ensureColumn("agent_sessions", "pid", "INTEGER");
     this.ensureColumn("agent_sessions", "tmux_session_name", "TEXT");
+    this.ensureColumn("agent_sessions", "session_cwd", "TEXT");
   }
 
   private ensureColumn(
@@ -543,11 +549,13 @@ export class SqliteSessionStore implements SessionStore {
 function normalizeSession(session: ThreadSession): ThreadSession {
   session.provider = normalizePersistedRunnerProvider(session.provider);
   session.leadSessionId ??= session.sessionId;
+  session.sessionCwd ??= null;
   session.agentSessions ??= {};
   for (const agentSession of Object.values(session.agentSessions)) {
     agentSession.provider = normalizePersistedRunnerProvider(
       agentSession.provider,
     );
+    agentSession.sessionCwd ??= null;
     agentSession.stateVersion ??= 0;
     agentSession.pendingMessages ??= [];
     agentSession.pid ??= null;

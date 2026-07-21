@@ -8,7 +8,7 @@ import type {
 } from "../runners/types.ts";
 import type { SlackMessageEvent } from "../slack/events.ts";
 import type { Config } from "../config.ts";
-import { createSession } from "./types.ts";
+import { createSession, type ThreadSession } from "./types.ts";
 import type { App } from "@slack/bolt";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -149,6 +149,7 @@ function makeFakeDrivers(): {
     close: async (threadId: string, agentName: string) => {
       closeCalls.push({ mode, threadId, agentName });
     },
+    closeIfSessionId: async () => false,
   });
   return { drivers: { headless: stub("headless"), tmux: stub("tmux") }, closeCalls };
 }
@@ -410,6 +411,166 @@ describe("SessionManager", () => {
     rmSync(reviewWorktree, { recursive: true, force: true });
   });
 
+  it("cold-starts a reviewer when its provider session belongs to another cwd", async () => {
+    const reviewWorktree = mkdtempSync(join(tmpdir(), "junior-review-worktree-"));
+    writeFileSync(join(reviewWorktree, "package-lock.json"), "{}");
+    manager.worktreeManager = {
+      createWorktree: mock(async () => reviewWorktree),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+    const existing = createSession("thread-1", "C123");
+    existing.agentSessions.review = {
+      agentName: "review",
+      provider: "claude",
+      sessionId: "review-from-junior-root",
+      sessionCwd: "/Users/psbakre/Projects/junior",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "review https://github.com/GrowthX-Club/frontend/pull/127",
+      }),
+      "review",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    const runSession = mockSpawnFn.mock.calls[0][0];
+    expect(runSession.sessionId).toBeNull();
+    expect(runSession.sessionCwd).toBeNull();
+    const stored = await store.get("thread-1");
+    expect(stored?.agentSessions.review.sessionId).toBeNull();
+    expect(stored?.agentSessions.review.sessionCwd).toBeNull();
+    rmSync(reviewWorktree, { recursive: true, force: true });
+  });
+
+  it("resumes a reviewer when its provider session cwd matches the worktree", async () => {
+    const reviewWorktree = mkdtempSync(join(tmpdir(), "junior-review-worktree-"));
+    writeFileSync(join(reviewWorktree, "package-lock.json"), "{}");
+    manager.worktreeManager = {
+      createWorktree: mock(async () => reviewWorktree),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "frontend";
+    existing.worktreePath = reviewWorktree;
+    existing.worktreePaths = { frontend: reviewWorktree };
+    existing.agentSessions.review = {
+      agentName: "review",
+      provider: "claude",
+      sessionId: "review-in-worktree",
+      sessionCwd: reviewWorktree,
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "review https://github.com/GrowthX-Club/frontend/pull/127",
+      }),
+      "review",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(mockSpawnFn.mock.calls[0][0].sessionId).toBe("review-in-worktree");
+    expect(mockSpawnFn.mock.calls[0][0].sessionCwd).toBe(reviewWorktree);
+    rmSync(reviewWorktree, { recursive: true, force: true });
+  });
+
+  it("retries an unavailable Claude conversation once as a fresh session", async () => {
+    const localStore = new InMemorySessionStore();
+    const handles: MockHandle[] = [];
+    const spawnedSessions: ThreadSession[] = [];
+    const localSpawn: SpawnRunnerFn = (runSession) => {
+      spawnedSessions.push(structuredClone(runSession));
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    };
+    const localManager = new SessionManager(localStore, testConfig, localSpawn);
+    const existing = createSession("thread-1", "C123");
+    existing.sessionId = "missing-session";
+    existing.leadSessionId = "missing-session";
+    existing.sessionCwd = process.cwd();
+    await localStore.set(existing.threadId, existing);
+    const errors = mock((_session, _error) => undefined);
+    localManager.onError = errors;
+
+    await localManager.handleMessage(makeEvent({ text: "continue the work" }));
+    await waitFor(() => handles.length === 1);
+    handles[0]!._error(
+      "No conversation found with session ID: missing-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    expect(spawnedSessions[0]!.sessionId).toBe("missing-session");
+    expect(spawnedSessions[1]!.sessionId).toBeNull();
+    expect(errors).not.toHaveBeenCalled();
+
+    handles[1]!._complete("recovered", "fresh-session");
+    await waitFor(async () => (await localStore.get("thread-1"))?.status === "idle");
+    const recovered = await localStore.get("thread-1");
+    expect(recovered?.sessionId).toBe("fresh-session");
+    expect(recovered?.sessionCwd).toBe(process.cwd());
+  });
+
+  it("does not clear a newer session when an old unavailable result arrives", async () => {
+    const localStore = new InMemorySessionStore();
+    const handles: MockHandle[] = [];
+    const localManager = new SessionManager(localStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    const existing = createSession("thread-1", "C123");
+    existing.sessionId = "old-session";
+    existing.leadSessionId = "old-session";
+    existing.sessionCwd = process.cwd();
+    await localStore.set(existing.threadId, existing);
+    const errors = mock((_session, _error) => undefined);
+    localManager.onError = errors;
+
+    await localManager.handleMessage(makeEvent({ text: "continue the work" }));
+    await waitFor(() => handles.length === 1);
+    // Force invalidateProviderSession's mutator to run once against the old
+    // id, then retry after a concurrent writer installs a newer id. Its result
+    // flag must describe the committed retry, not the discarded first attempt.
+    const originalMutate = localStore.mutateThread.bind(localStore);
+    let forcedRetry = false;
+    localStore.mutateThread = async (threadId, mutator) => {
+      if (!forcedRetry) {
+        forcedRetry = true;
+        const discardedDraft = structuredClone((await localStore.get(threadId))!);
+        await mutator(discardedDraft);
+        await originalMutate(threadId, (session) => {
+          session.sessionId = "newer-session";
+          session.leadSessionId = "newer-session";
+          session.sessionCwd = process.cwd();
+        });
+      }
+      return originalMutate(threadId, mutator);
+    };
+    handles[0]!._error("No conversation found with session ID old-session");
+    await waitFor(async () => (await localStore.get("thread-1"))?.status === "idle");
+
+    expect(handles).toHaveLength(1);
+    const stored = await localStore.get("thread-1");
+    expect(stored?.sessionId).toBe("newer-session");
+    expect(stored?.sessionCwd).toBe(process.cwd());
+    expect(stored?.status).toBe("idle");
+    expect(errors).toHaveBeenCalledTimes(1);
+
+    await localManager.handleMessage(makeEvent({ text: "next message", ts: "2.0" }));
+    await waitFor(() => handles.length === 2);
+  });
+
   it("adds downloaded non-image Slack file paths to the prompt", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = mock(async () => new Response("a,b\n1,2\n", { status: 200 })) as unknown as typeof fetch;
@@ -488,6 +649,35 @@ describe("SessionManager", () => {
     expect(responses).toEqual([
       { agentName: "echo", username: "Echo", response: "echo response" },
     ]);
+  });
+
+  it("does not spawn an initial worker reset during dispatch notification", async () => {
+    const localStore = new InMemorySessionStore();
+    const localSpawn = mock<SpawnRunnerFn>(() => createMockHandle());
+    const localManager = new SessionManager(localStore, testConfig, localSpawn);
+    let releaseDispatch!: () => void;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    const dispatchGate = new Promise<void>((resolve) => { releaseDispatch = resolve; });
+    localManager.onAgentDispatched = async () => {
+      markEntered();
+      await dispatchGate;
+    };
+
+    const dispatch = localManager.handleAgentMessage(
+      makeEvent({ text: "start worker" }),
+      "echo",
+    );
+    await entered;
+    await localManager.handleMessage(
+      makeEvent({ command: "reset", text: "echo", ts: "reset-dispatch" }),
+    );
+    releaseDispatch();
+    await dispatch;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(localSpawn).not.toHaveBeenCalled();
+    expect((await localStore.get("thread-1"))?.agentSessions.echo).toBeUndefined();
   });
 
   it("internalizes pure persistent-agent directive responses instead of posting them", async () => {
@@ -747,6 +937,64 @@ describe("SessionManager", () => {
     }
   });
 
+  it("does not spawn a guard continuation after the thread is reset during setup", async () => {
+    const bugRoot = mkdtempSync(join(tmpdir(), "junior-guard-reset-"));
+    const previousBugRoot = process.env.JUNIOR_BUG_ROOT;
+    process.env.JUNIOR_BUG_ROOT = bugRoot;
+    try {
+      const bugDir = join(bugRoot, "growthx", "6a167cfb");
+      mkdirSync(bugDir, { recursive: true });
+      writeFileSync(join(bugDir, "state.json"), JSON.stringify({
+        bugId: "6a167cfb",
+        product: "growthx",
+        status: "researching",
+        slackChannel: "C-BUGS",
+        slackThread: "thread-1",
+      }));
+      const localStore = new InMemorySessionStore();
+      const handles: MockHandle[] = [];
+      const localManager = new SessionManager(
+        localStore,
+        cloneConfig({ channelDefaults: { "C-BUGS": { agentType: "lead" } } }),
+        () => {
+          const handle = createMockHandle();
+          handles.push(handle);
+          return handle;
+        },
+      );
+      let releaseRecall!: () => void;
+      const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
+      let recallCalls = 0;
+      (localManager as unknown as { preRecall: (message: string, context: { repo: string | null }) => Promise<string | null> }).preRecall = async () => {
+        recallCalls++;
+        if (recallCalls === 2) await recallGate;
+        return null;
+      };
+
+      await localManager.handleLeadMessage(
+        makeEvent({ channel: "C-BUGS", text: "bug report" }),
+      );
+      await waitFor(() => handles.length === 1);
+      handles[0]!._complete(
+        "DONE: New Relic findings written to research.md.",
+        "lead-guard-session",
+      );
+      await waitFor(() => recallCalls === 2);
+      await localManager.handleMessage(
+        makeEvent({ channel: "C-BUGS", command: "reset", text: "all", ts: "reset-guard" }),
+      );
+      releaseRecall();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(await localStore.get("thread-1")).toBeUndefined();
+      expect(handles).toHaveLength(1);
+    } finally {
+      if (previousBugRoot === undefined) delete process.env.JUNIOR_BUG_ROOT;
+      else process.env.JUNIOR_BUG_ROOT = previousBugRoot;
+      rmSync(bugRoot, { recursive: true, force: true });
+    }
+  });
+
   it("captures sessionId from init event", async () => {
     await manager.handleMessage(makeEvent());
     currentHandle._complete("response", "claude-session-42");
@@ -954,6 +1202,41 @@ describe("SessionManager", () => {
     // Session should be in draining/busy
     const session = await store.get("thread-1");
     expect(session!.pendingMessages.length).toBe(0);
+  });
+
+  it("does not spawn a worker drain after that agent is reset during setup", async () => {
+    const localStore = new InMemorySessionStore();
+    const handles: MockHandle[] = [];
+    const localManager = new SessionManager(localStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    let releaseRecall!: () => void;
+    const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
+    let recallCalls = 0;
+    (localManager as unknown as { preRecall: (message: string, context: { repo: string | null }) => Promise<string | null> }).preRecall = async () => {
+      recallCalls++;
+      if (recallCalls === 2) await recallGate;
+      return null;
+    };
+
+    await localManager.handleAgentMessage(makeEvent({ text: "first" }), "echo");
+    await waitFor(() => handles.length === 1);
+    await localManager.handleAgentMessage(
+      makeEvent({ text: "second", ts: "drain-second" }),
+      "echo",
+    );
+    handles[0]!._complete("first done", "echo-session");
+    await waitFor(() => recallCalls === 2);
+    await localManager.handleMessage(
+      makeEvent({ command: "reset", text: "echo", ts: "reset-drain" }),
+    );
+    releaseRecall();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect((await localStore.get("thread-1"))?.agentSessions.echo).toBeUndefined();
+    expect(handles).toHaveLength(1);
   });
 
   // --- Commands ---
@@ -1236,6 +1519,8 @@ describe("SessionManager", () => {
       adminManager.onClearThreadStatus = onClear;
 
       await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+      currentHandle._complete("done");
+      await waitFor(async () => (await store.get("thread-1"))?.status === "idle");
       await adminManager.handleMessage(
         makeEvent({ user: "U-ADMIN", command: "clear", text: "", ts: "ts-clear" }),
       );
@@ -1262,6 +1547,8 @@ describe("SessionManager", () => {
       adminManager.onCommandResponse = onCmd;
 
       await adminManager.handleMessage(makeEvent({ user: "U-ADMIN", text: "go" }));
+      currentHandle._complete("done");
+      await waitFor(async () => (await store.get("thread-1"))?.status === "idle");
       await adminManager.handleMessage(
         makeEvent({ user: "U-ADMIN", command: "clear", text: "", ts: "ts-clear" }),
       );
@@ -2485,6 +2772,359 @@ describe("SessionManager", () => {
 });
 
 describe("typed pipeline settlement", () => {
+  it("repairs an unavailable Claude session without consuming pipeline retries", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-invalid-session",
+      targetAgent: "build",
+      idempotencyKey: "asg-invalid-session-key",
+    }));
+    const seeded = createSession("thread-1", "C123");
+    seeded.agentSessions.build = {
+      agentName: "build",
+      provider: "claude",
+      sessionId: "missing-build-session",
+      sessionCwd: process.cwd(),
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    await sessionStore.set(seeded.threadId, seeded);
+    const handles: MockHandle[] = [];
+    const spawnedSessions: ThreadSession[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawnedSessions.push(structuredClone(runSession));
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    const errors = mock((_session, _error) => undefined);
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "<pipeline-assignment>repair me</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:dispatch-invalid-session",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-invalid-session",
+        dispatchKey: "dispatch-invalid-session",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._error(
+      "No conversation found with session ID: missing-build-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    expect(spawnedSessions[0]?.sessionId).toBe("missing-build-session");
+    expect(spawnedSessions[1]?.sessionId).toBeNull();
+    expect(
+      (await sessionStore.get("thread-1"))?.agentSessions.build
+        ?.activePipelineInvocation?.retryCount,
+    ).toBe(0);
+    expect(await pipelineStore.listOutcomes("asg-invalid-session")).toEqual([]);
+    expect(errors).not.toHaveBeenCalled();
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-invalid-session",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "fresh provider session recovered",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "invalid-session-recovered",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "invalid-session-recovered",
+    });
+    handles[1]!._complete("recovered", "fresh-build-session");
+    await waitFor(async () =>
+      (await sessionStore.get("thread-1"))?.agentSessions.build?.status === "done"
+    );
+  });
+
+  it("rebuilds exact assignment context when a settlement resume is unavailable", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-resume-context",
+      targetAgent: "build",
+      objective: "implement the durable checkout fix",
+      acceptanceCriteria: ["resume from the correct worktree"],
+      idempotencyKey: "asg-resume-context-key",
+    }));
+    const handles: MockHandle[] = [];
+    const prompts: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, (_session, prompt) => {
+      prompts.push(prompt);
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "initial assignment dispatch",
+      dedupeKey: "pipeline-outbox:dispatch-resume-context",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-resume-context",
+        dispatchKey: "dispatch-resume-context",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete("about to report", "resume-context-session", [], {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+      providerSubtype: "error_max_turns",
+      turns: 25,
+    });
+    await waitFor(() => handles.length === 2);
+    handles[1]!._error(
+      "No conversation found with session ID: resume-context-session",
+    );
+    await waitFor(() => handles.length === 3);
+
+    expect(prompts[2]).toContain("<pipeline-assignment>");
+    expect(prompts[2]).toContain("assignment_id: asg-resume-context");
+    expect(prompts[2]).toContain("objective: implement the durable checkout fix");
+    expect(prompts[2]).toContain("resume from the correct worktree");
+    expect(
+      (await sessionStore.get("thread-1"))?.agentSessions.build
+        ?.activePipelineInvocation?.retryCount,
+    ).toBe(1);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-resume-context",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "recovered with durable context",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "resume-context-recovered",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "resume-context-recovered",
+    });
+    handles[2]!._complete("recovered", "fresh-resume-context-session");
+    await waitFor(async () =>
+      (await sessionStore.get("thread-1"))?.agentSessions.build?.status === "done"
+    );
+  });
+
+  it("escalates a non-retryable provider failure without wasting continuations", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-provider-failure",
+      targetAgent: "build",
+      idempotencyKey: "asg-provider-failure-key",
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-concurrent-progress",
+      idempotencyKey: "asg-concurrent-progress-key",
+    }));
+    const originalRecordOutcome = pipelineStore.recordOutcomeTransaction.bind(
+      pipelineStore,
+    );
+    let settlementAttempts = 0;
+    pipelineStore.recordOutcomeTransaction = async (input) => {
+      if (
+        input.actorId === "pipeline-settlement" &&
+        settlementAttempts++ === 0
+      ) {
+        const run = (await pipelineStore.getRun("run-1"))!;
+        const concurrent = await originalRecordOutcome({
+          outcome: {
+            assignmentId: "asg-concurrent-progress",
+            expectedRunVersion: run.stateVersion,
+            action: "continue_self",
+            status: "progress",
+            reason: "another assignment advanced the run",
+            evidenceRefs: ["concurrent-progress"],
+            artifactRefs: [],
+            blockers: [],
+            checks: [],
+            progressFingerprint: "concurrent-progress",
+          },
+          toPhase: "building",
+          actorType: "system",
+          actorId: "test",
+          idempotencyKey: "concurrent-progress",
+        });
+        expect(concurrent.status).toBe("accepted");
+      }
+      return originalRecordOutcome(input);
+    };
+    const handles: MockHandle[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    const errors = mock((_session, _error) => undefined);
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "implement the assignment",
+      dedupeKey: "pipeline-outbox:dispatch-provider-failure",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-provider-failure",
+        dispatchKey: "dispatch-provider-failure",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._error("Claude process crashed before init");
+
+    await waitFor(() => errors.mock.calls.length === 1);
+    expect(handles).toHaveLength(1);
+    expect(errors.mock.calls[0]![1]).toContain(
+      "Provider error: Claude process crashed before init",
+    );
+    expect((await pipelineStore.getRun("run-1"))?.status).toBe("needs-human");
+    expect(settlementAttempts).toBe(2);
+    const outcomes = await pipelineStore.listOutcomes("asg-provider-failure");
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]?.blockers[0]?.detail).toBe(
+      "Claude process crashed before init",
+    );
+  });
+
+  it("does not resurrect a worker reset during continuation setup", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-reset-worker",
+      targetAgent: "build",
+      idempotencyKey: "asg-reset-worker-key",
+    }));
+    const handles: MockHandle[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    let releaseRecall!: () => void;
+    const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
+    let recallCalls = 0;
+    (manager as unknown as { preRecall: (message: string, context: { repo: string | null }) => Promise<string | null> }).preRecall = async () => {
+      recallCalls++;
+      if (recallCalls === 2) await recallGate;
+      return null;
+    };
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "implement",
+      dedupeKey: "pipeline-outbox:reset-worker",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-reset-worker",
+        dispatchKey: "reset-worker",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete("", "worker-session", [], {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+    });
+    await waitFor(() => recallCalls === 2);
+    await manager.handleMessage(
+      makeEvent({ command: "reset", text: "build", ts: "reset-worker" }),
+    );
+    releaseRecall();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect((await sessionStore.get("thread-1"))?.agentSessions.build).toBeUndefined();
+    expect(handles).toHaveLength(1);
+  });
+
+  it("does not resurrect a thread reset during continuation setup", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-reset-lead",
+      targetAgent: "lead",
+      idempotencyKey: "asg-reset-lead-key",
+    }));
+    const handles: MockHandle[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    let releaseRecall!: () => void;
+    const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
+    let recallCalls = 0;
+    (manager as unknown as { preRecall: (message: string, context: { repo: string | null }) => Promise<string | null> }).preRecall = async () => {
+      recallCalls++;
+      if (recallCalls === 2) await recallGate;
+      return null;
+    };
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "implement",
+      dedupeKey: "pipeline-outbox:reset-lead",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-reset-lead",
+        dispatchKey: "reset-lead",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "lead");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete("", "lead-session", [], {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+    });
+    await waitFor(() => recallCalls === 2);
+    await manager.handleMessage(
+      makeEvent({ command: "reset", text: "all", ts: "reset-lead" }),
+    );
+    releaseRecall();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(await sessionStore.get("thread-1")).toBeUndefined();
+    expect(handles).toHaveLength(1);
+  });
+
   it("quietly resumes a max-turn Claude session and trusts its later durable outcome", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));

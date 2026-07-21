@@ -64,6 +64,7 @@ describe("SqliteSessionStore", () => {
       agentName: "echo",
       provider: "opencode",
       sessionId: "echo-session",
+      sessionCwd: "/tmp/echo-worktree",
       status: "busy",
       pendingMessages: [{ user: "U1", text: "next", ts: "2.3" }],
       lastActivity: 12345,
@@ -75,6 +76,25 @@ describe("SqliteSessionStore", () => {
     const retrieved = await store.get("thread-1");
     expect(retrieved!.agentSessions.echo).toEqual(
       session.agentSessions.echo,
+    );
+  });
+
+  it("round-trips distinct top-level and per-agent session cwd affinity", async () => {
+    const session = createSession("cwd-thread", "channel-1");
+    session.sessionId = "lead-session";
+    session.leadSessionId = "lead-session";
+    session.sessionCwd = "/tmp/lead-worktree";
+    session.agentSessions.review = makeAgent("review", {
+      sessionId: "review-session",
+      sessionCwd: "/tmp/review-worktree",
+    });
+
+    await store.set(session.threadId, session);
+
+    const retrieved = await store.get(session.threadId);
+    expect(retrieved?.sessionCwd).toBe("/tmp/lead-worktree");
+    expect(retrieved?.agentSessions.review.sessionCwd).toBe(
+      "/tmp/review-worktree",
     );
   });
 
@@ -200,6 +220,7 @@ describe("SqliteSessionStore", () => {
     const retrieved = await store.get("legacy-thread");
     expect(retrieved!.provider).toBe("claude");
     expect(retrieved!.agentSessions.worker.provider).toBe("claude");
+    expect(retrieved!.agentSessions.worker.sessionCwd).toBeNull();
   });
 
   it("set on existing threadId upserts", async () => {
