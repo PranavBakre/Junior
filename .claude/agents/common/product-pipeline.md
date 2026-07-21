@@ -10,6 +10,8 @@ Generic rules already loaded are not restated: memory (core), Task-vs-directive 
 discovery → spec-drafting → awaiting-product-decision → ready-to-build
 → building → aggregate-verification → pr-open → reviewing ↔ fixing
 → approved → ready-for-human-merge → shipped | needs-human | abandoned
+
+approved | ready-for-human-merge → fixing (when dev/staging verification finds a regression)
 ```
 
 | Phase | Who acts | Exit |
@@ -24,7 +26,7 @@ discovery → spec-drafting → awaiting-product-decision → ready-to-build
 | reviewing | review (read-only) | typed verdict: approved \| changes_requested |
 | fixing | responsible builder | new revision digest; gates reopen |
 | approved | orchestrator | all required gates on same attempt/SHA |
-| ready-for-human-merge | human | protected-branch merges; then shipped |
+| ready-for-human-merge | human | verify the dev/staging merge; ship after the protected main merge, or reopen fixing on a regression |
 
 ## Ownership (non-negotiable)
 
@@ -50,6 +52,8 @@ Register every PR with exact owner/repo/number/role/workstreamKey/expectedHeadSh
 ## Review ↔ rework
 
 Changes requested → responsible builder. Unchanged findings without a new revision or evidence → escalate (no infinite loop). New revision → re-review on the new digest.
+
+Dev/staging verification is also a rework gate. If a regression is discovered after the secondary dev PR merges, hand off the responsible builder with `to_phase="fixing"` and an exact `dev-verification:<message-or-artifact-ref>` (or `staging-verification:`) evidence ref; untyped tool/agent failures must wait or escalate and cannot reopen an approved candidate. Reopen the same run rather than starting a disconnected pipeline. The controller atomically invalidates the approved revision gates and archives the old dev-PR association. Update the still-open primary main PR with the fix, register its new head SHA, run aggregate verification and review again, then open and merge a fresh secondary dev PR for the new revision. A merged dev PR is historical evidence and cannot represent later commits. Once the run is `shipped` or `abandoned`, create a separate follow-up instead of reopening it.
 
 ## Outcomes
 

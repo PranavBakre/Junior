@@ -671,7 +671,18 @@ export async function reduceProductOutcome(
   const completedBuilders = builders.filter((a) => a.status === "completed");
 
   const skipReasons = await loadSkipReasons(store, run.id);
-  const registeredPrKeys = await loadRegisteredPrKeys(store, run.id);
+  const revisionMembers = run.activeAttemptId
+    ? await store.listRevisionMembers(run.activeAttemptId)
+    : [];
+  const activeAttempt = run.activeAttemptId
+    ? await store.getAttempt(run.activeAttemptId)
+    : undefined;
+  const registeredPrKeys = await loadRegisteredPrKeys(
+    store,
+    run.id,
+    run.activeAttemptId,
+    revisionMembers.map((member) => member.headSha),
+  );
   const recentReviewFingerprints = await loadReviewFingerprints(store, run.id);
   const gates = run.activeAttemptId
     ? await store.listGates(run.activeAttemptId)
@@ -727,7 +738,11 @@ export async function reduceProductOutcome(
       run.phase === "approved" ||
       run.phase === "ready-for-human-merge")
   ) {
-    const consistency = revisionGatesConsistent(gates);
+    const consistency = revisionGatesConsistent(
+      gates,
+      revisionMembers,
+      activeAttempt?.revisionDigest ?? null,
+    );
     if (!consistency.ok) {
       return {
         status: "rejected",
@@ -761,20 +776,6 @@ export async function reduceProductOutcome(
         observedAt: clock.now(),
       });
     }
-  }
-
-  // Failed review → rework invalidates gates on active attempt.
-  if (
-    input.outcome.status === "failed" &&
-    (run.phase === "reviewing" || run.phase === "aggregate-verification") &&
-    run.activeAttemptId
-  ) {
-    await invalidateAttemptGates(
-      store,
-      run.activeAttemptId,
-      "review or verification failed; rework required",
-      clock.now(),
-    );
   }
 
   // Fan-out bookkeeping when a builder completes.
@@ -811,6 +812,7 @@ export async function reduceProductOutcome(
   const reviewVerdict =
     input.reviewVerdict ??
     inferReviewVerdict(input.outcome, run.phase);
+  const devVerificationFailed = isDevVerificationRegression(input.outcome);
 
   let suggested: ProductPhase | undefined =
     (input.toPhase as ProductPhase | undefined) ??
@@ -828,6 +830,7 @@ export async function reduceProductOutcome(
           registeredPrKeys.some((k) => k.includes(`:${w}`) || k.endsWith(w)),
         ),
       needsProductDecision: input.needsProductDecision === true,
+      devVerificationFailed,
     }) ??
     undefined;
 
@@ -847,12 +850,75 @@ export async function reduceProductOutcome(
     suggested = input.toPhase as ProductPhase;
   }
 
+  const reopensApprovedCandidate =
+    suggested === "fixing" &&
+    (run.phase === "approved" || run.phase === "ready-for-human-merge");
+  if (reopensApprovedCandidate && !devVerificationFailed) {
+    return {
+      status: "rejected",
+      runVersion: run.stateVersion,
+      assignmentId: assignment.id,
+      reason:
+        "approved candidate rework requires failed dev-verification or staging-verification evidence",
+    };
+  }
+  if (
+    reopensApprovedCandidate &&
+    (input.outcome.action !== "handoff" ||
+      !isProductBuilderAgent(input.outcome.targetAgent ?? ""))
+  ) {
+    return {
+      status: "rejected",
+      runVersion: run.stateVersion,
+      assignmentId: assignment.id,
+      reason:
+        "approved candidate rework must hand off to a builder so fixing has an active owner",
+    };
+  }
+  const reopensRevision =
+    suggested === "fixing" &&
+    (run.phase === "aggregate-verification" ||
+      run.phase === "reviewing" ||
+      reopensApprovedCandidate);
+  if (suggested === "ready-for-human-merge" && run.phase === "approved") {
+    const mergedDevWorkstreams = await loadMergedDevPrWorkstreams(
+      store,
+      run.id,
+      run.activeAttemptId,
+      revisionMembers,
+    );
+    const requiredDevWorkstreams = workstreams.length > 0
+      ? workstreams
+      : revisionMembers.map((member) => member.memberKey);
+    const devMergeComplete =
+      requiredDevWorkstreams.length > 0 &&
+      requiredDevWorkstreams.every((workstream) =>
+        mergedDevWorkstreams.has(workstream)
+      );
+    if (!devMergeComplete) {
+      return {
+        status: "rejected",
+        runVersion: run.stateVersion,
+        assignmentId: assignment.id,
+        reason:
+          "ready-for-human-merge requires a merged dev PR for every current workstream and revision SHA",
+      };
+    }
+  }
+
   const receipt = await store.recordOutcomeTransaction({
     outcome: input.outcome,
     toPhase: suggested,
     actorType: input.actorType ?? "agent",
     actorId: input.actorId,
     idempotencyKey: input.idempotencyKey,
+    invalidateAttemptGates:
+      reopensRevision && run.activeAttemptId
+        ? { attemptId: run.activeAttemptId }
+        : undefined,
+    deactivateGitHubResourceRoles: reopensApprovedCandidate
+      ? ["dev-pr"]
+      : undefined,
   });
 
   return {
@@ -1120,7 +1186,7 @@ export async function registerProductPr(
       expectedHeadSha: input.expectedHeadSha,
       registrationKey: key,
     },
-    idempotencyKey: `pr-reg:${run.id}:${key}`,
+    idempotencyKey: `pr-reg:${run.id}:${key}:${input.attemptId ?? run.activeAttemptId ?? "none"}:${input.expectedHeadSha}`,
     occurredAt: now,
     observedAt: now,
   });
@@ -1162,27 +1228,60 @@ export async function ensureProductRevisionGates(
   },
 ): Promise<PipelineGate[]> {
   const now = Date.now();
-  const kinds = ["review", "checks", "aggregate"] as const;
+  const revisionMembers = await store.listRevisionMembers(input.attemptId);
+  const attempt = await store.getAttempt(input.attemptId);
+  const selectedMembers = input.memberKey
+    ? revisionMembers.filter(
+        (member) => member.memberKey === input.memberKey,
+      )
+    : revisionMembers;
+  const targets = selectedMembers.length > 0
+    ? selectedMembers
+    : [
+        {
+          memberKey: input.memberKey ?? "candidate",
+          headSha: input.subjectSha,
+        },
+      ];
   const gates: PipelineGate[] = [];
-  for (const gateKind of kinds) {
-    const gate: PipelineGate = {
-      id: `${input.attemptId}:${gateKind}:${input.memberKey ?? "aggregate"}`,
-      runId: input.runId,
-      attemptId: input.attemptId,
-      memberKey: input.memberKey ?? null,
-      githubResourceId: null,
-      gateKind,
-      status: "pending",
-      subjectSha: input.subjectSha,
-      evidenceRef: null,
-      provider: null,
-      model: null,
-      agentName: input.agentName ?? null,
-      updatedAt: now,
-    };
-    await store.upsertGate(gate);
-    gates.push(gate);
+  for (const member of targets) {
+    for (const gateKind of ["review", "checks"] as const) {
+      const gate: PipelineGate = {
+        id: `${input.attemptId}:${gateKind}:${member.memberKey}`,
+        runId: input.runId,
+        attemptId: input.attemptId,
+        memberKey: member.memberKey,
+        githubResourceId: null,
+        gateKind,
+        status: "pending",
+        subjectSha: member.headSha,
+        evidenceRef: null,
+        provider: null,
+        model: null,
+        agentName: input.agentName ?? null,
+        updatedAt: now,
+      };
+      await store.upsertGate(gate);
+      gates.push(gate);
+    }
   }
+  const aggregate: PipelineGate = {
+    id: `${input.attemptId}:aggregate:vector`,
+    runId: input.runId,
+    attemptId: input.attemptId,
+    memberKey: null,
+    githubResourceId: null,
+    gateKind: "aggregate",
+    status: "pending",
+    subjectSha: attempt?.revisionDigest ?? input.subjectSha,
+    evidenceRef: null,
+    provider: null,
+    model: null,
+    agentName: input.agentName ?? null,
+    updatedAt: now,
+  };
+  await store.upsertGate(aggregate);
+  gates.push(aggregate);
   return gates;
 }
 
@@ -1225,11 +1324,25 @@ export async function loadSkipReasons(
 async function loadRegisteredPrKeys(
   store: PipelineStore,
   runId: string,
+  attemptId: string | null,
+  revisionShas: string[],
 ): Promise<string[]> {
+  if (!attemptId || revisionShas.length === 0) return [];
+  const acceptedRoles = new Set(["candidate", "main-pr", "review-target"]);
+  const acceptedShas = new Set(revisionShas);
   const events = await store.listEvents(runId);
   const keys = new Set<string>();
   for (const e of events) {
     if (e.eventType !== "github.pr.registered") continue;
+    if (
+      e.payload.attemptId !== attemptId ||
+      typeof e.payload.role !== "string" ||
+      !acceptedRoles.has(e.payload.role) ||
+      typeof e.payload.expectedHeadSha !== "string" ||
+      !acceptedShas.has(e.payload.expectedHeadSha)
+    ) {
+      continue;
+    }
     const key =
       typeof e.payload.registrationKey === "string"
         ? e.payload.registrationKey
@@ -1259,10 +1372,98 @@ async function loadRegisteredPrKeys(
   if (store.listPipelineGitHubResources) {
     const assocs = await store.listPipelineGitHubResources(runId, true);
     for (const a of assocs) {
+      if (
+        a.attemptId !== attemptId ||
+        !acceptedRoles.has(a.role) ||
+        !a.expectedHeadSha ||
+        !acceptedShas.has(a.expectedHeadSha)
+      ) {
+        continue;
+      }
       keys.add(`${a.role}:${a.workstreamKey}`);
     }
   }
   return [...keys];
+}
+
+function isDevVerificationRegression(outcome: AgentOutcome): boolean {
+  const failedCheck = outcome.checks.find(
+    (check) =>
+      (check.name === "dev-verification" ||
+        check.name === "staging-verification") &&
+      check.status === "failed",
+  );
+  if (failedCheck?.evidenceRef?.trim()) return true;
+  return outcome.evidenceRefs.some(
+    (ref) => {
+      const [prefix, suffix] = ref.split(":", 2);
+      return (
+        (prefix === "dev-verification" || prefix === "staging-verification") &&
+        Boolean(suffix?.trim())
+      );
+    },
+  );
+}
+
+async function loadMergedDevPrWorkstreams(
+  store: PipelineStore,
+  runId: string,
+  attemptId: string | null,
+  revisionMembers: AttemptRevisionMember[],
+): Promise<Set<string>> {
+  if (!attemptId || revisionMembers.length === 0) return new Set();
+  const candidates: Array<{
+    workstreamKey: string;
+    expectedHeadSha: string;
+    mergedHeadSha: string;
+  }> = [];
+  const associations = await store.listPipelineGitHubResources(runId, true);
+  for (const association of associations) {
+    if (
+      association.role !== "dev-pr" ||
+      association.attemptId !== attemptId ||
+      !association.expectedHeadSha
+    ) {
+      continue;
+    }
+    const resource = await store.getGitHubResource(association.resourceId);
+    if (
+      resource?.snapshot?.state === "MERGED" &&
+      resource.snapshot.headRefOid === association.expectedHeadSha
+    ) {
+      candidates.push({
+        workstreamKey: association.workstreamKey,
+        expectedHeadSha: association.expectedHeadSha,
+        mergedHeadSha: resource.snapshot.headRefOid,
+      });
+    }
+  }
+  return mergedDevPrCoverage(revisionMembers, candidates);
+}
+
+export function mergedDevPrCoverage(
+  revisionMembers: AttemptRevisionMember[],
+  candidates: Array<{
+    workstreamKey: string;
+    expectedHeadSha: string;
+    mergedHeadSha: string;
+  }>,
+): Set<string> {
+  const requiredShaByWorkstream = new Map(
+    revisionMembers.map((member) => [member.memberKey, member.headSha]),
+  );
+  const covered = new Set<string>();
+  for (const candidate of candidates) {
+    const requiredSha = requiredShaByWorkstream.get(candidate.workstreamKey);
+    if (
+      requiredSha &&
+      candidate.expectedHeadSha === requiredSha &&
+      candidate.mergedHeadSha === requiredSha
+    ) {
+      covered.add(candidate.workstreamKey);
+    }
+  }
+  return covered;
 }
 
 async function loadReviewFingerprints(
@@ -1311,24 +1512,6 @@ function inferReviewVerdict(
   return null;
 }
 
-async function invalidateAttemptGates(
-  store: PipelineStore,
-  attemptId: string,
-  reason: string,
-  now: number,
-): Promise<void> {
-  const gates = await store.listGates(attemptId);
-  for (const g of gates) {
-    if (g.status === "invalidated") continue;
-    await store.upsertGate({
-      ...g,
-      status: "invalidated",
-      evidenceRef: reason,
-      updatedAt: now,
-    });
-  }
-}
-
 /**
  * Build injection block for dispatch when assignment is under an active product run.
  */
@@ -1349,7 +1532,12 @@ export async function productContextForAssignment(
     gates = await config.store.listGates(attemptId);
   }
   const skipReasons = await loadSkipReasons(config.store, run.id);
-  const registeredPrKeys = await loadRegisteredPrKeys(config.store, run.id);
+  const registeredPrKeys = await loadRegisteredPrKeys(
+    config.store,
+    run.id,
+    attemptId,
+    revisionMembers.map((member) => member.headSha),
+  );
   const workstreams = await loadWorkstreams(config.store, run.id);
   return buildProductContext({
     run,

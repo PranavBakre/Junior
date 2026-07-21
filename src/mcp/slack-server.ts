@@ -743,13 +743,16 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         reason: z.string().optional().describe("Why this agent/ownership transition is needed"),
         idempotency_key: z.string().min(1).describe("Stable semantic key reused on retries"),
         to_phase: z.string().optional().describe("Optional legal controller phase for a handoff"),
+        evidence_refs: z.array(z.string()).optional().describe("Durable evidence references supporting the transition"),
+        artifact_refs: z.array(z.string()).optional().describe("Durable artifact references inherited by the child assignment"),
+        acceptance_criteria: z.array(z.string()).optional().describe("Acceptance criteria for the child assignment"),
         channel_id: z.string().optional().describe("Deprecated; authenticated channel is derived from signed context"),
         thread_ts: z.string().optional().describe("Deprecated; authenticated thread is derived from signed context"),
         user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
         trigger_ts: z.string().optional().describe("Slack message timestamp that caused the dispatch. Defaults to thread_ts."),
       },
     },
-    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, channel_id, thread_ts, user_id, trigger_ts }) => {
+    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, evidence_refs, artifact_refs, acceptance_criteria, channel_id, thread_ts, user_id, trigger_ts }) => {
       if (!sessionManager) {
         return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
       }
@@ -782,6 +785,9 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           reason: reason?.trim() || `${runContext.agent} dispatched ${targetAgent}`,
           idempotency_key: idempotency_key.trim(),
           to_phase,
+          evidence_refs,
+          artifact_refs,
+          acceptance_criteria,
         });
       }
       if (pipelineRuntime && session?.activeRunId) {

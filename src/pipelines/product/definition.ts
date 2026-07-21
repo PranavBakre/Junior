@@ -282,6 +282,8 @@ export function suggestPhaseAfterOutcome(input: {
   allPrsRegistered?: boolean;
   /** True when a material product decision is still open. */
   needsProductDecision?: boolean;
+  /** Typed evidence that dev/staging verification found a regression. */
+  devVerificationFailed?: boolean;
 }): ProductPhase | null {
   const {
     currentPhase,
@@ -291,6 +293,7 @@ export function suggestPhaseAfterOutcome(input: {
     allBuildersDone = true,
     allPrsRegistered = true,
     needsProductDecision = false,
+    devVerificationFailed = false,
   } = input;
 
   if (outcomeStatus === "blocked" || outcomeAction === "escalate") {
@@ -300,8 +303,14 @@ export function suggestPhaseAfterOutcome(input: {
   if (outcomeStatus === "failed") {
     if (
       currentPhase === "reviewing" ||
-      currentPhase === "aggregate-verification" ||
-      currentPhase === "approved"
+      currentPhase === "aggregate-verification"
+    ) {
+      return "fixing";
+    }
+    if (
+      devVerificationFailed &&
+      (currentPhase === "approved" ||
+        currentPhase === "ready-for-human-merge")
     ) {
       return "fixing";
     }
@@ -346,7 +355,8 @@ export function suggestPhaseAfterOutcome(input: {
     case "approved":
       return "ready-for-human-merge";
     case "ready-for-human-merge":
-      // Human merge only — agents cannot auto-ship.
+      // Human merge only — agents cannot auto-ship. A failed dev/staging
+      // verification is handled above and reopens the run at fixing.
       return null;
     default:
       return null;

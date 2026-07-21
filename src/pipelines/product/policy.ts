@@ -6,6 +6,7 @@
 import type {
   AgentOutcome,
   Assignment,
+  AttemptRevisionMember,
   PipelineGate,
   ProductRun,
 } from "../types.ts";
@@ -179,7 +180,17 @@ export function reviewFindingFingerprint(outcome: AgentOutcome): string | null {
 export function revisionGatesConsistent(gates: PipelineGate[]): {
   ok: boolean;
   reason?: string;
-} {
+};
+export function revisionGatesConsistent(
+  gates: PipelineGate[],
+  revisionMembers: AttemptRevisionMember[],
+  revisionDigest: string | null,
+): { ok: boolean; reason?: string };
+export function revisionGatesConsistent(
+  gates: PipelineGate[],
+  revisionMembers: AttemptRevisionMember[] = [],
+  revisionDigest: string | null = null,
+): { ok: boolean; reason?: string } {
   const active = gates.filter(
     (g) =>
       g.status !== "invalidated" &&
@@ -188,15 +199,79 @@ export function revisionGatesConsistent(gates: PipelineGate[]): {
         g.gateKind === "aggregate" ||
         g.gateKind === "human-merge"),
   );
-  if (active.length === 0) return { ok: true };
-
-  const shas = new Set(
-    active.map((g) => g.subjectSha).filter((s): s is string => s != null),
-  );
-  if (shas.size > 1) {
+  if (revisionMembers.length === 0 || !revisionDigest) {
     return {
       ok: false,
-      reason: `product aggregate gates subject SHAs diverge: ${[...shas].join(", ")}`,
+      reason: "product aggregate gates require a current revision vector",
+    };
+  }
+
+  for (const member of revisionMembers) {
+    for (const kind of ["review", "checks"] as const) {
+      const gate = active.find(
+        (candidate) =>
+          candidate.gateKind === kind &&
+          candidate.memberKey === member.memberKey &&
+          candidate.subjectSha === member.headSha,
+      );
+      if (!gate) {
+        return {
+          ok: false,
+          reason: `product aggregate gates missing ${kind} for ${member.memberKey}@${member.headSha}`,
+        };
+      }
+      if (gate.status !== "passed") {
+        return {
+          ok: false,
+          reason: `product ${kind} gate for ${member.memberKey} is ${gate.status}, expected passed`,
+        };
+      }
+    }
+  }
+
+  const aggregate = active.find(
+    (gate) =>
+      gate.gateKind === "aggregate" &&
+      gate.memberKey === null &&
+      gate.subjectSha === revisionDigest,
+  );
+  if (!aggregate) {
+    return {
+      ok: false,
+      reason: `product aggregate gate missing for revision ${revisionDigest}`,
+    };
+  }
+  if (aggregate.status !== "passed") {
+    return {
+      ok: false,
+      reason: `product aggregate gate is ${aggregate.status}, expected passed`,
+    };
+  }
+
+  const stale = active.find((gate) => {
+    if (gate.gateKind === "human-merge") return false;
+    if (gate.gateKind === "aggregate") {
+      return gate.memberKey !== null || gate.subjectSha !== revisionDigest;
+    }
+    const member = revisionMembers.find(
+      (candidate) => candidate.memberKey === gate.memberKey,
+    );
+    return !member || gate.subjectSha !== member.headSha;
+  });
+  if (stale) {
+    return {
+      ok: false,
+      reason: `product ${stale.gateKind} gate is not bound to the current revision vector`,
+    };
+  }
+
+  const incompleteHumanGate = active.find(
+    (gate) => gate.gateKind === "human-merge" && gate.status !== "passed",
+  );
+  if (incompleteHumanGate) {
+    return {
+      ok: false,
+      reason: `product human-merge gate is ${incompleteHumanGate.status}, expected passed`,
     };
   }
 
@@ -205,6 +280,13 @@ export function revisionGatesConsistent(gates: PipelineGate[]): {
     return {
       ok: false,
       reason: "product aggregate gates span multiple attempts",
+    };
+  }
+
+  if (active.some((gate) => !gate.subjectSha)) {
+    return {
+      ok: false,
+      reason: "product aggregate gate is missing subject SHA",
     };
   }
 

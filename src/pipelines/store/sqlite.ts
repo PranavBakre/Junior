@@ -1123,6 +1123,17 @@ export class SqlitePipelineStore implements PipelineStore {
         reason: "run not found",
       };
     }
+    if (input.invalidateAttemptGates) {
+      const attempt = await this.getAttempt(input.invalidateAttemptGates.attemptId);
+      if (!attempt || attempt.runId !== run.id) {
+        return {
+          status: "rejected",
+          runVersion: run.stateVersion,
+          assignmentId: assignment.id,
+          reason: "gate invalidation attempt does not belong to run",
+        };
+      }
+    }
 
     if (input.idempotencyKey) {
       const prior = this.db
@@ -1273,6 +1284,36 @@ export class SqlitePipelineStore implements PipelineStore {
 
       if (decision.outbox && !input.suppressDispatch) {
         this.insertOutbox(decision.outbox);
+      }
+
+      if (input.invalidateAttemptGates) {
+        this.db
+          .query(
+            `UPDATE pipeline_gates SET status = 'invalidated', updated_at = ?
+             WHERE run_id = ? AND attempt_id = ? AND status != 'invalidated'`,
+          )
+          .run(
+            this.clock.now(),
+            run.id,
+            input.invalidateAttemptGates.attemptId,
+          );
+      }
+
+      if (input.deactivateGitHubResourceRoles?.length) {
+        const placeholders = input.deactivateGitHubResourceRoles
+          .map(() => "?")
+          .join(", ");
+        this.db
+          .query(
+            `UPDATE pipeline_github_resources
+             SET active = 0, updated_at = ?
+             WHERE run_id = ? AND active = 1 AND role IN (${placeholders})`,
+          )
+          .run(
+            this.clock.now(),
+            run.id,
+            ...input.deactivateGitHubResourceRoles,
+          );
       }
     });
 
@@ -2164,7 +2205,7 @@ export class SqlitePipelineStore implements PipelineStore {
     now: number;
   }): Promise<{ eventId: string }> {
     const { registration, actorId, runPhase, now } = input;
-    const idempotencyKey = `pr-reg:${registration.runId}:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`;
+    const idempotencyKey = `pr-reg:${registration.runId}:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}:${registration.attemptId ?? "none"}:${registration.expectedHeadSha}`;
 
     const prior = this.db
       .query<{ id: string }, [string]>(

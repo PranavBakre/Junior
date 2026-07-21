@@ -60,8 +60,13 @@ const PRODUCT_TRANSITIONS: Record<ProductPhase, readonly ProductPhase[]> = {
     "needs-human",
     "abandoned",
   ],
-  approved: ["ready-for-human-merge", "needs-human", "abandoned"],
-  "ready-for-human-merge": ["shipped", "needs-human", "abandoned"],
+  approved: ["fixing", "ready-for-human-merge", "needs-human", "abandoned"],
+  "ready-for-human-merge": [
+    "fixing",
+    "shipped",
+    "needs-human",
+    "abandoned",
+  ],
   shipped: [],
   abandoned: [],
   "needs-human": [

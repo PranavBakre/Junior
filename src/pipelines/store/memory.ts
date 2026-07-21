@@ -300,6 +300,17 @@ export class InMemoryPipelineStore implements PipelineStore {
         reason: "run not found",
       };
     }
+    if (input.invalidateAttemptGates) {
+      const attempt = this.attempts.get(input.invalidateAttemptGates.attemptId);
+      if (!attempt || attempt.runId !== run.id) {
+        return {
+          status: "rejected",
+          runVersion: run.stateVersion,
+          assignmentId: assignment.id,
+          reason: "gate invalidation attempt does not belong to run",
+        };
+      }
+    }
 
     // Event idempotency: return prior receipt as duplicate.
     if (input.idempotencyKey) {
@@ -393,6 +404,40 @@ export class InMemoryPipelineStore implements PipelineStore {
           decision.outbox.idempotencyKey,
           decision.outbox.id,
         );
+      }
+    }
+
+    if (input.invalidateAttemptGates) {
+      const attemptId = input.invalidateAttemptGates.attemptId;
+      const gates = this.gates.get(attemptId) ?? [];
+      this.gates.set(
+        attemptId,
+        gates.map((gate) =>
+          gate.status === "invalidated"
+            ? gate
+            : {
+                ...gate,
+                status: "invalidated" as const,
+                updatedAt: this.clock.now(),
+              }
+        ),
+      );
+    }
+
+    if (input.deactivateGitHubResourceRoles?.length) {
+      const roles = new Set(input.deactivateGitHubResourceRoles);
+      for (const [id, association] of this.pipelineGithub.entries()) {
+        if (
+          association.runId === run.id &&
+          association.active &&
+          roles.has(association.role)
+        ) {
+          this.pipelineGithub.set(id, {
+            ...association,
+            active: false,
+            updatedAt: this.clock.now(),
+          });
+        }
       }
     }
 
@@ -995,7 +1040,7 @@ export class InMemoryPipelineStore implements PipelineStore {
     now: number;
   }): Promise<{ eventId: string }> {
     const { registration, actorId, runPhase, now } = input;
-    const idempotencyKey = `pr-reg:${registration.runId}:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}`;
+    const idempotencyKey = `pr-reg:${registration.runId}:${registration.owner}/${registration.repo}#${registration.number}:${registration.role}:${registration.workstreamKey}:${registration.attemptId ?? "none"}:${registration.expectedHeadSha}`;
     const priorId = this.eventByIdempotency.get(idempotencyKey);
     if (priorId) {
       return { eventId: priorId };
@@ -1056,7 +1101,13 @@ export class InMemoryPipelineStore implements PipelineStore {
       });
     }
 
-    const assocId = crypto.randomUUID();
+    const existingAssociation = [...this.pipelineGithub.values()].find(
+      (association) =>
+        association.runId === registration.runId &&
+        association.resourceId === resourceId &&
+        association.role === registration.role,
+    );
+    const assocId = existingAssociation?.id ?? crypto.randomUUID();
     this.pipelineGithub.set(assocId, {
       id: assocId,
       runId: registration.runId,
@@ -1067,7 +1118,7 @@ export class InMemoryPipelineStore implements PipelineStore {
       registeredByAssignmentId: registration.assignmentId,
       expectedHeadSha: registration.expectedHeadSha,
       active: true,
-      createdAt: now,
+      createdAt: existingAssociation?.createdAt ?? now,
       updatedAt: now,
     });
 

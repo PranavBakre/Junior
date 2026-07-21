@@ -538,7 +538,11 @@ describe("InMemoryPipelineStore", () => {
     await store.createRun(makeProductRun({ id: "run-a", threadId: "T-a" }));
     await store.createRun(makeProductRun({ id: "run-b", threadId: "T-b" }));
 
-    const register = (runId: string, assignmentId: string) =>
+    const register = (
+      runId: string,
+      assignmentId: string,
+      expectedHeadSha = "a".repeat(40),
+    ) =>
       store.commitPrRegistration({
         registration: {
           runId,
@@ -549,7 +553,7 @@ describe("InMemoryPipelineStore", () => {
           role: "candidate",
           workstreamKey: "backend",
           attemptId: null,
-          expectedHeadSha: "a".repeat(40),
+          expectedHeadSha,
         },
         actorId: "default",
         runPhase: "pr-open",
@@ -558,14 +562,20 @@ describe("InMemoryPipelineStore", () => {
 
     const first = await register("run-a", "asg-a");
     const second = await register("run-b", "asg-b");
+    const revised = await register("run-a", "asg-a", "b".repeat(40));
 
     expect(second.eventId).not.toBe(first.eventId);
+    expect(revised.eventId).not.toBe(first.eventId);
     expect(await store.listPipelineGitHubResources("run-a", true)).toHaveLength(
       1,
     );
     expect(await store.listPipelineGitHubResources("run-b", true)).toHaveLength(
       1,
     );
+    expect(
+      (await store.listPipelineGitHubResources("run-a", true))[0]
+        ?.expectedHeadSha,
+    ).toBe("b".repeat(40));
   });
 
   it("creates next assignment + outbox on handoff", async () => {

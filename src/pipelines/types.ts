@@ -473,6 +473,12 @@ export type RecordOutcomeInput = {
   actorId: string;
   /** Optional event idempotency key for duplicate detection. */
   idempotencyKey?: string;
+  /** Gate invalidation committed atomically with the accepted phase change. */
+  invalidateAttemptGates?: {
+    attemptId: string;
+  };
+  /** GitHub associations made historical by the accepted transition. */
+  deactivateGitHubResourceRoles?: GitHubResourceRegistration["role"][];
   /**
    * When true (shadow mode), still persist outcome/event/assignment state but
    * do not enqueue dispatch/continue/resume outbox items. Shadow records
