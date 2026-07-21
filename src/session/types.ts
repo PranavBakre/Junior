@@ -63,6 +63,8 @@ export interface AgentSession {
   agentName: string;
   provider?: RunnerProvider;
   sessionId: string | null;
+  /** Working directory in which the native provider session was created. */
+  sessionCwd?: string | null;
   status: AgentSessionStatus;
   pendingMessages: PendingMessage[];
   lastActivity: number;
@@ -99,6 +101,8 @@ export interface ThreadSession {
   provider?: RunnerProvider;
   sessionId: string | null;
   leadSessionId: string | null;
+  /** Working directory in which sessionId / leadSessionId was created. */
+  sessionCwd?: string | null;
   agentSessions: Record<string, AgentSession>;
   worktreePath: string | null;
   /** Per-repo worktree paths for bug-pipeline threads. Keys are repo names (from RepoConfig.name). */
@@ -243,6 +247,7 @@ export function createSession(
     provider,
     sessionId: null,
     leadSessionId: null,
+    sessionCwd: null,
     agentSessions: {},
     worktreePath: null,
     worktreePaths: {},

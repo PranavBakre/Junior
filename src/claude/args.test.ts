@@ -81,10 +81,26 @@ describe("buildClaudeArgs", () => {
   });
 
   it("includes --resume when sessionId is present", () => {
-    const session = makeSession({ sessionId: "sess-abc" });
+    const session = makeSession({ sessionId: "sess-abc", sessionCwd: CWD });
     const args = buildClaudeArgs(session, "continue", makeConfig(), CWD);
     expect(args).toContain("--resume");
     expect(args).toContain("sess-abc");
+  });
+
+  it("does not resume a session created under another cwd", () => {
+    const session = makeSession({
+      sessionId: "sess-abc",
+      sessionCwd: "/work/other-repo",
+    });
+    const args = buildClaudeArgs(session, "continue", makeConfig(), CWD);
+    expect(args).not.toContain("--resume");
+    expect(args).not.toContain("sess-abc");
+  });
+
+  it("does not assume legacy sessions without cwd affinity are resumable", () => {
+    const session = makeSession({ sessionId: "sess-legacy" });
+    const args = buildClaudeArgs(session, "continue", makeConfig(), CWD);
+    expect(args).not.toContain("--resume");
   });
 
   it("does not include --resume when sessionId is null", () => {
@@ -124,6 +140,7 @@ describe("buildClaudeArgs", () => {
   it("includes both --resume and --append-system-prompt when both are set", () => {
     const session = makeSession({
       sessionId: "sess-xyz",
+      sessionCwd: CWD,
       systemPrompt: "Be concise.",
     });
     const args = buildClaudeArgs(session, "go", makeConfig(), CWD);

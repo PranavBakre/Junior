@@ -132,6 +132,7 @@ describe("createSession", () => {
       "pid",
       "pipelineGuardRetryCount",
       "provider",
+      "sessionCwd",
       "sessionId",
       "stateVersion",
       "status",

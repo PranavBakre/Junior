@@ -3,6 +3,7 @@ import { resolveEffectivePermissionIntent } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
 import { mapClaudeRunPolicy } from "./policy.ts";
 import { resolveClaudeModel } from "./model.ts";
+import { providerSessionMatchesCwd } from "../runners/runtime.ts";
 
 /** Fully-qualified name of the slack-bot MCP approval tool (see src/mcp/approval.ts). */
 export const APPROVAL_PERMISSION_TOOL = "mcp__slack-bot__request_permission";
@@ -50,7 +51,15 @@ export function buildClaudeArgs(
     String(config.maxTurns),
   ];
 
-  if (session.sessionId) {
+  if (
+    session.sessionId &&
+    providerSessionMatchesCwd({
+      provider: "claude",
+      sessionId: session.sessionId,
+      sessionCwd: session.sessionCwd,
+      cwd,
+    })
+  ) {
     args.push("--resume", session.sessionId);
   }
 
