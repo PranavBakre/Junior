@@ -18,11 +18,15 @@ export function resolvePipelineRepos(
   const resolved: RepoConfig[] = [];
   const unresolvedRefs: string[] = [];
   const seen = new Set<string>();
+  const seenUnresolved = new Set<string>();
 
   for (const ref of repoRefs) {
     const matches = repos.filter((repo) => repoMatchesRef(repo.name, ref));
     if (matches.length !== 1) {
-      unresolvedRefs.push(ref);
+      if (!seenUnresolved.has(ref)) {
+        seenUnresolved.add(ref);
+        unresolvedRefs.push(ref);
+      }
       continue;
     }
     const repo = matches[0]!;
@@ -37,8 +41,9 @@ export function resolvePipelineRepos(
 
 /**
  * Pick the pipeline worktree used as the process cwd. Every resolved repo gets
- * its own worktree; this only chooses the initial checkout. Explicit PR URLs
- * win, then assignment workstream/agent affinity, then durable repo order.
+ * its own worktree; this only chooses the initial checkout. Review assignments
+ * prefer an explicit PR URL. Other agents prefer durable assignment
+ * workstream/agent affinity so incidental URLs in context cannot reroute them.
  */
 export function inferPipelinePrimaryRepo(input: {
   configuredRepos: RepoConfig[];
@@ -46,26 +51,49 @@ export function inferPipelinePrimaryRepo(input: {
   prompt: string;
   targetAgent: string;
   assignmentContextRefs?: string[];
+  onDiagnostic?: (message: string) => void;
 }): RepoConfig | undefined {
-  const explicit = inferReviewRepo(input.configuredRepos, input.prompt);
-  if (
-    explicit &&
-    input.pipelineRepos.some((repo) => repo.name === explicit.name)
-  ) {
-    return explicit;
+  if (input.targetAgent === "review") {
+    const explicit = inferReviewRepo(input.configuredRepos, input.prompt);
+    if (
+      explicit &&
+      input.pipelineRepos.some((repo) => repo.name === explicit.name)
+    ) {
+      return explicit;
+    }
   }
 
-  const workstream = input.assignmentContextRefs
-    ?.find((ref) => ref.startsWith("workstream:"))
-    ?.slice("workstream:".length)
-    .trim()
-    .toLowerCase();
-  const affinity = workstream || agentWorkstream(input.targetAgent);
+  const workstreams = [
+    ...new Set(
+      (input.assignmentContextRefs ?? [])
+        .filter((ref) => ref.startsWith("workstream:"))
+        .map((ref) => ref.slice("workstream:".length).trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ];
+  if (workstreams.length > 1) {
+    input.onDiagnostic?.(
+      `multiple assignment workstreams (${workstreams.join(", ")}); falling back to durable repo order`,
+    );
+  }
+  const workstream = workstreams.length === 1 ? workstreams[0] : undefined;
+  const affinity = workstreams.length > 1
+    ? undefined
+    : workstream || agentWorkstream(input.targetAgent);
   if (affinity) {
     const matches = input.pipelineRepos.filter((repo) =>
       repoMatchesWorkstream(repo.name, affinity)
     );
     if (matches.length === 1) return matches[0];
+    input.onDiagnostic?.(
+      matches.length === 0
+        ? `no pipeline repo matches ${affinity} affinity; falling back to durable repo order`
+        : `${matches.length} pipeline repos match ${affinity} affinity; falling back to durable repo order`,
+    );
+  } else if (input.pipelineRepos.length > 1) {
+    input.onDiagnostic?.(
+      "no unique repo affinity for a multi-repo pipeline; falling back to durable repo order",
+    );
   }
 
   return input.pipelineRepos[0];
