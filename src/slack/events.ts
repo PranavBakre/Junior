@@ -70,7 +70,7 @@ export interface SlackMessageEvent {
   pipelineInvocation?: PipelineInvocationRef;
 }
 
-export type OnMessageCallback = (event: SlackMessageEvent) => void;
+export type OnMessageCallback = (event: SlackMessageEvent) => void | Promise<void>;
 
 export function registerEventHandlers(
   app: App,
@@ -171,7 +171,7 @@ export function registerEventHandlers(
         ? (event as { bot_id: string }).bot_id
         : undefined;
 
-    onMessage({
+    await onMessage({
       threadId,
       channel: event.channel,
       user,
@@ -225,7 +225,7 @@ export function registerEventHandlers(
         : undefined;
     const isSelfBot = !!(botId && selfBotId && botId === selfBotId);
 
-    onMessage({
+    await onMessage({
       threadId,
       channel: event.channel,
       user: event.user,

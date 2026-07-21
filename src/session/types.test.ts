@@ -110,6 +110,7 @@ describe("createSession", () => {
     expect(keys).toEqual([
       "activePipelineKind",
       "activePipelineRunId",
+      "activeRunId",
       "agentSessions",
       "agentType",
       "baseRef",

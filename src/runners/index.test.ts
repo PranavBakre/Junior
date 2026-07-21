@@ -34,14 +34,14 @@ describe("buildOpenCodeMcpConfig", () => {
     });
   });
 
-  it("does not inject Slack MCP for a reproducer without a declared Slack tool", () => {
+  it("injects Slack MCP for a reproducer's trusted control-plane capability", () => {
     const session = createSession("thread-1", "C01");
     session.activeAgentName = "reproducer";
     session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
 
     const mcp = buildOpenCodeMcpConfig(testConfig(), session);
 
-    expect(mcp?.["slack-bot"]).toBeUndefined();
+    expect(mcp?.["slack-bot"]).toBeDefined();
   });
 
   it("only includes Mixpanel MCP for the feature-metrics agent", () => {

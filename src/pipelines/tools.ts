@@ -13,6 +13,7 @@ import {
 import {
   canonicalAgentName,
 } from "../agents/registry.ts";
+import { canDispatch } from "../support/agents.ts";
 import {
   slackMcpAgentForSession,
   type SlackMcpRunContext,
@@ -29,13 +30,17 @@ import {
 } from "./outcomes.ts";
 import { runPipelineCheck, writePipelineArtifact } from "./artifacts.ts";
 import type {
+  AgentOutcome,
   Assignment,
   GitHubResourceRegistration,
   PipelineRun,
   TransitionReceipt,
 } from "./types.ts";
-import { createProductRun } from "./product/controller.ts";
-import { createBugRun } from "./bug/controller.ts";
+import {
+  createProductRun,
+  reduceProductOutcome,
+} from "./product/controller.ts";
+import { createBugRun, reduceBugOutcome } from "./bug/controller.ts";
 import type { BugMode } from "./bug/definition.ts";
 
 export type PipelineToolRuntime = {
@@ -167,8 +172,15 @@ export async function pipelineStartRun(
     );
   }
 
-  const active = await runtime.store.getRunByThread(runContext.threadId);
-  if (active && active.status !== "terminal" && active.kind !== args.kind) {
+  const active = session.activeRunId
+    ? await runtime.store.getRun(session.activeRunId)
+    : await runtime.store.getRunByThread(runContext.threadId);
+  if (
+    active &&
+    active.status !== "terminal" &&
+    active.kind !== "default" &&
+    active.kind !== args.kind
+  ) {
     return textResult(
       {
         ok: false,
@@ -178,6 +190,46 @@ export async function pipelineStartRun(
       },
       true,
     );
+  }
+  if (active?.kind === "default" && active.status !== "terminal") {
+    const invocation =
+      runContext.agent === "default" || runContext.agent === "lead"
+        ? session.activePipelineInvocation
+        : session.agentSessions?.[runContext.agent]?.activePipelineInvocation;
+    if (!invocation || invocation.runId !== active.id) {
+      return textResult(
+        {
+          ok: false,
+          reason: "pipeline promotion requires ownership of the active default assignment",
+        },
+        true,
+      );
+    }
+    if (
+      runContext.runId !== invocation.runId ||
+      runContext.assignmentId !== invocation.assignmentId ||
+      runContext.dispatchKey !== invocation.dispatchKey
+    ) {
+      return textResult(
+        { ok: false, reason: "stale signed assignment context cannot promote the run" },
+        true,
+      );
+    }
+    const source = await runtime.store.getAssignment(invocation.assignmentId);
+    if (!source || source.runId !== active.id) {
+      return textResult(
+        { ok: false, reason: "active default assignment is missing" },
+        true,
+      );
+    }
+    const caller = canonicalAgentName(runContext.agent) ?? runContext.agent;
+    const target = canonicalAgentName(source.targetAgent) ?? source.targetAgent;
+    if (caller !== target) {
+      return textResult(
+        { ok: false, reason: "authenticated agent does not own the active default assignment" },
+        true,
+      );
+    }
   }
 
   const repoRefs = [
@@ -193,6 +245,55 @@ export async function pipelineStartRun(
     idempotencyKey: `${runContext.threadId}:${sourceMessageTs}:${args.idempotency_key}`,
     sourceMessageTs,
   };
+  const exactSourceAssignmentId = active?.kind === "default"
+    ? (runContext.agent === "default" || runContext.agent === "lead"
+        ? session.activePipelineInvocation?.assignmentId
+        : session.agentSessions?.[runContext.agent]?.activePipelineInvocation
+          ?.assignmentId)
+    : undefined;
+
+  if (active && active.kind === args.kind && active.status !== "terminal") {
+    const priorStart = (await runtime.store.listEvents(active.id)).find(
+      (event) => event.idempotencyKey === `pipeline.promoted:${provenance.idempotencyKey}`,
+    );
+    if (priorStart?.assignmentId) {
+      const priorAssignment = await runtime.store.getAssignment(priorStart.assignmentId);
+      if (priorAssignment) {
+        await runtime.store.enqueueOutbox({
+          id: crypto.randomUUID(),
+          runId: active.id,
+          assignmentId: priorAssignment.id,
+          eventType: "assignment.dispatch",
+          payload: {
+            assignmentId: priorAssignment.id,
+            targetAgent: priorAssignment.targetAgent,
+            startKind: args.start_kind,
+            phase: active.phase,
+          },
+          idempotencyKey:
+            `${active.kind}-dispatch:${priorAssignment.idempotencyKey}`,
+        });
+        await runtime.sessionStore.mutateThread(runContext.threadId, (current) => {
+          current.activePipelineRunId = active.id;
+          current.activePipelineKind = active.kind;
+          current.activeRunId = active.id;
+        });
+        await runtime.onRunStarted?.({
+          runId: active.id,
+          assignmentId: priorAssignment.id,
+        });
+        return textResult({
+          ok: true,
+          created: false,
+          promoted: priorStart.payload.fromKind === "default",
+          run: active,
+          initialAssignment: priorAssignment,
+          dispatchQueued: true,
+          wakeError: null,
+        });
+      }
+    }
+  }
 
   try {
     const started = productStart
@@ -209,6 +310,7 @@ export async function pipelineStartRun(
             acceptanceCriteria: args.acceptance_criteria,
             requiredWorkstreams: args.required_workstreams,
             provenance,
+            sourceAssignmentId: exactSourceAssignmentId,
           },
         )
       : await createBugRun(
@@ -225,6 +327,7 @@ export async function pipelineStartRun(
               args.start_kind === "debug" ? runContext.agent : "reproducer",
             explicitMode: args.bug_mode,
             provenance,
+            sourceAssignmentId: exactSourceAssignmentId,
           },
         );
 
@@ -234,6 +337,7 @@ export async function pipelineStartRun(
       }
       current.activePipelineRunId = started.run.id;
       current.activePipelineKind = started.run.kind;
+      current.activeRunId = started.run.id;
     });
 
     let wakeError: string | null = null;
@@ -249,6 +353,7 @@ export async function pipelineStartRun(
     return textResult({
       ok: true,
       created: started.created,
+      promoted: started.promoted === true,
       run: started.run,
       initialAssignment: started.assignment,
       dispatchQueued: true,
@@ -440,19 +545,74 @@ export async function pipelineReportOutcome(
   }
 
   const shadow = runtime.runtimeMode === "shadow";
-  const receipt = await reportOutcome(
-    {
-      store: runtime.store,
-      githubTrackingEnabled: runtime.githubTrackingEnabled,
-      suppressDispatch: shadow,
-    },
-    {
-      outcome,
-      toPhase: args.to_phase,
-      idempotencyKey: args.idempotency_key,
-      auth: authFromContext(runContext),
-    },
-  );
+  if (!runContext.signed || !runtime.sessionStore) {
+    return textResult({ ok: false, reason: "signed pipeline session context required" }, true);
+  }
+  const session = await runtime.sessionStore.get(runContext.threadId);
+  const caller = canonicalAgentName(runContext.agent) ?? runContext.agent;
+  const invocation = caller === "default" || caller === "lead"
+    ? session?.activePipelineInvocation
+    : session?.agentSessions?.[caller]?.activePipelineInvocation;
+  if (
+    !session ||
+    session.channel !== runContext.channel ||
+    !invocation ||
+    runContext.runId !== invocation.runId ||
+    runContext.assignmentId !== invocation.assignmentId ||
+    runContext.dispatchKey !== invocation.dispatchKey ||
+    outcome.assignmentId !== invocation.assignmentId
+  ) {
+    return textResult(
+      { ok: false, reason: "outcome does not match this signed active assignment" },
+      true,
+    );
+  }
+  const assignment = await runtime.store.getAssignment(outcome.assignmentId);
+  const run = assignment ? await runtime.store.getRun(assignment.runId) : undefined;
+  if (run && assignment) {
+    const authFailure = authorizeAssignmentAction(run, assignment, runContext.agent);
+    if (authFailure) return textResult({ ok: false, reason: authFailure }, true);
+  }
+  const delegatedBranch = assignment?.contextRefs.some((ref) =>
+    ref.startsWith("delegated-branch:") || ref === "control-branch:human-input"
+  ) === true;
+  const receipt = !run || !assignment || run.kind === "default" || shadow || delegatedBranch
+    ? await reportOutcome(
+        {
+          store: runtime.store,
+          githubTrackingEnabled: runtime.githubTrackingEnabled,
+          suppressDispatch: shadow,
+        },
+        {
+          outcome,
+          toPhase: args.to_phase,
+          idempotencyKey: args.idempotency_key,
+          auth: authFromContext(runContext),
+        },
+      )
+    : run.kind === "product"
+      ? await reduceProductOutcome(
+          { store: runtime.store, workspaceRoot: runtime.workspaceRoot },
+          {
+            outcome,
+            toPhase: args.to_phase,
+            actorId: runContext.agent,
+            idempotencyKey: args.idempotency_key,
+          },
+        )
+      : await reduceBugOutcome(
+          {
+            store: runtime.store,
+            jobStore: runtime.store,
+            workspaceRoot: runtime.workspaceRoot,
+          },
+          {
+            outcome,
+            toPhase: args.to_phase,
+            actorId: runContext.agent,
+            idempotencyKey: args.idempotency_key,
+          },
+        );
 
   // Only pump/dispatch when runtime is fully active.
   if (
@@ -523,6 +683,206 @@ export async function pipelineRequestHandoff(
     ok: receipt.status === "accepted" || receipt.status === "duplicate" || receipt.status === "buffered",
     receipt,
   });
+}
+
+/** Durable replacement for direct agent dispatch while an assignment is active. */
+export async function pipelineDispatchAgent(
+  runtime: PipelineToolRuntime,
+  runContext: SlackMcpRunContext | null,
+  args: {
+    target_agent: string;
+    objective: string;
+    mode: "delegate" | "handoff";
+    reason: string;
+    idempotency_key: string;
+    to_phase?: string;
+    evidence_refs?: string[];
+    artifact_refs?: string[];
+    acceptance_criteria?: string[];
+  },
+): Promise<ToolTextResult> {
+  const disabled = requireActive(runtime);
+  if (disabled) return disabled;
+  if (!runContext?.signed || !runtime.sessionStore) {
+    return textResult({ ok: false, reason: "signed pipeline session context required" }, true);
+  }
+  if (args.mode === "delegate" && args.to_phase) {
+    return textResult(
+      { ok: false, reason: "delegate is phase-neutral; to_phase is only valid for handoff" },
+      true,
+    );
+  }
+  const session = await runtime.sessionStore.get(runContext.threadId);
+  if (!session || session.channel !== runContext.channel) {
+    return textResult({ ok: false, reason: "thread session not found" }, true);
+  }
+  const caller = canonicalAgentName(runContext.agent) ?? runContext.agent;
+  const invocation = caller === "default" || caller === "lead"
+    ? session.activePipelineInvocation
+    : session.agentSessions?.[caller]?.activePipelineInvocation;
+  if (!invocation) {
+    return textResult({ ok: false, reason: "no active durable assignment for caller" }, true);
+  }
+  if (
+    runContext.runId !== invocation.runId ||
+    runContext.assignmentId !== invocation.assignmentId ||
+    runContext.dispatchKey !== invocation.dispatchKey
+  ) {
+    return textResult({ ok: false, reason: "stale signed assignment context" }, true);
+  }
+  const [run, source] = await Promise.all([
+    runtime.store.getRun(invocation.runId),
+    runtime.store.getAssignment(invocation.assignmentId),
+  ]);
+  if (!run || !source || source.runId !== run.id || run.status === "terminal") {
+    return textResult({ ok: false, reason: "active assignment state is missing or terminal" }, true);
+  }
+  const sourceAgent = canonicalAgentName(source.targetAgent) ?? source.targetAgent;
+  if (sourceAgent !== caller) {
+    return textResult({ ok: false, reason: "authenticated agent does not own the active assignment" }, true);
+  }
+  const target = canonicalAgentName(args.target_agent) ?? args.target_agent.trim();
+  const dispatchContext = run.kind === "bug" ? "support" : "default";
+  if (!canDispatch(source.targetAgent, target, dispatchContext)) {
+    return textResult(
+      { ok: false, reason: `unauthorized handoff edge: ${source.targetAgent} → ${target}` },
+      true,
+    );
+  }
+  const mutationScope = canEditProductCode(target)
+    ? ["worktree-code"]
+    : canWritePipelineArtifacts(target)
+      ? ["pipeline-artifact"]
+      : [];
+  const stableKey = `${run.id}:${source.id}:${args.idempotency_key}`;
+  const prior = (await runtime.store.listEvents(run.id)).find(
+    (event) => event.idempotencyKey === stableKey,
+  );
+  if (prior) {
+    const child = (await runtime.store.listAssignments(run.id)).find(
+      (candidate) => candidate.idempotencyKey === `${stableKey}:next`,
+    );
+    return textResult({
+      ok: true,
+      mode: args.mode,
+      runId: run.id,
+      sourceAssignmentId: source.id,
+      targetAssignmentId: child?.id,
+      receipt: {
+        status: "duplicate",
+        runVersion: run.stateVersion,
+        assignmentId: child?.id ?? source.id,
+        eventId: prior.id,
+        reason: "dispatch already committed",
+      },
+    });
+  }
+  const inheritedBranch = source.contextRefs.find((ref) =>
+    ref.startsWith("delegated-branch:")
+  );
+  const delegatedBranch = inheritedBranch ??
+    (args.mode === "delegate" ? `delegated-branch:${source.id}` : undefined);
+  const contextRefs = [
+    `dispatch-mode:${args.mode}`,
+    ...(delegatedBranch ? [delegatedBranch] : []),
+  ];
+  const nextIdempotencyKey = `${stableKey}:next`;
+  const dispatchOutcome: AgentOutcome = {
+    assignmentId: source.id,
+    expectedRunVersion: run.stateVersion,
+    action: args.mode,
+    status: "progress",
+    targetAgent: target,
+    reason: args.reason,
+    evidenceRefs: args.evidence_refs ?? [],
+    artifactRefs: args.artifact_refs ?? [],
+    blockers: [],
+    checks: [],
+    progressFingerprint: `dispatch:${args.mode}:${target}:${args.idempotency_key}`,
+    nextAssignment: {
+      parentAssignmentId: source.id,
+      targetAgent: target,
+      objective: args.objective,
+      contextRefs,
+      artifactRefs: args.artifact_refs ?? [],
+      acceptanceCriteria: args.acceptance_criteria ?? run.acceptanceCriteria,
+      mutationScope,
+      dependsOn: [],
+      attempt: source.attempt,
+      attemptId: source.attemptId,
+      candidateRevisionDigest: source.candidateRevisionDigest,
+      deadlineAt: source.deadlineAt ?? run.deadlineAt,
+      idempotencyKey: nextIdempotencyKey,
+    },
+  };
+  const genericDispatch =
+    run.kind === "default" || args.mode === "delegate" || Boolean(inheritedBranch);
+  const receipt = genericDispatch
+    ? await requestHandoff(
+        {
+          store: runtime.store,
+          githubTrackingEnabled: runtime.githubTrackingEnabled,
+        },
+        {
+          assignmentId: source.id,
+          expectedRunVersion: run.stateVersion,
+          targetAgent: target,
+          objective: args.objective,
+          reason: args.reason,
+          progressFingerprint: dispatchOutcome.progressFingerprint,
+          evidenceRefs: dispatchOutcome.evidenceRefs,
+          artifactRefs: dispatchOutcome.artifactRefs,
+          acceptanceCriteria: args.acceptance_criteria ?? run.acceptanceCriteria,
+          mutationScope,
+          contextRefs,
+          attempt: source.attempt,
+          attemptId: source.attemptId,
+          candidateRevisionDigest: source.candidateRevisionDigest,
+          deadlineAt: source.deadlineAt ?? run.deadlineAt,
+          idempotencyKey: stableKey,
+          nextIdempotencyKey,
+          action: args.mode,
+          toPhase: args.to_phase,
+          auth: authFromContext(runContext),
+        },
+      )
+    : run.kind === "product"
+      ? await reduceProductOutcome(
+          { store: runtime.store, workspaceRoot: runtime.workspaceRoot },
+          {
+            outcome: dispatchOutcome,
+            toPhase: args.to_phase,
+            actorId: caller,
+            idempotencyKey: stableKey,
+          },
+        )
+      : await reduceBugOutcome(
+          {
+            store: runtime.store,
+            jobStore: runtime.store,
+            workspaceRoot: runtime.workspaceRoot,
+          },
+          {
+            outcome: dispatchOutcome,
+            toPhase: args.to_phase,
+            actorId: caller,
+            idempotencyKey: stableKey,
+          },
+        );
+  if (receipt.status === "accepted" || receipt.status === "duplicate") {
+    await runtime.onOutcomeCommitted?.(receipt);
+  }
+  return textResult(
+    {
+      ok: receipt.status !== "rejected",
+      mode: args.mode,
+      runId: run.id,
+      sourceAssignmentId: source.id,
+      targetAssignmentId: receipt.assignmentId,
+      receipt,
+    },
+    receipt.status === "rejected",
+  );
 }
 
 export async function pipelineWriteArtifact(

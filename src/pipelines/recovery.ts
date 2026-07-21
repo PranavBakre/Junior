@@ -87,13 +87,59 @@ export async function reconcileStalePipelineAssignments(input: {
   let escalationsRecorded = 0;
 
   for (const session of sessions.values()) {
-    if (!session.activePipelineRunId) continue;
-    const run = await input.store.getRun(session.activePipelineRunId);
+    const activeRunId = session.activeRunId ?? session.activePipelineRunId;
+    if (!activeRunId) continue;
+    const run = await input.store.getRun(activeRunId);
     if (!run || run.status !== "active") continue;
     const [assignments, outbox] = await Promise.all([
       input.store.listAssignments(run.id),
       input.store.listOutbox(run.id),
     ]);
+
+    let deadEscalated = false;
+    for (const dead of outbox.filter((item) =>
+      item.status === "dead" &&
+      ["assignment.dispatch", "assignment.continue", "assignment.resume"].includes(
+        item.eventType,
+      )
+    )) {
+      const assignment = dead.assignmentId
+        ? assignments.find((candidate) => candidate.id === dead.assignmentId)
+        : undefined;
+      if (!assignment || assignment.status === "completed" || assignment.status === "cancelled") {
+        continue;
+      }
+      const reason = `Durable dispatch failed after ${dead.attempts} attempts: ${dead.lastError ?? dead.eventType}`;
+      const receipt = await input.store.recordOutcomeTransaction({
+        outcome: {
+          assignmentId: assignment.id,
+          expectedRunVersion: (await input.store.getRun(run.id))?.stateVersion ?? run.stateVersion,
+          action: "escalate",
+          status: "blocked",
+          reason,
+          evidenceRefs: [],
+          artifactRefs: [],
+          blockers: [{ kind: "human_gate", detail: reason }],
+          checks: [],
+          progressFingerprint: `dead-outbox:${dead.id}`,
+        },
+        toPhase: "needs-human",
+        actorType: "system",
+        actorId: "pipeline-outbox-recovery",
+        idempotencyKey: `dead-outbox:${dead.id}`,
+        suppressDispatch: true,
+      });
+      if (receipt.status === "accepted" || receipt.status === "escalated") {
+        deadEscalated = true;
+        escalationsRecorded += 1;
+        await input.audit?.({
+          channelId: run.channelId,
+          threadId: run.threadId,
+          text: `:warning: ${reason} The run was escalated for human attention.`,
+        });
+      }
+    }
+    if (deadEscalated) continue;
 
     for (const assignment of assignments) {
       if (assignment.status !== "pending" && assignment.status !== "leased") {

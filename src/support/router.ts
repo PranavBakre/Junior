@@ -372,6 +372,7 @@ export class AgentDispatcher {
           await this.sessionStore.mutateThread(event.threadId, (session) => {
             session.activePipelineRunId = result.run.id;
             session.activePipelineKind = "bug";
+            session.activeRunId = result.run.id;
           });
         } catch (err) {
           // Only fall back when the session row is missing. Real CAS conflicts
@@ -383,6 +384,7 @@ export class AgentDispatcher {
             await this.sessionStore.mutateThread(event.threadId, (s) => {
               s.activePipelineRunId = result.run.id;
               s.activePipelineKind = "bug";
+              s.activeRunId = result.run.id;
             });
           }
         }
@@ -417,10 +419,10 @@ export class AgentDispatcher {
     if (pipeline.legacyDirectivesEnabled === false) return false;
     if (directives.length === 0) return false;
 
-    // Need a session with an active pipeline run.
+    // Need a session with an active durable run.
     if (!this.sessionStore) return false;
     const session = await this.sessionStore.get(event.threadId);
-    const runId = session?.activePipelineRunId;
+    const runId = session?.activeRunId ?? session?.activePipelineRunId;
     if (!runId) return false;
 
     const run = await pipeline.store.getRun(runId);

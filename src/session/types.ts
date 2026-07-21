@@ -214,6 +214,8 @@ export interface ThreadSession {
    */
   activePipelineRunId?: string | null;
   activePipelineKind?: "product" | "bug" | null;
+  /** Universal durable run backing the current task, including kind=default. */
+  activeRunId?: string | null;
   /** Exact assignment dispatch currently owned by the top-level runner. */
   activePipelineInvocation?: PipelineInvocationRef | null;
   /** Authoritative Slack source turn for the active top-level invocation. */
@@ -278,6 +280,7 @@ export function createSession(
     stateVersion: 0,
     activePipelineRunId: null,
     activePipelineKind: null,
+    activeRunId: null,
   };
 }
 

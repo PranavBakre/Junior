@@ -79,6 +79,8 @@ import { bugContextForAssignment } from "../pipelines/bug/controller.ts";
 import { composeBugDispatchPrompt } from "../pipelines/bug/context.ts";
 import { productContextForAssignment } from "../pipelines/product/controller.ts";
 import { composeProductDispatchPrompt } from "../pipelines/product/context.ts";
+import { createDefaultRun } from "../pipelines/default/controller.ts";
+import { pumpOutbox } from "../pipelines/pump.ts";
 
 export class SessionManager {
   private store: SessionStore;
@@ -151,13 +153,13 @@ export class SessionManager {
   }
 
   /**
-   * Enrich !status with active pipeline run summary when the thread has an
-   * activePipelineRunId and a pipeline store is wired.
+   * Enrich !status with the active durable run summary when a pipeline store
+   * is wired. activePipelineRunId remains a typed-run compatibility alias.
    */
   private async pipelineStatusLines(
     session: ThreadSession,
   ): Promise<string[]> {
-    const runId = session.activePipelineRunId;
+    const runId = session.activeRunId ?? session.activePipelineRunId;
     if (!runId || !this.pipelineStore) return [];
     try {
       const run = await this.pipelineStore.getRun(runId);
@@ -250,12 +252,14 @@ export class SessionManager {
           .mutateThread(event.threadId, (s) => {
             s.activePipelineRunId = result.run.id;
             s.activePipelineKind = "product";
+            s.activeRunId = result.run.id;
           })
           .catch(async () => {
             const s = await this.store.get(event.threadId);
             if (s) {
               s.activePipelineRunId = result.run.id;
               s.activePipelineKind = "product";
+              s.activeRunId = result.run.id;
               await this.store.set(event.threadId, s);
             }
           });
@@ -462,11 +466,19 @@ export class SessionManager {
 
     const dedupeKey = event.dedupeKey ?? `${event.ts}:${agentName}`;
     if (this.seenMessages.has(dedupeKey)) return;
-    this.rememberSeenMessage(dedupeKey);
 
     // Ensure the parent row exists before the concurrent-safe mutation.
     await this.getOrCreateSession(event);
     await this.captureSlackMemory(event, agentName, "persistent-agent");
+
+    const directSession = await this.store.get(event.threadId);
+    if (
+      directSession &&
+      await this.routeDirectTaskThroughDefaultRun(event, agentName, directSession)
+    ) {
+      this.rememberSeenMessage(dedupeKey);
+      return;
+    }
 
     // Object wrapper so TS doesn't narrow the flag past the mutator closure.
     const outcome: { action: "muted" | "buffer" | "run" } = { action: "run" };
@@ -487,6 +499,7 @@ export class SessionManager {
       s.lastActivity = agentSession.lastActivity;
       outcome.action = "run";
     });
+    this.rememberSeenMessage(dedupeKey);
 
     if (outcome.action === "muted") return;
 
@@ -524,19 +537,29 @@ export class SessionManager {
     // Deduplicate: Slack fires both `message` and `app_mention` for @mentions
     const dedupeKey = event.dedupeKey ?? event.ts;
     if (this.seenMessages.has(dedupeKey)) return;
-    this.rememberSeenMessage(dedupeKey);
 
     let session = await this.getOrCreateSession(event);
     await this.captureSlackMemory(event, agentName, "single-session");
 
     if (event.command) {
       const handled = await this.handleCommand(session, event);
-      if (handled) return;
+      if (handled) {
+        this.rememberSeenMessage(dedupeKey);
+        return;
+      }
       // Commands may have rewritten the row; re-read before the busy gate.
       session = (await this.store.get(event.threadId)) ?? session;
     }
 
-    if (session.muted) return;
+    if (session.muted) {
+      this.rememberSeenMessage(dedupeKey);
+      return;
+    }
+
+    if (await this.routeDirectTaskThroughDefaultRun(event, agentName, session)) {
+      this.rememberSeenMessage(dedupeKey);
+      return;
+    }
 
     await this.onAgentDispatched?.(session, agentName);
 
@@ -557,6 +580,7 @@ export class SessionManager {
       s.lastActivity = Date.now();
       outcome.action = "run";
     });
+    this.rememberSeenMessage(dedupeKey);
 
     if (outcome.action === "buffer") {
       this.onMessageBuffered?.(event);
@@ -1314,7 +1338,7 @@ export class SessionManager {
         ? session.activePipelineInvocation
         : agentSession?.activePipelineInvocation;
       const pipelineRunId =
-        pipelineInvocation?.runId ?? session.activePipelineRunId;
+        pipelineInvocation?.runId ?? session.activePipelineRunId ?? session.activeRunId;
       let activePipelineRun = pipelineRunId && this.pipelineStore
         ? await this.pipelineStore.getRun(pipelineRunId)
         : undefined;
@@ -2563,6 +2587,9 @@ export class SessionManager {
           objective,
         });
       }
+      if (run.kind === "default") {
+        return `${assignmentContext}\n\n${objective}`;
+      }
       const productContext = await productContextForAssignment(
         { store: this.pipelineStore, workspaceRoot: process.cwd() },
         run,
@@ -3027,6 +3054,133 @@ export class SessionManager {
     return session;
   }
 
+  /**
+   * Ordinary work enters the same durable assignment/outbox substrate as a
+   * product or bug pipeline. The outbox re-enters handleAgentMessage with an
+   * exact pipelineInvocation, so there is only one runner dispatch path.
+   */
+  private async routeDirectTaskThroughDefaultRun(
+    event: SlackMessageEvent,
+    agentName: string,
+    session: ThreadSession,
+  ): Promise<boolean> {
+    if (event.pipelineInvocation || !this.pipelineStore) return false;
+    if ((this.config.pipeline?.runtimeMode ?? "off") !== "active") return false;
+
+    const durableTarget =
+      agentName === "default" && session.agentType && session.agentType !== "lead"
+        ? session.agentType
+        : agentName;
+    const activeId = session.activeRunId ?? session.activePipelineRunId;
+    if (activeId) {
+      const active = await this.pipelineStore.getRun(activeId);
+      if (active && active.status !== "terminal") {
+        const assignments = await this.pipelineStore.listAssignments(active.id);
+        let assignment = assignments
+          .filter((candidate) =>
+            candidate.targetAgent === durableTarget &&
+            (candidate.status === "pending" ||
+              candidate.status === "leased")
+          )
+          .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        if (!assignment) {
+          const parent = [...assignments].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+          const assignmentId = crypto.randomUUID();
+          assignment = await this.pipelineStore.createAssignmentWithOutbox({
+            assignment: {
+              id: assignmentId,
+              runId: active.id,
+              parentAssignmentId: parent?.id ?? null,
+              sourceAgent: "human",
+              targetAgent: durableTarget,
+              objective: event.text.trim() || "Continue from the latest human input",
+              contextRefs: ["control-branch:human-input", `source-message:${event.ts}`],
+              artifactRefs: [],
+              acceptanceCriteria: active.acceptanceCriteria,
+              mutationScope:
+                durableTarget === "build" || durableTarget === "frontend"
+                  ? ["worktree-code"]
+                  : [],
+              dependsOn: [],
+              attempt: 1,
+              attemptId: active.activeAttemptId,
+              candidateRevisionDigest: null,
+              deadlineAt: active.deadlineAt,
+              idempotencyKey: `human-input:${active.id}:${event.ts}:${durableTarget}`,
+            },
+            outbox: {
+              id: crypto.randomUUID(),
+              runId: active.id,
+              assignmentId,
+              eventType: "assignment.resume",
+              payload: {
+                assignmentId,
+                targetAgent: durableTarget,
+                prompt: event.text,
+                sourceMessageTs: event.ts,
+                resumeReason: "human follow-up on active durable task",
+              },
+              idempotencyKey:
+                `default-follow-up:${active.id}:${event.ts}:${durableTarget}`,
+            },
+          });
+        } else {
+          await this.pipelineStore.enqueueOutbox({
+            id: crypto.randomUUID(),
+            runId: active.id,
+            assignmentId: assignment.id,
+            eventType: "assignment.resume",
+            payload: {
+              assignmentId: assignment.id,
+              targetAgent: assignment.targetAgent,
+              prompt: event.text,
+              sourceMessageTs: event.ts,
+              resumeReason: "human follow-up on active durable task",
+            },
+            idempotencyKey:
+              `default-follow-up:${active.id}:${event.ts}:${durableTarget}`,
+          });
+        }
+        await pumpOutbox({
+          store: this.pipelineStore,
+          dispatcher: this,
+          sessionReader: this.store,
+        });
+        return true;
+      }
+    }
+
+    const started = await createDefaultRun(
+      { store: this.pipelineStore },
+      {
+        channelId: event.channel,
+        threadId: event.threadId,
+        objective: event.text.trim() || `${agentName} task`,
+        messageTs: event.ts,
+        targetAgent: durableTarget,
+        sourceAgent: event.isSelfBot ? "system" : "human",
+        repoRefs: session.targetRepo ? [session.targetRepo] : [],
+      },
+    );
+    await this.mutateSession(event.threadId, (current) => {
+      current.activeRunId = started.run.id;
+      current.activePipelineRunId = null;
+      current.activePipelineKind = null;
+    });
+    const report = await pumpOutbox({
+      store: this.pipelineStore,
+      dispatcher: this,
+      sessionReader: this.store,
+    });
+    if (report.failed > 0) {
+      _log.warn(
+        "default-run",
+        `initial dispatch retained for retry run=${started.run.id} errors=${report.errors.join("; ")}`,
+      );
+    }
+    return true;
+  }
+
   private getOrCreateAgentSession(
     session: ThreadSession,
     agentName: string,
@@ -3094,6 +3248,7 @@ export class SessionManager {
       pendingMessages: agentSession.pendingMessages,
       pid: agentSession.pid,
       lastActivity: agentSession.lastActivity,
+      activePipelineInvocation: agentSession.activePipelineInvocation ?? null,
       activeAgentName: agentName,
       slackIdentity: agentIdentity,
     };

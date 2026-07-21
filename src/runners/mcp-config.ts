@@ -22,19 +22,12 @@ export function allowedMcpServers(session: ThreadSession): Set<McpServerName> {
       name === "notion"
     ),
   );
+  const agent = session.activeAgentName ?? session.agentType;
   if (
-    hasCapability(
-      session.activeAgentName ?? session.agentType,
-      "github-review-comment",
-    )
-  ) {
-    allowed.add("slack-bot");
-  }
-  if (
-    hasCapability(
-      session.activeAgentName ?? session.agentType,
-      "pipeline-run-start",
-    )
+    hasCapability(agent, "github-review-comment") ||
+    hasCapability(agent, "pipeline-artifact-write") ||
+    hasCapability(agent, "dispatch") ||
+    hasCapability(agent, "pipeline-run-start")
   ) {
     allowed.add("slack-bot");
   }

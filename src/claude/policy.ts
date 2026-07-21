@@ -79,12 +79,23 @@ export function mapClaudeRunPolicy(options: {
   );
   const declaredTools = permissions?.tools ?? [];
   const agentName = session.activeAgentName ?? session.agentType;
-  const capabilityTools = hasCapability(
-    agentName,
-    "github-review-comment",
-  )
-    ? [GITHUB_POST_REVIEW_TOOL]
-    : [];
+  const capabilityTools = [
+    ...(hasCapability(agentName, "github-review-comment")
+      ? [GITHUB_POST_REVIEW_TOOL]
+      : []),
+    ...(hasCapability(agentName, "pipeline-artifact-write")
+      ? [
+          "mcp__slack-bot__pipeline_get_state",
+          "mcp__slack-bot__pipeline_report_outcome",
+        ]
+      : []),
+    ...(hasCapability(agentName, "dispatch")
+      ? ["mcp__slack-bot__agent_dispatch"]
+      : []),
+    ...(hasCapability(agentName, "pipeline-run-start")
+      ? ["mcp__slack-bot__pipeline_start_run"]
+      : []),
+  ];
   const worktreeRoots = [
     session.worktreePath,
     ...Object.values(session.worktreePaths ?? {}),
@@ -130,14 +141,16 @@ export function mapClaudeRunPolicy(options: {
           : [],
       };
     }
-    // Critical safety case: review / reproducer-validation agents must not
-    // be able to mutate the worktree. `plan` mode is the ACTUAL gate — it
-    // blocks edits and write-Bash wholesale; the deny list below is
-    // defense-in-depth for specific high-blast-radius commands, not the
-    // primary enforcer. Don't loosen plan mode assuming the deny list confines.
+    // Read-only agents still need trusted control-plane MCP mutations to
+    // settle/delegate exact assignments. Claude plan mode blocks those calls,
+    // so use default mode only when the catalog contributes a strict trusted
+    // allowlist; product/worktree mutations remain explicitly disallowed.
+    const readOnlyDeclaredTools = declaredTools.filter(
+      (tool) => !isMutatingToolSpec(tool),
+    );
     return {
-      permissionMode: "plan",
-      allowedTools: [...new Set([...declaredTools, ...capabilityTools])],
+      permissionMode: capabilityTools.length > 0 ? "default" : "plan",
+      allowedTools: [...new Set([...readOnlyDeclaredTools, ...capabilityTools])],
       disallowedTools: [...READ_ONLY_DISALLOWED],
       addDirs: [],
     };
@@ -153,8 +166,10 @@ export function mapClaudeRunPolicy(options: {
   }
 
   if (intent === "human-gated") {
-    // Propose, don't execute. A later phase layers live approval on top; the
-    // policy module's safe base is `plan`.
+    // Planners need the durable control plane even though product/worktree
+    // mutation remains blocked. Claude plan mode rejects mutating MCP tools,
+    // so use a strict default-mode allowlist when trusted capabilities add
+    // those tools; filesystem mutations remain explicitly disallowed.
     //
     // Mutating tools MUST NOT be pre-allowed: when the approval round-trip is
     // active the spawner switches to `default` mode, and anything in
@@ -163,9 +178,15 @@ export function mapClaudeRunPolicy(options: {
     // them un-allowed routes each mutation through the approval tool
     // (approval mode) or blocks it (plan mode).
     return {
-      permissionMode: "plan",
-      allowedTools: declaredTools.filter((tool) => !isMutatingToolSpec(tool)),
-      disallowedTools: [],
+      permissionMode: capabilityTools.length > 0 ? "default" : "plan",
+      allowedTools: [
+        ...new Set([
+          ...declaredTools.filter((tool) => !isMutatingToolSpec(tool)),
+          ...capabilityTools,
+        ]),
+      ],
+      disallowedTools:
+        capabilityTools.length > 0 ? [...READ_ONLY_DISALLOWED] : [],
       addDirs: [cwd],
     };
   }

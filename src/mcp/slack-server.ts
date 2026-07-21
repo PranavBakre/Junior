@@ -56,9 +56,9 @@ import { disableAgentActionMessages } from "../slack/action-buttons.ts";
 import type { PipelineToolRuntime } from "../pipelines/tools.ts";
 import {
   pipelineGetState,
+  pipelineDispatchAgent,
   pipelineRegisterPr,
   pipelineReportOutcome,
-  pipelineRequestHandoff,
   pipelineRunCheck,
   pipelineStartRun,
   pipelineWriteArtifact,
@@ -735,36 +735,31 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     "agent_dispatch",
     {
       description:
-        "Internally dispatch a prompt to a registered Junior persistent agent in a Slack thread without posting a Slack !<agent> directive.",
+        "Durably delegate to or hand off ownership to a registered Junior agent. With an active assignment this creates a typed successor in the current run; outside the durable runtime it falls back to legacy internal dispatch.",
       inputSchema: {
         agent_name: z.string().describe("Target persistent agent name, e.g. review, reproducer"),
         prompt: z.string().describe("Prompt to send to the agent"),
-        channel_id: z.string().describe("Slack channel ID for the thread context"),
-        thread_ts: z.string().describe("Slack thread timestamp / session key"),
+        mode: z.enum(["delegate", "handoff"]).describe("delegate resumes the caller after the child completes; handoff transfers ownership."),
+        reason: z.string().optional().describe("Why this agent/ownership transition is needed"),
+        idempotency_key: z.string().min(1).describe("Stable semantic key reused on retries"),
+        to_phase: z.string().optional().describe("Optional legal controller phase for a handoff"),
+        channel_id: z.string().optional().describe("Deprecated; authenticated channel is derived from signed context"),
+        thread_ts: z.string().optional().describe("Deprecated; authenticated thread is derived from signed context"),
         user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
         trigger_ts: z.string().optional().describe("Slack message timestamp that caused the dispatch. Defaults to thread_ts."),
       },
     },
-    async ({ agent_name, prompt, channel_id, thread_ts, user_id, trigger_ts }) => {
+    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, channel_id, thread_ts, user_id, trigger_ts }) => {
       if (!sessionManager) {
         return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
       }
       const targetAgent = agent_name.trim();
-      if (!isPersistentAgent(targetAgent)) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: unknown agent "${targetAgent}". Use agent_search to find registered agents.`,
-            },
-          ],
-        };
-      }
-
       if (!runContext) {
         return { content: [{ type: "text" as const, text: "Error: MCP run context missing; cannot authenticate caller" }] };
       }
-      if (runContext.threadId !== thread_ts || runContext.channel !== channel_id) {
+      const resolvedThread = thread_ts ?? runContext.threadId;
+      const resolvedChannel = channel_id ?? runContext.channel;
+      if (runContext.threadId !== resolvedThread || runContext.channel !== resolvedChannel) {
         return {
           content: [
             {
@@ -775,31 +770,65 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         };
       }
 
+      const session = await sessionManager.getSession(runContext.threadId);
+      const callerInvocation = runContext.agent === "default" || runContext.agent === "lead"
+        ? session?.activePipelineInvocation
+        : session?.agentSessions?.[runContext.agent]?.activePipelineInvocation;
+      if (pipelineRuntime && callerInvocation) {
+        return pipelineDispatchAgent(pipelineRuntime, runContext, {
+          target_agent: targetAgent,
+          objective: prompt,
+          mode,
+          reason: reason?.trim() || `${runContext.agent} dispatched ${targetAgent}`,
+          idempotency_key: idempotency_key.trim(),
+          to_phase,
+        });
+      }
+      if (pipelineRuntime && session?.activeRunId) {
+        const active = await pipelineRuntime.store.getRun(session.activeRunId);
+        if (active && active.status !== "terminal") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: "Error: active durable run has no assignment owned by this caller; refusing legacy dispatch",
+            }],
+            isError: true,
+          };
+        }
+      }
+
+      // Legacy, non-durable fallback retains the public identity/allow-table
+      // checks. Durable dispatch above is authorized by the trusted catalog.
+      if (!isPersistentAgent(targetAgent)) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Error: unknown legacy agent "${targetAgent}". Use agent_search to find registered agents.`,
+          }],
+        };
+      }
       const caller = runContext.agent;
       const allowed = dispatchableAgentsFor(caller);
       if (!allowed.includes(targetAgent)) {
         return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Error: ${caller} is not allowed to dispatch ${targetAgent}. Allowed: ${allowed.join(", ") || "(none)"}.`,
-            },
-          ],
+          content: [{
+            type: "text" as const,
+            text: `Error: ${caller} is not allowed to dispatch ${targetAgent}. Allowed: ${allowed.join(", ") || "(none)"}.`,
+          }],
         };
       }
 
-      const now = Date.now();
       await sessionManager.handleAgentMessage(
         {
-          threadId: thread_ts,
-          channel: channel_id,
+          threadId: resolvedThread,
+          channel: resolvedChannel,
           user: user_id ?? "mcp-internal",
           text: prompt,
-          ts: trigger_ts ?? thread_ts,
+          ts: trigger_ts ?? resolvedThread,
           command: null,
           isSelfBot: true,
           botUsername: AGENT_IDENTITIES[caller]?.username,
-          dedupeKey: `${thread_ts}:mcp:${targetAgent}:${now}`,
+          dedupeKey: `${resolvedThread}:mcp:${runContext.agent}:${targetAgent}:${idempotency_key}`,
         },
         targetAgent,
       );
@@ -808,7 +837,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ok: true, agent: targetAgent, thread: thread_ts }),
+            text: JSON.stringify({ ok: true, agent: targetAgent, thread: resolvedThread, mode, durable: false }),
           },
         ],
       };
@@ -1058,12 +1087,12 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     "pipeline_report_outcome",
     {
       description:
-        "Report a structured agent outcome (continue_self|handoff|wait|escalate|complete). " +
+        "Settle the caller's exact signed assignment with continue_self|wait|escalate|complete. Use agent_dispatch for every agent-to-agent transition. " +
         "Runtime validates authority, state version, edges, and budgets; returns an explicit receipt.",
       inputSchema: {
         outcome: z
           .record(z.string(), z.unknown())
-          .describe("AgentOutcome object (assignmentId, expectedRunVersion, action, status, reason, progressFingerprint, ...)"),
+          .describe("AgentOutcome object with assignmentId, expectedRunVersion, action, status, reason, evidenceRefs, artifactRefs, blockers, checks, progressFingerprint, plus wait when action=wait"),
         to_phase: z.string().optional().describe("Optional phase advance"),
         idempotency_key: z.string().optional().describe("Duplicate-safe idempotency key"),
       },
@@ -1088,46 +1117,6 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         to_phase,
         idempotency_key,
       });
-    },
-  );
-
-  server.registerTool(
-    "pipeline_request_handoff",
-    {
-      description:
-        "Request a typed handoff to another agent. Runtime validates the handoff graph and returns a receipt. " +
-        "Successor work is enqueued on the durable outbox (not Slack-as-bus).",
-      inputSchema: {
-        assignment_id: z.string().describe("Current assignment id"),
-        expected_run_version: z.number().describe("CAS expected run state_version"),
-        target_agent: z.string().describe("Target agent name (e.g. architect, build, review)"),
-        objective: z.string().describe("Objective for the successor assignment"),
-        reason: z.string().describe("Why the handoff is requested"),
-        progress_fingerprint: z.string().describe("Progress fingerprint for loop policy"),
-        idempotency_key: z.string().describe("Shared idempotency key"),
-        evidence_refs: z.array(z.string()).optional(),
-        artifact_refs: z.array(z.string()).optional(),
-        acceptance_criteria: z.array(z.string()).optional(),
-        to_phase: z.string().optional(),
-        candidate_revision_digest: z.string().optional(),
-      },
-    },
-    async (args) => {
-      if (!pipelineRuntime) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                ok: false,
-                reason: "pipeline runtime disabled (PIPELINE_RUNTIME_MODE=off)",
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
-      return pipelineRequestHandoff(pipelineRuntime, runContext, args);
     },
   );
 

@@ -54,6 +54,7 @@ import {
 } from "./pipelines/recovery.ts";
 import { gcTerminalPipelineHistory } from "./pipelines/gc.ts";
 import type { PipelineToolRuntime } from "./pipelines/tools.ts";
+import type { SlackAuditCallback } from "./pipelines/dispatch.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -63,6 +64,7 @@ log.info("boot", `Session store: ${config.session.store}`);
 const actionStore = new SlackActionStore(resolve(config.session.sqlitePath));
 const memoryStore = createMemoryStore(config.memory.sqlitePath);
 const memoryIngestor = new MemoryIngestor(memoryStore);
+let pipelineAudit: SlackAuditCallback | undefined;
 const sessionManager = new SessionManager(store, config);
 sessionManager.setMemoryIngestor(memoryIngestor);
 const agentRouter = new AgentRouter(
@@ -97,6 +99,7 @@ const pipelineToolRuntime: PipelineToolRuntime = {
         store: pipelineStore,
         dispatcher: sessionManager,
         sessionReader: store,
+        audit: pipelineAudit,
       });
     } catch (err) {
       log.warn(
@@ -111,6 +114,7 @@ const pipelineToolRuntime: PipelineToolRuntime = {
       store: pipelineStore,
       dispatcher: sessionManager,
       sessionReader: store,
+      audit: pipelineAudit,
       workspaceRoot: process.cwd(),
     });
   },
@@ -128,6 +132,8 @@ sessionManager.worktreeManager = worktreeManager;
 sessionManager.pipelineStore = pipelineStore;
 sessionManager.slackApp = app;
 const responder = new SlackResponder(app);
+pipelineAudit = ({ channelId, threadId, text }) =>
+  responder.postResponse(channelId, threadId, text).then(() => undefined);
 const autoTriggerChannels = new Set(Object.keys(config.channelDefaults));
 // Only channels whose default agent is "lead" go through the support router —
 // other auto-trigger channels (e.g., a build channel default) keep the
@@ -440,6 +446,7 @@ const pipelineBoot = (async () => {
                       store: pipelineStore,
                       dispatcher: sessionManager,
                       sessionReader: store,
+                      audit: pipelineAudit,
                     });
                   }
                   return wakes;
@@ -493,6 +500,7 @@ const pipelineBoot = (async () => {
           store: pipelineStore,
           dispatcher: sessionManager,
           sessionReader: store,
+          audit: pipelineAudit,
         });
       })().catch((err) => {
         log.warn(
@@ -661,7 +669,7 @@ setInterval(() => {
     if (await workflowController.handleMessage(event)) return;
     // Universal dispatch: AgentDispatcher decides whether to dispatch a persistent
     // agent (any channel) or fall through to the single-session manager.
-    supportRouter.handleMessage(event);
+    await supportRouter.handleMessage(event);
   }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
 
   if (config.http.enabled) {

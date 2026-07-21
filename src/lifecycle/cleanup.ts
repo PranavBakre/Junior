@@ -20,11 +20,12 @@ export async function cleanupStaleSessions(
     if (session.lastActivity < staleBefore) {
       // A pipeline run owns durable work beyond any individual model turn.
       // Preserve its session row so startup reconciliation can resume it.
+      const activeRunId = session.activeRunId ?? session.activePipelineRunId;
       if (
-        session.activePipelineRunId &&
+        activeRunId &&
         (!shouldPreservePipelineRun ||
           await shouldPreservePipelineRun(
-            session.activePipelineRunId,
+            activeRunId,
             staleBefore,
           ))
       ) continue;
