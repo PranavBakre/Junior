@@ -48,6 +48,8 @@ Setup scripts that `cp -R .claude/.` would otherwise pull every sibling thread's
 
 `SessionManager` creates a worktree whenever `session.targetRepo` is set — not gated on agent type. Previously gated on `build`/`frontend`, which let other agents `cwd` into the shared origin repo and modify it.
 
+Durable pipeline assignments use a stricter path: `pipeline-routing.ts` resolves every run `repoRef`, and `SessionManager` provisions every resolved repo before spawning the worker. Concurrent fan-out creation for the same repo/thread is single-flighted. Repo-less orchestration may remain in Junior's workspace, but repo-bound pipeline agents never fall back to the target repo's developer checkout.
+
 ### Dirty-check before remove
 
 Callers should `isWorktreeDirty(path)` before `removeWorktree` so uncommitted work isn't silently destroyed. The cleanup pass in `lifecycle/cleanup.ts` skips busy/draining and deletes only stale idle sessions; worktree removal itself is not currently automatic on cleanup (worktrees outlive the session row).
@@ -55,4 +57,4 @@ Callers should `isWorktreeDirty(path)` before `removeWorktree` so uncommitted wo
 ## Dependencies
 
 - **Uses**: `config.RepoConfig`, `Bun.spawn` (git, optional setup script), `node:fs/promises` (stat)
-- **Used by**: `SessionManager.runClaudeWithAgent` (per-thread create), `DevServerManager.bootstrap` (shared dev-server worktree), MCP `register_worktree` tool (bug-pipeline intake)
+- **Used by**: `SessionManager.runRunnerWithAgent` (per-thread and durable pipeline provisioning), `DevServerManager.bootstrap` (shared dev-server worktree), MCP `register_worktree` tool (explicit/manual routing)

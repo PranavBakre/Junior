@@ -63,7 +63,7 @@ Run six passes on the code. Do not blend them -- each pass has a different lens.
 
 Use the `<workspace>` block as the source of truth for repo paths. Review inside the routed per-thread worktree for the target repo, not the bare repo.
 
-If the needed target repo is missing from `<workspace>`, call `mcp__slack-bot__register_worktree({ thread_id: "<thread ts>", repo: "<repo name>" })` before reading code or running git commands in that repo. Do not create ad hoc worktrees with shell commands; Junior's MCP tool owns worktree creation and persistence.
+If a durable pipeline assignment is missing its target repo from `<workspace>`, report a control-plane blocker — pipeline dispatch should already have provisioned every run repo. For a non-pipeline/manual review, call `mcp__slack-bot__register_worktree({ thread_id: "<thread ts>", repo: "<repo name>" })` before reading code or running git commands in that repo. Do not create ad hoc worktrees with shell commands; Junior's MCP tool owns worktree creation and persistence.
 
 Use the worktree to:
 - read the full diff and surrounding code

@@ -96,7 +96,7 @@ Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, c
 
 ## Prompt Composition (in `runRunnerWithAgent`)
 
-1. Resolve target repo + (always) create worktree if `targetRepo` set
+1. For an active pipeline assignment, resolve every durable repo ref, provision all managed worktrees, and select the primary cwd from review/workstream affinity. Otherwise resolve `targetRepo` and create its worktree when set.
 2. Resolve agent definition + context profile (defaults to all-true)
 3. First turn: `buildPromptPreamble(...)` injects enabled blocks
 4. Resumed turn: just `buildWorkspaceBlock` (cheap safety insurance) if workspace flag is on
@@ -110,6 +110,8 @@ Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, c
 
 - **Refetch-then-mutate in `onRunComplete`**: long-running agents may be minutes stale; refetch the row to avoid clobbering writes from other agents on the same thread.
 - **Handle ownership check**: if `this.handles.get(handleKey) !== ownHandle`, the run was replaced by `!reset` or a newer spawn — bail without writing or posting.
+- **Pipeline workspace gate**: only the active assignment inherits fail-closed repo/worktree setup. The trusted agent catalog allows planner/orchestrator roles to run repo-less; builder/reviewer/reproducer and unknown roles require a managed target repo. Later human turns remain usable if the assignment escalates to `needs-human`.
+- **Setup settlement containment**: pre-spawn failures attempt durable pipeline settlement, but a store failure during settlement is caught and folded into the normal setup-error path so the session cannot remain stuck `busy`.
 - **Idle interrupt/resume**: for headless CLI providers Junior owns, silent runs are SIGINT'd after `session.idleTimeoutMs`; if a native session id was captured, the retry uses `buildRunSession(...)` so provider-native continuity receives the latest `sessionId`. OpenCode idle recovery is gated by `OPENCODE_CONTINUITY_ENABLED`.
 - **Slack tool duplicate suppression**: if a runner used `slack_send_message` and its final response is the exact same text, skip `onResponse` to avoid double-posting the same Slack reply.
 - **`seenMessages` dedupe**: bounded set (cap 1000, drops oldest 500) keyed on `dedupeKey ?? ts`. Slack fires both `message` and `app_mention` for @mentions.

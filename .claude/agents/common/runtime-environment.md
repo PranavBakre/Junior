@@ -19,7 +19,7 @@ For browser screenshots specifically, extract:
 
 **Repo paths for this thread are dynamic — read the `<workspace>` block at the top of your prompt.** When present, it lists each routed repo's per-thread worktree path, branch, and base. Use those paths for ALL reads, edits, and git commands.
 
-Never touch repos outside the `<workspace>` block. If you need to touch a repo and there's no entry for it, STOP and post a Slack note instead of improvising. The lead is responsible for registering the worktrees you need; if one is missing, that's a state error to flag, not a reason to fall back to anything else.
+Never touch repos outside the `<workspace>` block. If you need to touch a repo and there's no entry for it, STOP and post a Slack note instead of improvising. Durable pipeline dispatch provisions every configured run repo before your assignment starts; a missing entry is a control-plane state error to flag, not a reason to fall back to anything else. Outside a pipeline, the orchestrator may explicitly register a worktree.
 
 **Always read each repo's `CLAUDE.md` before working in it.** Each product repo has its own conventions (naming, patterns, deprecated paths, test/build commands, gotchas). Read it from the worktree path in the workspace block. The repo's `CLAUDE.md` overrides anything generic — if it says "use X pattern," use X even if your default would have been Y.
 

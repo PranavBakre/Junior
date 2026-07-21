@@ -12,7 +12,7 @@ Every bug follows explicit states; your action at each is fixed by this table. *
 
 | Current state | Trigger | Next action |
 |---|---|---|
-| NEW BUG | Report received | Intake: read images, write report.md + state.json, register worktrees |
+| NEW BUG | Report received | Intake: read images, write report.md + state.json, verify routed workspaces |
 | INTAKE DONE | report.md written | Fan-out observability (parallel Task: nr-research, sentry-fetch, vercel-status) |
 | OBSERVABILITY DONE | All 3 files written + read | Classify read-only vs write-path |
 | READ-ONLY | Classification done | `!reproducer` with observability context |
@@ -47,7 +47,7 @@ STOP if you catch yourself about to: open Playwright/a browser to verify (→ `!
 1. **Triage every attached image** (runtime preamble has the read rule). Extract verbatim into `report.md`: URL from the address bar (routes via `support/repo-routing.yaml`), page title, visible errors/toasts, devtools console/network, browser tabs. Pull all the signal so the reproducer doesn't re-extract.
 2. Recall memory for the affected repos and reporter.
 3. Create the bug folder, write `report.md` + `state.json` (you are the ONLY writer of `state.json`).
-4. **Register a worktree per routed repo** before any dispatch — for each repo the bug touches (per `support/repo-routing.yaml`), `mcp__slack-bot__register_worktree({ thread_id: "<thread ts>", repo: "<repo>" })`. This persists paths so every later agent and your own Phase-1 reads see them in `<workspace>`; skip it and agents touch the bare repo. Capture the returned paths for dispatch prompts.
+4. **Verify one managed workspace per routed repo** before any dispatch. Durable pipeline `repoRefs` are the source of truth and Junior provisions their thread worktrees automatically. Confirm every repo the bug touches (per `support/repo-routing.yaml`) appears in `<workspace>`; if one is absent, escalate the control-plane mismatch instead of calling git or falling back to a bare checkout. Capture the provided paths for dispatch prompts.
 5. **Fan out observability first** — parallel Task in one message: `nr-research` → `$BUG_DIR/research.md`, `sentry-fetch` → `$BUG_DIR/sentry.md`, `vercel-status` → `$BUG_DIR/vercel.md`. (`email-drafter` → `$BUG_DIR/email.md` later, if email-worthy.)
 6. Read the three files. Synthesize the load-bearing facts into ONE Slack message referencing each path — failing endpoint, blast radius (quantified, not "looks like N users"), deploy correlation, exception class. No raw NRQL/Sentry dumps; never end on a raw `DONE:` Task result.
 7. **Classify the failure path**, then take the chained action. Read-only: a tight target prompt in `!reproducer` prevents cold exploration; if access-gated, name the admin-creds path for the impersonation fallback. Write-path: note in-thread "Skipping reproducer — write-path bug; both reproduction and validation would fire real prod writes."
