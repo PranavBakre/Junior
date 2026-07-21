@@ -1385,6 +1385,13 @@ export class SessionManager {
             "manager",
             `pipeline.workspace.skip thread=${session.threadId} run=${activePipelineRun.id} assignment=${pipelineInvocation.assignmentId} agent=${agentName} reason=repo-less-orchestration`,
           );
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            // A prior utility command may have pinned the thread to an
+            // arbitrary cwd. Repo-less pipeline work belongs in Junior's
+            // workspace, not that stale override.
+            fresh.cwd = null;
+          });
         } else {
           if (!this.worktreeManager) {
             throw new Error(

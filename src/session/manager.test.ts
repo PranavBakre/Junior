@@ -726,6 +726,7 @@ describe("SessionManager", () => {
     const existing = createSession("thread-1", "C123");
     existing.activePipelineRunId = "run-repo-less-pm";
     existing.activePipelineKind = "product";
+    existing.cwd = "/tmp/stale-utility-cwd";
     await store.set(existing.threadId, existing);
 
     await manager.handleAgentMessage(
@@ -747,6 +748,7 @@ describe("SessionManager", () => {
     expect(runSession.targetRepo).toBeNull();
     expect(runSession.worktreePath).toBeNull();
     expect(runSession.cwd).toBeNull();
+    expect((await store.get("thread-1"))?.cwd).toBeNull();
   });
 
   it("keeps human turns usable after a repo-less build assignment escalates", async () => {
