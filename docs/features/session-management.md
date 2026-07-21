@@ -1,8 +1,10 @@
 # Session Management
 
+> **Current status (2026-07-21):** Shipped. Production uses the SQLite-backed session store and normalized runner provider boundary; the in-memory store is retained for tests/dev. Current persistent Slack workers are `reproducer` and `review`, with `thinker` only as a legacy session alias.
+
 ## Problem
 
-Each Slack thread is one `ThreadSession`, but a single thread can run several persistent agents concurrently (lead, reproducer, thinker, build, reviewer, …). The manager owns:
+Each Slack thread is one `ThreadSession`, but a single thread can run several persistent agents concurrently (lead, reproducer, review, private overlay workers, …). The manager owns:
 
 - Per-thread lookup and creation
 - Per-agent run state, sessionId, pending buffer, pid

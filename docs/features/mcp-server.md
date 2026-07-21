@@ -1,17 +1,19 @@
 # Bot Slack MCP Server
 
+> **Current status (2026-07-21):** Shipped. This server is the shared loopback MCP surface for Claude, OpenCode, and Codex runs. The code-index page is the compact current inventory; this feature page retains the design history and security rationale.
+
 ## Problem
 
 Spawned Claude Code processes need Slack access — to send messages, read channels, search conversations, and upload files. The official Slack plugin (`slack@claude-plugins-official`) provides this, but it sends messages as the user's personal OAuth identity (no `bot_id`). Junior's event handler filters by `bot_id` to prevent loops, so plugin messages bypass the filter and trigger an infinite loop: Claude posts via plugin → Junior picks it up as a new user message → spawns Claude again → repeat.
 
 **Who has this problem:** Any spawned Claude instance that needs to interact with Slack.
-**What happens today:** Slack plugin enabled → messages come from Pranav's account → Junior sees them as new events → infinite loop.
+**What happens today:** The bot-owned MCP path posts with Junior's bot identity, while ordinary self-authored bot events are filtered. Explicit persistent-agent directives and configured auto-trigger exceptions still pass through the event router by design.
 **Painful part:** The identity model. The plugin authenticates as the user, not the bot. There's no way to configure it to use the bot token.
 **"Finally" moment:** Claude sends messages that appear as Junior (the bot), event handler skips them, no loop.
 
 ## Solution
 
-A shared HTTP MCP server running inside Junior's main process. It uses the bot token (`SLACK_BOT_TOKEN`) so all messages carry Junior's `bot_id`. The event handler at `src/slack/events.ts:31` already filters by `selfBotId` — messages from the bot MCP server are automatically ignored.
+A shared HTTP MCP server running inside Junior's main process. It uses the bot token (`SLACK_BOT_TOKEN`) so messages carry Junior's `bot_id`. The event handler filters ordinary self-authored bot traffic; explicit directives and configured auto-trigger channels are handled as intentional exceptions.
 
 ### Why shared, not per-instance
 
@@ -74,7 +76,7 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
 
 ## Configuration
 
-- `.mcp.json` defines the server as `{ "type": "http", "url": "http://localhost:3456/mcp" }`
+- `.mcp.json` defines the local `slack-bot` server as `{ "type": "http", "url": "http://localhost:3456/mcp" }` and also carries the optional hosted Figma and Notion MCP entries.
 - `.claude/settings.json` grants `mcp__slack-bot__*` permissions
 - Port configurable via `MCP_PORT` env var (default 3456)
 - `--mcp-config` flag injected by `spawner.ts` when cwd differs from project root (worktree scenarios)
@@ -131,10 +133,9 @@ open-admin fallback never unlocks the archive). Unknown sessions deny. All
 message-bearing responses (including group subjects) are wrapped in an
 UNTRUSTED-content boundary before entering a tool-capable agent's context.
 
-Known residual: the `thread` query param is unsigned, so a caller that learns
-a real admin-DM thread id could still impersonate that session; signing the
-run context (a per-spawn credential) is the follow-up that would harden every
-slack-bot tool. Note the honest ceiling: agents with unrestricted Bash on this
+The run context is HMAC-signed per spawn, so callers cannot substitute a
+different channel or thread in the MCP query context. Note the honest ceiling:
+agents with unrestricted Bash on this
 machine can read `data/whatsapp.db` directly, so the MCP gate can never exceed
 filesystem-level protection — restricting which agents get Bash (or moving the
 archive off-box) is the stronger lever.

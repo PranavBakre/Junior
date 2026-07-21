@@ -2,6 +2,8 @@
 
 > **Status (2026-07 — 3-way agent merge):** `lead` and `thinker` retired as standalone agent definitions. There is now one orchestrator (`default.md`); support-channel sessions keep the `lead` session marker, which the router aliases to `default.md` and layers `common/bug-pipeline.md` on top of. The orchestrator runs the old thinker methodology **itself** in its own turn(s) — Phase 1 (3-5 hypotheses, cheap-evidence verification, mock-run protocol, anti-anchoring, Message 1 + human gate) and Phase 2 (scoping.md, then dispatch the implementation to `build`/`frontend` via the Task tool; the orchestrator never edits product code). The two-turn human gate survives. `reproducer` and `review` stay as persistent workers; `!thinker` no longer exists as a directive. Read the sections below with those substitutions: "thinker" → "the orchestrator's Phase 1/2", "!thinker proceed" → "the orchestrator posting Message 1 and stopping for the gate", "fix scoped by thinker" → "fix scoped by the orchestrator and dispatched to build/frontend via Task".
 
+> **Current runtime note:** Core Slack identities are `default`, `lead`, `reproducer`, `review`, and `echo`; private agents are loaded from `agents-org`. The long iteration and example sections below are retained as a migration/design record. Current dispatch and safety behavior is indexed in [`../code_index/persistent-agents.md`](../code_index/persistent-agents.md) and [`../code_index/agent-catalog.md`](../code_index/agent-catalog.md).
+
 > Same backbone as the wiped `support-lead-persistent-agents.md` (persistent Claude Code session per agent role, one thread holds many agent sessions, each agent posts to Slack with its own identity). Refined design after a session of pruning: lead-only dispatch (workers can't tag each other), `NO_SLACK_MESSAGE` for silence, observability-before-UI as a hard invariant, no internal-dispatch-plus-audit-log split. First product use is the bug pipeline; substrate is reusable.
 
 ## Problem
@@ -13,7 +15,7 @@ When a bug is reported in `#bugs-backlog`, Junior needs to triage it: pull obser
 3. **Opacity.** Humans only saw Junior's summaries. They couldn't see what research actually found, where the thinker pushed back, or what reasoning produced the chosen fix. The full picture was buried in workspace.md files on disk.
 
 **Who has this problem:** Pranav (operator), and any human watching `#bugs-backlog` for what Junior is doing on a bug.
-**What happens today:** Nothing — the previous pipeline is wiped. Bug threads in `#bugs-backlog` get auto-triggered via `events.ts` but currently have no agent to handle them.
+**What happens today:** Support-channel sessions route to the merged `default` orchestrator (with the `lead` marker where configured); `reproducer` and `review` remain addressable persistent workers, while private overlay workers are registered at boot. Typed product/bug pipeline persistence is available behind `PIPELINE_RUNTIME_MODE` and is off by default.
 **Painful part:** A bug pipeline is fundamentally a **multi-actor parallel system** dressed up to look sequential. Observability fetchers (NR, Sentry, Vercel) are independent and can race. The reproducer needs their output as context. Re-queries between thinker and research happen multiple times. Forcing this into a single Claude session loses parallelism and observability.
 **"Finally" moment:** A bug arrives in `#bugs-backlog`. The thread shows distinct messages from Lead, Research, Sentry, Vercel, Reproducer — each with their own identity, posting as they finish work, in parallel where it makes sense. Humans can `!research <follow-up>` directly. The full investigation reads top-to-bottom in the thread:
 
@@ -252,14 +254,18 @@ Already wired in `src/slack/responder.ts:54` (`updateStatus`) — posts a transi
 
 Two changes needed for the new architecture:
 
-1. **Per-agent keying.** `SlackResponder.statusMessages` is currently `Map<threadTs, StatusEntry>`. Re-key to `Map<${threadTs}:${agentName}, StatusEntry>` so concurrent persistent agents in the same thread don't clobber each other's pill. `updateStatus` and `deleteStatus` take an `agentName` argument; existing non-bug-pipeline callers pass `"lead"` (preserves current behavior).
+1. **Per-agent keying — shipped.** `SlackResponder.statusMessages` is keyed by
+   `${threadTs}:${agentName}`, so concurrent persistent agents in one thread do
+   not clobber each other's status pill.
 2. **Task-tool formatter.** Add a `"Task"` case to `formatToolBlock` (`src/slack/formatting.ts:31`) that pulls `subagent_type` from the input and renders `Calling <subagent_type>`. For parallel Task calls in one assistant event, `formatToolStatuses` should roll up: `"Calling nr-research, sentry-fetch, vercel-status (3 in progress)"` instead of returning N strings (which the current debounce eats anyway).
 
 `tool_result` events stay filtered out — content stays internal to the calling persistent agent's session.
 
 ### Lead prompt
 
-The lead's `.claude/agents/lead.md` (replaces the old `support-lead.md`) teaches:
+The support orchestrator uses `.claude/agents/default.md` with the `lead` marker
+and the appended `common/bug-pipeline.md`; there is no public `.claude/agents/lead.md`.
+The merged orchestrator prompt teaches:
 
 - The dispatch syntax: write `!<agent> <prompt>` on its own line to dispatch.
 - State-checking: read `agentSessions[name].status` before emitting. Don't dispatch a `busy` agent (will buffer); don't dispatch a `done` one without good reason.
@@ -270,7 +276,7 @@ The lead's `.claude/agents/lead.md` (replaces the old `support-lead.md`) teaches
 
 ## Iterations
 
-### Iteration 0: Substrate (~4h)
+### Iteration 0: Substrate (~4h) — shipped
 
 Multi-session thread model + router + agent identities. No real agents yet — test with a fake `!echo` agent.
 
@@ -294,7 +300,7 @@ Multi-session thread model + router + agent identities. No real agents yet — t
 
 **Defers:** Real agents, lead orchestration prompt, parallel observability.
 
-### Iteration 1: First sub-agent — `nr-research` (~3h)
+### Iteration 1: First sub-agent — `nr-research` (~3h) — shipped in overlays
 
 Validates the sub-agent (Task tool) tier end-to-end. nr-research is invoked from within a Claude session (initially the operator's, later the lead's), runs an NRQL query, writes findings to `$BUG_DIR/research.md`, returns a one-line summary, and exits. No Slack identity, no AgentSession entry.
 
@@ -309,7 +315,7 @@ Validates the sub-agent (Task tool) tier end-to-end. nr-research is invoked from
 
 **Defers:** Sentry, Vercel, parallel fan-out, lead orchestration.
 
-### Iteration 2: Parallel sub-agents — `sentry-fetch` + `vercel-status` (~3h)
+### Iteration 2: Parallel sub-agents — `sentry-fetch` + `vercel-status` (~3h) — shipped in overlays
 
 Prove parallel Task-tool fan-out.
 
@@ -323,7 +329,7 @@ Prove parallel Task-tool fan-out.
 
 **Defers:** Reproducer, lead orchestration.
 
-### Iteration 3: First persistent agent — `reproducer` (~4h)
+### Iteration 3: First persistent agent — `reproducer` (~4h) — shipped
 
 The first real persistent agent on top of the substrate. Single-concern UI walker. Runs after observability completes.
 
@@ -342,13 +348,13 @@ The first real persistent agent on top of the substrate. Single-concern UI walke
 
 **Defers:** Lead-driven orchestration (still manual), thinker/review/email-drafter, reproducer phase=validation.
 
-### Iteration 4: Lead orchestration prompt (~3h)
+### Iteration 4: Lead orchestration prompt (~3h) — superseded by the merged orchestrator
 
 Lead actually orchestrates the pipeline instead of being manually invoked.
 
 **What it adds:**
 
-- `.claude/agents/lead.md` (the lead's persistent-agent definition)
+- `default.md` plus the support-only `common/bug-pipeline.md` (there is no `lead.md`)
 - Auto-assign `#bugs-backlog` threads to `lead` agent type (already wired via `channelDefaults`)
 - Lead's prompt teaches:
   - Bug folder lifecycle: create `support/bugs/<product>/<bug-id>/` on intake (template restored)

@@ -404,3 +404,9 @@ The tracked bug-state snapshot contains 44 `state.json` files: 7 `done` and 37 n
 9. Port adaptive bug modes into the active orchestrator.
 10. Make generic workflow docs repository-neutral.
 11. Consolidate prompts and add end-to-end pipeline simulations for restart recovery, duplicate handoffs, busy-agent buffering, review-to-fix loops, dev-server readiness, GitHub changes during laptop sleep, revision-matched gates, timeout escalation, multi-PR action anchoring, and terminal-only cleanup.
+# Historical snapshot
+
+> This audit predates the 2026-07-21 documentation and agent-catalog updates.
+> It records findings from that point in time; follow the current code indexes
+> and [`2026-07-21-documentation.md`](2026-07-21-documentation.md) for live
+> behavior.

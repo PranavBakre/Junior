@@ -2,6 +2,8 @@
 
 Status: **landed (Scopes 1, 2a, 2b)**. Step 4 (this doc sync) shipped 2026-04-30.
 
+> **Current implementation note (2026-07-21):** The implementation is live, but several sections below retain the original design discussion. The dev-server slot is a sibling worktree at `<repo>.junior-worktrees/slack-dev-server`; it is not under `<repo>/.claude/dev-server`. Current source: [`src/lifecycle/dev-server.ts`](../../src/lifecycle/dev-server.ts), [`src/lifecycle/dev-server-queue.ts`](../../src/lifecycle/dev-server-queue.ts), and [`docs/code_index/worktree-manager.md`](../code_index/worktree-manager.md).
+
 Implementation history:
 - Scope-1 (PR #3, merged 2026-04-29): per-thread worktrees + `register_worktree` MCP tool. Code: `WorktreeManager.createWorktree(repo, threadId, baseRef?, branchOverride?)`, `ThreadSession.worktreePaths`, multi-repo `<workspace>` block in `buildWorkspaceBlock`.
 - Scope-2a (PR #4, merged 2026-04-30): `DevServerManager` (`src/lifecycle/dev-server.ts`) — owns dev-server PID/branch tracking, idle TTL sweeper, shutdown teardown, startup orphan check. Independently fixed the leaked-`pnpm dev` bug.
@@ -48,7 +50,7 @@ This alone stops the cross-branch corruption from edits and `git checkout`.
 
 The dev server can't trivially live in N concurrent worktrees on fixed ports. The cleanest answer is queueing rather than per-thread ports.
 
-- Each repo gets a **dedicated dev-server worktree** at a fixed path (e.g. `<repo>/.claude/dev-server`). Dev servers always run from there. The bare repo is never touched by junior.
+- Each repo gets a **dedicated dev-server worktree** at `<repo>.junior-worktrees/slack-dev-server`. Dev servers always run from there. The bare repo is never touched by junior.
 - Junior holds an in-process **per-repo mutex** (or `p-queue` with concurrency=1). `reproducer` phase-2 acquires the lock for each repo it needs → `git fetch && git checkout <fix-branch>` in the dev-server worktree → restart dev server → walk → release. Other threads wait.
 - `thinker` keeps writing in its own per-thread worktree (so concurrent thinking is fine); only the validation slot is serialised.
 
@@ -85,11 +87,11 @@ This bumps the dev-server worktree from a passive checkout location to an active
 
 ## Queue implementation — filesystem lock
 
-**Decided: filesystem lock via `proper-lockfile` on `<repo>/.claude/dev-server/.lock`.** Picked for durability under heavy usage and to leave the door open for multiple junior instances or long-lived background processes coordinating on the same host. In-process primitives (`async-mutex`, `p-queue`) were considered and rejected because they don't survive a junior restart mid-validation — a crash with the lock held leaves no on-disk record, and the next junior boot has no way to know whether the dev server it spawns is fighting another instance.
+**Decided: filesystem lock via `proper-lockfile` on `<repo>.junior-worktrees/slack-dev-server/.lock`.** Picked for durability under heavy usage and to leave the door open for multiple junior instances or long-lived background processes coordinating on the same host. In-process primitives (`async-mutex`, `p-queue`) were considered and rejected because they don't survive a junior restart mid-validation.
 
 What this means concretely:
 
-- Each repo's dev-server worktree has its own `.lock` file. `proper-lockfile.lock(<repo>/.claude/dev-server, { stale: <slotTimeoutMs>, retries: { forever: true, minTimeout: 1000, maxTimeout: 5000 } })` is the acquire call.
+- Each repo's dev-server worktree has its own `.lock` file. `proper-lockfile.lock(<repo>.junior-worktrees/slack-dev-server, { stale: <slotTimeoutMs>, retries: { forever: true, minTimeout: 1000, maxTimeout: 5000 } })` is the acquire call.
 - Acquire returns a `release` function. Reproducer phase-2 wraps the entire validation walk in `try { await acquire(); ... } finally { await release(); }`.
 - `stale` config doubles as the slot timeout — if a holder crashes or hangs past the threshold, `proper-lockfile` lets the next acquirer steal the lock. We choose `stale = 10 min` (top of the 5–10 min slot-timeout range).
 - The lock file co-locates with metadata: alongside `.lock` we write `.lock.meta.json` with `{ holderThreadId, holderPid, branch, acquiredAt }`. Future acquirers / `!devserver status` read it for human-friendly waiter context.
@@ -108,7 +110,7 @@ Trap to watch:
 **Lead initiates, junior executes.** Concretely: junior's slack-bot MCP server exposes a new tool `register_worktree(repo, branch?)`. Lead calls it on intake, after writing `state.json`, once per routed repo. The tool:
 
 1. Resolves the repo's `RepoConfig`. Errors if unknown.
-2. If `repo.worktreeSetupCommand` is configured (e.g. `"bin/setup-worktree.sh"`), runs `<repo.path>/<command> <worktreePath> <branch>`. Otherwise runs `git fetch origin && git worktree add <worktreePath> -b <branch> <baseRef>` directly.
+2. If `repo.worktreeSetupCommand` is configured, runs the target-repo command as `<repo.path>/<command> <branch> --path <worktreePath> --base <baseRef>`. Otherwise runs `git fetch origin --prune` and `git worktree add <worktreePath> -b <branch> <baseRef>` directly.
 3. Sets `worktreePath = <repo.path>.junior-worktrees/slack-<threadId>` and `branch = slack/<threadId>` (unless caller overrides).
 4. Persists `session.worktreePaths[repo] = worktreePath` via `SessionManager.updateSession`.
 5. Returns `{ path, branch }` to the caller.
@@ -160,7 +162,7 @@ interface RepoConfig {
   devCommand?: string;          // "pnpm dev" | "npm run dev" — junior runs this
   devPort?: number;             // 3000 | 3001 | 8000 — readiness probe target
   readyUrl?: string;            // "http://localhost:3000" — what junior curls
-  worktreeSetupCommand?: string; // optional; e.g. "bin/setup-worktree.sh"
+  worktreeSetupCommand?: string; // optional target-repo setup command; receives branch, --path, and --base
 }
 ```
 
@@ -186,10 +188,10 @@ Humans posting `!devserver fix/foo app-frontend` from a thread (or even outside 
 
 ### Lockfile bootstrap
 
-The lockfile path is `<repo>/.claude/dev-server/.lock`. The dev-server worktree must exist before the lock can be acquired. Junior on boot:
+The lockfile path is `<repo>.junior-worktrees/slack-dev-server/.lock`. The dev-server worktree must exist before the lock can be acquired. Junior on boot:
 
-1. For each `RepoConfig` with a `devCommand`, ensure `<repo>/.claude/dev-server/` exists as a worktree on `defaultBase`. Create it if missing using the same logic as `register_worktree` (with branch `dev-server-slot/<repo>` to avoid clashing with thread worktrees).
-2. Scan `<repo>/.claude/dev-server/.lock.meta.json`. If it claims a holder PID that doesn't exist anymore, treat as orphan — clear the lock and the queue file.
+1. For each `RepoConfig` with a `devCommand`, ensure `<repo>.junior-worktrees/slack-dev-server/` exists as a worktree on `defaultBase`. Create it if missing using the same logic as `register_worktree` (with branch `dev-server-slot/<repo>` to avoid clashing with thread worktrees).
+2. Scan `<repo>.junior-worktrees/slack-dev-server/.lock.meta.json`. If it claims a holder PID that doesn't exist anymore, treat as orphan — clear the lock and the queue file.
 3. Scan the configured `devPort`. If a listener exists and isn't us (PID mismatch with `.lock.meta.json`), refuse to spawn until the human frees it. Log it loudly.
 
 This is the entirety of `lifecycle/dev-server.ts`'s startup path; the rest is event-driven from `!devserver` directives.
@@ -199,7 +201,7 @@ This is the entirety of `lifecycle/dev-server.ts`'s startup path; the rest is ev
 Extend `lifecycle/cleanup.ts`:
 
 - For each stale session, walk `session.worktreePaths` (in addition to the old single `worktreePath`). For each `(repo, path)`, run `worktreeManager.isWorktreeDirty(path)` — if clean, `removeWorktree(repo, threadId)`; if dirty, log a warning and skip.
-- The dev-server worktree (`<repo>/.claude/dev-server/`) is NEVER cleaned up by stale-session sweeps. It's a permanent fixture, owned by junior, lifecycled by `lifecycle/dev-server.ts`.
+- The dev-server worktree (`<repo>.junior-worktrees/slack-dev-server/`) is NEVER cleaned up by stale-session sweeps. It's a permanent fixture, owned by junior, lifecycled by `lifecycle/dev-server.ts`.
 
 ### Test plan
 
@@ -237,11 +239,11 @@ Each step lands as one commit (or one PR) with prompt updates and code changes c
 2. **Scope-2a — dev-server lifecycle (one commit).**
    - `RepoConfig`: add `devCommand`, `devPort`, `readyUrl`.
    - New module `src/lifecycle/dev-server.ts` — tracks PID + branch per repo, spawn/kill/ready-probe, idle TTL, shutdown teardown.
-   - Bootstrap on junior boot: ensure `<repo>/.claude/dev-server/` exists; orphan-PID check; external-listener check.
+   - Bootstrap on junior boot: ensure `<repo>.junior-worktrees/slack-dev-server/` exists; orphan-PID check; external-listener check.
    - Tests: unit with mocked `Bun.spawn` for spawn/kill/probe paths.
 3. **Scope-2b — `!devserver` directive + lockfile queue (one commit).**
    - Add `proper-lockfile` dep.
-   - Lockfile + `.lock.meta.json` + `.queue` files at `<repo>/.claude/dev-server/`.
+   - Lockfile + `.lock.meta.json` + `.queue` files at `<repo>.junior-worktrees/slack-dev-server/`.
    - `!devserver <branch> [repo]`, `!devserver status`, `!devserver kill <repo>` directives in `src/support/router.ts`.
    - Reproducer + lead prompt updates: reproducer waits for `!devserver` ready; lead orchestrates the dispatch sequence.
    - Tests: directive parser unit; lockfile integration with a stubbed dev command.

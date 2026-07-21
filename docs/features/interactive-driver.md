@@ -1,5 +1,7 @@
 # Interactive Claude Driver
 
+> **Current status (2026-07-21):** Implemented and opt-in. `src/claude/driver.ts`, `HeadlessDriver`, and `TmuxDriver` are live behind `DEFAULT_CLAUDE_DRIVER`; the default remains `headless` while tmux continues its production soak. The historical iterations below document how the feature evolved.
+
 > Drive Claude Code as a persistent TTY session (tmux) instead of one short-lived `claude -p` per turn. Forced by Anthropic's pricing change: `claude -p` (headless) is moving off Max subscription onto separate API credits, while interactive TUI usage stays under the subscription. Coexist with the current headless driver behind a flag; flip the default per-thread once the new path is proven.
 
 ## Problem
@@ -9,9 +11,9 @@ Today every Slack message spawns a new `claude -p <prompt> --resume <id> --outpu
 Anthropic is changing the terms: the headless `-p` flag will be billed against API credits, not the Max subscription. Only the interactive TUI session counts as subscription usage. That removes the substrate the project was built on — every Slack turn currently costs API credits we don't want to spend.
 
 **Who has this problem:** The whole bot. Every Slack message turn runs through `spawnClaude`. Bug-pipeline persistent agents (lead, reproducer, thinker, review) are particularly exposed — they fan out and would burn through credits fastest.
-**What happens today:** `src/claude/spawner.ts` calls `Bun.spawn(["claude", "-p", ...])` and pipes stream-json out of stdout. There is no driver abstraction — the spawner *is* the driver, baked into the session manager.
+**What happens today:** `src/claude/driver.ts` selects a headless or tmux driver. The headless driver wraps `claude -p` stream-json, while the tmux driver owns the persistent TTY, transcript tail, turn boundary, reconciliation, eviction, and interrupt behavior.
 **Painful part:** Interactive Claude does not emit `--output-format stream-json`. It paints a TUI: ANSI escapes, cursor positioning, redraws. The whole event pipeline (init→tool_use→text→result) we depend on for live Slack status pills, session-id extraction, and turn completion has no obvious equivalent. We need a different signal channel — and process lifecycle is no longer "exit = done."
-**"Finally" moment:** A Slack message arrives, `driver.send(session, prompt)` pastes it into the thread's already-running `claude` TUI inside a detached tmux session, hooks fire as Claude works, the bot streams `tool_use` pills exactly like today, and a `Stop` hook fires the "turn done" signal. The Claude process never exits between turns. Bot restart re-attaches to the surviving tmux sessions. `CLAUDE_DRIVER=tmux` per thread (or globally) chooses this path; `CLAUDE_DRIVER=headless` is the fallback that still works for any code path that can tolerate API billing (utility commands, throwaway one-shots).
+**"Finally" moment:** A Slack message arrives, `driver.send(session, prompt)` uses the selected provider. In tmux mode the prompt is pasted into the thread's persistent Claude TUI, transcript events stream into Slack, and bot restart can re-attach. `DEFAULT_CLAUDE_DRIVER` selects the default; `!driver tmux` / `!driver headless` overrides a thread.
 
 ## Full Vision
 
@@ -24,7 +26,7 @@ Anthropic is changing the terms: the headless `-p` flag will be billed against A
 - **Bot-boot reconciliation.** On startup, the bot reads every session row with `driverMode = "tmux"` from sqlite. For each, runs `tmux has-session -t <name>`. If present: re-attach the transcript tail and Stop-signal watch — no state lost. If absent: mark `sessionId` stale and downgrade `status` to `idle` so the next turn cold-starts a fresh tmux session via `--resume <sessionId>` against the still-on-disk transcript.
 - **Eviction.** A background sweep kills tmux sessions whose `lastActivity` is older than `TMUX_IDLE_TTL_MS` (default 4h). Eviction = `tmux kill-session -t <name>`. The next Slack message spins it back up via `--resume`. RAM cost is bounded by active threads, not lifetime threads.
 - **Interrupts.** `driver.interrupt(session)` sends `Escape` keys (`tmux send-keys -t <name> Escape Escape`) to halt mid-turn. New in v2 — today's buffer-and-drain has no equivalent. Used by `!stop` thread command.
-- **Coexistence flag.** `ThreadSession.driverMode: "headless" | "tmux"`. Default selected by env `DEFAULT_CLAUDE_DRIVER=headless`. Per-thread override via `!driver tmux` / `!driver headless` for testing. The session manager picks `HeadlessDriver` or `TmuxDriver` from the session row — no other call site changes.
+- **Coexistence flag.** `ThreadSession.driverMode: "headless" | "tmux"`. Default selected by env `DEFAULT_CLAUDE_DRIVER=headless`. Per-thread override via `!driver tmux` / `!driver headless`. The session manager picks `HeadlessDriver` or `TmuxDriver` from the session row.
 
 ## Invariants (architectural commitments)
 
@@ -138,7 +140,7 @@ One thread, one agent, happy path only.
   - Session-id discovery: on first turn (no `--resume`), watch the project dir for the newest `*.jsonl` created after tmux start. Persist the discovered id.
 - `~/.claude/settings.json` template/check that ensures a `Stop` hook writes the sentinel. Document the install in `docs/features/project-setup.md`.
 
-**Test:** Set `CLAUDE_DRIVER=tmux` for one Slack thread. Send a message. See the Claude TUI run (attach with `tmux attach -t junior-<threadId>-junior` for debugging). See events stream into Slack via the same status pill code. Second message in the same thread reuses the tmux session — no `claude` re-launch.
+**Test:** Set `DEFAULT_CLAUDE_DRIVER=tmux` or use `!driver tmux` for one Slack thread. Send a message. See the Claude TUI run (attach with `tmux attach -t junior-<threadId>-junior` for debugging). See events stream into Slack via the same status pill code. Second message in the same thread reuses the tmux session — no `claude` re-launch.
 **Defers:** Reconciliation on restart, eviction, interrupts, multi-agent, error handling, `!driver` command.
 
 ### Iteration 3: Reconciliation on bot restart (~1h)
@@ -194,7 +196,7 @@ Persistent agents on tmux.
 - Eviction policy applied per-agent-session, not per-thread (a thread's reproducer can be evicted while lead stays warm).
 - Integration test: full bug-pipeline run in tmux mode, parallel agents, status pills correct, all four tmux sessions reconciled after a forced bot restart mid-flight.
 
-**Test:** Trigger a bug thread with `DEFAULT_CLAUDE_DRIVER=tmux`. Watch lead → reproducer → thinker → review fan out across four tmux sessions. Restart bot mid-pipeline. Pipeline resumes.
+**Historical test scenario:** Trigger a bug thread with `DEFAULT_CLAUDE_DRIVER=tmux`. Older pipeline iterations described lead → reproducer → thinker → review fan-out; current support routing uses the merged orchestrator plus `reproducer`/`review`, with `thinker` only as a legacy session alias.
 **Defers:** Default flip.
 
 ### Iteration 7: Default flip (~30min + soak)

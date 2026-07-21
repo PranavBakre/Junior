@@ -6,9 +6,9 @@
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `KNOWN_COMMANDS` (private set) | `slack/commands.ts` | `build, frontend, architect, cancel, reset, clear, status, repo, branch, agent, quiet, verbose, normal, help, adhoc, bugs, mute, unmute, aside, listen` |
+| `KNOWN_COMMANDS` | `slack/commands.ts` | `build, frontend, architect, pm, cancel, clear, reset, status, repo, branch, agent, provider, quiet, verbose, normal, help, workflow, workflows, adhoc, bugs, mute, unmute, stop, driver, aside, listen` |
 | `parseCommand(text)` | `slack/commands.ts` | Splits `!build fix auth` → `{ command: "build", text: "fix auth" }`. Returns `{ command: null, text }` for unknown or non-`!` input. |
-| `SessionManager.handleCommand(session, event)` | `session/manager.ts` | Dispatches by `event.command`; returns true if the command consumed the message (no Claude spawn), false if it should fall through |
+| `SessionManager.handleCommand(session, event)` | `session/manager.ts` | Dispatches by `event.command`; runner-selection commands (`build`, `frontend`, `architect`, `pm`) fall through to a run, while control commands are consumed |
 | `SessionManager.gateAttention(event)` | `session/manager.ts` | Runs before any routing in `index.ts`. Consumes `!aside` and `!listen`, drops everything while `session.dormant`, and fires the one-shot auto-dormant trigger when a second human posts without `@`-mentioning Junior. Returns `true` when the message is consumed. Auto-trigger channels (`channelDefaults[channel]`) are exempt. |
 
 ## Supported Commands
@@ -18,6 +18,7 @@
 | `!build <text>` | Sets `agentType = "build"` | Yes |
 | `!frontend <text>` | Sets `agentType = "frontend"` | Yes |
 | `!architect <text>` | Sets `agentType = "architect"` | Yes |
+| `!pm <text>` | Sets `agentType = "pm"` | Yes |
 | `!repo <name>` | Sets `targetRepo` (validates against `config.repos`) | No |
 | `!branch <ref>` | Sets `baseRef` for next worktree creation | No |
 | `!agent <junior\|lead>` | Sets thread-level `defaultAgent` override (used by `AgentDispatcher`) | No |
@@ -26,6 +27,10 @@
 | `!clear` | **Admin-gated**. Archives full thread to `data/thread-archives/`, deletes Junior bot messages only, clears status-pill cache | No |
 | `!status` | Posts thread/agent/repo/worktree/pending/last-activity summary | No |
 | `!quiet` / `!normal` / `!verbose` | Sets `session.verbosity` | No |
+| `!provider <name>` | Sets the thread runner provider | No |
+| `!stop` | Stops the active runner/driver | No |
+| `!driver <headless\|tmux>` | Sets Claude's driver mode | No |
+| `!workflow ...` / `!workflows` | Lists or controls dynamic workflows | No |
 | `!help` | Posts command reference | No |
 | `!adhoc <text>` / `!bugs <text>` | Calendar item via haiku model + `cwd = /tmp/junior-utility`; accepts `today\|tomorrow` prefix; reshapes `event.text` into a structured GCal task | Yes |
 | `!mute` / `!unmute` | **Admin-gated**. Toggles `session.muted`. Muted sessions discard buffered messages on drain. | No |

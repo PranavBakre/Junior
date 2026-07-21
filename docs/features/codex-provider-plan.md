@@ -1,5 +1,7 @@
 # Codex Provider Plan
 
+> **Historical implementation plan.** Codex app-server is implemented under `src/codex-app-server` and selected with `RUNNER_PROVIDER=codex-app-server`. This document preserves the earlier decision record; current behavior is indexed in [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md).
+
 Date: 2026-05-25
 
 This document plans a Codex runner provider for Junior after the stacked PRs
@@ -14,7 +16,7 @@ It supersedes the older Codex-only runner notes as an implementation plan, but
 keeps their verified CLI findings where they still match the installed Codex
 CLI.
 
-## Recommendation
+## Historical recommendation
 
 Build a **Codex app-server provider first if and only if Phase 0 proves config,
 hook, and MCP isolation**. Keep a **Codex CLI provider as the fallback path** if

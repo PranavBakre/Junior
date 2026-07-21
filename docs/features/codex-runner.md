@@ -1,6 +1,8 @@
 # Codex Runner
 
-> Last audited 2026-05-15 against `src/` at `4aa25ab` (main) and `codex-cli 0.130.0`. Original draft 2026-04-28 against `codex-cli 0.125.0`.
+> **Historical design record.** Codex app-server is now implemented under `src/codex-app-server` and selected with `RUNNER_PROVIDER=codex-app-server`. Use [`runner-providers.md`](runner-providers.md) and [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md) for the current contract. The implementation-plan language below is retained for context.
+
+> Original audit: 2026-05-15 against `src/` at `4aa25ab` (main) and `codex-cli 0.130.0`; initial draft 2026-04-28 against `codex-cli 0.125.0`.
 
 ## Problem
 

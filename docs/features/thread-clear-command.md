@@ -1,8 +1,10 @@
 # Thread Clear Command (`!clear`)
 
+> **Current status (2026-07-21):** Shipped. The implementation lives in `src/slack/thread-archive.ts` and the command is handled by the thread-command path. The sections below preserve the original behavior specification and test plan.
+
 Date: 2026-05-28
 
-Proposal for a new thread command that archives a Slack thread to markdown on disk, then deletes every message posted by Junior (including agent personas) from that thread.
+The `!clear` command archives a Slack thread to markdown on disk, then deletes every message posted by Junior (including agent personas) from that thread.
 
 ## Problem
 
@@ -10,7 +12,7 @@ Long Junior threads accumulate dozens of status pills, multi-chunk responses, an
 
 **Who has this problem:** Anyone running multi-turn bug-pipeline or build threads where Junior, Lead, Reproducer, Thinker, and Reviewer have posted many messages.
 
-**What happens today:** No way to bulk-remove bot messages. Users scroll past stale status updates or manually delete messages one at a time (Slack UI only; Junior has no command).
+**What happens today:** Admins can use `!clear` to preserve a local archive, delete Junior-authored messages, and leave session/provider state untouched.
 
 **Painful part:** Deletion without backup is irreversible. Slack's own message retention policies vary by workspace; Junior should not assume Slack search or exports will preserve the thread.
 
@@ -321,4 +323,4 @@ User: !clear
 | New Slack scopes | None |
 | Primary new code | `src/slack/thread-archive.ts` + `handleCommand` case |
 
-Estimated effort: **~2–3 hours** (implementation + tests + docs index updates).
+Original estimate: **~2–3 hours** (implementation + tests + docs index updates).

@@ -1,5 +1,7 @@
 # Codex Runner — Codex Scope
 
+> **Historical implementation plan.** The provider boundary and Codex app-server path described here have since landed under `src/runners` and `src/codex-app-server`. See [`runner-providers.md`](runner-providers.md) and [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md) for current behavior.
+
 Date: 2026-05-15
 
 This is an independent implementation scope for replacing Junior's hard-coded
@@ -24,7 +26,7 @@ The immediate goal is not to delete Claude support. The clean replacement path i
 to introduce a runner boundary, make Claude one adapter, make Codex another
 adapter, then switch the default provider once Codex has parity.
 
-## Current Reality
+## Historical snapshot (superseded)
 
 The app is still Claude-shaped at the execution boundary:
 
@@ -39,7 +41,7 @@ The app is still Claude-shaped at the execution boundary:
 - `src/slack/home.ts` emits `claude --resume <sessionId>` hints.
 - `src/config.ts` only exposes `config.claude`.
 
-There is no `src/runners/` abstraction today.
+At the time of this plan there was no `src/runners/` abstraction; the current implementation has that boundary.
 
 Important current behavior to preserve:
 

@@ -1,6 +1,8 @@
 # Agent Action Buttons
 
-Status: **implemented in progress**.
+Status: **implemented**.
+
+> **Current routing note:** The `Make fix` action is resolved to the `lead` session in support channels and `default` elsewhere. The payload's legacy `agent` value is not used as the final target for this action, so the merged orchestrator owns scoping and dispatches `build`/`frontend` as needed.
 
 Persistent agents can attach safe Slack action buttons to final responses. The first consumer is the review agent: `Re-review`, `Make fix`, and `Cleanup worktree`.
 
@@ -24,7 +26,7 @@ Agents append a stripped sentinel block to the final response:
     "label": "Make fix",
     "style": "danger",
     "type": "dispatch_agent",
-    "agent": "thinker",
+    "agent": "default",
     "prompt": "Address the blockers from the latest review. Read thread history first."
   },
   {
@@ -43,7 +45,7 @@ Junior validates the JSON, strips it from the Slack-visible text, renders Slack 
 - Action records are stored in SQLite.
 - Buttons expire when the same source agent receives a new message or posts a newer response in the same thread.
 - Clicked buttons are disabled by updating the original Slack message and removing the actions block.
-- `Make fix` dispatches `thinker`; thinker reads Slack thread history instead of relying on copied review text.
+- `Make fix` dispatches the support `lead` marker or the default Junior session; the orchestrator reads Slack thread history instead of relying on copied review text.
 - `cleanup_worktree` may be clicked by any thread participant.
 - Worktree cleanup refuses tracked changes and unknown untracked files.
 - Cleanup may proceed when the only untracked paths are `learnings.md`, `.codex/`, `.claude/`, or `.DS_Store`.

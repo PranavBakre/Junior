@@ -1,6 +1,6 @@
 # Code Index: Project Setup
 
-Entry point, configuration, logging, persona loading, and boot sequence.
+Entry point, configuration, logging, persona loading, and boot sequence. The project foundation is shipped; this index is the current source map, while older setup prose remains useful as design history.
 
 ## Code Index
 
@@ -16,7 +16,7 @@ Entry point, configuration, logging, persona loading, and boot sequence.
 
 | Type | File | Shape |
 |---|---|---|
-| `Config` | `config.ts` | `{ slack, claude, repos, session, channelDefaults, adminSlackUserId, http }` |
+| `Config` | `config.ts` | `{ slack, claude, runner, opencode, codex, repos, session, memory, threadArchives, channelDefaults, adminSlackUserId, http, whatsapp?, pipeline?, github? }` |
 | `RepoConfig` | `config.ts` | `{ name, path, defaultBase, worktreeSetupCommand?, devCommand?, devPort?, readyUrl? }` |
 | `SessionStoreKind` | `config.ts` | `"memory" \| "sqlite"` |
 
@@ -27,6 +27,7 @@ Entry point, configuration, logging, persona loading, and boot sequence.
 | `SLACK_BOT_TOKEN` | yes | — | Bolt + MCP server + file uploads |
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode |
 | `SLACK_SIGNING_SECRET` | no | `""` | Bolt request verification |
+| `RUNNER_PROVIDER` | no | `opencode` | `claude` \| `opencode` \| `opencode-sdk` \| `codex-app-server` |
 | `CLAUDE_MAX_TURNS` | no | `25` | `--max-turns` |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | Process timeout guard |
 | `CLAUDE_PERMISSION_MODE` | no | `bypassPermissions` | `--permission-mode` |
@@ -42,6 +43,14 @@ Entry point, configuration, logging, persona loading, and boot sequence.
 | `ADMIN_SLACK_USER_ID` | no | unset | Bootstrap admin (rest in `admins` table) |
 | `HTTP_DASHBOARD_PORT` | no | unset (disabled) | Strict positive int 1-65535; throws on invalid |
 | `MCP_PORT` | no | `3456` | Bot Slack MCP server port (read in `src/mcp/slack-server.ts`) |
+| `MEMORY_DB_PATH` | no | `data/memory.db` | Semantic claim store |
+| `MEMORY_EMBED_PROVIDER` | no | `local` | Embedding provider (`local` or `hashing`) |
+| `PRE_RECALL_ENABLED` | no | `false` | Optional pre-recall hook |
+| `WHATSAPP_ENABLED` | no | `false` | Read-only archive ingestion/tools |
+| `PIPELINE_RUNTIME_MODE` | no | `off` | Typed pipeline mode (`off`, `shadow`, `active`) |
+| `PRODUCT_PIPELINE_ENABLED` | no | `false` | Product pipeline starts; requires active mode |
+| `BUG_PIPELINE_ENABLED` | no | `false` | Bug pipeline starts; requires active mode |
+| `GITHUB_RECONCILE_ENABLED` | no | `false` | PR reconciliation |
 
 ## Boot Sequence (`index.ts`)
 
@@ -54,7 +63,7 @@ Entry point, configuration, logging, persona loading, and boot sequence.
  6. WorktreeManager(repos)
  7. DevServerManager(repos, worktreeManager)
  8. DevServerQueue(devServerManager, repos)
- 9. startMcpServer(botToken, store, worktreeManager)   ← HTTP MCP on MCP_PORT
+ 9. startMcpServer(deps)                              ← loopback MCP on MCP_PORT
 10. Wire: sessionManager.{agentRouter, worktreeManager, slackApp}
 11. SlackResponder(app)
 12. AgentDispatcher(sessionManager, supportChannels, { devServerQueue, sessionStore, slackClient, repos })
@@ -67,7 +76,7 @@ Entry point, configuration, logging, persona loading, and boot sequence.
 19. await app.start()                                   ← Socket Mode connect
 20. auth.test()  → sessionManager.botUserId, selfBotId
 21. registerEventHandlers(app, dispatcher.handleMessage, store, selfBotId, botUserId, autoTriggerChannels)
-22. if (http.enabled) startHttpServer(...)              ← non-fatal
+22. if (http.enabled) startHttpServer(...)              ← workflows + memory routes; non-fatal
 ```
 
 ## Logger
@@ -80,5 +89,5 @@ Daily file rotation; format: `<ISO> [LEVEL] [tag] message`. Writes go to both st
 
 ## Dependencies
 
-- **Uses**: every module (composition root)
+- **Uses**: every module (composition root), including runners, memory, workflows, pipelines, GitHub reconciliation, WhatsApp archive, and HTTP dashboard wiring
 - **Used by**: nothing
