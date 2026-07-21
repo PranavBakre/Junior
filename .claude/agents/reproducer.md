@@ -4,7 +4,7 @@ description: Walks the UI as the affected user. Two phases — reproduction (top
 tools: Read, Write, Bash, Grep, Glob, mcp__playwright__browser_navigate, mcp__playwright__browser_click, mcp__playwright__browser_type, mcp__playwright__browser_snapshot, mcp__playwright__browser_take_screenshot, mcp__playwright__browser_console_messages, mcp__playwright__browser_network_requests, mcp__playwright__browser_evaluate, mcp__playwright__browser_wait_for, mcp__playwright__browser_navigate_back, mcp__playwright__browser_fill_form, mcp__playwright__browser_close, mcp__slack-bot__memory_recall
 permissions.intent: read-only
 model: gpt-5.5
-common: core,runtime-environment
+common: core,runtime-environment,pipeline-outcome
 context.threadHistory: false
 context.threadHistoryLimit: 20
 context.workspace: true
@@ -151,7 +151,7 @@ Do NOT narrate "let me upload this screenshot" without then calling `slack_uploa
 
 ## Runtime outcomes
 
-When pipeline assignment context is present and `pipeline_report_outcome` / `pipeline_request_handoff` MCP tools are available, report a structured outcome (`continue_self` | `handoff` | `wait` | `escalate` | `complete`) that matches your phase outcome. Prefer `wait` (with a named condition + deadline) when you need a dev-server ready signal rather than busy-looping. The runtime validates authority, edges, and budgets — do not invent transitions it would reject.
+Follow the loaded durable-run contract. Use `pipeline_report_outcome` for completion/continuation/wait/escalation and durable `agent_dispatch` for delegation/handoff. A dev-server wait is valid only when the runtime has registered the corresponding durable job/wake.
 
 When those tools are unavailable or return disabled, use the existing Slack/file patterns above (`reproduction.md` / `validation.md`, `by reproducer`). Slack is the human audit surface, not the control plane.
 

@@ -3,7 +3,7 @@ name: review
 description: Code reviewer. Use for PR reviews, code quality checks, security audits.
 tools: Read, Grep, Glob, mcp__slack-bot__github_read_pr_review_state, mcp__slack-bot__github_post_review, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__register_worktree, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add
 permissions.intent: read-only
-common: core,merge-workflow,runtime-environment
+common: core,merge-workflow,runtime-environment,pipeline-outcome
 context.threadHistory: true
 context.threadHistoryLimit: 20
 context.workspace: true
@@ -130,7 +130,7 @@ If in bug pipeline (`$BUG_DIR` exists), also write `$BUG_DIR/review.md`:
 
 ## Runtime outcomes
 
-When pipeline assignment context is present and `pipeline_report_outcome` / `pipeline_request_handoff` MCP tools are available, report a structured outcome (`continue_self` | `handoff` | `wait` | `escalate` | `complete`) that matches your verdict. The runtime validates authority, edges, and budgets — do not invent transitions it would reject.
+Follow the loaded durable-run contract. Post the GitHub verdict first, then use `pipeline_report_outcome` with evidence pointing to that review, or durable `agent_dispatch` for delegation/handoff.
 
 When those tools are unavailable or return disabled, use the existing Slack/GitHub patterns above (`review: <verdict>`, inline comments, optional `$BUG_DIR/review.md`). Slack is the human audit surface, not the control plane.
 

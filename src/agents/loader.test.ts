@@ -35,7 +35,11 @@ describe("loadAgentDefinition", () => {
       "Read, Edit, Write, Bash, Grep, Glob, Agent, mcp__slack-bot__memory_recall",
     );
     expect(def!.model).toBeNull();
-    expect(def!.common).toEqual(["core", "building-philosophy"]);
+    expect(def!.common).toEqual([
+      "core",
+      "building-philosophy",
+      "pipeline-outcome",
+    ]);
     expect(def!.permissions).toEqual({
       intent: "normal",
       mcp: ["slack-bot"],
