@@ -2,12 +2,13 @@
 
 Status: **landed (Scopes 1, 2a, 2b)**. Step 4 (this doc sync) shipped 2026-04-30.
 
-> **Current implementation note (2026-07-21):** The implementation is live, but several sections below retain the original design discussion. The dev-server slot is a sibling worktree at `<repo>.junior-worktrees/slack-dev-server`; it is not under `<repo>/.claude/dev-server`. Current source: [`src/lifecycle/dev-server.ts`](../../src/lifecycle/dev-server.ts), [`src/lifecycle/dev-server-queue.ts`](../../src/lifecycle/dev-server-queue.ts), and [`docs/code_index/worktree-manager.md`](../code_index/worktree-manager.md).
+> **Current implementation note (2026-07-21):** Durable product and bug pipeline dispatch now owns worktree provisioning. Before an assignment starts, `SessionManager` resolves every durable `repoRef`, provisions one thread-scoped worktree per repo, persists the full path map, and chooses the process cwd from review/workstream affinity. Agents no longer depend on lead calling `register_worktree`. The trusted catalog permits repo-less planner/orchestrator work; repo-bound assignments fail closed until the run names a configured repo. The dev-server slot remains a sibling worktree at `<repo>.junior-worktrees/slack-dev-server`. Current source: [`src/worktree/pipeline-routing.ts`](../../src/worktree/pipeline-routing.ts), [`src/session/manager.ts`](../../src/session/manager.ts), [`src/lifecycle/dev-server.ts`](../../src/lifecycle/dev-server.ts), [`src/lifecycle/dev-server-queue.ts`](../../src/lifecycle/dev-server-queue.ts), and [`docs/code_index/pipeline-routing.md`](../code_index/pipeline-routing.md).
 
 Implementation history:
 - Scope-1 (PR #3, merged 2026-04-29): per-thread worktrees + `register_worktree` MCP tool. Code: `WorktreeManager.createWorktree(repo, threadId, baseRef?, branchOverride?)`, `ThreadSession.worktreePaths`, multi-repo `<workspace>` block in `buildWorkspaceBlock`.
 - Scope-2a (PR #4, merged 2026-04-30): `DevServerManager` (`src/lifecycle/dev-server.ts`) — owns dev-server PID/branch tracking, idle TTL sweeper, shutdown teardown, startup orphan check. Independently fixed the leaked-`pnpm dev` bug.
 - Scope-2b (PR #5, merged 2026-04-30): `DevServerQueue` (`src/lifecycle/dev-server-queue.ts`) — `proper-lockfile` per repo, `.lock.meta.json` (atomic write-tmp + rename) and append-only NDJSON `.queue` for waiter introspection, `onCompromised` handler wired to `stealStale` so stale-lock takeovers recover instead of crashing the bot. New `!devserver <branch> [repo]` / `!devserver status` / `!devserver kill <repo>` directives in `src/support/router.ts`.
+- Pipeline-owned provisioning (PR #133, 2026-07-21): durable pipeline `repoRefs` are resolved and provisioned before assignment spawn. Multi-repo setup is coalesced per repo/thread; recovery continuations reuse the managed cwd; unknown refs and missing worktrees escalate durably instead of falling back to a developer checkout.
 
 Captures the discussion in a Slack thread on 2026-04-29.
 
@@ -107,7 +108,7 @@ Trap to watch:
 
 ### Who creates worktrees, and how
 
-**Lead initiates, junior executes.** Concretely: junior's slack-bot MCP server exposes a new tool `register_worktree(repo, branch?)`. Lead calls it on intake, after writing `state.json`, once per routed repo. The tool:
+**Historical Scope-1 design:** lead initiated worktree setup by calling the slack-bot MCP tool `register_worktree(repo, branch?)` after writing `state.json`. The tool:
 
 1. Resolves the repo's `RepoConfig`. Errors if unknown.
 2. If `repo.worktreeSetupCommand` is configured, runs the target-repo command as `<repo.path>/<command> <branch> --path <worktreePath> --base <baseRef>`. Otherwise runs `git fetch origin --prune` and `git worktree add <worktreePath> -b <branch> <baseRef>` directly.
@@ -115,7 +116,7 @@ Trap to watch:
 4. Persists `session.worktreePaths[repo] = worktreePath` via `SessionManager.updateSession`.
 5. Returns `{ path, branch }` to the caller.
 
-Lead's prompt grows by ~3 lines: "after `state.json`, call `register_worktree` for each routed repo." Lead is the only persistent agent that calls this — workers see the paths via the workspace block, never call the tool themselves.
+**Current behavior:** pipeline dispatch does not rely on that prompt convention. `SessionManager` resolves the run's durable `repoRefs`, provisions every configured repo before spawn, and injects the resulting path map. `register_worktree` remains available for explicit/manual non-pipeline routing, but pipeline correctness no longer depends on an agent remembering to call it.
 
 ### Multi-repo workspace block format
 
@@ -144,10 +145,10 @@ For non-bug threads (single `worktreePath`), keep the existing single-workspace 
 
 ### Agent prompt rewrite plan (lands WITH Scope-1, not after)
 
-These edits ship in the same commit as the `register_worktree` tool — otherwise agents still cd into `~/projects/` and the worktree creation does nothing.
+These prompt edits shipped with the original `register_worktree` tool. They remain useful workspace guidance, while pipeline-owned provisioning is now the enforcement boundary.
 
 - **`runtime-environment.md`**: replace the "Repo locations" section. New text says: "Repo paths for THIS thread are listed in the `<workspace>` block at the top of your prompt. Use those — never `~/projects/<repo>/` directly. The bare repos are the human developer's working trees; touching them corrupts active branches." Also: "Don't run `pnpm dev` / `npm run dev` / any dev server yourself. Post `!devserver <branch> [repo]` in the thread; junior owns the dev-server slot. Wait for junior's ready message before walking."
-- **`lead.md`**: add an intake step after `state.json`: "For each routed repo in `repo-routing.yaml`, call the `register_worktree` MCP tool. Capture the returned paths and reference them in the dispatch prompt to reproducer/thinker so they know which workspace to use."
+- **`lead.md`** (historical): originally called `register_worktree` during intake. Current pipeline dispatch provisions from durable `repoRefs`; lead only needs to ensure those refs are correct.
 - **`reproducer.md`**: replace "check out the fix branch in `~/projects/<repo>/`" with "post `!devserver <branch> <repo>` and wait for junior's `ready` reply. Walk against `localhost:<port>` as before."
 - **`thinker.md`**: no path edits needed — it already follows whatever cwd it's spawned in (which will be the worktree once Scope-1 lands). Add one sentence: "the workspace block at the top of your prompt has the repo paths. Use them; don't cd elsewhere."
 

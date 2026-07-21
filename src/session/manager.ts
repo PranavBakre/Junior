@@ -1,5 +1,5 @@
 import type { App } from "@slack/bolt";
-import type { Config } from "../config.ts";
+import type { Config, RepoConfig } from "../config.ts";
 import type { RunnerEvent, RunnerProvider, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
 import type {
   SlackMessageEvent,
@@ -14,6 +14,7 @@ import type {
   ThreadSession,
 } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
+import { resolveAgentManifest } from "../agents/registry.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import type { PipelineStore } from "../pipelines/store/interface.ts";
 import {
@@ -61,6 +62,10 @@ import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loa
 import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import { inferReviewRepo } from "../worktree/review-routing.ts";
+import {
+  inferPipelinePrimaryRepo,
+  resolvePipelineRepos,
+} from "../worktree/pipeline-routing.ts";
 import { detectJavaScriptPackageManager } from "../worktree/package-manager.ts";
 import type { MemoryIngestor } from "../memory/ingestion.ts";
 import { createPreRecall, type PreRecallFn } from "../memory/pre-recall.ts";
@@ -80,6 +85,7 @@ export class SessionManager {
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
   private seenMessages = new Set<string>();
+  private worktreeSetups = new Map<string, Promise<string>>();
   private spawnRunner: SpawnRunnerFn;
   private drivers: DriverMap;
   private memoryIngestor?: MemoryIngestor;
@@ -1295,6 +1301,7 @@ export class SessionManager {
         throw new RunOwnershipChangedError();
       }
     };
+    let runnerStarted = false;
     try {
       assertRunOwnership();
       let agentSession = isTopLevel
@@ -1303,37 +1310,148 @@ export class SessionManager {
       const agentIdentity = identityForAgent(agentName);
       const rawMessage = prompt;
 
-      // Reviewers run checks only in Junior-managed worktrees. Route each PR
-      // URL to its repo-specific worktree, and fall back to a pipeline repo ref
-      // only when the run names exactly one configured repo. This also lets one
-      // Slack session review PRs across different repositories without reusing
-      // the wrong checkout.
-      if (agentName === "review" && this.worktreeManager) {
-        let pipelineRepoRefs: string[] = [];
-        if (session.activePipelineRunId && this.pipelineStore) {
-          try {
-            const activeRun = await this.pipelineStore.getRun(
-              session.activePipelineRunId,
-            );
-            pipelineRepoRefs = activeRun?.repoRefs ?? [];
-          } catch (err) {
-            _log.warn(
-              "manager",
-              `review repo inference failed for pipeline ${session.activePipelineRunId}: ${err instanceof Error ? err.message : String(err)}`,
+      const pipelineInvocation = isTopLevel
+        ? session.activePipelineInvocation
+        : agentSession?.activePipelineInvocation;
+      const pipelineRunId =
+        pipelineInvocation?.runId ?? session.activePipelineRunId;
+      let activePipelineRun = pipelineRunId && this.pipelineStore
+        ? await this.pipelineStore.getRun(pipelineRunId)
+        : undefined;
+      if (activePipelineRun?.status === "terminal") {
+        activePipelineRun = undefined;
+      }
+      const activePipelineAssignment =
+        pipelineInvocation && this.pipelineStore
+          ? await this.pipelineStore.getAssignment(
+              pipelineInvocation.assignmentId,
+            )
+          : undefined;
+      assertRunOwnership();
+
+      // An explicit PR URL is the strongest repo-affinity signal for review.
+      // Outside a pipeline this preserves the existing review routing; inside
+      // one it also selects which of the provisioned repo worktrees is primary.
+      const inferredReviewRepo = agentName === "review"
+        ? inferReviewRepo(
+            this.config.repos,
+            prompt,
+            activePipelineRun?.repoRefs ?? [],
+          )
+        : undefined;
+
+      if (activePipelineRun && pipelineInvocation) {
+        // Durable repo refs, not a developer checkout or stale session cwd,
+        // define the pipeline workspace. Provision every referenced repo so
+        // fan-out agents can collaborate through the injected path map. Plain
+        // human turns on a needs-human run do not own an assignment, so they
+        // must remain usable to diagnose or reset an unrecoverable run.
+        const resolution = resolvePipelineRepos(
+          this.config.repos,
+          activePipelineRun.repoRefs,
+        );
+        if (resolution.unresolvedRefs.length > 0) {
+          throw new Error(
+            `Pipeline ${activePipelineRun.id.slice(0, 8)} cannot run assignment ${pipelineInvocation.assignmentId.slice(0, 8)}: repository refs are not uniquely configured: ${resolution.unresolvedRefs.join(", ")}. Update the run repository refs/configuration or use !reset after preserving any work.`,
+          );
+        }
+
+        const pipelineRepos = [...resolution.repos];
+        const addRepo = (repo: RepoConfig | undefined) => {
+          if (repo && !pipelineRepos.some((item) => item.name === repo.name)) {
+            pipelineRepos.push(repo);
+          }
+        };
+        addRepo(inferredReviewRepo);
+        if (
+          activePipelineRun.repoRefs.length === 0 &&
+          pipelineRepos.length === 0
+        ) {
+          addRepo(
+            session.targetRepo
+              ? this.config.repos.find(
+                  (repo) => repo.name === session.targetRepo,
+                )
+              : undefined,
+          );
+        }
+        if (pipelineRepos.length === 0) {
+          if (pipelineAgentRequiresWorktree(agentName)) {
+            throw new Error(
+              `Pipeline ${activePipelineRun.id.slice(0, 8)} cannot run ${agentName} assignment ${pipelineInvocation.assignmentId.slice(0, 8)} without a configured repository and isolated worktree. Add a repository to the run or use !reset after preserving any work.`,
             );
           }
-        }
-        assertRunOwnership();
-        const inferredRepo = inferReviewRepo(
-          this.config.repos,
-          prompt,
-          pipelineRepoRefs,
-        );
-        if (inferredRepo && session.targetRepo !== inferredRepo.name) {
+          _log.info(
+            "manager",
+            `pipeline.workspace.skip thread=${session.threadId} run=${activePipelineRun.id} assignment=${pipelineInvocation.assignmentId} agent=${agentName} reason=repo-less-orchestration`,
+          );
           session = await this.mutateSession(session.threadId, (fresh) => {
             assertRunOwnership();
-            fresh.targetRepo = inferredRepo.name;
-            fresh.worktreePath = fresh.worktreePaths[inferredRepo.name] ?? null;
+            // A prior utility command may have pinned the thread to an
+            // arbitrary cwd. Repo-less pipeline work belongs in Junior's
+            // workspace, not that stale override.
+            fresh.cwd = null;
+          });
+        } else {
+          if (!this.worktreeManager) {
+            throw new Error(
+              `Pipeline ${activePipelineRun.id.slice(0, 8)} cannot run assignment ${pipelineInvocation.assignmentId.slice(0, 8)}: worktree manager is unavailable. Use !reset after preserving any work.`,
+            );
+          }
+
+          const primaryRepo = inferPipelinePrimaryRepo({
+            configuredRepos: this.config.repos,
+            pipelineRepos,
+            prompt,
+            targetAgent: agentName,
+            assignmentContextRefs: activePipelineAssignment?.contextRefs,
+            onDiagnostic: (message) => {
+              _log.warn(
+                "manager",
+                `pipeline.workspace.affinity thread=${session.threadId} run=${activePipelineRun.id} assignment=${pipelineInvocation.assignmentId} agent=${agentName} detail=${message}`,
+              );
+            },
+          });
+          if (!primaryRepo) {
+            throw new Error(
+              `Pipeline ${activePipelineRun.id.slice(0, 8)} cannot choose an isolated worktree. Use !reset after preserving any work.`,
+            );
+          }
+
+          const provisioned = await Promise.all(
+            pipelineRepos.map(async (repo) => [
+              repo.name,
+              await this.ensurePipelineWorktree(
+                repo.name,
+                session.threadId,
+                session.baseRef ?? undefined,
+              ),
+            ] as const),
+          );
+          assertRunOwnership();
+          const provisionedPaths = Object.fromEntries(provisioned);
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            fresh.worktreePaths = {
+              ...fresh.worktreePaths,
+              ...provisionedPaths,
+            };
+            fresh.targetRepo = primaryRepo.name;
+            fresh.worktreePath = provisionedPaths[primaryRepo.name] ?? null;
+            // Utility commands can leave an explicit cwd on the thread. Once a
+            // durable pipeline owns the turn, persistently clear that override
+            // so provider cold starts and recovery continuations also stay in
+            // the managed worktree.
+            fresh.cwd = null;
+          });
+        }
+      } else if (inferredReviewRepo && this.worktreeManager) {
+        if (session.targetRepo !== inferredReviewRepo.name) {
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            fresh.targetRepo = inferredReviewRepo.name;
+            fresh.worktreePath =
+              fresh.worktreePaths[inferredReviewRepo.name] ?? null;
           });
         }
       }
@@ -1689,6 +1807,7 @@ export class SessionManager {
           imagePaths,
         );
       }
+      runnerStarted = true;
       let attemptedResumeId = runSession.sessionId;
       const handle = withTimeout(
         rawHandle,
@@ -1987,6 +2106,48 @@ export class SessionManager {
       if (expectedHandle && this.handles.get(reservationKey) !== expectedHandle) {
         return;
       }
+      let fatalMessage = err instanceof Error ? err.message : String(err);
+      if (!runnerStarted && expectedHandle && this.pipelineStore) {
+        try {
+          const setupResult = await this.resolvePipelineInvocation(
+            session,
+            agentName,
+            {
+              provider: sessionProvider(
+                this.buildRunSession(
+                  session,
+                  agentName,
+                  identityForAgent(agentName),
+                ),
+                this.config,
+              ),
+              sessionId: null,
+              response: "",
+              events: [],
+              exitCode: null,
+              error: fatalMessage,
+              completion: {
+                status: "failure",
+                reason: "provider_error",
+                retryable: false,
+              },
+            },
+            expectedHandle,
+            session.worktreePath ?? process.cwd(),
+          );
+          if (!setupResult) return;
+          fatalMessage = setupResult.error ?? fatalMessage;
+        } catch (settlementErr) {
+          const settlementMessage = settlementErr instanceof Error
+            ? settlementErr.message
+            : String(settlementErr);
+          _log.error(
+            "pipeline",
+            `setup.settlement.fail thread=${session.threadId} agent=${agentName} err=${settlementMessage}`,
+          );
+          fatalMessage = `${fatalMessage} Pipeline settlement also failed: ${settlementMessage}`;
+        }
+      }
       if (expectedHandle) this.handles.delete(reservationKey);
       // Agent prompt composition or worktree creation failed fatally
       try {
@@ -2000,7 +2161,7 @@ export class SessionManager {
           }
           fresh.lastError = {
             type: "setup",
-            message: err instanceof Error ? err.message : String(err),
+            message: fatalMessage,
             timestamp: Date.now(),
           };
         });
@@ -2953,6 +3114,49 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Return the deterministic Junior-managed worktree for a pipeline repo.
+   * Concurrent fan-out can dispatch multiple agents before the first setup
+   * finishes, so coalesce creation per repo/thread instead of racing two
+   * `git worktree add` processes against the same path and branch.
+   */
+  private async ensurePipelineWorktree(
+    repoName: string,
+    threadId: string,
+    baseRef?: string,
+  ): Promise<string> {
+    const manager = this.worktreeManager;
+    if (!manager) throw new Error("worktree manager is unavailable");
+
+    const expectedPath = manager.getWorktreePath(repoName, threadId);
+    if (await manager.worktreeExists(repoName, threadId)) {
+      return expectedPath;
+    }
+
+    const key = `${repoName}:${threadId}`;
+    const existing = this.worktreeSetups.get(key);
+    if (existing) return existing;
+
+    const setup = manager.createWorktree(repoName, threadId, baseRef).then(
+      (createdPath) => {
+        if (createdPath !== expectedPath) {
+          throw new Error(
+            `worktree setup returned ${createdPath}; expected managed path ${expectedPath}`,
+          );
+        }
+        return createdPath;
+      },
+    );
+    this.worktreeSetups.set(key, setup);
+    try {
+      return await setup;
+    } finally {
+      if (this.worktreeSetups.get(key) === setup) {
+        this.worktreeSetups.delete(key);
+      }
+    }
+  }
+
   private withAgentIdentityPrompt(
     systemPrompt: string | null,
     agentName: string,
@@ -3061,6 +3265,14 @@ export class SessionManager {
   private handleKey(threadId: string, agentName: string): string {
     return `${threadId}:${agentName}`;
   }
+}
+
+function pipelineAgentRequiresWorktree(agentName: string): boolean {
+  const role = resolveAgentManifest(agentName)?.role;
+  // Unknown roles fail closed. Trusted orchestrators and planners can perform
+  // repo-less discovery/control-plane work; every execution/review role needs
+  // a target repository and a Junior-managed worktree.
+  return role !== "orchestrator" && role !== "planner";
 }
 
 const defaultSpawnRunnerForRuntime: SpawnRunnerFn =

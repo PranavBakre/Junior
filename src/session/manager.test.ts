@@ -120,6 +120,18 @@ function createTestManager(
   );
 }
 
+function attachExistingPipelineWorktree(
+  manager: InstanceType<typeof SessionManager>,
+): void {
+  const worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+  manager.worktreeManager = {
+    getWorktreePath: () => worktreePath,
+    worktreeExists: mock(async () => true),
+    createWorktree: mock(async () => worktreePath),
+    getBranchName: () => "slack/thread-1",
+  } as unknown as WorktreeManager;
+}
+
 /**
  * Minimal fake driver map for tmux teardown tests — records close() calls so
  * the test can assert on (threadId, agentName) without booting a real tmux.
@@ -482,6 +494,412 @@ describe("SessionManager", () => {
     expect(mockSpawnFn.mock.calls[0][0].sessionId).toBe("review-in-worktree");
     expect(mockSpawnFn.mock.calls[0][0].sessionCwd).toBe(reviewWorktree);
     rmSync(reviewWorktree, { recursive: true, force: true });
+  });
+
+  it("provisions every pipeline repo and starts the worker in its workstream worktree", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-worktrees",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/junior", "GrowthX-Club/frontend"],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-frontend",
+        runId: "run-worktrees",
+        targetAgent: "frontend",
+        contextRefs: ["workstream:frontend"],
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+
+    const paths: Record<string, string> = {
+      junior: "/tmp/junior.junior-worktrees/slack-thread-1",
+      frontend: "/tmp/frontend.junior-worktrees/slack-thread-1",
+    };
+    const createWorktree = mock(async (repoName: string) => paths[repoName]!);
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: (repoName: string) => paths[repoName]!,
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-worktrees";
+    existing.activePipelineKind = "product";
+    // Simulate legacy state pointing at the developer's checkout. Pipeline
+    // routing must overwrite both cwd sources before the provider starts.
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/junior";
+    existing.cwd = "/tmp/junior";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "implement the frontend workstream",
+        pipelineInvocation: {
+          runId: "run-worktrees",
+          assignmentId: "assignment-frontend",
+          dispatchKey: "dispatch-frontend",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "frontend",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(createWorktree).toHaveBeenCalledTimes(2);
+    expect(createWorktree).toHaveBeenCalledWith(
+      "junior",
+      "thread-1",
+      undefined,
+    );
+    expect(createWorktree).toHaveBeenCalledWith(
+      "frontend",
+      "thread-1",
+      undefined,
+    );
+    const runSession = mockSpawnFn.mock.calls[0]![0];
+    expect(runSession.cwd).toBeNull();
+    expect(runSession.targetRepo).toBe("frontend");
+    expect(runSession.worktreePath).toBe(paths.frontend);
+    expect(runSession.worktreePaths).toEqual(paths);
+  });
+
+  it("coalesces concurrent fan-out setup for the same pipeline worktree", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-concurrent-worktree",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/junior"],
+      }),
+    );
+    for (const [id, targetAgent] of [
+      ["assignment-build", "build"],
+      ["assignment-frontend-concurrent", "frontend"],
+    ] as const) {
+      await pipelineStore.createAssignment(
+        makeAssignmentCreate({
+          id,
+          runId: "run-concurrent-worktree",
+          targetAgent,
+        }),
+      );
+    }
+    manager.pipelineStore = pipelineStore;
+
+    const worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    let releaseSetup!: () => void;
+    const setupGate = new Promise<void>((resolve) => {
+      releaseSetup = resolve;
+    });
+    const createWorktree = mock(async () => {
+      await setupGate;
+      return worktreePath;
+    });
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: () => worktreePath,
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-concurrent-worktree";
+    existing.activePipelineKind = "product";
+    await store.set(existing.threadId, existing);
+
+    await Promise.all([
+      manager.handleAgentMessage(
+        makeEvent({
+          text: "build stream",
+          dedupeKey: "concurrent-build",
+          pipelineInvocation: {
+            runId: "run-concurrent-worktree",
+            assignmentId: "assignment-build",
+            dispatchKey: "dispatch-build",
+            outcomeCountAtDispatch: 0,
+            retryCount: 0,
+          },
+        }),
+        "build",
+      ),
+      manager.handleAgentMessage(
+        makeEvent({
+          text: "frontend stream",
+          dedupeKey: "concurrent-frontend",
+          pipelineInvocation: {
+            runId: "run-concurrent-worktree",
+            assignmentId: "assignment-frontend-concurrent",
+            dispatchKey: "dispatch-frontend-concurrent",
+            outcomeCountAtDispatch: 0,
+            retryCount: 0,
+          },
+        }),
+        "frontend",
+      ),
+    ]);
+    await waitFor(() => createWorktree.mock.calls.length === 1);
+    releaseSetup();
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+
+    expect(createWorktree).toHaveBeenCalledTimes(1);
+    expect(
+      mockSpawnFn.mock.calls.map((call) => call[0].worktreePath),
+    ).toEqual([worktreePath, worktreePath]);
+  });
+
+  it("fails closed when a pipeline cannot provision managed worktrees", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-no-worktree-manager",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/junior"],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-no-worktree-manager",
+        runId: "run-no-worktree-manager",
+        targetAgent: "build",
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-no-worktree-manager";
+    existing.activePipelineKind = "product";
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/junior";
+    await store.set(existing.threadId, existing);
+    const errors = mock((_session: ThreadSession, _error: string | null) => {});
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "implement safely",
+        pipelineInvocation: {
+          runId: "run-no-worktree-manager",
+          assignmentId: "assignment-no-worktree-manager",
+          dispatchKey: "dispatch-no-worktree-manager",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "build",
+    );
+    await waitFor(() => errors.mock.calls.length === 1);
+
+    expect(mockSpawnFn).not.toHaveBeenCalled();
+    expect(errors.mock.calls[0]![1]).toContain(
+      "worktree manager is unavailable",
+    );
+    expect((await store.get("thread-1"))?.agentSessions.build.status).toBe(
+      "failed",
+    );
+    expect((await pipelineStore.getRun("run-no-worktree-manager"))?.status)
+      .toBe("needs-human");
+  });
+
+  it("allows repo-less orchestration assignments without a target worktree", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-repo-less-pm",
+        threadId: "thread-1",
+        repoRefs: [],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-repo-less-pm",
+        runId: "run-repo-less-pm",
+        targetAgent: "pm",
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-repo-less-pm";
+    existing.activePipelineKind = "product";
+    existing.cwd = "/tmp/stale-utility-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "discover and write the product brief",
+        pipelineInvocation: {
+          runId: "run-repo-less-pm",
+          assignmentId: "assignment-repo-less-pm",
+          dispatchKey: "dispatch-repo-less-pm",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "pm",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    const runSession = mockSpawnFn.mock.calls[0]![0];
+    expect(runSession.targetRepo).toBeNull();
+    expect(runSession.worktreePath).toBeNull();
+    expect(runSession.cwd).toBeNull();
+    expect((await store.get("thread-1"))?.cwd).toBeNull();
+  });
+
+  it("keeps human turns usable after a repo-less build assignment escalates", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-repo-less-build",
+        threadId: "thread-1",
+        repoRefs: [],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-repo-less-build",
+        runId: "run-repo-less-build",
+        targetAgent: "build",
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-repo-less-build";
+    existing.activePipelineKind = "product";
+    await store.set(existing.threadId, existing);
+    const errors = mock((_session: ThreadSession, _error: string | null) => {});
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "implement without a repo",
+        pipelineInvocation: {
+          runId: "run-repo-less-build",
+          assignmentId: "assignment-repo-less-build",
+          dispatchKey: "dispatch-repo-less-build",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "build",
+    );
+    await waitFor(() => errors.mock.calls.length === 1);
+    expect(errors.mock.calls[0]![1]).toContain("Add a repository to the run");
+    expect((await pipelineStore.getRun("run-repo-less-build"))?.status)
+      .toBe("needs-human");
+
+    await manager.handleMessage(
+      makeEvent({
+        text: "explain how I can recover this run",
+        ts: "human-recovery-turn",
+      }),
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+    expect(mockSpawnFn.mock.calls[0]![0].activePipelineInvocation).toBeNull();
+  });
+
+  it("fails unknown repo refs with an actionable error without wedging human turns", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-unknown-repo",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/not-configured"],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-unknown-repo",
+        runId: "run-unknown-repo",
+        targetAgent: "build",
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-unknown-repo";
+    existing.activePipelineKind = "product";
+    await store.set(existing.threadId, existing);
+    const errors = mock((_session: ThreadSession, _error: string | null) => {});
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "implement in the unknown repo",
+        pipelineInvocation: {
+          runId: "run-unknown-repo",
+          assignmentId: "assignment-unknown-repo",
+          dispatchKey: "dispatch-unknown-repo",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "build",
+    );
+    await waitFor(() => errors.mock.calls.length === 1);
+    expect(errors.mock.calls[0]![1]).toContain(
+      "Update the run repository refs/configuration",
+    );
+
+    await manager.handleMessage(
+      makeEvent({ text: "what repo is missing?", ts: "unknown-repo-recovery" }),
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+  });
+
+  it("marks setup failed when durable pipeline settlement also throws", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-settlement-failure",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/junior"],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-settlement-failure",
+        runId: "run-settlement-failure",
+        targetAgent: "build",
+      }),
+    );
+    pipelineStore.recordOutcomeTransaction = mock(async () => {
+      throw new Error("pipeline store unavailable");
+    });
+    manager.pipelineStore = pipelineStore;
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-settlement-failure";
+    existing.activePipelineKind = "product";
+    await store.set(existing.threadId, existing);
+    const errors = mock((_session: ThreadSession, _error: string | null) => {});
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "implement safely",
+        pipelineInvocation: {
+          runId: "run-settlement-failure",
+          assignmentId: "assignment-settlement-failure",
+          dispatchKey: "dispatch-settlement-failure",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "build",
+    );
+    await waitFor(() => errors.mock.calls.length === 1);
+
+    expect(errors.mock.calls[0]![1]).toContain("worktree manager is unavailable");
+    expect(errors.mock.calls[0]![1]).toContain(
+      "Pipeline settlement also failed: pipeline store unavailable",
+    );
+    expect((await store.get("thread-1"))?.agentSessions.build.status).toBe(
+      "failed",
+    );
   });
 
   it("retries an unavailable Claude conversation once as a fresh session", async () => {
@@ -2775,7 +3193,10 @@ describe("typed pipeline settlement", () => {
   it("repairs an unavailable Claude session without consuming pipeline retries", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
-    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-invalid-session",
       targetAgent: "build",
@@ -2786,7 +3207,7 @@ describe("typed pipeline settlement", () => {
       agentName: "build",
       provider: "claude",
       sessionId: "missing-build-session",
-      sessionCwd: process.cwd(),
+      sessionCwd: "/tmp/junior.junior-worktrees/slack-thread-1",
       status: "idle",
       pendingMessages: [],
       lastActivity: Date.now(),
@@ -2802,6 +3223,7 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
     const errors = mock((_session, _error) => undefined);
     manager.onError = errors;
 
@@ -2859,7 +3281,10 @@ describe("typed pipeline settlement", () => {
   it("rebuilds exact assignment context when a settlement resume is unavailable", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
-    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-resume-context",
       targetAgent: "build",
@@ -2876,6 +3301,7 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
 
     await manager.handleAgentMessage(makeEvent({
       text: "initial assignment dispatch",
@@ -2939,7 +3365,10 @@ describe("typed pipeline settlement", () => {
   it("escalates a non-retryable provider failure without wasting continuations", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
-    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-provider-failure",
       targetAgent: "build",
@@ -2988,6 +3417,7 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
     const errors = mock((_session, _error) => undefined);
     manager.onError = errors;
 
@@ -3022,7 +3452,10 @@ describe("typed pipeline settlement", () => {
   it("does not resurrect a worker reset during continuation setup", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
-    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-reset-worker",
       targetAgent: "build",
@@ -3035,6 +3468,7 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
     let releaseRecall!: () => void;
     const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
     let recallCalls = 0;
@@ -3075,7 +3509,10 @@ describe("typed pipeline settlement", () => {
   it("does not resurrect a thread reset during continuation setup", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
-    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-reset-lead",
       targetAgent: "lead",
@@ -3088,6 +3525,7 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
     let releaseRecall!: () => void;
     const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
     let recallCalls = 0;
@@ -3128,7 +3566,10 @@ describe("typed pipeline settlement", () => {
   it("quietly resumes a max-turn Claude session and trusts its later durable outcome", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
-    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-settlement",
       targetAgent: "build",
@@ -3144,6 +3585,7 @@ describe("typed pipeline settlement", () => {
     };
     const manager = new SessionManager(sessionStore, testConfig, localSpawn);
     manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
     const errors = mock((_session, _error) => undefined);
     manager.onError = errors;
 
@@ -3218,7 +3660,10 @@ describe("typed pipeline settlement", () => {
   it("posts one failure only after the bounded recovery budget is exhausted", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
-    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-exhausted",
       targetAgent: "build",
@@ -3231,6 +3676,7 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
     const errors = mock((_session, _error) => undefined);
     manager.onError = errors;
 
@@ -3267,7 +3713,10 @@ describe("typed pipeline settlement", () => {
   it("reports zero recovery continuations when no provider session can resume", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
-    await pipelineStore.createRun(makeProductRun({ phase: "building" }));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-no-session",
       targetAgent: "build",
@@ -3276,6 +3725,7 @@ describe("typed pipeline settlement", () => {
     const handle = createMockHandle();
     const manager = new SessionManager(sessionStore, testConfig, () => handle);
     manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
     const errors = mock((_session, _error) => undefined);
     const responses = mock((_session, _response) => undefined);
     manager.onError = errors;
