@@ -25,7 +25,7 @@ export function inferReviewRepo(
   return refMatches.length === 1 ? refMatches[0] : undefined;
 }
 
-function repoMatchesRef(repoName: string, ref: string): boolean {
+export function repoMatchesRef(repoName: string, ref: string): boolean {
   const normalized = ref.trim().replace(/\.git$/i, "").replace(/\/+$/, "");
   return (
     normalized.toLowerCase() === repoName.toLowerCase() ||
@@ -36,4 +36,3 @@ function repoMatchesRef(repoName: string, ref: string): boolean {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-
