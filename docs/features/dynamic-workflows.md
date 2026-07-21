@@ -1,11 +1,13 @@
 # Dynamic Workflows
 
+> **Current status (2026-07-21):** Shipped. The registry, SQLite state/run store, hot reload, scheduler, Slack commands, and localhost dashboard endpoint are live. Current definitions include `worklog`, `release-notes`, `memory-consolidation`, and `worktree-prune`; private overlays may add or override definitions.
+
 ## Problem
 
 Junior needs recurring and on-demand workflows that can be added without restarting the bot. The first workflow is a daily worklog: collect my PRs and commits, turn them into grouped "things I did", store a markdown artifact, and post a Slack summary.
 
 **Who has this problem:** Junior operators who need repeatable automation.
-**What happens today:** Work has to be prompted manually or hard-coded into the bot.
+**What happens today:** Workflow definitions are discovered from `workflows/` and `agents-org/workflows/`, reloaded on file changes, persisted in SQLite, and controllable through `!workflow` / `!workflows`. The dashboard exposes the same state at `GET /api/workflows`.
 **Painful part:** Every new cron-like behavior currently risks becoming a code deploy.
 **"Finally" moment:** Add or edit `workflows/worklog.workflow.md`; Junior reloads it, schedules it, and owners can `!workflow run worklog` or `!workflow stop worklog` from Slack.
 
@@ -226,7 +228,7 @@ The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Because work
 
 Workflow runner configs can set `idleTimeoutMs` to recover from a silent CLI run before the hard `timeoutMs` expires. The executor starts an idle timer for each CLI attempt and resets it on every normalized runner event. When the timer fires, Junior sends `SIGINT` to the provider process, waits up to 10 seconds for it to exit, then sends `SIGKILL` as a cleanup fallback. If the run has already emitted a provider session id, Junior immediately spawns a new `opencode run --session <id>` / `claude --resume <id>` attempt with a compact "continue from the last completed step" prompt. `maxIdleInterrupts` bounds the number of resume attempts; after that, the run fails normally.
 
-This is a CLI fallback, not OpenCode's native TUI interrupt. OpenCode's TUI uses the server `session.abort` API after repeated Escape presses; a future SDK/server provider should use that API directly instead of process signals.
+This is a CLI fallback, not OpenCode's native server interrupt. The implemented OpenCode SDK/server provider uses provider-native abort semantics; the fallback applies to silent CLI workflow attempts.
 
 ## Dependencies
 
@@ -245,3 +247,7 @@ This is a CLI fallback, not OpenCode's native TUI interrupt. OpenCode's TUI uses
 - Per-output templates.
 - Workflow-specific secrets.
 - A UI for workflow states and history.
+
+The localhost dashboard already exposes workflow definitions, state, recent runs,
+and registry errors through `GET /api/workflows`; a richer interactive UI remains
+out of scope.

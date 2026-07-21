@@ -1,11 +1,13 @@
 # Project Setup & Configuration
 
+> **Current status (2026-07-21):** The foundation described here is shipped. This page is also a historical record of the original bootstrap plan; for exact current symbols, see [`docs/code_index/project-setup.md`](../code_index/project-setup.md) and [`docs/README.md`](../README.md).
+
 ## Problem
 
 The bot needs environment configuration (Slack tokens, repo paths, timeouts) and project scaffolding (package.json, TypeScript config, directory structure) before any feature can be built. This doc covers the foundational setup.
 
 **Who has this problem:** The first developer (Claude or human) who starts building.
-**What happens today:** Empty repo with CLAUDE.md and feature docs.
+**What happens today:** A Bun/TypeScript Slack service with SQLite-backed sessions, normalized runner providers, dynamic workflows, pipeline stores, MCP tools, optional GitHub reconciliation, and an optional localhost dashboard.
 **Painful part:** Getting the right TypeScript config, ESM vs CJS, which Slack SDK version, how to structure a CLI-spawning server. Wrong choices here cascade into every feature.
 **"Finally" moment:** `bun run dev` starts the bot server. Hot reload works. TypeScript compiles cleanly. Slack connects. Ready to build features.
 
@@ -66,7 +68,7 @@ interface Config {
     tmuxIdleTtlMs: number;    // TMUX_IDLE_TTL_MS (default: 14400000 — 4h)
     tmuxSweepIntervalMs: number; // TMUX_SWEEP_INTERVAL_MS (default: 900000 — 15min)
   };
-  runner: { provider: "claude" | "opencode" };
+  runner: { provider: "claude" | "opencode" | "opencode-sdk" | "codex-app-server" };
   opencode: {
     model: string | null;
     timeoutMs: number;
@@ -75,6 +77,24 @@ interface Config {
     mcpEnabled: boolean;
     slackMcpEnabled: boolean;
     playwrightMcpEnabled: boolean;
+    mixpanelMcpEnabled: boolean;
+    mongodbMcpEnabled: boolean;
+  };
+  codex: {
+    mode: "app-server" | "cli";
+    model: string | null;
+    timeoutMs: number;
+    sandbox: "read-only" | "workspace-write" | "danger-full-access";
+    askForApproval: "untrusted" | "on-request" | "never";
+    searchEnabled: boolean;
+    appServerContinuityEnabled: boolean;
+    mcpEnabled: boolean;
+    slackMcpEnabled: boolean;
+    playwrightMcpEnabled: boolean;
+    mixpanelMcpEnabled: boolean;
+    mongodbMcpEnabled: boolean;
+    memoryMcpEnabled: boolean;
+    isolatedHomePath: string | null;
   };
   repos: RepoConfig[];                  // JSON in REPOS env var
   session: {
@@ -82,6 +102,21 @@ interface Config {
     store: "memory" | "sqlite";
     sqlitePath; homeWindowMs;
     defaultVerbosity: "quiet" | "normal" | "verbose";
+    idleTimeoutMs; maxIdleInterrupts;
+  };
+  memory: {
+    sqlitePath; embedProvider;
+    preRecall?: { enabled; runner; model?; timeoutMs };
+  };
+  threadArchives: { dir };
+  pipeline?: {
+    runtimeMode: "off" | "shadow" | "active";
+    legacyDirectivesEnabled; bugPipelineEnabled;
+    productPipelineEnabled; retentionDays;
+  };
+  github?: {
+    reconcileEnabled; eventWakeEnabled; reconcileToken;
+    reconcileUseCli; reconcileIntervalMs;
   };
   channelDefaults: Record<string, { agentType: string }>; // JSON
   adminSlackUserId: string | null;       // bootstrap admin; rest live in admins table
@@ -98,7 +133,7 @@ interface Config {
 | `SLACK_BOT_TOKEN` | yes | — | |
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode `xapp-...` |
 | `SLACK_SIGNING_SECRET` | no | `""` | only needed if you ever switch to Events API |
-| `RUNNER_PROVIDER` | no | `opencode` | `opencode` \| `opencode-sdk` \| `codex-app-server` \| `claude`; `codex` is reserved for the future CLI fallback |
+| `RUNNER_PROVIDER` | no | `opencode` | `opencode` \| `opencode-sdk` \| `codex-app-server` \| `claude` |
 | `CLAUDE_MAX_TURNS` | no | `25` | |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | |
 | `CLAUDE_MODEL` | no | unset | passed through to `claude -p --model` |
@@ -110,6 +145,22 @@ interface Config {
 | `OPENCODE_MCP_ENABLED` | no | `true` | enables generated OpenCode MCP config for normal non-utility runs |
 | `OPENCODE_SLACK_MCP_ENABLED` | no | `true` | includes the local Slack MCP entry when MCP is enabled |
 | `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | no | `true` | includes Playwright MCP in generated OpenCode config; set `false` to disable |
+| `OPENCODE_MIXPANEL_MCP_ENABLED` | no | `true` | includes the optional Mixpanel MCP entry |
+| `OPENCODE_MONGODB_MCP_ENABLED` | no | `true` | includes the optional MongoDB MCP entry |
+| `CODEX_MODE` | no | `app-server` | `app-server` or `cli`; app-server is the implemented Codex provider path |
+| `CODEX_MODEL` | no | unset | Codex model override |
+| `CODEX_TIMEOUT_MS` | no | `300000` | Codex turn timeout |
+| `CODEX_SANDBOX` | no | `workspace-write` | Codex sandbox policy |
+| `CODEX_ASK_FOR_APPROVAL` | no | `never` | Codex approval policy |
+| `CODEX_SEARCH_ENABLED` | no | `false` | Codex web search capability |
+| `CODEX_APP_SERVER_CONTINUITY_ENABLED` | no | `false` | Reuse Codex app-server sessions when supported |
+| `CODEX_MCP_ENABLED` | no | `true` | Enable generated Codex MCP config |
+| `CODEX_SLACK_MCP_ENABLED` | no | `true` | Include Slack MCP for Codex |
+| `CODEX_PLAYWRIGHT_MCP_ENABLED` | no | `true` | Include Playwright MCP for Codex |
+| `CODEX_MIXPANEL_MCP_ENABLED` | no | `true` | Include Mixpanel MCP for Codex |
+| `CODEX_MONGODB_MCP_ENABLED` | no | `true` | Include MongoDB MCP for Codex |
+| `CODEX_MEMORY_MCP_ENABLED` | no | `true` | Include memory MCP for Codex |
+| `CODEX_ISOLATED_HOME_PATH` | no | `data/codex-home` | Isolated Codex home directory |
 | `REPOS` | no | `[]` | JSON array of `RepoConfig` |
 | `CHANNEL_DEFAULTS` | no | `{"C05557KKV37":{"agentType":"lead"}}` | JSON, validated |
 | `SESSION_STORE` | no | `sqlite` | `sqlite` \| `memory` |
@@ -122,9 +173,17 @@ interface Config {
 | `ADMIN_SLACK_USER_ID` | no | unset | bootstrap admin; further admins live in the `admins` SQLite table |
 | `HTTP_DASHBOARD_PORT` | no | unset | localhost dashboard; must be a positive integer 1–65535 or unset |
 | `MCP_PORT` | no | `3456` | internal Slack-bot MCP server |
+| `MEMORY_EMBED_PROVIDER` | no | `local` | `local` or deterministic `hashing` test provider |
+| `PRE_RECALL_ENABLED` | no | `false` | optional pre-recall query extraction before runner turns |
+| `WHATSAPP_ENABLED` | no | `false` | enable read-only WhatsApp archive ingestion/tools |
+| `PIPELINE_RUNTIME_MODE` | no | `off` | `off`, `shadow`, or `active` |
+| `PRODUCT_PIPELINE_ENABLED` | no | `false` | typed product pipeline starts; requires active mode |
+| `BUG_PIPELINE_ENABLED` | no | `false` | typed bug pipeline starts; requires active mode |
+| `PIPELINE_RETENTION_DAYS` | no | `90` | terminal pipeline outbox retention |
+| `GITHUB_RECONCILE_ENABLED` | no | `false` | outbound read-only PR reconciliation |
 
 Validation rules (each throws on bad input):
-- `parseRunnerProvider` — must be `claude` or `opencode`; `codex` is a planned provider and currently rejected with a not-implemented error.
+- `parseRunnerProvider` — accepts only the four implemented providers: `claude`, `opencode`, `opencode-sdk`, and `codex-app-server`.
 - `parseStoreKind` — must be `memory` or `sqlite`.
 - `parseVerbosity` — must be `quiet`/`normal`/`verbose`.
 - `parseChannelDefaults` — must be a JSON object of `{channelId: {agentType: string}}`.
@@ -157,11 +216,17 @@ junior/
         factory.ts        -- createSessionStore(config)
         memory.ts         -- InMemorySessionStore
         sqlite.ts         -- SqliteSessionStore (bun:sqlite)
+    runners/
+      index.ts            -- normalized provider factory and dispatch
+      types.ts            -- provider-neutral SpawnResult/SpawnHandle contract
     claude/
-      spawner.ts          -- spawn claude -p, manage child process
-      args.ts             -- build CLI args from session state
-      parser.ts           -- stream-json line parser
-      types.ts            -- stream-json event types
+      spawner.ts          -- Claude headless/tmux provider
+      driver.ts           -- Claude driver selection and lifecycle
+    opencode/
+      spawner.ts          -- OpenCode CLI provider
+      sdk-provider.ts     -- OpenCode SDK provider
+    codex-app-server/
+      provider.ts         -- Codex app-server provider
     agents/
       router.ts           -- agent definition routing
       loader.ts           -- read .md files, parse frontmatter (incl. identity)
@@ -170,6 +235,11 @@ junior/
     support/
       router.ts           -- AgentDispatcher: per-agent persistent sessions
       agents.ts           -- overlay identity loading + per-agent context profile
+    memory/               -- claim store, embeddings, recall, consolidation
+    pipelines/            -- typed product/bug control plane and outbox
+    workflows/            -- dynamic workflow registry, store, runner
+    github/               -- optional PR reconciliation
+    whatsapp/             -- optional read-only archive ingestion
     mcp/
       slack-server.ts     -- internal MCP server exposed to spawned sessions
     http/
@@ -191,7 +261,7 @@ junior/
   docs/
     features/             -- feature docs
     code_index/           -- code indexes per module
-    workflows/            -- ideation and building workflows
+  workflows/              -- release notes, worklog, memory consolidation, worktree prune
   .env.example
   package.json
   tsconfig.json

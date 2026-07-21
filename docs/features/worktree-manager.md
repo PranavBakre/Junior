@@ -1,5 +1,7 @@
 # Worktree Manager
 
+> **Current status (2026-07-21):** Shipped. Worktrees are sibling directories under `<repo>.junior-worktrees/`; delegated setup commands receive `branch --path <abs> --base <ref>`.
+
 > **Two flows live here.** The single-target-repo flow (driven by `!repo <name>`) creates one worktree per thread at `session.worktreePath`. The bug-pipeline flow (lead-driven) creates one worktree per routed repo per thread at `session.worktreePaths[repo]`, plus a dedicated dev-server worktree per repo at a fixed path. See [bug-pipeline-worktrees.md](bug-pipeline-worktrees.md) for the full bug-pipeline design and [process-lifecycle.md](process-lifecycle.md) for the dev-server lifecycle that owns the dev-server worktree.
 
 ## Problem
@@ -7,7 +9,7 @@
 When a Slack thread needs to edit code in a target repo (example-backend, example-frontend), it needs its own git worktree so concurrent threads don't collide on file state. The worktree manager creates, tracks, and cleans up worktrees in target repos — not in junior's own workspace.
 
 **Who has this problem:** Any thread that does code work on a shared repo.
-**What happens today:** Nothing — no code isolation.
+**What happens today:** Threads with a target repo receive sibling worktrees; bug-pipeline intake can register one per routed repo, and the dev-server manager owns a dedicated sibling slot. Dirty worktrees are preserved during cleanup.
 **Painful part:** Worktree lifecycle. Creating is easy. Knowing when to create (not every thread needs one), cleaning up safely (check for uncommitted changes), and handling edge cases (stale branches, dangling worktrees from crashed processes) is hard.
 **"Finally" moment:** Two Slack threads edit example-backend simultaneously. Neither sees the other's changes. Both can commit and push independently.
 
@@ -36,7 +38,7 @@ interface RepoConfig {
   path: string;                       // "/Users/.../projects/app-backend"
   defaultBase: string;                // "origin/main"
   // Optional — bug-pipeline / dev-server fields:
-  worktreeSetupCommand?: string;      // e.g. "bin/setup-worktree.sh" — resolved relative to `path`
+  worktreeSetupCommand?: string;      // target-repo command, resolved relative to `path`, receiving branch/--path/--base
   devCommand?: string;                // e.g. "pnpm dev", "npm run dev" — split on whitespace, no shell
   devPort?: number;                   // e.g. 3000, 8000 — readiness probe target
   readyUrl?: string;                  // e.g. "http://localhost:3000" — defaults to localhost:<devPort>

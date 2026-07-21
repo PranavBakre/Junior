@@ -11,7 +11,10 @@
 Claude Code CLI processes can hang, crash, or produce errors. The bot needs to handle every failure mode gracefully — timeouts, spawn failures, non-zero exits, malformed output — without crashing itself or leaving sessions in a broken state. A zombie Claude process that never exits blocks the thread forever.
 
 **Who has this problem:** The bot server — one bad process shouldn't take down the whole system.
-**What happens today:** Nothing — no error handling.
+**What happens today:** Hard timeouts, process-tree cleanup, orphan detection,
+and provider-specific idle recovery are implemented. This document keeps the
+failure model and runtime invariants in one place; the iteration history below
+is historical.
 **Painful part:** The failure modes are many and subtle. Process hangs (no output, no exit). Process exits with non-zero but no stderr. Process produces partial JSON (stdout cut mid-line). Process exits mid-stream (session state may be corrupt). Max subscription rate limit hit (unclear error). The bot must handle all of these without human intervention.
 **"Finally" moment:** Claude hangs → user sees "Timed out after 5 minutes. Try a more specific prompt." Claude crashes → user sees "Something went wrong. Try again." No zombie processes. No stuck sessions.
 
@@ -22,7 +25,10 @@ Claude Code CLI processes can hang, crash, or produce errors. The bot needs to h
 - Process-tree cleanup: spawned CLIs run in their own process group, and cleanup signals the group so wrapper commands cannot leave grandchildren behind
 - Error categorization: timeout, crash, rate limit, auth failure, unknown
 - User-facing error messages in Slack (not raw stderr)
-- Session state recovery: if process dies mid-turn, session stays resumable
+- Session state recovery: if a provider emitted a native session id, headless
+  CLI providers may be interrupted and resumed within the configured retry
+  limit; server-attached providers own their interrupt path. Durable pipeline
+  state and artifacts remain authoritative.
 - Stale cleanup must not delete an idle parent thread while any persistent agent session is still busy.
 - Health check: periodic scan for orphaned processes
 - Metrics: track success/failure/timeout rates per agent type
@@ -114,7 +120,7 @@ When the bot itself shuts down (SIGINT, SIGTERM, restart), handle running proces
 | Console.log for errors | Iteration 1 (user-facing messages) |
 | No graceful shutdown | Iteration 3 |
 | No orphan detection | Iteration 4 |
-| No retry on failure | By design — user re-sends |
+| No automatic retry after a hard failure | By design — idle recovery is bounded and provider-specific |
 
 ## Cut List (true v2)
 

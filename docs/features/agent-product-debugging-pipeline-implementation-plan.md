@@ -1,5 +1,11 @@
 # Agent Product-Building and Bug-Debugging Pipeline Implementation Plan
 
+> **Historical implementation plan:** This plan predates the current SQLite
+> bootstrapping and workflow layout. Its migration paths and `docs/workflows/*`
+> references are preserved as design history; follow [`../README.md`](../README.md),
+> [`../code_index/pipelines.md`](../code_index/pipelines.md), and
+> [`../code_index/workflows.md`](../code_index/workflows.md) for live behavior.
+
 > Status: Phases 0–9 landed (shadow/off by default)
 >
 > Source audit: [Agent Product-Building and Bug-Debugging Pipeline Audit](../audits/2026-07-19-agent-product-debugging-pipeline.md)

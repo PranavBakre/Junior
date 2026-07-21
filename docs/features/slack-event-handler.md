@@ -16,7 +16,10 @@ The bot needs to receive Slack messages and route them to the right session. A m
 - Receive the bot's own posts (`ignoreSelf=false`) so orchestrator agents can dispatch workers via `!<persistent-agent>`. Drop incidental self-bot chatter to avoid loops.
 - Drop sibling-bot streaming updates (lines that start with `✽`).
 - Strip the bot's own `<@U…>` mentions from anywhere in the text before parsing.
-- Parse `!<command>` from the start of the message; pass `{ threadId, channel, user, text, ts, command, files }` to the session manager.
+- Parse leading `KNOWN_COMMANDS` from the start of the message; leave
+  persistent-agent directives such as `!review` and `!reproducer` intact for
+  `AgentDispatcher`; pass `{ threadId, channel, user, text, ts, command, files }`
+  to the session manager.
 - Acknowledge events quickly (Slack expects <3s response).
 - Publish a compact home tab summary of recent sessions, with permalinks and session metadata. Detailed per-session data opens in Slack modals from Home tab buttons.
 
@@ -33,7 +36,7 @@ The bot needs to receive Slack messages and route them to the right session. A m
 
 - `src/slack/app.ts` — `createSlackApp(config)` builds the Bolt `App` with Socket Mode and `ignoreSelf: false`.
 - `src/slack/events.ts` — `registerEventHandlers(app, onMessage, store?, selfBotId?, selfUserId?, autoTriggerChannels?)`. Registers `message` and `app_mention` listeners.
-- `src/slack/commands.ts` — `parseCommand(text)` extracts a leading `!<word>` from `KNOWN_COMMANDS`. `!<persistent-agent>` directives (e.g. `!lead`, `!reproducer`, `!thinker`, `!review`) are **not** in this set — they pass through with the prefix intact for the agent dispatcher.
+- `src/slack/commands.ts` — `parseCommand(text)` extracts a leading `!<word>` from `KNOWN_COMMANDS`. `!<persistent-agent>` directives (e.g. `!lead`, `!reproducer`, `!review`) are **not** in this set — they pass through with the prefix intact for the agent dispatcher. `!thinker` is legacy-only and is not a current directive.
 - `src/slack/responder.ts` — `SlackResponder` wraps `chat.postMessage`, `chat.update`, `chat.delete`, and `reactions.add`. Handles response splitting (via `formatting.ts`), agent identity (`username` + `icon_emoji` on posts), and per-agent status pills keyed by `${threadTs}:${agentName}` with a 1s debounce.
 - `src/slack/home.ts` — `registerHomeTab` listens for `app_home_opened` and `home_session_details` button actions. `publishHomeTab` calls `store.getRecent(windowMs)`, resolves Slack permalinks, and renders blocks: stats summary (active/idle/draining/errors/muted/total), Active Sessions, Recent Sessions (last 10 idle), Recent Errors (last 5). Each session block stays compact (status, lead agent, provider, repo, last activity, mute flag, pending count, agent count) and includes a `View details` button. Detail modals show worktree path, resume command, per-agent resume/status rows, and last error, split into Slack-safe section blocks. Last-error text is passed through the same prompt-leak sanitizer used for runner error replies before it appears in Home or modals.
 - `src/slack/files.ts` — `downloadSlackFiles(files, threadId, botToken)` fetches Slack attachments to `/tmp/junior-files/<threadId>/` so the runner can read them from disk.
@@ -91,11 +94,13 @@ Drop rules, `threadId` extraction, structured event passed to session manager. N
 
 `parseCommand` strips `!<word>` from message start when the word is in `KNOWN_COMMANDS`. See [thread-commands.md](thread-commands.md) for the command set and admin gating (`!reset`, `!mute`, `!unmute`, `!agent`).
 
-### Iteration 3: DM, edits, files (partly shipped)
+### Iteration 3: DM, edits, files, and action surfaces (shipped)
 
 - DMs (`channel_type === "im"`) bypass the mention requirement.
 - Message edits/deletes have no `text` and fall through `no-text`.
 - File uploads: attachments are downloaded by `files.ts` and the local paths are passed to the runner as context.
+- Home-tab detail modals and agent action/approval buttons are wired through
+  `src/slack/home.ts`, `src/slack/action-buttons.ts`, and `src/slack/action-store.ts`.
 - No outgoing rate-limit beyond the 1s status-pill debounce.
 
 ## Shortcuts
@@ -107,7 +112,8 @@ Drop rules, `threadId` extraction, structured event passed to session manager. N
 
 ## Cut List (true v2)
 
-- Slack interactive components (buttons, modals, dropdowns).
+- More interactive components (dropdowns and complex command forms); home
+  detail modals and action/approval buttons are already shipped.
 - Emoji reactions as commands (`:rocket:` → deploy).
 - Multi-workspace support (multiple Slack workspaces).
 - Message scheduling / delayed responses.

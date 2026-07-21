@@ -5,7 +5,9 @@
 Users need to control thread behavior beyond just sending messages. Reset a broken session, check what's running, switch agent types, change the target repo or branch. These are control-plane operations that don't need Claude — the bot handles them directly.
 
 **Who has this problem:** Users managing active Slack threads.
-**What happens today:** Nothing — no way to control sessions.
+**What happens today:** Junior handles thread controls directly in
+`SessionManager`; persistent-agent directives are routed separately by
+`AgentDispatcher` and are not part of `KNOWN_COMMANDS`.
 **Painful part:** Namespace collision. `!build fix auth` is a command + prompt. `!reset` is a pure command. `!status` might be a Slack-native command. Need clean parsing that doesn't conflict with Slack's built-in slash commands.
 **"Finally" moment:** `!status` → "Session active. Agent: build. Worktree: slack/1234. Last activity: 2 min ago." `!reset` → "Session cleared." Everything feels controllable.
 
@@ -16,7 +18,8 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 - `!status` — Show session state (agent type, worktree, busy/idle, last activity, pending messages count)
 - `!build [prompt]` — Set agent to build, create worktree if needed, run prompt
 - `!frontend [prompt]` — Set agent to frontend, create worktree, run prompt
-- `!review [prompt]` — Set agent to review (no worktree needed), run prompt
+- `!review` — Dispatch to the persistent review agent. It is not a normal
+  `KNOWN_COMMANDS` command; the support router handles the directive.
 - `!architect [prompt]` — Set agent to architect, run prompt
 - `!repo <name>` — Switch target repo for this thread
 - `!branch <ref>` — Set worktree base ref (next worktree creation uses this)
@@ -26,6 +29,11 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 - `!aside [text]` — Drop just this message; everything else in the thread continues as normal. For human-to-human sidebar without leaving the thread.
 - `!listen` — Wake Junior back up from auto-dormant mode. Anyone in the thread can use it.
 - `!help` — List available commands
+- `!provider <name>` — Switch the thread's runner provider (`claude`,
+  `opencode`, `opencode-sdk`, or `codex-app-server`)
+- `!stop` — Stop the active runner/driver
+- `!driver <headless|tmux>` — Select Claude's driver mode for the thread
+- `!workflow ...` / `!workflows` — Inspect and control dynamic workflows
 
 ## Admin-only commands
 

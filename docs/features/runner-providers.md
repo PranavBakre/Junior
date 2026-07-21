@@ -1,6 +1,6 @@
 # Runner Providers
 
-Date: 2026-05-15
+Date: 2026-07-21
 
 This supersedes a Codex-only replacement plan. The right architecture is a
 provider boundary: Junior owns Slack/session/worktree behavior, and provider
@@ -9,7 +9,17 @@ and resume semantics.
 
 ## Status
 
-The provider abstraction and OpenCode/Claude adapters are implemented. OpenCode is the default provider (`RUNNER_PROVIDER=opencode`); Claude remains the fallback provider.
+The provider abstraction and all four configured providers are implemented: OpenCode CLI, OpenCode SDK, Claude headless/tmux, and Codex app-server. OpenCode is the default provider (`RUNNER_PROVIDER=opencode`). The provider boundary is also used by workflow and memory-consolidation runs.
+
+| Provider value | Runtime | Continuity / interrupt behavior |
+|---|---|---|
+| `opencode` | `opencode run --format json` | Optional `--session`; CLI idle recovery requires `OPENCODE_CONTINUITY_ENABLED` |
+| `opencode-sdk` | OpenCode server/SDK session | Native session attach/abort; server-owned process |
+| `claude` | `claude -p` or opt-in tmux driver | `--resume`; tmux keeps an interactive process alive |
+| `codex-app-server` | Codex app-server protocol | `thread/resume`; optional idle interrupt/continue |
+
+The older Codex planning documents are design history; use this document and
+the code index for the current provider contract.
 
 OpenCode is currently a better replacement candidate than Codex for Junior's
 specific needs because it has:
@@ -23,7 +33,7 @@ specific needs because it has:
 - native MCP config in `opencode.json`
 - `OPENCODE_CONFIG_CONTENT` / `OPENCODE_CONFIG` for deterministic generated
   runtime config
-- `opencode serve` + `opencode run --attach` as a future optimization for MCP
+- `opencode serve` + `opencode run --attach` as an optional optimization for MCP
   cold-start cost
 
 OpenCode's server/SDK surface exposes a session abort API, and the OpenCode TUI
@@ -38,7 +48,7 @@ agent prompts.
 
 System prompts are the load-bearing surface for Junior. Junior's value is not
 just "run a coding CLI from Slack"; it is dynamic personas and workflows: build,
-frontend, review, architect, lead, reproducer, thinker, support fetchers, and
+frontend, review, architect, lead, reproducer, support fetchers, and
 repo-local overlays. Claude handles that with `--append-system-prompt`.
 
 OpenCode has a credible provider-native replacement:
@@ -47,12 +57,11 @@ OpenCode has a credible provider-native replacement:
 - override the built-in `build` primary agent with `agent.build.prompt`
 - run `opencode run --agent build`
 
-Codex does not currently expose an equivalent system-prompt flag. Its realistic
-v1 option is to prepend Junior's agent prompt to the first user prompt, which is
-weaker: it pollutes the user turn, has lower salience than a provider/system
-prompt, and forces Junior to reason carefully about resumed turns. The other
-Codex fallback, generating `AGENTS.md` in worktrees, writes prompt artifacts into
-target workspaces and creates cleanup/ownership questions.
+Codex CLI does not expose the same flag, but the implemented app-server adapter
+uses its developer-instructions field for the composed prompt. The isolated CLI
+fallback can prepend the prompt to its first user turn when app-server mode is
+not selected; that path remains weaker and must not be confused with the
+app-server contract.
 
 Configuration ergonomics also favor OpenCode:
 
@@ -79,7 +88,11 @@ App code should consume normalized runner events, never Claude/OpenCode/Codex
 native event shapes.
 
 ```ts
-export type RunnerProvider = "claude" | "opencode" | "codex";
+export type RunnerProvider =
+  | "claude"
+  | "opencode"
+  | "opencode-sdk"
+  | "codex-app-server";
 
 export type RunnerEvent =
   | { type: "init"; provider: RunnerProvider; sessionId: string }
@@ -205,7 +218,7 @@ back to the configured default or are omitted so OpenCode uses its own default.
 
 Do not guess the tool event schema from docs.
 
-## OpenCode SDK/Server Provider
+## OpenCode SDK/Server Provider — implemented
 
 OpenCode's TUI interrupt path does not send Escape bytes to a headless process.
 It calls the server/SDK `session.abort` API. Junior should use that API for the
@@ -409,9 +422,10 @@ Mitigations in code today:
   "subagent"` entries so Task fan-out works when the child cwd is a target repo
   or Junior's root. These subagents use a constrained permission surface:
   read/search tools and MCP tools only. Utility `session.cwd` runs do not receive
-  these support subagents. Persistent workers (`reproducer`, `thinker`,
-  `review`) are intentionally not exposed as OpenCode Task subagents; they must
-  remain Slack-dispatched persistent sessions with their own audit trail.
+  these support subagents. Persistent workers (`reproducer`, `review`, and
+  legacy `thinker` sessions) are intentionally not exposed as OpenCode Task
+  subagents; they must remain Slack-dispatched persistent sessions with their
+  own audit trail.
 
 If full isolation is required for a deployment (production, shared service
 accounts), run Junior with `HOME` / `XDG_CONFIG_HOME` pointed at an empty
@@ -439,7 +453,7 @@ inspectable, testable, and per-agent.
 Persist provider beside the native id.
 
 ```ts
-provider: "claude" | "opencode" | "codex";
+provider: "claude" | "opencode" | "opencode-sdk" | "codex-app-server";
 sessionId: string | null;
 ```
 
@@ -463,7 +477,7 @@ Rules:
 Start with global config:
 
 ```env
-RUNNER_PROVIDER=opencode|claude
+RUNNER_PROVIDER=opencode|opencode-sdk|codex-app-server|claude
 ```
 
 Default when unset: `opencode`.
@@ -473,11 +487,12 @@ Then add a thread command:
 ```text
 !provider claude
 !provider opencode
+!provider opencode-sdk
+!provider codex-app-server
 ```
 
-`codex` stays in the internal `RunnerProvider` union as a planned provider, but
-is rejected at config load and at `!provider codex` until the Codex adapter
-lands.
+`codex-app-server` is implemented. `CODEX_MODE=app-server` is the current
+transport; `CODEX_MODE=cli` is an isolated fallback for supported runs.
 
 Home/status output should show:
 
@@ -493,14 +508,18 @@ opencode --session <id>
 codex exec resume <id>
 ```
 
-## Implementation Plan
+## Historical implementation plan
+
+The steps below describe the migration that produced the provider boundary.
+They are retained for decision history; all four provider paths listed at the
+top are implemented.
 
 ### 1. Extract Runner Types
 
 - Add `src/runners/types.ts`.
 - Move `SpawnHandle` and `SpawnResult` out of `src/claude/types.ts`.
 - Update `lifecycle/timeout.ts`, `SessionManager`, and tests.
-- Keep runtime Claude-only.
+- Historical baseline: keep runtime Claude-only until the boundary is extracted.
 
 Exit criteria:
 

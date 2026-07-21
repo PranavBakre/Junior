@@ -89,7 +89,6 @@ prints the visible groups, and exits. Auth state persists in
 
 The Hermes buildathon tracker this replaced (LLM task extraction, task tables,
 custom Notion database sync, mentor-links script) shipped in PR #121/#122 and
-was removed after the event; see git history of
-`docs/features/whatsapp-hermes-tracker.md` for its design. A possible future
-direction from that era — reply-in-group as Pranav — remains unbuilt and gated
-on his explicit approval.
+was removed after the event. Its design is historical and is not part of the
+current documentation tree. A possible future direction from that era —
+reply-in-group as Pranav — remains unbuilt and gated on his explicit approval.

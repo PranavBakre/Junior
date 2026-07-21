@@ -1,11 +1,16 @@
 # Session Persistence
 
+> **Current status (2026-07-21):** SQLite is the production default and the current contract. The opening problem statement is historical context; use the “What happens today” and schema sections for live behavior.
+
 ## Problem
 
 Junior's session state lives in an in-memory `Map`. On restart — whether a crash, a deploy, or a manual stop — every thread's session ID, agent type, worktree path, and error history evaporates. Users hit their threads again and Junior has no idea who they are. Worktrees stay on disk but lose their binding to a thread.
 
 **Who has this problem:** Operators running Junior in production.
-**What happens today:** All sessions reset on restart. Users have to re-run `!build` / `!frontend` to re-bind agent type. `--resume` chains are broken.
+**What happens today:** Production sessions persist in SQLite and retain their
+provider/session metadata across restarts. The in-memory store still resets by
+design for tests and development. Pending messages are persisted as stale on
+restart because the process they were queued behind is gone.
 **Painful part:** A deploy silently throws away context that only existed in RAM. The home tab was the only place history showed up, and it was wiped too.
 **"Finally" moment:** Restart the bot, open the home tab, see every recent thread exactly as it was.
 
@@ -54,7 +59,7 @@ CREATE INDEX idx_sessions_last_activity ON sessions(last_activity);
 CREATE INDEX idx_sessions_status ON sessions(status);
 
 -- Per-agent rows for the persistent-agent substrate. One row per
--- (thread_id, agent_name) — e.g. lead, reproducer, thinker on a bug
+-- (thread_id, agent_name) — e.g. lead, reproducer, review on a bug
 -- pipeline thread. The parent ThreadSession's `agentSessions` map is
 -- rebuilt from these rows on load.
 CREATE TABLE agent_sessions (
@@ -78,7 +83,7 @@ CREATE TABLE admins (
 - `sessions.json` holds the full `ThreadSession` — including `muted`, `worktreePaths` (per-repo worktrees keyed by repo name), `defaultAgent` (the `!agent` override), and ephemeral `pendingMessages` (accepted as stale on restart per rule 11).
 - `last_activity` and `status` on `sessions` are denormalized for cheap queries (home window, orphan scan).
 - `agent_sessions` is the source of truth for each agent's `sessionId`, `status`, and `lastActivity`. `set()` resyncs the rows in a transaction; `get()`/`getAll()`/`getRecent()` reload them and overlay the JSON blob's `agentSessions` map (preserving in-memory-only fields `pendingMessages` and `pid`).
-- Migration story: schema is additive. `CREATE TABLE IF NOT EXISTS` brings up new tables on existing DBs. Field-level additions to `ThreadSession` are backfilled on read by `normalizeSession` (currently `leadSessionId`, `agentSessions`, `worktreePaths`, `muted`). Breaking changes nuke the db.
+- Migration story: schema is additive. `CREATE TABLE IF NOT EXISTS` brings up new tables on existing DBs. Field-level additions to `ThreadSession` are backfilled on read by `normalizeSession` (including `leadSessionId`, `agentSessions`, `worktreePaths`, and `muted`). Breaking changes require an explicit operator migration or a fresh local DB.
 
 PRAGMAs: `journal_mode=WAL`, `synchronous=NORMAL`. Standard for a single-writer SQLite embedded in a Bun server.
 
