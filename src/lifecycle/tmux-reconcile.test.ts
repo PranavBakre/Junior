@@ -17,7 +17,7 @@ interface AdoptCall {
  * adoptExistingSession calls and answers tmuxHasSession from a live-set so
  * tests can simulate "tmux survived" vs "tmux died while bot was down."
  */
-function fakeDriver(liveTmux: Set<string>): {
+function fakeDriver(liveTmux: Set<string>, unsafeTmux = new Set<string>()): {
   driver: TmuxDriver;
   adoptCalls: AdoptCall[];
   discardCalls: string[];
@@ -26,6 +26,8 @@ function fakeDriver(liveTmux: Set<string>): {
   const discardCalls: string[] = [];
   const driver = {
     tmuxHasSession: async (name: string) => liveTmux.has(name),
+    tmuxSessionHasDatabaseCredentialSentinels: async (name: string) =>
+      !unsafeTmux.has(name),
     adoptExistingSession: async (input: AdoptCall) => {
       adoptCalls.push(input);
     },
@@ -81,6 +83,33 @@ describe("reconcileTmuxSessions", () => {
     expect(after.tmuxSessionName).toBeNull();
     expect(after.status).toBe("idle");
     expect(after.lastError?.type).toBe("tmux-lost");
+  });
+
+  it("discards a surviving pre-hardening tmux session instead of adopting it", async () => {
+    const store = new InMemorySessionStore();
+    const session = createSession("T1", "C1", "quiet", "tmux");
+    session.tmuxSessionName = "junior-T1-default";
+    session.topLevelTmuxAgent = "default";
+    session.sessionId = "resume-me";
+    session.worktreePath = "/tmp/T1";
+    session.sessionCwd = "/tmp/T1";
+    session.status = "busy";
+    await store.set("T1", session);
+
+    const { driver, adoptCalls, discardCalls } = fakeDriver(
+      new Set(["junior-T1-default"]),
+      new Set(["junior-T1-default"]),
+    );
+    const result = await reconcileTmuxSessions(store, driver);
+
+    expect(result).toEqual({ adopted: 0, downgraded: 1 });
+    expect(adoptCalls).toEqual([]);
+    expect(discardCalls).toEqual(["junior-T1-default"]);
+    const after = (await store.get("T1"))!;
+    expect(after.tmuxSessionName).toBeNull();
+    expect(after.sessionId).toBe("resume-me");
+    expect(after.status).toBe("idle");
+    expect(after.lastError?.type).toBe("tmux-credentials-unsanitized");
   });
 
   it("resets status busy→idle when the bot died mid-turn but tmux survived", async () => {

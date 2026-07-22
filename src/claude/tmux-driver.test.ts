@@ -115,6 +115,9 @@ describe("TmuxDriver with stubbed exec", () => {
             throw new Error("no session");
           }
         }
+        if (args[0] === "show-environment") {
+          return `${args[3]}=`;
+        }
         return "";
       },
     });
@@ -158,6 +161,20 @@ describe("TmuxDriver with stubbed exec", () => {
 
     // Same session — no second new-session call.
     expect(calls.filter((c) => c.args[0] === "new-session").length).toBe(1);
+  });
+
+  it("rejects persisted tmux sessions without empty credential sentinels", async () => {
+    const { driver } = setup();
+    expect(
+      await driver.tmuxSessionHasDatabaseCredentialSentinels("safe-session"),
+    ).toBe(true);
+
+    const unsafeDriver = new TmuxDriver({
+      exec: async (_cmd, args) => `${args[3]}=mongodb://unsafe`,
+    });
+    expect(
+      await unsafeDriver.tmuxSessionHasDatabaseCredentialSentinels("legacy-session"),
+    ).toBe(false);
   });
 
   it("recreates a live tmux session when routing changes cwd", async () => {
