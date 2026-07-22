@@ -102,7 +102,7 @@ describe("mapClaudeRunPolicy", () => {
 
     expect(policy.permissionMode).toBe("acceptEdits");
     expect(policy.allowedTools).toEqual(["Read"]);
-    expect(policy.disallowedTools).toEqual([]);
+    expect(policy.disallowedTools).toContain("Bash(*mongosh*)");
     expect(policy.addDirs).toEqual(["/repo"]);
   });
 
@@ -113,7 +113,10 @@ describe("mapClaudeRunPolicy", () => {
 
     expect(policy.permissionMode).toBe("bypassPermissions");
     expect(policy.allowedTools).toEqual([]);
-    expect(policy.disallowedTools).toEqual([]);
+    expect(policy.disallowedTools).toContain("Bash(*mongosh*)");
+    expect(policy.disallowedTools).toContain("Bash(*DB_STRING*)");
+    expect(policy.disallowedTools).toContain("Bash(*.env*)");
+    expect(policy.disallowedTools).toContain("Read(**/.env)");
     expect(policy.addDirs).toEqual(["/repo"]);
   });
 
@@ -124,7 +127,7 @@ describe("mapClaudeRunPolicy", () => {
 
     expect(policy.permissionMode).toBe("bypassPermissions");
     expect(policy.allowedTools).toEqual([]);
-    expect(policy.disallowedTools).toEqual([]);
+    expect(policy.disallowedTools).toContain("Bash(*mongosh*)");
     expect(policy.addDirs).toEqual(["/repo"]);
   });
 

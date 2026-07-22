@@ -17,6 +17,7 @@ import { z } from "zod";
 import type { WhatsAppHandle } from "../whatsapp/index.ts";
 import type { WaMessage } from "../whatsapp/types.ts";
 import type { SlackMcpRunContext } from "./context.ts";
+import { registerTool } from "./register-tool.ts";
 
 let handle: WhatsAppHandle | null = null;
 
@@ -198,7 +199,8 @@ function formatMessages(messages: WaMessage[], includeGroup: boolean): string {
 }
 
 export function registerWhatsAppTools(server: McpServer, auth: WhatsAppToolAuth): void {
-  server.registerTool(
+  registerTool(
+    server,
     "whatsapp_list_groups",
     {
       description:
@@ -220,7 +222,8 @@ export function registerWhatsAppTools(server: McpServer, auth: WhatsAppToolAuth)
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "whatsapp_read_messages",
     {
       description:
@@ -276,7 +279,8 @@ export function registerWhatsAppTools(server: McpServer, auth: WhatsAppToolAuth)
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "whatsapp_search_messages",
     {
       description:

@@ -46,6 +46,7 @@ import {
 } from "../support/agents.ts";
 import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
+import { registerTool } from "./register-tool.ts";
 import { registerWhatsAppTools } from "./whatsapp-tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 import { registerPendingApproval } from "./approval.ts";
@@ -132,7 +133,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         : null;
     },
   });
-  server.registerTool(
+  registerTool(
+    server,
     "github_read_pr_review_state",
     {
       description:
@@ -160,7 +162,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
       };
     },
   );
-  server.registerTool(
+  registerTool(
+    server,
     "github_post_review",
     {
       description:
@@ -227,7 +230,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
       };
     },
   );
-  server.registerTool(
+  registerTool(
+    server,
     "slack_send_message",
     {
       description: "Send a message to a Slack channel or thread as Junior (the bot).",
@@ -331,7 +335,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "request_permission",
     {
       description:
@@ -429,7 +434,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "slack_send_dm",
     {
       description: "Send a direct message to a Slack user ID as Junior (the bot). Opens the DM channel first.",
@@ -476,7 +482,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "slack_read_channel",
     {
       description: "Read recent messages from a Slack channel (newest first).",
@@ -509,7 +516,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "slack_read_thread",
     {
       description: "Read all replies in a Slack thread.",
@@ -540,7 +548,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "slack_search",
     {
       description: "Search for messages across Slack. Supports Slack search syntax (in:#channel, from:@user, before:/after: dates).",
@@ -582,7 +591,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "slack_search_users",
     {
       description: "Search for Slack users by name, email, or profile attributes.",
@@ -616,7 +626,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "slack_upload_file",
     {
       description: "Upload a file to a Slack channel/thread as Junior (the bot).",
@@ -656,7 +667,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "register_worktree",
     {
       description:
@@ -731,7 +743,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "agent_dispatch",
     {
       description:
@@ -850,7 +863,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "agent_search",
     {
       description:
@@ -881,7 +895,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "reload_agent_registry",
     {
       description:
@@ -911,7 +926,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "memory_recall",
     {
       description:
@@ -949,7 +965,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "memory_add",
     {
       description:
@@ -978,7 +995,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "memory_consolidate",
     {
       description:
@@ -1010,7 +1028,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
   // still answers with empty/not-found.
   // -------------------------------------------------------------------------
 
-  server.registerTool(
+  registerTool(
+    server,
     "pipeline_start_run",
     {
       description:
@@ -1059,7 +1078,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "pipeline_get_state",
     {
       description:
@@ -1089,7 +1109,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "pipeline_report_outcome",
     {
       description:
@@ -1126,7 +1147,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "pipeline_write_artifact",
     {
       description:
@@ -1158,7 +1180,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "pipeline_register_pr",
     {
       description:
@@ -1195,7 +1218,8 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
     },
   );
 
-  server.registerTool(
+  registerTool(
+    server,
     "pipeline_run_check",
     {
       description:

@@ -8,6 +8,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { log } from "../logger.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
+import { registerTool } from "./register-tool.ts";
 
 const MONGODB_PROXY_IDLE_TTL_MS = Number(process.env.MONGODB_MCP_PROXY_IDLE_TTL_MS ?? "600000");
 const MONGODB_PROXY_REQUEST_TIMEOUT_MS = Number(process.env.MONGODB_MCP_PROXY_REQUEST_TIMEOUT_MS ?? "120000");
@@ -60,7 +61,8 @@ function registerMongoProxyTools(
   runContext: SlackMcpRunContext | null,
 ): void {
   for (const name of MONGODB_TOOL_NAMES) {
-    server.registerTool(
+    registerTool(
+      server,
       name,
       {
         description: `Proxy to Junior's shared read-only MongoDB MCP backend (${name}).`,

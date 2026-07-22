@@ -37,7 +37,9 @@ export async function reconcileTmuxSessions(
         downgraded++;
       } else {
         const live = await driver.tmuxHasSession(session.tmuxSessionName);
-        if (live) {
+        const safeToAdopt = live &&
+          await driver.tmuxSessionHasDatabaseCredentialSentinels(session.tmuxSessionName);
+        if (safeToAdopt) {
           await driver.adoptExistingSession({
             threadId,
             agentName: session.topLevelTmuxAgent ?? "lead",
@@ -60,14 +62,17 @@ export async function reconcileTmuxSessions(
           }
           adopted++;
         } else {
+          if (live) await driver.discardPersistedSession(session.tmuxSessionName);
           // The tmux session is gone but we kept the transcript — next send()
           // will cold-start a fresh tmux with --resume <sessionId>.
           session.tmuxSessionName = null;
           if (session.status === "busy") {
             session.status = "idle";
             session.lastError = {
-              type: "tmux-lost",
-              message: "tmux session died while bot was down",
+              type: live ? "tmux-credentials-unsanitized" : "tmux-lost",
+              message: live
+                ? "discarded pre-hardening tmux session with unsafe credential environment"
+                : "tmux session died while bot was down",
               timestamp: Date.now(),
             };
           }
@@ -92,7 +97,9 @@ export async function reconcileTmuxSessions(
         continue;
       }
       const live = await driver.tmuxHasSession(agentSession.tmuxSessionName);
-      if (live) {
+      const safeToAdopt = live &&
+        await driver.tmuxSessionHasDatabaseCredentialSentinels(agentSession.tmuxSessionName);
+      if (safeToAdopt) {
         await driver.adoptExistingSession({
           threadId,
           agentName: agentSession.agentName,
@@ -106,6 +113,7 @@ export async function reconcileTmuxSessions(
         }
         adopted++;
       } else {
+        if (live) await driver.discardPersistedSession(agentSession.tmuxSessionName);
         agentSession.tmuxSessionName = null;
         if (agentSession.status === "busy") {
           agentSession.status = "idle";

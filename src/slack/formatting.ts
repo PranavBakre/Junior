@@ -533,7 +533,10 @@ function formatToolEvent(event: RunnerEventTool): string {
     }
     case "Bash": {
       const cmd = typeof input.command === "string" ? input.command : "";
-      const short = cmd.length > 80 ? cmd.slice(0, 77) + "..." : cmd;
+      const safeCommand = redactDatabaseCredentials(cmd);
+      const short = safeCommand.length > 80
+        ? safeCommand.slice(0, 77) + "..."
+        : safeCommand;
       return `Running: \`${short}\``;
     }
     case "Read": {
@@ -556,6 +559,13 @@ function formatToolEvent(event: RunnerEventTool): string {
     default:
       return `Using ${tool}`;
   }
+}
+
+function redactDatabaseCredentials(command: string): string {
+  return command.replace(
+    /mongodb(?:\+srv)?:\/\/[^\s"'`]+/gi,
+    "mongodb://<redacted>",
+  );
 }
 
 function getTaskSubagentName(event: RunnerEventTool): string {

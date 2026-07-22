@@ -10,6 +10,7 @@ import { buildClaudeArgs } from "./args.ts";
 import { mapClaudeEvent, writeClaudeMcpConfig } from "./spawner.ts";
 import { adaptTranscriptLine } from "./transcript-adapter.ts";
 import {
+  DATABASE_CREDENTIAL_ENV_KEYS,
   buildRunnerRuntime,
   providerSessionMatchesCwd,
 } from "../runners/runtime.ts";
@@ -276,6 +277,24 @@ export class TmuxDriver implements ClaudeDriver {
     }
   }
 
+  /** Only post-hardening sessions are safe to adopt after a Junior restart. */
+  async tmuxSessionHasDatabaseCredentialSentinels(name: string): Promise<boolean> {
+    for (const key of DATABASE_CREDENTIAL_ENV_KEYS) {
+      try {
+        const value = await this.execImpl(this.tmuxBin, [
+          "show-environment",
+          "-t",
+          name,
+          key,
+        ]);
+        if (value.trim() !== `${key}=`) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /**
    * "Has session" plus a wedged-pane check. tmux happily keeps the session
    * alive after claude exits inside it (process crash, `/exit`, OOM) — the
@@ -372,6 +391,7 @@ export class TmuxDriver implements ClaudeDriver {
       sessionName,
       "-c",
       cwd,
+      ...DATABASE_CREDENTIAL_ENV_KEYS.flatMap((key) => ["-e", `${key}=`]),
       "claude",
       ...claudeArgs,
     ]);

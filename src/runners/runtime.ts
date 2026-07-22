@@ -15,6 +15,15 @@ export interface RunnerRuntime {
   env: Record<string, string>;
 }
 
+export const DATABASE_CREDENTIAL_ENV_KEYS = [
+  "MDB_MCP_CONNECTION_STRING",
+  "DB_STRING",
+  "MONGODB_URI",
+  "MONGO_URI",
+  "MONGODB_URL",
+  "MONGO_URL",
+] as const;
+
 /**
  * Whether this provider invocation will resume a prior model session.
  *
@@ -125,6 +134,10 @@ export function buildRunnerEnv(
   // MCP_CONTEXT_SECRET authenticates the agent identity embedded in MCP URLs.
   // A child that receives it could forge a different agent's capability token.
   delete env.MCP_CONTEXT_SECRET;
+  // Database credentials belong to Junior's MCP backend, never to spawned
+  // coding agents. Keep explicit empty sentinels instead of deleting the keys:
+  // Bun otherwise reloads values from the runner cwd's .env in descendants.
+  for (const key of DATABASE_CREDENTIAL_ENV_KEYS) env[key] = "";
 
   if (agentIdentity) {
     env.JUNIOR_SLACK_USERNAME = agentIdentity.username;

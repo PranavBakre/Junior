@@ -57,6 +57,19 @@ describe("formatRunnerToolStatuses", () => {
     expect(result[0]).toBe(`Running: \`${cmd}\``);
   });
 
+  it("redacts MongoDB credentials from Bash status text", () => {
+    const result = formatRunnerToolStatuses(makeToolEvent({
+      name: "Bash",
+      input: {
+        command: "mongosh 'mongodb+srv://write-user:password@prod.example/db?retryWrites=true'",
+      },
+    }));
+
+    expect(result).toEqual(["Running: `mongosh 'mongodb://<redacted>'`"]);
+    expect(result[0]).not.toContain("write-user");
+    expect(result[0]).not.toContain("password");
+  });
+
   it("formats Read with file_path", () => {
     const result = formatRunnerToolStatuses(makeToolEvent({ name: "Read", input: { file_path: "src/auth.ts" } }));
     expect(result).toEqual(["Reading `src/auth.ts`"]);

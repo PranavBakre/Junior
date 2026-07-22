@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ThreadSession } from "../session/types.ts";
 import type { Config } from "../config.ts";
+import { DATABASE_CREDENTIAL_ENV_KEYS } from "../runners/runtime.ts";
 
 function makeSession(overrides: Partial<ThreadSession> = {}): ThreadSession {
   return {
@@ -114,6 +115,9 @@ describe("TmuxDriver with stubbed exec", () => {
             throw new Error("no session");
           }
         }
+        if (args[0] === "show-environment") {
+          return `${args[3]}=`;
+        }
         return "";
       },
     });
@@ -139,6 +143,9 @@ describe("TmuxDriver with stubbed exec", () => {
 
     const startCalls = calls.filter((c) => c.args[0] === "new-session");
     expect(startCalls.length).toBe(1);
+    for (const key of DATABASE_CREDENTIAL_ENV_KEYS) {
+      expect(startCalls[0].args).toContain(`${key}=`);
+    }
     const sessName = startCalls[0].args[startCalls[0].args.indexOf("-s") + 1];
     expect(sessName).toBe(tmuxSessionNameFor(session.threadId, "lead"));
 
@@ -154,6 +161,20 @@ describe("TmuxDriver with stubbed exec", () => {
 
     // Same session — no second new-session call.
     expect(calls.filter((c) => c.args[0] === "new-session").length).toBe(1);
+  });
+
+  it("rejects persisted tmux sessions without empty credential sentinels", async () => {
+    const { driver } = setup();
+    expect(
+      await driver.tmuxSessionHasDatabaseCredentialSentinels("safe-session"),
+    ).toBe(true);
+
+    const unsafeDriver = new TmuxDriver({
+      exec: async (_cmd, args) => `${args[3]}=mongodb://unsafe`,
+    });
+    expect(
+      await unsafeDriver.tmuxSessionHasDatabaseCredentialSentinels("legacy-session"),
+    ).toBe(false);
   });
 
   it("recreates a live tmux session when routing changes cwd", async () => {
