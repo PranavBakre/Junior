@@ -136,10 +136,7 @@ export function createGitHubClient(options: GitHubClientOptions = {}): GitHubCli
         "graphql",
         "-f",
         `query=${query}`,
-        ...Object.entries(variables).flatMap(([k, v]) => [
-          "-F",
-          `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`,
-        ]),
+        ...serializeCliVariables(variables),
       ]);
       if (!result.ok) {
         return {
@@ -404,6 +401,25 @@ export function createGitHubClient(options: GitHubClientOptions = {}): GitHubCli
       };
     },
   };
+}
+
+function serializeCliVariables(
+  variables: Record<string, unknown>,
+): string[] {
+  return Object.entries(variables).flatMap(([key, value]) => {
+    if (Array.isArray(value)) {
+      if (value.length === 0) return ["-F", `${key}[]`];
+      return value.flatMap((item) => [
+        "-F",
+        `${key}[]=${serializeCliFieldValue(item)}`,
+      ]);
+    }
+    return ["-F", `${key}=${serializeCliFieldValue(value)}`];
+  });
+}
+
+function serializeCliFieldValue(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
 }
 
 export function parsePullRequestNode(

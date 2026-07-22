@@ -209,4 +209,26 @@ describe("createGitHubClient", () => {
     expect(map.get("PR_1")?.ok).toBe(true);
     expect(map.get("PR_missing")?.ok).toBe(false);
   });
+
+  it("passes CLI GraphQL arrays as repeated typed fields", async () => {
+    let cliArgs: string[] = [];
+    const client = createGitHubClient({
+      useCli: true,
+      runCli: async (args) => {
+        cliArgs = args;
+        return {
+          ok: true,
+          status: 200,
+          body: JSON.stringify({ data: { nodes: [null, null] } }),
+          headers: {},
+        };
+      },
+    });
+
+    await client.fetchPullRequestsByNodeIds(["PR_1", "PR_2"]);
+
+    expect(cliArgs).toContain("ids[]=PR_1");
+    expect(cliArgs).toContain("ids[]=PR_2");
+    expect(cliArgs).not.toContain('ids=["PR_1","PR_2"]');
+  });
 });
