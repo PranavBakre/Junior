@@ -10,6 +10,7 @@ import { buildClaudeArgs } from "./args.ts";
 import { mapClaudeEvent, writeClaudeMcpConfig } from "./spawner.ts";
 import { adaptTranscriptLine } from "./transcript-adapter.ts";
 import {
+  DATABASE_CREDENTIAL_ENV_KEYS,
   buildRunnerRuntime,
   providerSessionMatchesCwd,
 } from "../runners/runtime.ts";
@@ -372,6 +373,7 @@ export class TmuxDriver implements ClaudeDriver {
       sessionName,
       "-c",
       cwd,
+      ...DATABASE_CREDENTIAL_ENV_KEYS.flatMap((key) => ["-e", `${key}=`]),
       "claude",
       ...claudeArgs,
     ]);

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ThreadSession } from "../session/types.ts";
 import {
+  DATABASE_CREDENTIAL_ENV_KEYS,
   buildRunnerEnv,
   needsProjectMcp,
   isProviderSessionUnavailable,
@@ -189,14 +193,7 @@ describe("runner runtime", () => {
   });
 
   it("never exposes direct database credentials to child runners", () => {
-    const keys = [
-      "MDB_MCP_CONNECTION_STRING",
-      "DB_STRING",
-      "MONGODB_URI",
-      "MONGO_URI",
-      "MONGODB_URL",
-      "MONGO_URL",
-    ] as const;
+    const keys = DATABASE_CREDENTIAL_ENV_KEYS;
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
     for (const key of keys) process.env[key] = `mongodb://unsafe/${key}`;
 
@@ -205,7 +202,7 @@ describe("runner runtime", () => {
         makeSession({ activeAgentName: "default" }),
         "xoxb-test",
       );
-      for (const key of keys) expect(env[key]).toBeUndefined();
+      for (const key of keys) expect(env[key]).toBe("");
     } finally {
       for (const key of keys) {
         const value = previous[key];
@@ -213,6 +210,34 @@ describe("runner runtime", () => {
         else process.env[key] = value;
       }
     }
+  });
+
+  it("prevents Bun descendants from reloading database credentials from .env", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "junior-runner-env-"));
+    writeFileSync(
+      join(cwd, ".env"),
+      DATABASE_CREDENTIAL_ENV_KEYS
+        .map((key) => `${key}=mongodb://unsafe/${key}`)
+        .join("\n"),
+    );
+    const env = buildRunnerEnv(
+      makeSession({ activeAgentName: "default" }),
+      "xoxb-test",
+    );
+
+    const proc = Bun.spawn(
+      ["bun", "-e", `console.log(JSON.stringify(${JSON.stringify(DATABASE_CREDENTIAL_ENV_KEYS)}.map((key) => process.env[key])))`],
+      { cwd, env, stdout: "pipe", stderr: "pipe" },
+    );
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toEqual(DATABASE_CREDENTIAL_ENV_KEYS.map(() => ""));
   });
 
   it("sets JUNIOR_SLACK_ICON_URL for image URL identities", () => {
