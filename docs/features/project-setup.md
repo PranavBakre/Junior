@@ -134,7 +134,7 @@ interface Config {
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode `xapp-...` |
 | `SLACK_SIGNING_SECRET` | no | `""` | only needed if you ever switch to Events API |
 | `RUNNER_PROVIDER` | no | `opencode` | `opencode` \| `opencode-sdk` \| `codex-app-server` \| `claude` |
-| `CLAUDE_MAX_TURNS` | no | `25` | |
+| `CLAUDE_MAX_TURNS` | no | `100` | Max turns per `claude -p` / `claude -p --resume` invocation |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | |
 | `CLAUDE_MODEL` | no | unset | passed through to `claude -p --model` |
 | `CLAUDE_PERMISSION_MODE` | no | `bypassPermissions` | |

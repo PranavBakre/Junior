@@ -157,7 +157,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
 | `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode`, `opencode-sdk`, `codex-app-server`, or `claude` |
-| `CLAUDE_MAX_TURNS` | `25` | Max turns per `claude -p` invocation |
+| `CLAUDE_MAX_TURNS` | `100` | Max turns per `claude -p` / `claude -p --resume` invocation |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Per-turn timeout before SIGINT |
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |
 | `OPENCODE_MODEL` | *(unset)* | Override default OpenCode model |

@@ -263,7 +263,7 @@ export function loadConfig(): Config {
       signingSecret: optional("SLACK_SIGNING_SECRET", ""),
     },
     claude: {
-      maxTurns: Number(optional("CLAUDE_MAX_TURNS", "25")),
+      maxTurns: Number(optional("CLAUDE_MAX_TURNS", "100")),
       timeoutMs: Number(optional("CLAUDE_TIMEOUT_MS", "300000")),
       permissionMode: optional("CLAUDE_PERMISSION_MODE", "bypassPermissions"),
       defaultModel: process.env.CLAUDE_MODEL ?? null,
