@@ -52,6 +52,22 @@ const READ_ONLY_DISALLOWED = [
 const NO_TOOLS_DISALLOWED = ["Edit", "Write", "NotebookEdit", "Bash"];
 
 /**
+ * Database access is capability-scoped through the read-only MongoDB MCP.
+ * Normal agents otherwise run Bash in bypassPermissions mode, so explicitly
+ * block the credential-discovery and direct-client forms seen in production.
+ */
+export const DIRECT_DATABASE_ACCESS_DISALLOWED = [
+  "Bash(*mongosh*)",
+  "Bash(*mongodb+srv://*)",
+  "Bash(*mongodb://*)",
+  "Bash(*DB_STRING*)",
+  "Bash(*MDB_MCP_CONNECTION_STRING*)",
+  "Bash(*.env*)",
+  "Read(**/.env)",
+  "Grep(**/.env)",
+];
+
+/**
  * True for tool specifiers that can mutate state: file editors and any Bash
  * pattern (Bash(git *) can commit/push — command patterns don't make it safe).
  */
@@ -196,7 +212,7 @@ export function mapClaudeRunPolicy(options: {
     return {
       permissionMode: config.permissionMode,
       allowedTools: declaredTools,
-      disallowedTools: [],
+      disallowedTools: [...DIRECT_DATABASE_ACCESS_DISALLOWED],
       addDirs: [cwd],
     };
   }
@@ -208,7 +224,7 @@ export function mapClaudeRunPolicy(options: {
   return {
     permissionMode: "bypassPermissions",
     allowedTools: [],
-    disallowedTools: [],
+    disallowedTools: [...DIRECT_DATABASE_ACCESS_DISALLOWED],
     addDirs: [cwd],
   };
 }

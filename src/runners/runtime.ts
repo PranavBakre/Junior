@@ -125,6 +125,15 @@ export function buildRunnerEnv(
   // MCP_CONTEXT_SECRET authenticates the agent identity embedded in MCP URLs.
   // A child that receives it could forge a different agent's capability token.
   delete env.MCP_CONTEXT_SECRET;
+  // Database credentials belong to Junior's MCP backend, never to spawned
+  // coding agents. Exposing them lets an unrestricted Bash session bypass the
+  // read-only MCP surface with mongosh or a driver script.
+  delete env.MDB_MCP_CONNECTION_STRING;
+  delete env.DB_STRING;
+  delete env.MONGODB_URI;
+  delete env.MONGO_URI;
+  delete env.MONGODB_URL;
+  delete env.MONGO_URL;
 
   if (agentIdentity) {
     env.JUNIOR_SLACK_USERNAME = agentIdentity.username;

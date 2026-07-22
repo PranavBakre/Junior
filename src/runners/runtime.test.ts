@@ -188,6 +188,33 @@ describe("runner runtime", () => {
     }
   });
 
+  it("never exposes direct database credentials to child runners", () => {
+    const keys = [
+      "MDB_MCP_CONNECTION_STRING",
+      "DB_STRING",
+      "MONGODB_URI",
+      "MONGO_URI",
+      "MONGODB_URL",
+      "MONGO_URL",
+    ] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) process.env[key] = `mongodb://unsafe/${key}`;
+
+    try {
+      const env = buildRunnerEnv(
+        makeSession({ activeAgentName: "default" }),
+        "xoxb-test",
+      );
+      for (const key of keys) expect(env[key]).toBeUndefined();
+    } finally {
+      for (const key of keys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("sets JUNIOR_SLACK_ICON_URL for image URL identities", () => {
     const env = buildRunnerEnv(
       makeSession({ activeAgentName: "github-access" }),
