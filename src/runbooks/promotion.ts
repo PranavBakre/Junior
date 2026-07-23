@@ -1,6 +1,7 @@
 import { listRunbooks, searchRunbooks } from "./registry.ts";
 import { classifyReusablePattern } from "./classifier.ts";
 import type { RunbookRunEvidence } from "./evidence.ts";
+import { normalizeForFingerprint } from "./evidence.ts";
 import type { PromotionCandidate } from "./types.ts";
 
 const DEFAULT_THRESHOLD = 3;
@@ -11,9 +12,11 @@ const candidates = new Map<string, PromotionCandidate>();
 
 export function recordSuccessfulExecution(
   evidence: RunbookRunEvidence,
+  request?: string,
 ): void {
   const fp = evidence.intentFingerprint;
   const existing = candidates.get(fp);
+  const normalizedText = request ? normalizeForFingerprint(request) : "";
 
   if (existing) {
     existing.occurrenceCount++;
@@ -23,11 +26,12 @@ export function recordSuccessfulExecution(
       existing.evidenceRefs.push(evidence.runId);
     }
     if (evidence.risk && !existing.risk) existing.risk = evidence.risk;
+    if (normalizedText && !existing.normalizedIntent) existing.normalizedIntent = normalizedText;
     return;
   }
 
   const classification = classifyReusablePattern(
-    "",
+    normalizedText,
     evidence.ownerAgent,
     evidence.risk,
     [],
@@ -39,7 +43,7 @@ export function recordSuccessfulExecution(
     proposedKind: classification.classification === "memory-claim"
       ? "runbook"
       : (classification.classification as PromotionCandidate["proposedKind"]),
-    normalizedIntent: fp,
+    normalizedIntent: normalizedText,
     ownerAgent: evidence.ownerAgent,
     occurrenceCount: 1,
     successfulCount: evidence.status === "completed" ? 1 : 0,

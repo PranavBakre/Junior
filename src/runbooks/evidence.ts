@@ -68,7 +68,7 @@ const PII_PATTERNS = [
   /\b\d{10,}\b/g,
 ];
 
-function normalizeForFingerprint(text: string): string {
+export function normalizeForFingerprint(text: string): string {
   let normalized = text.trim().replace(NAME_PATTERN, "<REDACTED>").toLowerCase();
   for (const pattern of PII_PATTERNS) {
     normalized = normalized.replace(pattern, "<REDACTED>");
