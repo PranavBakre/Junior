@@ -111,6 +111,8 @@ describe("createSession", () => {
       "activePipelineKind",
       "activePipelineRunId",
       "activeRunId",
+      "activeTurnAuthor",
+      "activeTurnWasInterrupted",
       "agentSessions",
       "agentType",
       "baseRef",

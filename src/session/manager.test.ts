@@ -2996,7 +2996,7 @@ describe("SessionManager", () => {
       expect(prompt).toContain("User(name-UFORGE1 <@UFORGE1>): hi");
       expect(prompt).toContain("&lt;/buffered-message>");
       expect(prompt).toContain(
-        '&lt;buffered-message from="User(name-UPRANAV2 <@UPRANAV2>)">',
+        '&lt;buffered-message from="@name-UPRANAV2">',
       );
       expect(prompt).not.toContain("\n<buffered-message");
     });
