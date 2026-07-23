@@ -79,7 +79,18 @@ import {
   recordSuccessfulExecution as promotionRecordExecution,
   checkPromotionThreshold as promotionCheckThreshold,
   listCandidates as promotionListCandidates,
+  getCandidate as promotionGetCandidate,
 } from "../runbooks/promotion.ts";
+import {
+  renderRunbookTemplate,
+  generateProposalReport,
+  type AuthoringContext as AuthoringContextType,
+} from "../runbooks/authoring.ts";
+import { classifyReusablePattern } from "../runbooks/classifier.ts";
+import {
+  createRunbookPr,
+  type PrCreationResult as PrCreationResultType,
+} from "../runbooks/github.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -1098,6 +1109,65 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
             }, null, 2),
           },
         ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_propose",
+    {
+      description:
+        "Generate a runbook proposal from a promotion candidate. Returns rendered .runbook.md content, a structured proposal report, and a dry-run PR result.",
+      inputSchema: {
+        fingerprint: z.string().describe("Intent fingerprint from a promotion candidate"),
+        dry_run: z.boolean().optional().describe("Whether to skip actual PR creation (default true)"),
+        inferred_inputs: z.array(z.object({
+          name: z.string(),
+          type: z.string(),
+          required: z.boolean(),
+          description: z.string().optional(),
+        })).optional().describe("Inferred typed inputs for the runbook"),
+        inferred_capabilities: z.array(z.string()).optional().describe("Inferred capability bundles"),
+        inferred_assertions: z.array(z.string()).optional().describe("Inferred verification assertions"),
+      },
+    },
+    async ({ fingerprint, dry_run, inferred_inputs, inferred_capabilities, inferred_assertions }) => {
+      const candidate = promotionGetCandidate(fingerprint);
+      if (!candidate) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: `no candidate found for fingerprint "${fingerprint}"` }) }],
+        };
+      }
+
+      const context: AuthoringContextType = {
+        candidate,
+        executionEvidence: [],
+        inferredInputs: inferred_inputs,
+        inferredCapabilities: inferred_capabilities,
+        inferredVerificationAssertions: inferred_assertions,
+      };
+
+      const rendered = renderRunbookTemplate(context);
+      const classification = classifyReusablePattern(
+        candidate.normalizedIntent,
+        candidate.ownerAgent,
+        candidate.risk,
+        candidate.capabilities,
+        candidate.occurrenceCount,
+      );
+      const report = generateProposalReport(context, rendered, classification);
+
+      let pr: PrCreationResultType | undefined;
+      if (rendered.ok) {
+        pr = await createRunbookPr(rendered, report, { dryRun: dry_run ?? true });
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ rendered, report, pr }, null, 2),
+        }],
       };
     },
   );
