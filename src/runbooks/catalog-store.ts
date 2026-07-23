@@ -200,19 +200,21 @@ export class CatalogStore {
   }
 
   getRunsByName(name: string): DefinitionRun[] {
-    return this.db
+    const rows = this.db
       .query(
         `SELECT * FROM definition_runs WHERE name = $name ORDER BY started_at DESC`,
       )
-      .all({ $name: name }) as DefinitionRun[];
+      .all({ $name: name }) as RunRow[];
+    return rows.map(rowToRun);
   }
 
   getRunsByDigest(versionDigest: string): DefinitionRun[] {
-    return this.db
+    const rows = this.db
       .query(
         `SELECT * FROM definition_runs WHERE version_digest = $digest ORDER BY started_at DESC`,
       )
-      .all({ $digest: versionDigest }) as DefinitionRun[];
+      .all({ $digest: versionDigest }) as RunRow[];
+    return rows.map(rowToRun);
   }
 
   insertEvaluation(evaluation: DefinitionEvaluation): void {
@@ -276,6 +278,38 @@ function rowToCatalogEntry(row: CatalogEntryRow): CatalogEntry {
     loadedAt: row.loaded_at,
     validationStatus: row.validation_status as CatalogEntry["validationStatus"],
     validationErrors: row.validation_errors,
+  };
+}
+
+type RunRow = {
+  id: string;
+  kind: string;
+  name: string;
+  version_digest: string;
+  owner_agent: string;
+  intent_fingerprint: string;
+  risk: string;
+  status: string;
+  started_at: number;
+  completed_at: number | null;
+  approval_ref: string | null;
+  evidence_refs: string | null;
+};
+
+function rowToRun(row: RunRow): DefinitionRun {
+  return {
+    id: row.id,
+    kind: row.kind as "runbook",
+    name: row.name,
+    versionDigest: row.version_digest,
+    ownerAgent: row.owner_agent,
+    intentFingerprint: row.intent_fingerprint,
+    risk: row.risk,
+    status: row.status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    approvalRef: row.approval_ref,
+    evidenceRefs: row.evidence_refs,
   };
 }
 
