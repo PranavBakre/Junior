@@ -39,6 +39,12 @@ export type DispatchAssignmentInput = {
   assignment: Assignment;
   /** Optional free-text prompt body (defaults to assignment.objective). */
   prompt?: string;
+  /**
+   * Slack message that caused this dispatch, when one exists. Thread-history
+   * injection excludes this exact message because the prompt already contains
+   * it; using the thread root here would instead hide the original request.
+   */
+  sourceMessageTs?: string;
   /** Synthetic user id recorded on the internal event. */
   userId?: string;
   /** Shared idempotency / dedupe key for the synthetic Slack event. */
@@ -143,13 +149,16 @@ export async function dispatchAssignment(
   const dedupeKey =
     input.dedupeKey ??
     `pipeline:${run.id}:${assignment.id}:${assignment.idempotencyKey}`;
+  const syntheticTs =
+    input.sourceMessageTs ??
+    `pipeline:${run.id}:${assignment.id}:${assignment.updatedAt}`;
 
   const event: SlackMessageEvent = {
     threadId: run.threadId,
     channel: run.channelId,
     user: input.userId ?? "pipeline-internal",
     text: prompt,
-    ts: run.threadId,
+    ts: syntheticTs,
     command: null,
     isSelfBot: true,
     botUsername: "pipeline",
@@ -183,14 +192,18 @@ export async function dispatchAssignment(
     };
   }
 
-  // Slack audit is best-effort — failure must not lose the handoff.
-  await safeAudit(deps.audit, {
-    channelId: run.channelId,
-    threadId: run.threadId,
-    text: busy
-      ? `:hourglass_flowing_sand: *Pipeline handoff buffered* \`${assignment.sourceAgent}\` → \`${targetAgent}\` (\`${assignment.id.slice(0, 8)}\`)`
-      : `:arrow_right: *Pipeline handoff* \`${assignment.sourceAgent}\` → \`${targetAgent}\` (\`${assignment.id.slice(0, 8)}\`)`,
-  });
+  // Default runs are the invisible durability layer for ordinary messages.
+  // Only explicit product/bug pipelines should add handoff chatter to Slack.
+  if (run.kind !== "default") {
+    // Slack audit is best-effort — failure must not lose the handoff.
+    await safeAudit(deps.audit, {
+      channelId: run.channelId,
+      threadId: run.threadId,
+      text: busy
+        ? `:hourglass_flowing_sand: *Pipeline handoff buffered* \`${assignment.sourceAgent}\` → \`${targetAgent}\` (\`${assignment.id.slice(0, 8)}\`)`
+        : `:arrow_right: *Pipeline handoff* \`${assignment.sourceAgent}\` → \`${targetAgent}\` (\`${assignment.id.slice(0, 8)}\`)`,
+    });
+  }
 
   return {
     status: busy ? "buffered" : "dispatched",
