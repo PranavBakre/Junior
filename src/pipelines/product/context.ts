@@ -107,7 +107,7 @@ export function buildProductContext(input: ProductContextInput): string {
     "  - Do not infer phase from filesystem layout or Slack thread position.",
     "  - Report a typed outcome (continue_self|handoff|wait|escalate|complete).",
     "  - Direct build/fix/implement authorizes scoped work without a redundant go-word.",
-    "  - Reviewer is read-only; findings + typed verdict only.",
+    "  - Reviewer is read-only; findings + typed verdict only. Complete with a review/verdict check: passed requires status=succeeded, failed requires status=failed.",
     "  - Orchestrator owns aggregate verification, PR coordination, and transitions.",
     "  - Human owns material product decisions and final protected-branch merge.",
     "  - Changing any revision member creates a new digest and reopens aggregate gates.",

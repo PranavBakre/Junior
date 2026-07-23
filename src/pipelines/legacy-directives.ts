@@ -63,6 +63,7 @@ export async function convertLegacyDirectivesToHandoffs(
   const converted: LegacyDirectiveConversionResult["converted"] = [];
   const skipped: LegacyDirectiveConversionResult["skipped"] = [];
   const ctx = input.orchestratorContext ?? "default";
+  const run = await store.getRun(input.runId);
 
   for (const [index, directive] of input.directives.entries()) {
     if (!canDispatch(input.sourceAgent, directive.agentName, ctx)) {
@@ -98,9 +99,25 @@ export async function convertLegacyDirectivesToHandoffs(
         progressFingerprint: `legacy:${directive.agentName}:${input.messageTs}`,
         idempotencyKey,
         nextIdempotencyKey,
+        // A human re-review command resumes a product run from its durable
+        // human gate. Other phases retain their controller-owned transition.
+        toPhase:
+          directive.agentName === "review" &&
+            run?.kind === "product" &&
+            run.phase === "needs-human"
+            ? "reviewing"
+            : undefined,
         auth: input.auth,
       },
     );
+
+    if (receipt.status === "rejected") {
+      skipped.push({
+        agentName: directive.agentName,
+        reason: receipt.reason ?? "typed handoff rejected",
+      });
+      continue;
+    }
 
     converted.push({
       agentName: directive.agentName,

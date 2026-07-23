@@ -4,7 +4,10 @@
 import { describe, expect, it } from "bun:test";
 import { fakeClock } from "../../time/clock.ts";
 import { InMemoryPipelineStore } from "../store/memory.ts";
-import { makeAssignmentCreate } from "../store/test-helpers.ts";
+import {
+  makeAssignmentCreate,
+  makeProductRun,
+} from "../store/test-helpers.ts";
 import {
   createProductRun,
   ensureProductRevisionGates,
@@ -314,6 +317,83 @@ describe("createProductRun", () => {
     });
     expect(second.created).toBe(false);
     expect(second.run.id).toBe(first.run.id);
+  });
+});
+
+describe("review verdict contract", () => {
+  it("rejects a review completion without a typed verdict check", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1_000));
+    await store.createRun(
+      makeProductRun({
+        id: "run-review-contract",
+        phase: "reviewing",
+        ownerAgent: "default",
+      }),
+    );
+    const review = await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-review-contract",
+        runId: "run-review-contract",
+        sourceAgent: "default",
+        targetAgent: "review",
+        status: "leased",
+        idempotencyKey: "asg-review-contract",
+      }),
+    );
+
+    const receipt = await reduceProductOutcome(cfg(store), {
+      actorId: "review",
+      outcome: baseOutcome({
+        assignmentId: review.id,
+        reason: "changes-requested",
+      }),
+    });
+
+    expect(receipt).toMatchObject({
+      status: "rejected",
+      reason:
+        "review completion requires a passed or failed review/verdict check",
+    });
+    expect(await store.getRun("run-review-contract")).toMatchObject({
+      phase: "reviewing",
+      stateVersion: 0,
+    });
+  });
+
+  it("rejects succeeded plus a failed review verdict", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1_000));
+    await store.createRun(
+      makeProductRun({
+        id: "run-review-contradiction",
+        phase: "reviewing",
+        ownerAgent: "default",
+      }),
+    );
+    const review = await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-review-contradiction",
+        runId: "run-review-contradiction",
+        sourceAgent: "default",
+        targetAgent: "review",
+        status: "leased",
+        idempotencyKey: "asg-review-contradiction",
+      }),
+    );
+
+    const receipt = await reduceProductOutcome(cfg(store), {
+      actorId: "review",
+      outcome: baseOutcome({
+        assignmentId: review.id,
+        reason: "changes-requested",
+        checks: [{ name: "review", status: "failed" }],
+      }),
+    });
+
+    expect(receipt).toMatchObject({
+      status: "rejected",
+      reason:
+        "review outcome is contradictory: status=succeeded, verdict=failed",
+    });
   });
 });
 

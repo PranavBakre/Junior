@@ -52,6 +52,33 @@ export function validateProductOutcome(
   const { run, outcome, assignment, pendingBuilderAssignments } = ctx;
   const notes: string[] = [];
 
+  if (
+    run.phase === "reviewing" &&
+    assignment.targetAgent === "review" &&
+    outcome.action === "complete"
+  ) {
+    const reviewCheck = outcome.checks.find(
+      (check) => check.name === "review" || check.name === "verdict",
+    );
+    if (!reviewCheck || reviewCheck.status === "skipped") {
+      return {
+        ok: false,
+        reason:
+          "review completion requires a passed or failed review/verdict check",
+      };
+    }
+    if (
+      (reviewCheck.status === "passed" && outcome.status !== "succeeded") ||
+      (reviewCheck.status === "failed" && outcome.status !== "failed")
+    ) {
+      return {
+        ok: false,
+        reason:
+          `review outcome is contradictory: status=${outcome.status}, verdict=${reviewCheck.status}`,
+      };
+    }
+  }
+
   // Agents never auto-ship; ready-for-human-merge → shipped is human-only.
   if (
     run.phase === "ready-for-human-merge" &&

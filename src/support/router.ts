@@ -438,7 +438,7 @@ export class AgentDispatcher {
       )
       .sort((a, b) => b.createdAt - a.createdAt);
     const caller = sourceAgent ?? run.ownerAgent;
-    const sourceAssignment =
+    let sourceAssignment =
       open.find((a) => a.targetAgent === caller) ??
       open.find((a) => a.targetAgent === run.ownerAgent) ??
       open[0];
@@ -448,6 +448,38 @@ export class AgentDispatcher {
         `active run ${run.id} has no open assignment; falling back to legacy directive dispatch`,
       );
       return false;
+    }
+
+    // Waiting assignments cannot emit outcomes. A human directive is new
+    // control-plane input, so give it its own runnable owner assignment rather
+    // than silently attempting a handoff from the waiting assignment.
+    if (sourceAssignment.status === "waiting" && !event.isSelfBot) {
+      sourceAssignment = await pipeline.store.createAssignment({
+        id: crypto.randomUUID(),
+        runId: run.id,
+        parentAssignmentId: sourceAssignment.id,
+        sourceAgent: "human",
+        targetAgent: caller,
+        objective: directives
+          .map((directive) =>
+            directive.prompt || `Handle !${directive.agentName} directive`
+          )
+          .join("\n"),
+        contextRefs: [`human-directive:${event.ts}`],
+        artifactRefs: sourceAssignment.artifactRefs,
+        acceptanceCriteria:
+          sourceAssignment.acceptanceCriteria.length > 0
+            ? sourceAssignment.acceptanceCriteria
+            : run.acceptanceCriteria,
+        mutationScope: [],
+        dependsOn: [],
+        attempt: sourceAssignment.attempt,
+        attemptId: sourceAssignment.attemptId,
+        candidateRevisionDigest: sourceAssignment.candidateRevisionDigest,
+        deadlineAt: run.deadlineAt,
+        idempotencyKey:
+          `legacy-directive-source:${run.id}:${event.ts}:${caller}`,
+      });
     }
 
     const result = await convertLegacyDirectivesToHandoffs(
