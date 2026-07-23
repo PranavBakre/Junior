@@ -106,6 +106,12 @@ export interface ClaimRecallFilters {
    */
   repoIncludeGlobal?: boolean;
   kind?: ClaimKind;
+  /**
+   * Narrow fact claims to their legacy semantic subtype. Procedure, routing,
+   * and curated-fact rows are mirrored into v3 as `kind = "fact"`; this filter
+   * preserves subtype-aware retrieval without duplicating their embeddings.
+   */
+  factKind?: MemoryFactInput["kind"];
   tags?: string[];
   /** Absolute epoch-ms lower bound: only claims with created_at >= sinceMs. */
   sinceMs?: number;
@@ -133,6 +139,8 @@ export interface ClaimRecallOptions {
 export interface ClaimRecallResult {
   id: string;
   kind: ClaimKind;
+  /** Original memory_fact subtype when this claim was mirrored from one. */
+  factKind?: MemoryFactInput["kind"] | null;
   text: string;
   repo: string | null;
   tags: string[];

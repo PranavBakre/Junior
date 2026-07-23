@@ -24,6 +24,8 @@ import type {
 type ClaimRow = {
   id: string;
   kind: string;
+  /** Selected only by recallClaims; other claim queries do not need it. */
+  fact_kind?: string | null;
   text: string;
   embedding: Uint8Array | null;
   embed_model: string | null;
@@ -231,6 +233,13 @@ export class SqliteMemoryStore implements MemoryStore {
       where.push("kind = ?");
       params.push(filters.kind);
     }
+    if (filters.factKind) {
+      where.push("kind = 'fact'");
+      where.push(
+        "EXISTS (SELECT 1 FROM memory_fact AS mf WHERE mf.id = claim.id AND mf.kind = ?)",
+      );
+      params.push(filters.factKind);
+    }
     if (filters.sinceMs != null) {
       where.push("created_at >= ?");
       params.push(filters.sinceMs);
@@ -245,7 +254,9 @@ export class SqliteMemoryStore implements MemoryStore {
     }
     const rows = this.db
       .query<ClaimRow, (string | number)[]>(
-        `SELECT id, kind, text, embedding, embed_model, dim, repo, tags, source_episode,
+        `SELECT id, kind,
+                (SELECT mf.kind FROM memory_fact AS mf WHERE mf.id = claim.id) AS fact_kind,
+                text, embedding, embed_model, dim, repo, tags, source_episode,
                 helpful_count, unhelpful_count, weight, created_at, last_used_at, active
          FROM claim WHERE ${where.join(" AND ")}`,
       )
@@ -266,6 +277,9 @@ export class SqliteMemoryStore implements MemoryStore {
     const results = scored.slice(0, limit).map((entry) => ({
       id: entry.row.id,
       kind: entry.row.kind as ClaimKind,
+      factKind:
+        (entry.row.fact_kind as MemoryFactInput["kind"] | null | undefined) ??
+        null,
       text: entry.row.text,
       repo: entry.row.repo,
       tags: entry.tags,

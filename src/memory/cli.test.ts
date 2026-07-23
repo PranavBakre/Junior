@@ -118,6 +118,42 @@ describe("memory CLI", () => {
     }
   });
 
+  it("recalls procedure memories by their original subtype", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    try {
+      await runMemoryCli([
+        "add-fact", "--db", dbPath, "--json",
+        "--id", "procedure-cleanup", "--kind", "procedure",
+        "--title", "Clean merged worktrees",
+        "--body", "Verify the branch is merged before removing its worktree.",
+      ]);
+      await runMemoryCli([
+        "add-fact", "--db", dbPath, "--json",
+        "--id", "fact-cleanup", "--kind", "curated_fact",
+        "--body", "Worktrees live under the project worktrees directory.",
+      ]);
+
+      const output = await runMemoryCli([
+        "recall-claims", "--db", dbPath,
+        "--query", "clean merged worktrees", "--kind", "procedure", "--json",
+      ]);
+      const parsed = JSON.parse(output) as {
+        results: Array<{ id: string; kind: string; factKind?: string | null }>;
+      };
+
+      expect(parsed.results.map((result) => result.id)).toEqual([
+        "procedure-cleanup",
+      ]);
+      expect(parsed.results[0]).toMatchObject({
+        kind: "fact",
+        factKind: "procedure",
+      });
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("adds a claim and recalls it from the configured db", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
     const dbPath = join(tmpDir, "memory.db");

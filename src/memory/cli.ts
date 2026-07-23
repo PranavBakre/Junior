@@ -239,6 +239,26 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
     if (command === "recall-claims") {
       const vector = floatListOption(options, "query-vector");
       const queryText = stringOption(options, "query");
+      const requestedKind = stringOption(options, "kind");
+      const allowedKinds = [
+        "lesson",
+        "fact",
+        "situation-claim",
+        "curated_fact",
+        "routing_memory",
+        "procedure",
+      ] as const;
+      if (
+        requestedKind &&
+        !allowedKinds.includes(requestedKind as (typeof allowedKinds)[number])
+      ) {
+        throw new Error(
+          `--kind must be one of: ${allowedKinds.join(", ")}. Got: ${requestedKind}`,
+        );
+      }
+      const factKind = isMemoryFactKind(requestedKind)
+        ? requestedKind
+        : undefined;
       let queryVector: Float32Array | undefined = vector ? new Float32Array(vector) : undefined;
       // --query <text> embeds in-process (query mode) so callers (e.g. the
       // learnings hook dedup) get semantic recall without precomputing a vector.
@@ -250,7 +270,8 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         queryVector,
         filters: {
           repo: stringOption(options, "repo"),
-          kind: stringOption(options, "kind") as ClaimKind | undefined,
+          kind: factKind ? "fact" : requestedKind as ClaimKind | undefined,
+          factKind,
           tags: listOption(options, "tags"),
           sinceMs: numberOption(options, "since-ms"),
         },
@@ -318,6 +339,16 @@ function booleanOption(options: Map<string, string | true>, key: string): boolea
   return options.has(key) ? true : undefined;
 }
 
+function isMemoryFactKind(
+  kind: string | undefined,
+): kind is MemoryFactInput["kind"] {
+  return (
+    kind === "curated_fact" ||
+    kind === "routing_memory" ||
+    kind === "procedure"
+  );
+}
+
 function floatListOption(options: Map<string, string | true>, key: string): number[] | undefined {
   const value = stringOption(options, key);
   if (!value) return undefined;
@@ -341,7 +372,7 @@ function formatClaimRecall(results: ClaimRecallResult[]): string {
     .map((result, index) => {
       const cos = result.cosine != null ? `, cos ${result.cosine.toFixed(3)}` : "";
       return [
-        `${index + 1}. ${result.id} (${result.kind}, score ${result.score.toFixed(3)}${cos})`,
+        `${index + 1}. ${result.id} (${result.factKind ?? result.kind}, score ${result.score.toFixed(3)}${cos})`,
         result.text,
         `repo: ${result.repo ?? "none"} | tags: ${result.tags.join(", ") || "none"} | weight: ${result.weight}`,
       ].join("\n");
@@ -374,6 +405,6 @@ function usage(): string {
     "  bun run src/memory/cli.ts add-lesson --id <id> --title <title> --body <body> [--applies-when <text>] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--json]",
-    "  bun run src/memory/cli.ts recall-claims [--query <text> | --query-vector 0.1,0.2,...] [--repo <name>] [--kind <lesson|fact|situation-claim>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
+    "  bun run src/memory/cli.ts recall-claims [--query <text> | --query-vector 0.1,0.2,...] [--repo <name>] [--kind <lesson|fact|situation-claim|curated_fact|routing_memory|procedure>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
   ].join("\n") + "\n";
 }
