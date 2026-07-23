@@ -286,4 +286,48 @@ Do the test.`,
     expect(result.definition.prompt).not.toContain("---");
     expect(result.definition.prompt).not.toContain("schemaVersion");
   });
+
+  it("parses array items containing colons as plain strings, not objects", async () => {
+    await fs.mkdir(tmpDir, { recursive: true });
+    const colonPath = path.join(tmpDir, "colon-test.runbook.md");
+    await Bun.write(
+      colonPath,
+      `---
+schemaVersion: 1
+name: colon-test
+description: Test colon handling in arrays
+ownerAgent: build
+intent:
+  examples:
+    - connect via http://example.com
+    - step: run the migration
+risk: workspace-write
+approval:
+  required: false
+capabilities:
+  - mongo.read
+verification:
+  required: true
+  assertions:
+    - source count: 0
+    - target count increased by: matched count
+tags:
+  - test
+---
+
+Do the test.`,
+    );
+
+    const result = await loadRunbookDefinition(colonPath);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.intent.examples).toEqual([
+      "connect via http://example.com",
+      "step: run the migration",
+    ]);
+    expect(result.definition.verification.assertions).toEqual([
+      "source count: 0",
+      "target count increased by: matched count",
+    ]);
+  });
 });

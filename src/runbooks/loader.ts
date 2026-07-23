@@ -192,30 +192,40 @@ function parseArray(
     const value = trimmed.slice(2).trim();
     const colonIdx = value.indexOf(":");
     if (colonIdx !== -1 && value.slice(colonIdx + 1).trim() !== "") {
-      // Array of objects: - key: value
-      const obj: YamlNode = {};
-      const objKey = value.slice(0, colonIdx).trim();
-      const objVal = value.slice(colonIdx + 1).trim();
-      obj[objKey] = parseScalar(objVal);
-
-      // Check for continuation keys at deeper indent
+      // Only treat as object if continuation keys follow at indent+2
       const contIndent = indent + 2;
-      i++;
-      while (i < lines.length) {
-        const contLine = lines[i];
-        if (contLine.trim() === "") {
+      const nextContentIdx = nextNonBlankLine(lines, i + 1);
+      const hasCont =
+        nextContentIdx !== -1 &&
+        countIndent(lines[nextContentIdx]) >= contIndent &&
+        !lines[nextContentIdx].trim().startsWith("- ");
+
+      if (hasCont) {
+        const obj: YamlNode = {};
+        const objKey = value.slice(0, colonIdx).trim();
+        const objVal = value.slice(colonIdx + 1).trim();
+        obj[objKey] = parseScalar(objVal);
+
+        i++;
+        while (i < lines.length) {
+          const contLine = lines[i];
+          if (contLine.trim() === "") {
+            i++;
+            continue;
+          }
+          const ci = countIndent(contLine);
+          if (ci < contIndent) break;
+          const ct = contLine.trim();
+          const cc = ct.indexOf(":");
+          if (cc === -1 || ct.startsWith("- ")) break;
+          obj[ct.slice(0, cc).trim()] = parseScalar(ct.slice(cc + 1).trim());
           i++;
-          continue;
         }
-        const ci = countIndent(contLine);
-        if (ci < contIndent) break;
-        const ct = contLine.trim();
-        const cc = ct.indexOf(":");
-        if (cc === -1 || ct.startsWith("- ")) break;
-        obj[ct.slice(0, cc).trim()] = parseScalar(ct.slice(cc + 1).trim());
+        items.push(obj);
+      } else {
+        items.push(value);
         i++;
       }
-      items.push(obj);
     } else if (colonIdx !== -1 && value.slice(colonIdx + 1).trim() === "") {
       // Array item with nested object: - key:\n    subkey: val
       const obj: YamlNode = {};
@@ -258,6 +268,14 @@ function countIndent(line: string): number {
     else break;
   }
   return n;
+}
+
+function nextNonBlankLine(lines: string[], start: number): number {
+  for (let i = start; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t !== "" && !t.startsWith("#")) return i;
+  }
+  return -1;
 }
 
 function peekIndent(lines: string[], start: number): number {

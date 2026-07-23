@@ -32,7 +32,8 @@ export async function reloadRunbookRegistry(): Promise<{
         loaded++;
       } else {
         // Last-known-good: don't replace a valid entry with a broken reload
-        if (!registry.has(result.filePath)) {
+        const expectedName = file.replace(/\.runbook\.md$/, "");
+        if (!registry.has(expectedName)) {
           log.warn(
             "runbooks",
             `failed to load ${filePath}: ${result.errors.map((e) => e.message).join("; ")}`,
@@ -136,7 +137,8 @@ export async function loadRunbookRegistryFromDir(
       registry.set(result.definition.name, result.definition);
       loaded++;
     } else {
-      if (!registry.has(result.filePath)) {
+      const expectedName = file.replace(/\.runbook\.md$/, "");
+      if (!registry.has(expectedName)) {
         log.warn(
           "runbooks",
           `failed to load ${filePath}: ${result.errors.map((e) => e.message).join("; ")}`,
