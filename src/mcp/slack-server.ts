@@ -74,6 +74,12 @@ import {
 } from "../runbooks/registry.ts";
 import { selectRunbook } from "../runbooks/selector.ts";
 import type { RunbookRisk } from "../runbooks/types.ts";
+import type { RunbookRunEvidence } from "../runbooks/evidence.ts";
+import {
+  recordSuccessfulExecution as promotionRecordExecution,
+  checkPromotionThreshold as promotionCheckThreshold,
+  listCandidates as promotionListCandidates,
+} from "../runbooks/promotion.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -1021,6 +1027,75 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           {
             type: "text" as const,
             text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "promotion_candidates",
+    {
+      description:
+        "List promotion candidates — repeated tasks that may warrant a reviewed runbook.",
+      inputSchema: {
+        status: z.string().optional().describe("Filter by status: tracking, proposed, accepted, rejected, archived"),
+        min_occurrences: z.number().optional().describe("Minimum occurrence count (default 1)"),
+        limit: z.number().optional().describe("Maximum results (default 25, max 100)"),
+      },
+    },
+    async ({ status, min_occurrences, limit }) => {
+      const results = promotionListCandidates({
+        status,
+        minOccurrences: min_occurrences,
+      });
+      const capped = results.slice(0, Math.min(limit ?? 25, 100));
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ candidates: capped }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "promotion_record",
+    {
+      description:
+        "Record a completed run's evidence for promotion tracking. Returns the candidate and whether it should be proposed as a runbook.",
+      inputSchema: {
+        evidence: z.object({
+          runId: z.string(),
+          runbookName: z.string(),
+          contentDigest: z.string(),
+          ownerAgent: z.string(),
+          risk: z.string(),
+          boundInputs: z.record(z.string()),
+          status: z.string(),
+          startedAt: z.number(),
+          completedAt: z.number().optional(),
+          intentFingerprint: z.string(),
+        }).describe("RunbookRunEvidence from a completed run"),
+      },
+    },
+    async ({ evidence }) => {
+      promotionRecordExecution(evidence as RunbookRunEvidence);
+      const check = promotionCheckThreshold(evidence.intentFingerprint);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              fingerprint: evidence.intentFingerprint,
+              shouldPropose: check.shouldPropose,
+              reason: check.reason,
+              candidate: check.candidate,
+            }, null, 2),
           },
         ],
       };

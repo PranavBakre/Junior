@@ -92,3 +92,19 @@ export interface RunbookValidationError {
 export type RunbookLoadResult =
   | { ok: true; definition: RunbookDefinition }
   | { ok: false; errors: RunbookValidationError[]; filePath: string };
+
+export interface PromotionCandidate {
+  fingerprint: string;
+  proposedKind: "runbook" | "agent-extension" | "new-agent" | "workflow";
+  normalizedIntent: string;
+  ownerAgent: string;
+  occurrenceCount: number;
+  successfulCount: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  evidenceRefs: string[];
+  procedureMemoryIds: string[];
+  status: "tracking" | "proposed" | "accepted" | "rejected" | "archived";
+  risk: RunbookRisk | null;
+  capabilities: string[];
+}
