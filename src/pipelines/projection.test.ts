@@ -35,6 +35,7 @@ describe("projectRunSummary", () => {
         runId: run.id,
         parentAssignmentId: null,
         sourceAgent: "system",
+        sourceSlackUserId: null,
         targetAgent: "review",
         status: "leased",
         objective: "review",

@@ -34,6 +34,7 @@ function assignment(overrides: Partial<Assignment> = {}): Assignment {
     runId: "run-1",
     parentAssignmentId: null,
     sourceAgent: "system",
+    sourceSlackUserId: null,
     targetAgent: "build",
     status: "leased",
     objective: "implement feature",
@@ -215,6 +216,7 @@ describe("validateOutcome", () => {
         targetAgent: "review",
         nextAssignment: {
           parentAssignmentId: "asg-1",
+          sourceSlackUserId: null,
           targetAgent: "review",
           objective: "review changes",
           contextRefs: [],

@@ -154,6 +154,7 @@ export function parseAgentOutcome(raw: unknown): AgentOutcome {
         n.parentAssignmentId == null
           ? null
           : requiredString(n.parentAssignmentId, "nextAssignment.parentAssignmentId"),
+      sourceSlackUserId: null,
       targetAgent: requiredString(n.targetAgent, "nextAssignment.targetAgent"),
       objective: requiredString(n.objective, "nextAssignment.objective"),
       contextRefs: stringArray(n.contextRefs ?? [], "nextAssignment.contextRefs"),
@@ -419,6 +420,7 @@ export async function requestHandoff(
     progressFingerprint: args.progressFingerprint,
     nextAssignment: {
       parentAssignmentId: args.assignmentId,
+      sourceSlackUserId: null,
       targetAgent: args.targetAgent,
       objective: args.objective,
       contextRefs: args.contextRefs ?? [],

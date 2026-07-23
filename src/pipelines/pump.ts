@@ -193,20 +193,34 @@ async function handleOutboxItem(
       }
     }
 
+    // Build resume prompt, deduplicating when follow-up text matches objective.
+    let prompt: string | undefined;
+    if (item.eventType === "assignment.resume") {
+      if (typeof item.payload.prompt === "string") {
+        // When the follow-up text is identical to the objective (common for
+        // new child assignments whose objective IS the human message), avoid
+        // prepending it again with a redundant [task-follow-up] wrapper.
+        if (item.payload.prompt === assignment.objective) {
+          prompt = assignment.objective;
+        } else {
+          prompt = `${assignment.objective}\n\n[task-follow-up]\n${item.payload.prompt}`;
+        }
+      } else if (typeof item.payload.readyUrl === "string") {
+        prompt = `${assignment.objective}\n\n[devserver.ready] ${item.payload.readyUrl}`;
+      } else {
+        prompt = `${assignment.objective}\n\n[pipeline.recovery] Resume from durable state without repeating completed mutations. Report a typed outcome before ending.`;
+      }
+    }
+
     const result = await dispatchAssignment(
       { ...dispatchDeps, bugContext, productContext },
       {
         run,
         assignment,
-        // Resume wakes can carry a human follow-up, a dev-server URL, or a
-        // generic recovery instruction. All retain the exact assignment.
-        prompt: item.eventType === "assignment.resume"
-          ? typeof item.payload.prompt === "string"
-            ? `${assignment.objective}\n\n[task-follow-up]\n${item.payload.prompt}`
-            : typeof item.payload.readyUrl === "string"
-              ? `${assignment.objective}\n\n[devserver.ready] ${item.payload.readyUrl}`
-              : `${assignment.objective}\n\n[pipeline.recovery] Resume from durable state without repeating completed mutations. Report a typed outcome before ending.`
-          : undefined,
+        prompt,
+        // Carry the original human Slack user ID so the synthetic event's
+        // `user` field preserves speaker identity for prompt attribution.
+        userId: assignment.sourceSlackUserId ?? undefined,
         dedupeKey: `pipeline-outbox:${item.idempotencyKey}`,
         pipelineInvocation: {
           runId: run.id,

@@ -801,6 +801,7 @@ export async function pipelineDispatchAgent(
     progressFingerprint: `dispatch:${args.mode}:${target}:${args.idempotency_key}`,
     nextAssignment: {
       parentAssignmentId: source.id,
+      sourceSlackUserId: null,
       targetAgent: target,
       objective: args.objective,
       contextRefs,

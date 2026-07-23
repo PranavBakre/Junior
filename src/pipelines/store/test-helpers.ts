@@ -97,6 +97,7 @@ export function makeAssignmentCreate(
     runId: "run-1",
     parentAssignmentId: null,
     sourceAgent: "system",
+    sourceSlackUserId: null,
     targetAgent: "build",
     objective: "build it",
     contextRefs: [],

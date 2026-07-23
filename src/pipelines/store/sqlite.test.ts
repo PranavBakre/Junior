@@ -380,6 +380,7 @@ describe("SqlitePipelineStore", () => {
         reason: "ready for review",
         nextAssignment: {
           parentAssignmentId: "asg-1",
+          sourceSlackUserId: null,
           targetAgent: "review",
           objective: "review PR",
           contextRefs: [],

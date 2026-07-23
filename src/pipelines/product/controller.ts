@@ -211,6 +211,7 @@ export async function createProductRun(
         runId,
         parentAssignmentId: null,
         sourceAgent: "system",
+        sourceSlackUserId: null,
         targetAgent,
         objective: input.objective,
         contextRefs: [
@@ -411,6 +412,7 @@ async function promoteDefaultToProduct(
     runId: existing.id,
     parentAssignmentId: source.id,
     sourceAgent: source.targetAgent,
+    sourceSlackUserId: null,
     targetAgent: target.agent,
     objective: target.workstream
       ? `${input.objective} [${target.workstream}]`
@@ -999,6 +1001,7 @@ export async function fanOutBuilders(
     nextAssignment: {
       id: firstId,
       parentAssignmentId: input.parentAssignmentId,
+      sourceSlackUserId: null,
       targetAgent: first.agent,
       objective: first.objective ?? `${input.objective} [${first.workstreamKey}]`,
       contextRefs: [`workstream:${first.workstreamKey}`, "fanout:true"],
@@ -1054,6 +1057,7 @@ export async function fanOutBuilders(
       runId: run.id,
       parentAssignmentId: input.parentAssignmentId,
       sourceAgent: input.sourceAgent,
+      sourceSlackUserId: null,
       targetAgent: stream.agent,
       objective:
         stream.objective ?? `${input.objective} [${stream.workstreamKey}]`,

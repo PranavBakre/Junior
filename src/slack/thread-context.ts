@@ -77,6 +77,7 @@ export async function resolveSlackMentions(
   clientOrApp: App | WebClient,
   text: string,
   selfUserId?: string,
+  options?: { inline?: boolean },
 ): Promise<string> {
   const mentionPattern = /<@([A-Z0-9]+)>/g;
   const matches = [...text.matchAll(mentionPattern)];
@@ -92,10 +93,16 @@ export async function resolveSlackMentions(
     ),
   );
 
+  const inlineMode = options?.inline === true;
   return text.replace(mentionPattern, (_, userId: string) => {
     const name = nameMap.get(userId) ?? userId;
     if (selfUserId && userId === selfUserId) {
       return `Junior (you <@${userId}>)`;
+    }
+    // In inline mode, use a compact format that is visually distinct from the
+    // authoritative author prefix `User(Name <@ID>)`.
+    if (inlineMode) {
+      return `@${name}`;
     }
     return `User(${name} <@${userId}>)`;
   });
