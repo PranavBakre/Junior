@@ -72,6 +72,8 @@ import {
   getRunbook,
   searchRunbooks,
 } from "../runbooks/registry.ts";
+import { selectRunbook } from "../runbooks/selector.ts";
+import type { RunbookRisk } from "../runbooks/types.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -990,6 +992,35 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           {
             type: "text" as const,
             text: JSON.stringify(def, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_select",
+    {
+      description:
+        "Select the best matching runbook for a natural-language request, bind inputs from context, and return execution evidence. Falls back to procedure-memory guidance when no runbook matches.",
+      inputSchema: {
+        request: z.string().describe("Natural-language description of the task"),
+        context: z.record(z.string()).optional().describe("Key-value pairs from thread context for input binding"),
+        owner_agent: z.string().optional().describe("Filter to runbooks owned by this agent"),
+        risk_ceiling: z.string().optional().describe("Exclude runbooks above this risk level"),
+      },
+    },
+    async ({ request, context, owner_agent, risk_ceiling }) => {
+      const result = selectRunbook(request, context ?? {}, {
+        ownerAgent: owner_agent,
+        riskCeiling: risk_ceiling as RunbookRisk | undefined,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
           },
         ],
       };
