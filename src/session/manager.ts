@@ -662,10 +662,10 @@ export class SessionManager {
       this.runRunnerWithAgent(
         session,
         drainPrompt,
-        event.ts,
-        event.files,
+        undefined,
+        undefined,
         agentName,
-        event.user,
+        undefined,
         reservation,
       );
       return;
@@ -2899,6 +2899,8 @@ export class SessionManager {
             settle.drainPrompt = this.buildDrainPrompt(drained.messages);
             s.pendingMessages = drained.remaining;
             s.activePipelineInvocation = drained.pipelineInvocation;
+            s.activeTurnAuthor = null;
+            s.activeTurnWasInterrupted = false;
             s.status = "draining";
             settle.action = "drain";
           } else {
@@ -2984,6 +2986,7 @@ export class SessionManager {
       if (ownHandle && this.handles.get(handleKey) === ownHandle) {
         this.handles.delete(handleKey);
       }
+      this.activeTurnSideEffects.delete(handleKey);
     }
     if (settle.action === "settle") {
       await this.onAgentSettled?.(settled, agentName, result.response ?? null);
