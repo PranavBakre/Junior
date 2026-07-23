@@ -26,6 +26,7 @@ import {
   isImplementedRunnerProvider,
   isRunnerProvider,
 } from "./types.ts";
+import { evaluateBusyFollowup } from "./followup-policy.ts";
 import {
   runnerTimeoutMs,
   sessionProvider,
@@ -55,6 +56,7 @@ import {
   buildWorkspaceBlock,
   escapeBlockDelimiters,
   resolveSlackMentions,
+  resolveUserName,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
 import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
@@ -86,6 +88,7 @@ export class SessionManager {
   private store: SessionStore;
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
+  private activeTurnSideEffects = new Map<string, boolean>();
   private seenMessages = new Set<string>();
   private worktreeSetups = new Map<string, Promise<string>>();
   private spawnRunner: SpawnRunnerFn;
@@ -563,13 +566,58 @@ export class SessionManager {
 
     await this.onAgentDispatched?.(session, agentName);
 
-    const outcome: { action: "buffer" | "run" } = { action: "run" };
+    const outcome: { action: "buffer" | "run" | "interrupt" } = { action: "run" };
     session = await this.mutateSession(event.threadId, (s) => {
       if (s.status === "busy") {
-        s.pendingMessages.push({
-          ...this.toPendingMessage(event),
+        const isHuman = !event.isSelfBot && !event.botId;
+        const hk = this.handleKey(s.threadId, agentName);
+        const decision = evaluateBusyFollowup({
+          enabled: this.config.session.shortFollowupInterruptEnabled,
+          senderUserId: event.user,
+          activeTurnAuthor: s.activeTurnAuthor ?? null,
+          messageLength: event.text.length,
+          maxMessageLength: this.config.session.shortFollowupMaxLength,
+          activeTurnHasSideEffects: this.activeTurnSideEffects.get(hk) === true,
+          activeTurnAlreadyInterrupted: s.activeTurnWasInterrupted === true,
+          isSenderHuman: isHuman,
         });
-        outcome.action = "buffer";
+
+        if (decision.action === "interrupt") {
+          _log.info(
+            "session",
+            `short-followup.interrupt thread=${s.threadId} agent=${agentName} reason=${decision.reason}`,
+          );
+          s.pendingMessages.push(this.toPendingMessage(event));
+          s.activeTurnWasInterrupted = true;
+          outcome.action = "interrupt";
+        } else {
+          // Shadow-mode logging: when feature is disabled but would have been eligible
+          if (!this.config.session.shortFollowupInterruptEnabled) {
+            const shadowDecision = evaluateBusyFollowup({
+              enabled: true,
+              senderUserId: event.user,
+              activeTurnAuthor: s.activeTurnAuthor ?? null,
+              messageLength: event.text.length,
+              maxMessageLength: this.config.session.shortFollowupMaxLength,
+              activeTurnHasSideEffects: this.activeTurnSideEffects.get(hk) === true,
+              activeTurnAlreadyInterrupted: s.activeTurnWasInterrupted === true,
+              isSenderHuman: isHuman,
+            });
+            if (shadowDecision.action === "interrupt") {
+              _log.info(
+                "session",
+                `short-followup.shadow thread=${s.threadId} agent=${agentName} would-interrupt=true`,
+              );
+            }
+          } else {
+            _log.info(
+              "session",
+              `short-followup.buffer thread=${s.threadId} agent=${agentName} reason=${decision.reason}`,
+            );
+          }
+          s.pendingMessages.push(this.toPendingMessage(event));
+          outcome.action = "buffer";
+        }
         return;
       }
       s.status = "busy";
@@ -578,6 +626,8 @@ export class SessionManager {
       s.activeTopLevelMessageTs = event.ts;
       s.slackIdentity = identityForAgent(agentName);
       s.lastActivity = Date.now();
+      s.activeTurnAuthor = event.user;
+      s.activeTurnWasInterrupted = false;
       outcome.action = "run";
     });
     this.rememberSeenMessage(dedupeKey);
@@ -587,10 +637,46 @@ export class SessionManager {
       return;
     }
 
+    if (outcome.action === "interrupt") {
+      const handleKey = this.handleKey(session.threadId, agentName);
+      const currentHandle = this.handles.get(handleKey);
+      // Remove handle BEFORE kill so the old onRunComplete bails
+      this.handles.delete(handleKey);
+      if (currentHandle) currentHandle.kill();
+
+      // Build consolidated prompt from all pending (includes the new followup).
+      // Must happen before mutation clears pendingMessages.
+      const drainPrompt = this.buildDrainPrompt(session.pendingMessages);
+
+      session = await this.mutateSession(session.threadId, (s) => {
+        s.pendingMessages = [];
+        s.lastActivity = Date.now();
+        s.activeTopLevelMessageTs = event.ts;
+      });
+
+      const reservation = createRunSetupReservation(
+        sessionProvider(this.buildRunSession(session, agentName), this.config),
+      );
+      this.handles.set(handleKey, reservation);
+      this.activeTurnSideEffects.set(handleKey, false);
+      this.runRunnerWithAgent(
+        session,
+        drainPrompt,
+        event.ts,
+        event.files,
+        agentName,
+        event.user,
+        reservation,
+      );
+      return;
+    }
+
+    const handleKey = this.handleKey(session.threadId, agentName);
     const reservation = createRunSetupReservation(
       sessionProvider(this.buildRunSession(session, agentName), this.config),
     );
-    this.handles.set(this.handleKey(session.threadId, agentName), reservation);
+    this.handles.set(handleKey, reservation);
+    this.activeTurnSideEffects.set(handleKey, false);
     this.runRunnerWithAgent(
       session,
       event.text,
@@ -1644,14 +1730,26 @@ export class SessionManager {
         // Human-sent bodies also get block delimiters escaped so a message
         // can't smuggle in a forged <buffered-message from=...> block that
         // the instruction would treat as authoritative.
-        const attributed = this.isAttributableSender(senderUserId)
-          ? `<@${senderUserId}>: ${escapeBlockDelimiters(prompt)}`
-          : prompt;
-        const readablePrompt = await resolveSlackMentions(
-          this.slackApp,
-          attributed,
-          this.botUserId,
-        );
+        let readablePrompt: string;
+        if (this.isAttributableSender(senderUserId)) {
+          const senderName = await resolveUserName(this.slackApp, senderUserId);
+          const authorPrefix = `User(${senderName} <@${senderUserId}>)`;
+          // Resolve inline mentions in the body with compact @Name format so
+          // they are visually distinct from the authoritative author prefix.
+          const bodyWithMentions = await resolveSlackMentions(
+            this.slackApp,
+            escapeBlockDelimiters(prompt),
+            this.botUserId,
+            { inline: true },
+          );
+          readablePrompt = `${authorPrefix}: ${bodyWithMentions}`;
+        } else {
+          readablePrompt = await resolveSlackMentions(
+            this.slackApp,
+            prompt,
+            this.botUserId,
+          );
+        }
         if (!latestTs) {
           // Drain / internal continuation turns: no preamble decision to make,
           // but buffered messages still carry `<@ID>:` prefixes to resolve.
@@ -1888,6 +1986,9 @@ export class SessionManager {
 
       handle.onEvent((event: RunnerEvent) => {
         armIdleTimer();
+        if (event.type === "tool") {
+          this.activeTurnSideEffects.set(handleKey, true);
+        }
         if (event.type === "init") {
           if (isTopLevel) {
             session.sessionId = event.sessionId;
@@ -2070,6 +2171,9 @@ export class SessionManager {
           idleInterrupted = false;
           retryHandle.onEvent((event: RunnerEvent) => {
             armIdleTimer();
+            if (event.type === "tool") {
+              this.activeTurnSideEffects.set(handleKey, true);
+            }
             if (event.type === "init") {
               if (isTopLevel) {
                 session.sessionId = event.sessionId;
@@ -2783,6 +2887,8 @@ export class SessionManager {
             s.pendingMessages = [];
             s.activePipelineInvocation = null;
             s.status = "idle";
+            s.activeTurnAuthor = null;
+            s.activeTurnWasInterrupted = false;
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
             const drained = this.takePendingBatch(pendingMessages);
@@ -2798,6 +2904,8 @@ export class SessionManager {
           } else {
             s.activePipelineInvocation = null;
             s.status = "idle";
+            s.activeTurnAuthor = null;
+            s.activeTurnWasInterrupted = false;
             settle.action = "settle";
           }
         } else {
@@ -3092,6 +3200,7 @@ export class SessionManager {
               runId: active.id,
               parentAssignmentId: parent?.id ?? null,
               sourceAgent: "human",
+              sourceSlackUserId: event.isSelfBot ? null : event.user,
               targetAgent: durableTarget,
               objective: event.text.trim() || "Continue from the latest human input",
               contextRefs: ["control-branch:human-input", `source-message:${event.ts}`],
@@ -3159,6 +3268,7 @@ export class SessionManager {
         messageTs: event.ts,
         targetAgent: durableTarget,
         sourceAgent: event.isSelfBot ? "system" : "human",
+        sourceSlackUserId: event.isSelfBot ? null : event.user,
         repoRefs: session.targetRepo ? [session.targetRepo] : [],
       },
     );

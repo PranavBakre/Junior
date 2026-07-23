@@ -200,6 +200,10 @@ export interface ThreadSession {
   topLevelTmuxAgent: string | null;
   /** Number of times this session's current turn has been idle-interrupted and resumed. */
   idleInterruptCount: number;
+  /** Slack user ID of the human who started the current busy turn. Cleared on settle. */
+  activeTurnAuthor?: string | null;
+  /** Whether the active turn has already been interrupt-consolidated. */
+  activeTurnWasInterrupted?: boolean;
   /** Number of automatic lead-pipeline guard continuations attempted for the current turn. */
   pipelineGuardRetryCount?: number;
   /**
@@ -276,6 +280,8 @@ export function createSession(
     tmuxSessionName: null,
     topLevelTmuxAgent: null,
     idleInterruptCount: 0,
+    activeTurnAuthor: null,
+    activeTurnWasInterrupted: false,
     pipelineGuardRetryCount: 0,
     stateVersion: 0,
     activePipelineRunId: null,

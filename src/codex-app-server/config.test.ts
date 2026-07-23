@@ -160,6 +160,8 @@ function makeConfig(): Config {
       defaultVerbosity: "normal",
       idleTimeoutMs: 1,
       maxIdleInterrupts: 1,
+      shortFollowupInterruptEnabled: false,
+      shortFollowupMaxLength: 280,
     },
     memory: { sqlitePath: "data/memory.db" },
     threadArchives: { dir: "data/thread-archives" },
