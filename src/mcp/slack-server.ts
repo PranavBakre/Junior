@@ -68,6 +68,10 @@ import {
   postGitHubReview,
   readGitHubReviewState,
 } from "../github/review-comments.ts";
+import {
+  getRunbook,
+  searchRunbooks,
+} from "../runbooks/registry.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -920,6 +924,72 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
               null,
               2,
             ),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_search",
+    {
+      description:
+        "Search Junior runbook definitions by query, tags, owner agent, or risk level.",
+      inputSchema: {
+        query: z.string().optional().describe("Case-insensitive text to match against runbook name, description, or tags"),
+        tags: z.array(z.string()).optional().describe("Filter by tag (OR match)"),
+        owner_agent: z.string().optional().describe("Filter by owning agent name"),
+        risk: z.string().optional().describe("Filter by risk level"),
+        limit: z.number().optional().describe("Maximum results to return (default 25, max 100)"),
+      },
+    },
+    async ({ query, tags, owner_agent, risk, limit }) => {
+      const results = searchRunbooks({
+        query,
+        tags,
+        ownerAgent: owner_agent,
+        risk,
+        limit: Math.min(limit ?? 25, 100),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ runbooks: results }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_get",
+    {
+      description:
+        "Get a runbook definition by name, including its full prompt, inputs, verification, and provenance.",
+      inputSchema: {
+        name: z.string().describe("Runbook name (kebab-case)"),
+      },
+    },
+    async ({ name }) => {
+      const def = getRunbook(name);
+      if (!def) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ error: `runbook "${name}" not found` }),
+            },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(def, null, 2),
           },
         ],
       };
