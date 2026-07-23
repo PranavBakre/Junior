@@ -60,15 +60,16 @@ export function createIntentFingerprint(
   return hasher.digest("hex");
 }
 
+const NAME_PATTERN = /\b[A-Z][a-z]+ [A-Z][a-z]+\b/g;
+
 const PII_PATTERNS = [
   /\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g,
   /\b[a-f0-9]{24}\b/g,
   /\b\d{10,}\b/g,
-  /\b[A-Z][a-z]+ [A-Z][a-z]+\b/g,
 ];
 
 function normalizeForFingerprint(text: string): string {
-  let normalized = text.toLowerCase().trim();
+  let normalized = text.trim().replace(NAME_PATTERN, "<REDACTED>").toLowerCase();
   for (const pattern of PII_PATTERNS) {
     normalized = normalized.replace(pattern, "<REDACTED>");
   }
