@@ -91,6 +91,12 @@ import {
   createRunbookPr,
   type PrCreationResult as PrCreationResultType,
 } from "../runbooks/github.ts";
+import { CatalogStore } from "../runbooks/catalog-store.ts";
+import { computeMetrics as computeDefinitionMetrics } from "../runbooks/metrics.ts";
+import {
+  runEvaluationSuite as runEvaluationSuiteImpl,
+  type EvaluationFixture as EvaluationFixtureType,
+} from "../runbooks/evaluation.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -134,6 +140,7 @@ let worktreeManager: WorktreeManager | undefined;
 let sessionManager: SessionManager | undefined;
 let slackActionStore: SlackActionStore | undefined;
 let pipelineRuntime: PipelineToolRuntime | undefined;
+let catalogStore: CatalogStore | undefined;
 
 /** Inject pipeline tool runtime (store + mode). Called from boot or tests. */
 export function setPipelineRuntime(runtime: PipelineToolRuntime | undefined): void {
@@ -1168,6 +1175,65 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           type: "text" as const,
           text: JSON.stringify({ rendered, report, pr }, null, 2),
         }],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "definitions_status",
+    {
+      description:
+        "Show the catalogue status of runbook definitions, including Git provenance and computed metrics.",
+      inputSchema: {
+        name: z.string().optional().describe("Filter to a specific definition name"),
+      },
+    },
+    async ({ name }) => {
+      if (!catalogStore) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "catalogue store not initialized" }) }] };
+      }
+      const entries = name
+        ? [catalogStore.getCatalogEntry("runbook", name)].filter(Boolean)
+        : catalogStore.listCatalogEntries("runbook");
+      let metrics = null;
+      if (name) {
+        const runs = catalogStore.getRunsByName(name);
+        metrics = computeDefinitionMetrics(runs);
+      }
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ catalog: entries, metrics }, null, 2) }],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "evaluation_run",
+    {
+      description:
+        "Run an evaluation suite against loaded runbooks. Uses default fixtures for the named runbook or custom fixtures if provided.",
+      inputSchema: {
+        runbook_name: z.string().optional().describe("Run default evaluation fixtures for this runbook"),
+        fixtures: z.array(z.object({
+          request: z.string(),
+          shouldMatch: z.boolean(),
+          expectedRunbook: z.string().optional(),
+        })).optional().describe("Custom evaluation fixtures"),
+      },
+    },
+    async ({ runbook_name, fixtures: customFixtures }) => {
+      let fixtures = customFixtures as EvaluationFixtureType[] | undefined;
+      if (!fixtures && runbook_name === "transfer-ai-roadmaps") {
+        const { TRANSFER_AI_ROADMAPS_FIXTURES } = await import("../runbooks/__fixtures__/transfer-ai-roadmaps.eval.ts");
+        fixtures = TRANSFER_AI_ROADMAPS_FIXTURES;
+      }
+      if (!fixtures || fixtures.length === 0) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "no fixtures provided or found" }) }] };
+      }
+      const result = runEvaluationSuiteImpl(fixtures, { runbookName: runbook_name });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
     },
   );
