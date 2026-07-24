@@ -27,6 +27,11 @@ and GitHub comments do not settle an assignment.
   satisfied. For a default run it completes the task; typed controllers may
   advance or fan in according to their own policy.
 
+For ordinary `kind: default` runs, settlement is internal control-plane state:
+an `escalate` outcome does not publish a second Slack audit message. Put the
+human-facing question or blocker in the turn's one normal Slack response.
+Product and bug pipeline escalations remain visible human-gate audits.
+
 Use one transport per delegation. Do not call `agent_dispatch` and then also
 report a handoff. An accepted or duplicate dispatch receipt is already the
 durable outcome for this invocation.
