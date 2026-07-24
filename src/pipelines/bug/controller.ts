@@ -487,6 +487,8 @@ export async function reduceBugOutcome(
     actorType?: "agent" | "human" | "system";
     actorId: string;
     idempotencyKey?: string;
+    /** Repository refs atomically bound with an accepted transition. */
+    repoRefs?: string[];
     riskClass?: RiskClass;
   },
 ): Promise<TransitionReceipt & { mode?: BugMode; notes?: string[] }> {
@@ -626,6 +628,7 @@ export async function reduceBugOutcome(
   const receipt = await store.recordOutcomeTransaction({
     outcome: input.outcome,
     toPhase: suggested,
+    repoRefs: input.repoRefs,
     actorType: input.actorType ?? "agent",
     actorId: input.actorId,
     idempotencyKey: input.idempotencyKey,

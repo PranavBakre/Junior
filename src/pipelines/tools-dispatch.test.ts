@@ -33,6 +33,7 @@ describe("durable agent_dispatch", () => {
         objective: "review the implementation and continue",
         messageTs: "1700000000.101",
         targetAgent: "default",
+        repoRefs: ["junior"],
       },
     );
     await sessions.mutateThread(THREAD, (current) => {
@@ -110,6 +111,162 @@ describe("durable agent_dispatch", () => {
       eventType: "assignment.resume",
       assignmentId: started.assignment.id,
     });
+  });
+
+  it("rejects worktree dispatch before committing when no repository is bound", async () => {
+    const store = new InMemoryPipelineStore();
+    const sessions = new InMemorySessionStore();
+    const started = await createDefaultRun(
+      { store },
+      {
+        channelId: CHANNEL,
+        threadId: THREAD,
+        objective: "scope then build",
+        messageTs: "1700000000.104",
+        targetAgent: "default",
+      },
+    );
+    const session = createSession(THREAD, CHANNEL);
+    session.activePipelineInvocation = {
+      runId: started.run.id,
+      assignmentId: started.assignment.id,
+      dispatchKey: "repo-less-dispatch",
+      outcomeCountAtDispatch: 0,
+      retryCount: 0,
+    };
+    await sessions.set(THREAD, session);
+
+    const result = body(await pipelineDispatchAgent({
+      store,
+      sessionStore: sessions,
+      runtimeMode: "active",
+      githubTrackingEnabled: false,
+    }, {
+      agent: "default",
+      channel: CHANNEL,
+      threadId: THREAD,
+      runId: started.run.id,
+      assignmentId: started.assignment.id,
+      dispatchKey: "repo-less-dispatch",
+      signed: true,
+    }, {
+      target_agent: "build",
+      objective: "Implement the scoped change",
+      mode: "delegate",
+      reason: "The plan is ready",
+      idempotency_key: "repo-less-build",
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("retry agent_dispatch with repo_refs");
+    expect(await store.getRun(started.run.id)).toMatchObject({
+      phase: "working",
+      status: "active",
+      repoRefs: [],
+      stateVersion: 0,
+    });
+    expect(await store.getAssignment(started.assignment.id)).toMatchObject({
+      status: "pending",
+    });
+    expect(await store.listAssignments(started.run.id)).toHaveLength(1);
+  });
+
+  it("binds a missing repository and resumes a needs-human run atomically", async () => {
+    const store = new InMemoryPipelineStore();
+    const sessions = new InMemorySessionStore();
+    const started = await createDefaultRun(
+      { store },
+      {
+        channelId: CHANNEL,
+        threadId: THREAD,
+        objective: "scope then build",
+        messageTs: "1700000000.105",
+        targetAgent: "default",
+      },
+    );
+    const escalated = await store.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: started.assignment.id,
+        expectedRunVersion: started.run.stateVersion,
+        action: "escalate",
+        status: "blocked",
+        reason: "Repository was missing",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [{ kind: "infra_failure", detail: "No repository bound" }],
+        checks: [],
+        progressFingerprint: "missing-repository",
+      },
+      toPhase: "needs-human",
+      actorType: "system",
+      actorId: "pipeline-settlement",
+      idempotencyKey: "missing-repository",
+    });
+    expect(escalated.status).toBe("escalated");
+
+    const recovery = await store.createAssignment(makeAssignmentCreate({
+      id: "human-recovery",
+      runId: started.run.id,
+      parentAssignmentId: started.assignment.id,
+      sourceAgent: "human",
+      targetAgent: "default",
+      objective: "Retry in gx-backend",
+      contextRefs: ["control-branch:human-input"],
+      idempotencyKey: "human-recovery",
+    }));
+    const session = createSession(THREAD, CHANNEL);
+    session.activePipelineInvocation = {
+      runId: started.run.id,
+      assignmentId: recovery.id,
+      dispatchKey: "human-recovery-dispatch",
+      outcomeCountAtDispatch: 0,
+      retryCount: 0,
+    };
+    await sessions.set(THREAD, session);
+
+    const result = body(await pipelineDispatchAgent({
+      store,
+      sessionStore: sessions,
+      runtimeMode: "active",
+      githubTrackingEnabled: false,
+      repos: [{
+        name: "gx-backend",
+        path: "/tmp/gx-backend",
+        defaultBase: "origin/main",
+      }],
+    }, {
+      agent: "default",
+      channel: CHANNEL,
+      threadId: THREAD,
+      runId: started.run.id,
+      assignmentId: recovery.id,
+      dispatchKey: "human-recovery-dispatch",
+      signed: true,
+    }, {
+      target_agent: "build",
+      objective: "Implement the scoped change in gx-backend",
+      mode: "handoff",
+      reason: "The user supplied the missing repository",
+      idempotency_key: "recover-with-repo",
+      repo_refs: ["GrowthX-Club/gx-backend"],
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(result.recovered).toBe(true);
+    expect(await store.getRun(started.run.id)).toMatchObject({
+      phase: "working",
+      status: "active",
+      repoRefs: ["GrowthX-Club/gx-backend"],
+      stateVersion: 2,
+    });
+    expect(await store.getAssignment(recovery.id)).toMatchObject({
+      status: "completed",
+    });
+    expect(await store.getAssignment(result.targetAssignmentId as string))
+      .toMatchObject({
+        targetAgent: "build",
+        status: "pending",
+      });
   });
 
   it("rejects dispatch when the signed caller does not own the assignment", async () => {

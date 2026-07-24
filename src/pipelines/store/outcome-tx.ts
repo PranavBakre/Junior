@@ -44,6 +44,7 @@ export type OutcomeTxContext = {
   input: {
     outcome: AgentOutcome;
     toPhase?: string;
+    repoRefs?: string[];
     actorType: "agent" | "human" | "system";
     actorId: string;
     idempotencyKey?: string;
@@ -218,6 +219,10 @@ export function decideOutcomeTransaction(
     ...run,
     phase: resolvedToPhase as PipelinePhase,
     status: runStatus,
+    repoRefs: uniqueStrings([
+      ...run.repoRefs,
+      ...(input.repoRefs ?? []),
+    ]),
     stateVersion: newVersion,
     terminalOutcome:
       runStatus === "terminal" ? terminalOutcome : run.terminalOutcome,
