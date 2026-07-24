@@ -261,6 +261,7 @@ export type Assignment = {
   runId: string;
   parentAssignmentId: string | null;
   sourceAgent: string | "human" | "system";
+  sourceSlackUserId: string | null;
   targetAgent: string;
   status: AssignmentStatus;
   objective: string;

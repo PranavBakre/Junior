@@ -541,6 +541,8 @@ function testConfig(): Config {
       defaultVerbosity: "normal",
       idleTimeoutMs: 300000,
       maxIdleInterrupts: 3,
+      shortFollowupInterruptEnabled: false,
+      shortFollowupMaxLength: 280,
     },
     memory: { sqlitePath: "data/memory.db" },
     threadArchives: { dir: "data/thread-archives" },

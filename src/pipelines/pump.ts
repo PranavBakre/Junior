@@ -197,6 +197,12 @@ async function handleOutboxItem(
       typeof item.payload.sourceMessageTs === "string"
         ? item.payload.sourceMessageTs
         : undefined;
+    const sourceSlackUserId =
+      typeof item.payload.sourceSlackUserId === "string"
+        ? item.payload.sourceSlackUserId
+        : item.eventType === "assignment.dispatch"
+          ? assignment.sourceSlackUserId ?? undefined
+          : undefined;
     const result = await dispatchAssignment(
       { ...dispatchDeps, bugContext, productContext },
       {
@@ -208,6 +214,16 @@ async function handleOutboxItem(
           ? await buildResumePrompt(store, assignment, item.payload)
           : undefined,
         sourceMessageTs,
+        conversationalText:
+          item.eventType === "assignment.resume" &&
+            typeof item.payload.prompt === "string"
+            ? item.payload.prompt
+            : item.eventType === "assignment.dispatch"
+              ? assignment.objective
+              : undefined,
+        // Control-plane routing remains synthetic while trusted provenance
+        // supplies the conversational author for prompt attribution.
+        userId: sourceSlackUserId,
         dedupeKey: `pipeline-outbox:${item.idempotencyKey}`,
         pipelineInvocation: {
           runId: run.id,
@@ -296,6 +312,11 @@ async function buildResumePrompt(
   payload: Record<string, unknown>,
 ): Promise<string> {
   if (typeof payload.prompt === "string") {
+    // A newly-created human child assignment uses the message as its
+    // objective. Do not repeat the same text as a follow-up.
+    if (payload.prompt === assignment.objective) {
+      return assignment.objective;
+    }
     return `${assignment.objective}\n\n[task-follow-up]\n${payload.prompt}`;
   }
   if (typeof payload.readyUrl === "string") {

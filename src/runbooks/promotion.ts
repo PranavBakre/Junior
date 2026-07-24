@@ -218,6 +218,7 @@ export function archiveStaleCandidate(
   fingerprint: string,
   reason: string,
 ): boolean {
+  void reason;
   const candidate = candidates.get(fingerprint);
   if (!candidate) return false;
   candidate.status = "archived";

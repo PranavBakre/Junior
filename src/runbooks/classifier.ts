@@ -36,6 +36,7 @@ export function classifyReusablePattern(
   capabilities: string[],
   occurrenceCount: number,
 ): ClassificationResult {
+  void risk;
   if (occurrenceCount <= 1) {
     return {
       classification: "memory-claim",

@@ -140,6 +140,10 @@ export interface Config {
     idleTimeoutMs: number;
     /** Maximum SIGINT + resume attempts before letting the hard timeout kill the turn. */
     maxIdleInterrupts: number;
+    /** Enable short follow-up interruption (narrow interrupt + consolidate). Default false. */
+    shortFollowupInterruptEnabled: boolean;
+    /** Maximum character length for a message to be considered a "short" follow-up. */
+    shortFollowupMaxLength: number;
   };
   memory: {
     sqlitePath: string;
@@ -339,6 +343,11 @@ export function loadConfig(): Config {
       ),
       idleTimeoutMs: Number(optional("SESSION_IDLE_TIMEOUT_MS", "300000")),
       maxIdleInterrupts: Number(optional("SESSION_MAX_IDLE_INTERRUPTS", "3")),
+      shortFollowupInterruptEnabled: parseBooleanEnv("SESSION_SHORT_FOLLOWUP_INTERRUPT_ENABLED", false),
+      shortFollowupMaxLength: parsePositiveIntEnv(
+        "SESSION_SHORT_FOLLOWUP_MAX_LENGTH",
+        optional("SESSION_SHORT_FOLLOWUP_MAX_LENGTH", "240"),
+      ),
     },
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),

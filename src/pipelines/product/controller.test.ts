@@ -624,6 +624,7 @@ describe("backend feature → ready-for-human-merge", () => {
         ],
         nextAssignment: {
           parentAssignmentId: qaReopen.id,
+          sourceSlackUserId: null,
           targetAgent: "build",
           objective: "fix the regression discovered in dev verification",
           contextRefs: [],
@@ -652,6 +653,7 @@ describe("backend feature → ready-for-human-merge", () => {
         progressFingerprint: "untyped-tool-failure",
         nextAssignment: {
           parentAssignmentId: qaReopen.id,
+          sourceSlackUserId: null,
           targetAgent: "build",
           objective: "retry after tool failure",
           contextRefs: [],

@@ -1030,7 +1030,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         "Select the best matching runbook for a natural-language request, bind inputs from context, and return execution evidence. Falls back to procedure-memory guidance when no runbook matches.",
       inputSchema: {
         request: z.string().describe("Natural-language description of the task"),
-        context: z.record(z.string()).optional().describe("Key-value pairs from thread context for input binding"),
+        context: z.record(z.string(), z.string()).optional().describe("Key-value pairs from thread context for input binding"),
         owner_agent: z.string().optional().describe("Filter to runbooks owned by this agent"),
         risk_ceiling: z.string().optional().describe("Exclude runbooks above this risk level"),
       },
@@ -1093,7 +1093,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           contentDigest: z.string(),
           ownerAgent: z.string(),
           risk: z.string(),
-          boundInputs: z.record(z.string()),
+          boundInputs: z.record(z.string(), z.string()),
           status: z.string(),
           startedAt: z.number(),
           completedAt: z.number().optional(),

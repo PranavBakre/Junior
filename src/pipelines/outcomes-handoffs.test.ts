@@ -462,6 +462,43 @@ describe("outbox pump replay", () => {
     expect(events[0]!.ts).toBe("1700000000.000456");
   });
 
+  it("uses per-resume human provenance instead of the assignment's original author", async () => {
+    const clock = fakeClock(1000);
+    const store = new InMemoryPipelineStore(clock);
+    await seedPmRun(store);
+    await store.enqueueOutbox({
+      id: "speaker-b-resume",
+      runId: "run-1",
+      assignmentId: "asg-pm",
+      eventType: "assignment.resume",
+      payload: {
+        assignmentId: "asg-pm",
+        prompt: "Speaker B follow-up",
+        sourceMessageTs: "1700000000.000999",
+        sourceSlackUserId: "USPEAKERB",
+      },
+      idempotencyKey: "speaker-b-resume",
+    });
+
+    const events: SlackMessageEvent[] = [];
+    await pumpOutbox({
+      store,
+      clock,
+      dispatcher: {
+        handleAgentMessage: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      user: "pipeline-internal",
+      attributionUserId: "USPEAKERB",
+      conversationalText: "Speaker B follow-up",
+    });
+  });
+
   it("replays undelivered dispatch after simulated crash between commit and mark", async () => {
     const clock = fakeClock(1000);
     const store = new InMemoryPipelineStore(clock);

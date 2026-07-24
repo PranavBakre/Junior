@@ -457,6 +457,7 @@ function materializeNextAssignment(
     runId,
     parentAssignmentId: create.parentAssignmentId,
     sourceAgent,
+    sourceSlackUserId: create.sourceSlackUserId ?? null,
     targetAgent: create.targetAgent,
     objective: create.objective,
     contextRefs: create.contextRefs ?? [],

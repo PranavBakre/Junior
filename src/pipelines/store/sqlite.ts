@@ -80,6 +80,7 @@ type AssignmentRow = {
   run_id: string;
   parent_assignment_id: string | null;
   source_agent: string;
+  source_slack_user_id: string | null;
   target_agent: string;
   status: string;
   objective: string;
@@ -398,6 +399,13 @@ export class SqlitePipelineStore implements PipelineStore {
       CREATE INDEX IF NOT EXISTS idx_pipeline_assignments_run
       ON pipeline_assignments (run_id)
     `);
+
+    const assignmentColumns = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(pipeline_assignments)")
+      .all();
+    if (!assignmentColumns.some((column) => column.name === "source_slack_user_id")) {
+      this.db.run(`ALTER TABLE pipeline_assignments ADD COLUMN source_slack_user_id TEXT`);
+    }
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS pipeline_outcomes (
@@ -913,6 +921,7 @@ export class SqlitePipelineStore implements PipelineStore {
         runId: assignmentInput.runId,
         parentAssignmentId: assignmentInput.parentAssignmentId,
         sourceAgent: assignmentInput.sourceAgent,
+        sourceSlackUserId: assignmentInput.sourceSlackUserId,
         targetAgent: assignmentInput.targetAgent,
         status: assignmentInput.status ?? "pending",
         objective: assignmentInput.objective,
@@ -1009,6 +1018,7 @@ export class SqlitePipelineStore implements PipelineStore {
       runId: input.runId,
       parentAssignmentId: input.parentAssignmentId,
       sourceAgent: input.sourceAgent,
+      sourceSlackUserId: input.sourceSlackUserId,
       targetAgent: input.targetAgent,
       status: input.status ?? "pending",
       objective: input.objective,
@@ -2746,12 +2756,13 @@ export class SqlitePipelineStore implements PipelineStore {
     this.db
       .query(
         `INSERT INTO pipeline_assignments (
-          id, run_id, parent_assignment_id, source_agent, target_agent,
+          id, run_id, parent_assignment_id, source_agent, source_slack_user_id,
+          target_agent,
           status, objective, context_refs_json, artifact_refs_json,
           acceptance_json, mutation_scope_json, dependencies_json,
           attempt_number, attempt_id, candidate_revision_digest, deadline_at,
           lease_owner, lease_expires_at, idempotency_key, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(idempotency_key) DO NOTHING`,
       )
       .run(
@@ -2759,6 +2770,7 @@ export class SqlitePipelineStore implements PipelineStore {
         assignment.runId,
         assignment.parentAssignmentId,
         assignment.sourceAgent,
+        assignment.sourceSlackUserId,
         assignment.targetAgent,
         assignment.status,
         assignment.objective,
@@ -2897,6 +2909,7 @@ function assignmentFromRow(row: AssignmentRow): Assignment {
     runId: row.run_id,
     parentAssignmentId: row.parent_assignment_id,
     sourceAgent: row.source_agent,
+    sourceSlackUserId: row.source_slack_user_id ?? null,
     targetAgent: row.target_agent,
     status: row.status as Assignment["status"],
     objective: row.objective,

@@ -7,7 +7,6 @@ import {
 import {
   clearRegistryForTests,
   loadRunbookRegistryFromDir,
-  getRunbook,
 } from "./registry.ts";
 import { CatalogStore } from "./catalog-store.ts";
 import {

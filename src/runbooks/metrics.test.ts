@@ -5,7 +5,6 @@ import {
   type DefinitionMetrics,
 } from "./metrics.ts";
 import type { DefinitionRun } from "./catalog-store.ts";
-import type { RunbookRisk } from "./types.ts";
 
 function makeRun(overrides?: Partial<DefinitionRun>): DefinitionRun {
   return {

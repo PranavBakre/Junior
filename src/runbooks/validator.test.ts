@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import path from "node:path";
-import fs from "node:fs/promises";
 import { validateRunbook } from "./validator.ts";
 import { loadRunbookDefinition } from "./loader.ts";
 import type { RunbookDefinition } from "./types.ts";

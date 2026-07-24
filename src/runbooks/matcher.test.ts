@@ -128,9 +128,6 @@ describe("runbook matcher", () => {
     });
 
     it("returns candidates list with names and confidences", () => {
-      const { candidates } = matchRunbookDetailed(
-        "move all AI roadmaps from one account to another",
-      );
       // Even on a successful match, candidates may or may not be present.
       // On a failed match, candidates should always be present.
       const failed = matchRunbookDetailed(
