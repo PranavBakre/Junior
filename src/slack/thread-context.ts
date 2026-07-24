@@ -99,10 +99,10 @@ export async function resolveSlackMentions(
     if (selfUserId && userId === selfUserId) {
       return `Junior (you <@${userId}>)`;
     }
-    // In inline mode, use a compact format that is visually distinct from the
-    // authoritative author prefix `User(Name <@ID>)`.
+    // In inline mode, keep the ID while using syntax visibly distinct from
+    // the authoritative author prefix `User(Name <@ID>)`.
     if (inlineMode) {
-      return `@${name}`;
+      return `Mention(${name} <@${userId}>)`;
     }
     return `User(${name} <@${userId}>)`;
   });

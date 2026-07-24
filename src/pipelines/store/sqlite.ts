@@ -400,10 +400,11 @@ export class SqlitePipelineStore implements PipelineStore {
       ON pipeline_assignments (run_id)
     `);
 
-    try {
+    const assignmentColumns = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(pipeline_assignments)")
+      .all();
+    if (!assignmentColumns.some((column) => column.name === "source_slack_user_id")) {
       this.db.run(`ALTER TABLE pipeline_assignments ADD COLUMN source_slack_user_id TEXT`);
-    } catch {
-      // Column already exists
     }
 
     this.db.run(`

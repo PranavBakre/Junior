@@ -577,6 +577,12 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   session.humanParticipants ??= [];
   session.engagedHumans ??= [];
   session.pipelineGuardRetryCount ??= 0;
+  session.activeTurnAuthor ??= null;
+  session.activeTurnWasInterrupted ??= false;
+  session.activeTurnInput ??= null;
+  session.activeTurnStartedAt ??= null;
+  session.activeTurnGeneration ??= null;
+  session.supersededTurnGeneration ??= null;
   session.stateVersion ??= 0;
   // Pipeline substrate (Phase 2): pre-existing rows default to no active run.
   session.activePipelineRunId ??= null;

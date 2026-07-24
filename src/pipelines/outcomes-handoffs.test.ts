@@ -7,7 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeClock } from "../time/clock.ts";
 import { InMemoryPipelineStore } from "./store/memory.ts";
-import { makeAssignmentCreate, makeProductRun } from "./store/test-helpers.ts";
+import {
+  makeAssignmentCreate,
+  makeDefaultRun,
+  makeProductRun,
+} from "./store/test-helpers.ts";
 import {
   parseAgentOutcome,
   registerPr,
@@ -332,10 +336,10 @@ describe("dispatch + busy buffer", () => {
     );
     const run = (await store.getRun("run-1"))!;
 
-    const dispatches: Array<{ agent: string; text: string }> = [];
+    const dispatches: Array<{ agent: string; text: string; ts: string }> = [];
     const dispatcher = {
       handleAgentMessage: mock(async (event: SlackMessageEvent, agentName: string) => {
-        dispatches.push({ agent: agentName, text: event.text });
+        dispatches.push({ agent: agentName, text: event.text, ts: event.ts });
       }),
     };
 
@@ -359,13 +363,14 @@ describe("dispatch + busy buffer", () => {
           get: async () => busySession,
         },
       },
-      { run, assignment },
+      { run, assignment, sourceMessageTs: "1700000000.000123" },
     );
 
     expect(result.status).toBe("buffered");
     expect(dispatches).toHaveLength(1);
     expect(dispatches[0]!.agent).toBe("architect");
     expect(dispatches[0]!.text).toContain("<pipeline-assignment>");
+    expect(dispatches[0]!.ts).toBe("1700000000.000123");
   });
 
   it("reports dispatched when target is idle", async () => {
@@ -396,9 +401,104 @@ describe("dispatch + busy buffer", () => {
 
     expect(result.status).toBe("dispatched");
   });
+
+  it("keeps ordinary default-run dispatch audits out of Slack", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1000));
+    await store.createRun(makeDefaultRun());
+    const assignment = await store.createAssignment(
+      makeAssignmentCreate({
+        id: "default-asg",
+        runId: "default-run-1",
+        targetAgent: "default",
+        sourceAgent: "human",
+        objective: "answer the user",
+        idempotencyKey: "default-asg",
+      }),
+    );
+    const run = (await store.getRun("default-run-1"))!;
+    const audit = mock(async () => undefined);
+
+    await dispatchAssignment(
+      {
+        dispatcher: { handleAgentMessage: async () => undefined },
+        audit,
+      },
+      { run, assignment, sourceMessageTs: "1700000000.000789" },
+    );
+
+    expect(audit).not.toHaveBeenCalled();
+  });
 });
 
 describe("outbox pump replay", () => {
+  it("preserves the source Slack timestamp through the outbox dispatch", async () => {
+    const clock = fakeClock(1000);
+    const store = new InMemoryPipelineStore(clock);
+    await seedPmRun(store);
+    await store.enqueueOutbox({
+      id: "source-ts-outbox",
+      runId: "run-1",
+      assignmentId: "asg-pm",
+      eventType: "assignment.dispatch",
+      payload: {
+        assignmentId: "asg-pm",
+        sourceMessageTs: "1700000000.000456",
+      },
+      idempotencyKey: "source-ts-outbox",
+    });
+
+    const events: SlackMessageEvent[] = [];
+    await pumpOutbox({
+      store,
+      clock,
+      dispatcher: {
+        handleAgentMessage: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.ts).toBe("1700000000.000456");
+  });
+
+  it("uses per-resume human provenance instead of the assignment's original author", async () => {
+    const clock = fakeClock(1000);
+    const store = new InMemoryPipelineStore(clock);
+    await seedPmRun(store);
+    await store.enqueueOutbox({
+      id: "speaker-b-resume",
+      runId: "run-1",
+      assignmentId: "asg-pm",
+      eventType: "assignment.resume",
+      payload: {
+        assignmentId: "asg-pm",
+        prompt: "Speaker B follow-up",
+        sourceMessageTs: "1700000000.000999",
+        sourceSlackUserId: "USPEAKERB",
+      },
+      idempotencyKey: "speaker-b-resume",
+    });
+
+    const events: SlackMessageEvent[] = [];
+    await pumpOutbox({
+      store,
+      clock,
+      dispatcher: {
+        handleAgentMessage: async (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      user: "pipeline-internal",
+      attributionUserId: "USPEAKERB",
+      conversationalText: "Speaker B follow-up",
+    });
+  });
+
   it("replays undelivered dispatch after simulated crash between commit and mark", async () => {
     const clock = fakeClock(1000);
     const store = new InMemoryPipelineStore(clock);
@@ -497,6 +597,80 @@ describe("outbox pump replay", () => {
     expect(report.reclaimed).toBe(1);
     expect(report.delivered).toBe(1);
     expect(wakes).toEqual(["architect"]);
+  });
+});
+
+describe("delegated parent resume", () => {
+  it("injects the completed child verdict so the parent does not wait again", async () => {
+    const clock = fakeClock(1000);
+    const store = new InMemoryPipelineStore(clock);
+    await seedPmRun(store);
+
+    const delegated = await requestHandoff(
+      { store },
+      {
+        assignmentId: "asg-pm",
+        expectedRunVersion: 0,
+        targetAgent: "architect",
+        objective: "review the plan",
+        reason: "need a delegated verdict",
+        progressFingerprint: "delegate-review",
+        idempotencyKey: "delegate-review",
+        nextIdempotencyKey: "delegate-review:child",
+        action: "delegate",
+        auth: auth("pm"),
+      },
+    );
+    expect(delegated.status).toBe("accepted");
+    const childAssignmentId = delegated.assignmentId;
+    if (!childAssignmentId) throw new Error("delegation did not create a child");
+
+    await pumpOutbox({
+      store,
+      clock,
+      dispatcher: { handleAgentMessage: async () => undefined },
+    });
+
+    const completed = await reportOutcome(
+      { store },
+      {
+        outcome: {
+          assignmentId: childAssignmentId,
+          expectedRunVersion: delegated.runVersion,
+          action: "complete",
+          status: "succeeded",
+          reason: "Architecture review approved with no blockers",
+          evidenceRefs: ["review:approved"],
+          artifactRefs: ["artifact:plan"],
+          blockers: [],
+          checks: [{ name: "review", status: "passed", evidenceRef: "review:approved" }],
+          progressFingerprint: "architect-approved",
+        },
+        idempotencyKey: "architect-approved",
+        auth: auth("architect"),
+      },
+    );
+    expect(completed.status).toBe("accepted");
+
+    const resumes: SlackMessageEvent[] = [];
+    await pumpOutbox({
+      store,
+      clock,
+      dispatcher: {
+        handleAgentMessage: async (event) => {
+          resumes.push(event);
+        },
+      },
+    });
+
+    expect(resumes).toHaveLength(1);
+    expect(resumes[0]!.text).toContain("<delegated-result>");
+    expect(resumes[0]!.text).toContain("Architecture review approved with no blockers");
+    expect(resumes[0]!.text).toContain("review:approved");
+    expect(resumes[0]!.text).toContain(
+      "do not wait for the same child again",
+    );
+    expect(resumes[0]!.ts).not.toBe("T1");
   });
 });
 

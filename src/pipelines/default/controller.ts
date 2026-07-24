@@ -125,6 +125,7 @@ export async function createDefaultRun(
         assignmentId,
         targetAgent: input.targetAgent,
         sourceMessageTs: input.messageTs,
+        sourceSlackUserId: input.sourceSlackUserId ?? null,
       },
       idempotencyKey: `default-dispatch:${assignmentKey}`,
     }],

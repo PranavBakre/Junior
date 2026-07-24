@@ -89,6 +89,7 @@ export class SessionManager {
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
   private activeTurnSideEffects = new Map<string, boolean>();
+  private supersededTurnGenerations = new Set<string>();
   private seenMessages = new Set<string>();
   private worktreeSetups = new Map<string, Promise<string>>();
   private spawnRunner: SpawnRunnerFn;
@@ -566,42 +567,109 @@ export class SessionManager {
 
     await this.onAgentDispatched?.(session, agentName);
 
-    const outcome: { action: "buffer" | "run" | "interrupt" } = { action: "run" };
+    const outcome: {
+      action: "buffer" | "run" | "interrupt";
+      handle?: SpawnHandle;
+      generation?: string;
+    } = { action: "run" };
+    const incomingAuthor = this.attributionUserId(event);
     session = await this.mutateSession(event.threadId, (s) => {
       if (s.status === "busy") {
-        const isHuman = !event.isSelfBot && !event.botId;
-        const hk = this.handleKey(s.threadId, agentName);
+        const activeAgent = s.activeAgentName ?? agentName;
+        const hk = this.handleKey(s.threadId, activeAgent);
+        const currentHandle = this.handles.get(hk);
+        const activeInput = s.activeTurnInput ?? null;
+        const pipelineControlled = Boolean(s.activePipelineKind);
         const decision = evaluateBusyFollowup({
           enabled: this.config.session.shortFollowupInterruptEnabled,
-          senderUserId: event.user,
+          senderUserId: incomingAuthor,
           activeTurnAuthor: s.activeTurnAuthor ?? null,
-          messageLength: event.text.length,
+          activeMessage: activeInput
+            ? {
+                text: activeInput.policyText ?? activeInput.text,
+                hasFiles: activeInput.hasFiles === true,
+                hasCommand: Boolean(activeInput.command),
+                hasPipelineMetadata:
+                  pipelineControlled && Boolean(activeInput.pipelineInvocation),
+                isInternal: activeInput.isInternal === true,
+              }
+            : null,
+          incomingMessage: {
+            text: event.conversationalText ?? event.text,
+            hasFiles: Boolean(event.files?.length),
+            hasCommand: Boolean(event.command),
+            hasPipelineMetadata:
+              pipelineControlled && Boolean(event.pipelineInvocation),
+            isInternal: Boolean(event.isSelfBot && !event.attributionUserId),
+          },
           maxMessageLength: this.config.session.shortFollowupMaxLength,
+          maxWordCount: 40,
+          elapsedMs: Date.now() - (s.activeTurnStartedAt ?? 0),
+          maxElapsedMs: 20_000,
           activeTurnHasSideEffects: this.activeTurnSideEffects.get(hk) === true,
           activeTurnAlreadyInterrupted: s.activeTurnWasInterrupted === true,
-          isSenderHuman: isHuman,
+          sameAgentSlot: activeAgent === agentName,
+          ownsExactHandle: Boolean(
+            currentHandle && s.activeTurnGeneration &&
+              this.handles.get(hk) === currentHandle,
+          ),
+          providerSupportsInterruption:
+            currentHandle?.provider === "claude" && s.driverMode === "headless",
         });
 
         if (decision.action === "interrupt") {
+          const generation = s.activeTurnGeneration!;
+          // Mark in memory before the durable write yields so a concurrently
+          // completing runner cannot publish its stale response.
+          this.supersededTurnGenerations.add(generation);
           _log.info(
             "session",
             `short-followup.interrupt thread=${s.threadId} agent=${agentName} reason=${decision.reason}`,
           );
           s.pendingMessages.push(this.toPendingMessage(event));
           s.activeTurnWasInterrupted = true;
+          s.supersededTurnGeneration = generation;
           outcome.action = "interrupt";
+          outcome.handle = currentHandle;
+          outcome.generation = generation;
         } else {
           // Shadow-mode logging: when feature is disabled but would have been eligible
           if (!this.config.session.shortFollowupInterruptEnabled) {
             const shadowDecision = evaluateBusyFollowup({
               enabled: true,
-              senderUserId: event.user,
+              senderUserId: incomingAuthor,
               activeTurnAuthor: s.activeTurnAuthor ?? null,
-              messageLength: event.text.length,
+              activeMessage: activeInput
+                ? {
+                    text: activeInput.policyText ?? activeInput.text,
+                    hasFiles: activeInput.hasFiles === true,
+                    hasCommand: Boolean(activeInput.command),
+                    hasPipelineMetadata:
+                      pipelineControlled && Boolean(activeInput.pipelineInvocation),
+                    isInternal: activeInput.isInternal === true,
+                  }
+                : null,
+              incomingMessage: {
+                text: event.conversationalText ?? event.text,
+                hasFiles: Boolean(event.files?.length),
+                hasCommand: Boolean(event.command),
+                hasPipelineMetadata:
+                  pipelineControlled && Boolean(event.pipelineInvocation),
+                isInternal: Boolean(event.isSelfBot && !event.attributionUserId),
+              },
               maxMessageLength: this.config.session.shortFollowupMaxLength,
+              maxWordCount: 40,
+              elapsedMs: Date.now() - (s.activeTurnStartedAt ?? 0),
+              maxElapsedMs: 20_000,
               activeTurnHasSideEffects: this.activeTurnSideEffects.get(hk) === true,
               activeTurnAlreadyInterrupted: s.activeTurnWasInterrupted === true,
-              isSenderHuman: isHuman,
+              sameAgentSlot: activeAgent === agentName,
+              ownsExactHandle: Boolean(
+                currentHandle && s.activeTurnGeneration &&
+                  this.handles.get(hk) === currentHandle,
+              ),
+              providerSupportsInterruption:
+                currentHandle?.provider === "claude" && s.driverMode === "headless",
             });
             if (shadowDecision.action === "interrupt") {
               _log.info(
@@ -626,9 +694,18 @@ export class SessionManager {
       s.activeTopLevelMessageTs = event.ts;
       s.slackIdentity = identityForAgent(agentName);
       s.lastActivity = Date.now();
-      s.activeTurnAuthor = event.user;
+      s.activeTurnAuthor = incomingAuthor;
       s.activeTurnWasInterrupted = false;
+      s.activeTurnInput = this.toPendingMessage(event);
+      s.activeTurnStartedAt = Date.now();
+      s.activeTurnGeneration = crypto.randomUUID();
+      s.supersededTurnGeneration = null;
       outcome.action = "run";
+    }).catch((err) => {
+      if (outcome.generation) {
+        this.supersededTurnGenerations.delete(outcome.generation);
+      }
+      throw err;
     });
     this.rememberSeenMessage(dedupeKey);
 
@@ -638,36 +715,10 @@ export class SessionManager {
     }
 
     if (outcome.action === "interrupt") {
-      const handleKey = this.handleKey(session.threadId, agentName);
-      const currentHandle = this.handles.get(handleKey);
-      // Remove handle BEFORE kill so the old onRunComplete bails
-      this.handles.delete(handleKey);
-      if (currentHandle) currentHandle.kill();
-
-      // Build consolidated prompt from all pending (includes the new followup).
-      // Must happen before mutation clears pendingMessages.
-      const drainPrompt = this.buildDrainPrompt(session.pendingMessages);
-
-      session = await this.mutateSession(session.threadId, (s) => {
-        s.pendingMessages = [];
-        s.lastActivity = Date.now();
-        s.activeTopLevelMessageTs = event.ts;
-      });
-
-      const reservation = createRunSetupReservation(
-        sessionProvider(this.buildRunSession(session, agentName), this.config),
-      );
-      this.handles.set(handleKey, reservation);
-      this.activeTurnSideEffects.set(handleKey, false);
-      this.runRunnerWithAgent(
-        session,
-        drainPrompt,
-        undefined,
-        undefined,
-        agentName,
-        undefined,
-        reservation,
-      );
+      // SIGINT is supported here only for Claude headless turns. Keep the
+      // exact handle installed and let its normal settlement path start the
+      // consolidated replacement after the process has actually exited.
+      outcome.handle!.kill("SIGINT");
       return;
     }
 
@@ -683,7 +734,7 @@ export class SessionManager {
       event.ts,
       event.files,
       agentName,
-      event.user,
+      incomingAuthor ?? undefined,
       reservation,
     );
   }
@@ -2204,15 +2255,26 @@ export class SessionManager {
           continue;
         }
 
-        const pipelineResolution = await this.resolvePipelineInvocation(
-          session,
-          agentName,
-          result,
-          attemptHandle,
-          invocationCwd,
+        const activeGeneration = isTopLevel
+          ? session.activeTurnGeneration ?? null
+          : null;
+        const supersededBeforeSettlement = Boolean(
+          activeGeneration &&
+            (this.supersededTurnGenerations.has(activeGeneration) ||
+              (await this.store.get(session.threadId))
+                  ?.supersededTurnGeneration === activeGeneration),
         );
-        if (pipelineResolution === null) return;
-        result = pipelineResolution;
+        if (!supersededBeforeSettlement) {
+          const pipelineResolution = await this.resolvePipelineInvocation(
+            session,
+            agentName,
+            result,
+            attemptHandle,
+            invocationCwd,
+          );
+          if (pipelineResolution === null) return;
+          result = pipelineResolution;
+        }
 
         // Normal completion (or idle-interrupted but out of retries).
         const exhaustedRetries = idleInterrupted && session.idleInterruptCount >= maxIdleInterrupts;
@@ -2740,19 +2802,39 @@ export class SessionManager {
     // clobber each other via a stale full-row write.
     const snapshot = await this.store.get(session.threadId);
     if (!snapshot || !stillOwnsRun()) return;
-    await this.captureRunnerMemory(snapshot.threadId, agentName, result);
-    if (!stillOwnsRun()) return;
+    const runGeneration = isTopLevel ? session.activeTurnGeneration ?? null : null;
+    if (
+      runGeneration &&
+      snapshot.activeTurnGeneration !== runGeneration &&
+      snapshot.supersededTurnGeneration !== runGeneration
+    ) {
+      return;
+    }
+    const runWasSuperseded = Boolean(
+      runGeneration &&
+        (this.supersededTurnGenerations.has(runGeneration) ||
+          snapshot.supersededTurnGeneration === runGeneration),
+    );
+    if (runWasSuperseded) {
+      _log.info(
+        "session",
+        `short-followup.suppress thread=${session.threadId} agent=${agentName} generation=${runGeneration}`,
+      );
+    } else {
+      await this.captureRunnerMemory(snapshot.threadId, agentName, result);
+      if (!stillOwnsRun()) return;
+    }
     let internalDispatchDirectives: AgentDirective[] = [];
     let pipelineGuardRetryReset = false;
 
-    if (result.error) {
+    if (result.error && !runWasSuperseded) {
       this.onError?.(
         this.buildRunSession(snapshot, agentName, agentIdentity),
         result.error,
       );
     }
 
-    if (!result.error && isTopLevel && result.response) {
+    if (!runWasSuperseded && !result.error && isTopLevel && result.response) {
       const supportChannels = new Set(
         Object.entries(this.config.channelDefaults)
           .filter(([, def]) => def.agentType === "lead")
@@ -2827,7 +2909,7 @@ export class SessionManager {
       pipelineGuardRetryReset = true;
     }
 
-    if (result.response) {
+    if (!runWasSuperseded && result.response) {
       internalDispatchDirectives = this.allowedInternalDirectivesForResponse(
         agentName,
         result.response,
@@ -2862,6 +2944,14 @@ export class SessionManager {
       if (!stillOwnsRun()) return;
       settled = await this.mutateSession(snapshot.threadId, (s) => {
         if (!stillOwnsRun()) throw new RunOwnershipChangedError();
+        if (
+          isTopLevel &&
+          runGeneration &&
+          s.activeTurnGeneration !== runGeneration &&
+          s.supersededTurnGeneration !== runGeneration
+        ) {
+          throw new RunOwnershipChangedError();
+        }
         if (pipelineGuardRetryReset) {
           s.pipelineGuardRetryCount = 0;
         }
@@ -2882,16 +2972,35 @@ export class SessionManager {
             };
           }
 
-          const pendingMessages = s.pendingMessages;
+          const supersededGenerationMatches = Boolean(
+            runGeneration && s.supersededTurnGeneration === runGeneration,
+          );
+          const pendingMessages =
+            supersededGenerationMatches && s.activeTurnInput
+              ? [s.activeTurnInput, ...s.pendingMessages]
+              : s.pendingMessages;
           if (pendingMessages.length > 0 && s.muted) {
             s.pendingMessages = [];
             s.activePipelineInvocation = null;
             s.status = "idle";
             s.activeTurnAuthor = null;
             s.activeTurnWasInterrupted = false;
+            s.activeTurnInput = null;
+            s.activeTurnStartedAt = null;
+            s.activeTurnGeneration = null;
+            s.supersededTurnGeneration = null;
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
-            const drained = this.takePendingBatch(pendingMessages);
+            const drained = supersededGenerationMatches
+              ? {
+                  messages: pendingMessages,
+                  remaining: [] as PendingMessage[],
+                  pipelineInvocation:
+                    [...pendingMessages].reverse().find((message) =>
+                      message.pipelineInvocation
+                    )?.pipelineInvocation ?? null,
+                }
+              : this.takePendingBatch(pendingMessages);
             s.activeTopLevelMessageTs =
               drained.messages[drained.messages.length - 1]?.ts ??
               s.activeTopLevelMessageTs ??
@@ -2899,8 +3008,21 @@ export class SessionManager {
             settle.drainPrompt = this.buildDrainPrompt(drained.messages);
             s.pendingMessages = drained.remaining;
             s.activePipelineInvocation = drained.pipelineInvocation;
-            s.activeTurnAuthor = null;
-            s.activeTurnWasInterrupted = false;
+            if (supersededGenerationMatches) {
+              s.activeTurnInput = drained.messages[0] ?? null;
+              s.activeTurnStartedAt = Date.now();
+              s.activeTurnGeneration = crypto.randomUUID();
+              s.supersededTurnGeneration = null;
+              // One automatic interruption per conversational burst.
+              s.activeTurnWasInterrupted = true;
+            } else {
+              s.activeTurnAuthor = null;
+              s.activeTurnWasInterrupted = false;
+              s.activeTurnInput = null;
+              s.activeTurnStartedAt = null;
+              s.activeTurnGeneration = crypto.randomUUID();
+              s.supersededTurnGeneration = null;
+            }
             s.status = "draining";
             settle.action = "drain";
           } else {
@@ -2908,6 +3030,10 @@ export class SessionManager {
             s.status = "idle";
             s.activeTurnAuthor = null;
             s.activeTurnWasInterrupted = false;
+            s.activeTurnInput = null;
+            s.activeTurnStartedAt = null;
+            s.activeTurnGeneration = null;
+            s.supersededTurnGeneration = null;
             settle.action = "settle";
           }
         } else {
@@ -2987,6 +3113,9 @@ export class SessionManager {
         this.handles.delete(handleKey);
       }
       this.activeTurnSideEffects.delete(handleKey);
+    }
+    if (runGeneration) {
+      this.supersededTurnGenerations.delete(runGeneration);
     }
     if (settle.action === "settle") {
       await this.onAgentSettled?.(settled, agentName, result.response ?? null);
@@ -3230,6 +3359,7 @@ export class SessionManager {
                 targetAgent: durableTarget,
                 prompt: event.text,
                 sourceMessageTs: event.ts,
+                sourceSlackUserId: event.isSelfBot ? null : event.user,
                 resumeReason: "human follow-up on active durable task",
               },
               idempotencyKey:
@@ -3247,6 +3377,7 @@ export class SessionManager {
               targetAgent: assignment.targetAgent,
               prompt: event.text,
               sourceMessageTs: event.ts,
+              sourceSlackUserId: event.isSelfBot ? null : event.user,
               resumeReason: "human follow-up on active durable task",
             },
             idempotencyKey:
@@ -3470,6 +3601,16 @@ export class SessionManager {
     );
   }
 
+  private attributionUserId(event: SlackMessageEvent): string | null {
+    if (this.isAttributableSender(event.attributionUserId)) {
+      return event.attributionUserId;
+    }
+    if (!event.isSelfBot && !event.botId && this.isAttributableSender(event.user)) {
+      return event.user;
+    }
+    return null;
+  }
+
   /**
    * Format buffered messages for a drain turn. Each message gets its own
    * <buffered-message> block so multi-author drains stay unambiguous: a flat
@@ -3493,10 +3634,13 @@ export class SessionManager {
 
   private toPendingMessage(event: SlackMessageEvent): PendingMessage {
     return {
-      user: event.user,
+      user: this.attributionUserId(event) ?? event.user,
       text: event.text,
+      policyText: event.conversationalText,
       ts: event.ts,
       command: event.command ?? undefined,
+      hasFiles: Boolean(event.files?.length),
+      isInternal: Boolean(event.isSelfBot && !event.attributionUserId),
       dedupeKey: event.dedupeKey,
       pipelineInvocation: event.pipelineInvocation,
     };

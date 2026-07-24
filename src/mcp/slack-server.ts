@@ -68,6 +68,35 @@ import {
   postGitHubReview,
   readGitHubReviewState,
 } from "../github/review-comments.ts";
+import {
+  getRunbook,
+  searchRunbooks,
+} from "../runbooks/registry.ts";
+import { selectRunbook } from "../runbooks/selector.ts";
+import type { RunbookRisk } from "../runbooks/types.ts";
+import type { RunbookRunEvidence } from "../runbooks/evidence.ts";
+import {
+  recordSuccessfulExecution as promotionRecordExecution,
+  checkPromotionThreshold as promotionCheckThreshold,
+  listCandidates as promotionListCandidates,
+  getCandidate as promotionGetCandidate,
+} from "../runbooks/promotion.ts";
+import {
+  renderRunbookTemplate,
+  generateProposalReport,
+  type AuthoringContext as AuthoringContextType,
+} from "../runbooks/authoring.ts";
+import { classifyReusablePattern } from "../runbooks/classifier.ts";
+import {
+  createRunbookPr,
+  type PrCreationResult as PrCreationResultType,
+} from "../runbooks/github.ts";
+import { CatalogStore } from "../runbooks/catalog-store.ts";
+import { computeMetrics as computeDefinitionMetrics } from "../runbooks/metrics.ts";
+import {
+  runEvaluationSuite as runEvaluationSuiteImpl,
+  type EvaluationFixture as EvaluationFixtureType,
+} from "../runbooks/evaluation.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -111,6 +140,7 @@ let worktreeManager: WorktreeManager | undefined;
 let sessionManager: SessionManager | undefined;
 let slackActionStore: SlackActionStore | undefined;
 let pipelineRuntime: PipelineToolRuntime | undefined;
+let catalogStore: CatalogStore | undefined;
 
 /** Inject pipeline tool runtime (store + mode). Called from boot or tests. */
 export function setPipelineRuntime(runtime: PipelineToolRuntime | undefined): void {
@@ -922,6 +952,288 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
             ),
           },
         ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_search",
+    {
+      description:
+        "Search Junior runbook definitions by query, tags, owner agent, or risk level.",
+      inputSchema: {
+        query: z.string().optional().describe("Case-insensitive text to match against runbook name, description, or tags"),
+        tags: z.array(z.string()).optional().describe("Filter by tag (OR match)"),
+        owner_agent: z.string().optional().describe("Filter by owning agent name"),
+        risk: z.string().optional().describe("Filter by risk level"),
+        limit: z.number().optional().describe("Maximum results to return (default 25, max 100)"),
+      },
+    },
+    async ({ query, tags, owner_agent, risk, limit }) => {
+      const results = searchRunbooks({
+        query,
+        tags,
+        ownerAgent: owner_agent,
+        risk,
+        limit: Math.min(limit ?? 25, 100),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ runbooks: results }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_get",
+    {
+      description:
+        "Get a runbook definition by name, including its full prompt, inputs, verification, and provenance.",
+      inputSchema: {
+        name: z.string().describe("Runbook name (kebab-case)"),
+      },
+    },
+    async ({ name }) => {
+      const def = getRunbook(name);
+      if (!def) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ error: `runbook "${name}" not found` }),
+            },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(def, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_select",
+    {
+      description:
+        "Select the best matching runbook for a natural-language request, bind inputs from context, and return execution evidence. Falls back to procedure-memory guidance when no runbook matches.",
+      inputSchema: {
+        request: z.string().describe("Natural-language description of the task"),
+        context: z.record(z.string(), z.string()).optional().describe("Key-value pairs from thread context for input binding"),
+        owner_agent: z.string().optional().describe("Filter to runbooks owned by this agent"),
+        risk_ceiling: z.string().optional().describe("Exclude runbooks above this risk level"),
+      },
+    },
+    async ({ request, context, owner_agent, risk_ceiling }) => {
+      const result = selectRunbook(request, context ?? {}, {
+        ownerAgent: owner_agent,
+        riskCeiling: risk_ceiling as RunbookRisk | undefined,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "promotion_candidates",
+    {
+      description:
+        "List promotion candidates — repeated tasks that may warrant a reviewed runbook.",
+      inputSchema: {
+        status: z.string().optional().describe("Filter by status: tracking, proposed, accepted, rejected, archived"),
+        min_occurrences: z.number().optional().describe("Minimum occurrence count (default 1)"),
+        limit: z.number().optional().describe("Maximum results (default 25, max 100)"),
+      },
+    },
+    async ({ status, min_occurrences, limit }) => {
+      const results = promotionListCandidates({
+        status,
+        minOccurrences: min_occurrences,
+      });
+      const capped = results.slice(0, Math.min(limit ?? 25, 100));
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ candidates: capped }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "promotion_record",
+    {
+      description:
+        "Record a completed run's evidence for promotion tracking. Returns the candidate and whether it should be proposed as a runbook.",
+      inputSchema: {
+        evidence: z.object({
+          runId: z.string(),
+          runbookName: z.string(),
+          contentDigest: z.string(),
+          ownerAgent: z.string(),
+          risk: z.string(),
+          boundInputs: z.record(z.string(), z.string()),
+          status: z.string(),
+          startedAt: z.number(),
+          completedAt: z.number().optional(),
+          intentFingerprint: z.string(),
+        }).describe("RunbookRunEvidence from a completed run"),
+      },
+    },
+    async ({ evidence }) => {
+      promotionRecordExecution(evidence as RunbookRunEvidence);
+      const check = promotionCheckThreshold(evidence.intentFingerprint);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              fingerprint: evidence.intentFingerprint,
+              shouldPropose: check.shouldPropose,
+              reason: check.reason,
+              candidate: check.candidate,
+            }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_propose",
+    {
+      description:
+        "Generate a runbook proposal from a promotion candidate. Returns rendered .runbook.md content, a structured proposal report, and a dry-run PR result.",
+      inputSchema: {
+        fingerprint: z.string().describe("Intent fingerprint from a promotion candidate"),
+        dry_run: z.boolean().optional().describe("Whether to skip actual PR creation (default true)"),
+        inferred_inputs: z.array(z.object({
+          name: z.string(),
+          type: z.string(),
+          required: z.boolean(),
+          description: z.string().optional(),
+        })).optional().describe("Inferred typed inputs for the runbook"),
+        inferred_capabilities: z.array(z.string()).optional().describe("Inferred capability bundles"),
+        inferred_assertions: z.array(z.string()).optional().describe("Inferred verification assertions"),
+      },
+    },
+    async ({ fingerprint, dry_run, inferred_inputs, inferred_capabilities, inferred_assertions }) => {
+      const candidate = promotionGetCandidate(fingerprint);
+      if (!candidate) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: `no candidate found for fingerprint "${fingerprint}"` }) }],
+        };
+      }
+
+      const context: AuthoringContextType = {
+        candidate,
+        executionEvidence: [],
+        inferredInputs: inferred_inputs,
+        inferredCapabilities: inferred_capabilities,
+        inferredVerificationAssertions: inferred_assertions,
+      };
+
+      const rendered = renderRunbookTemplate(context);
+      const classification = classifyReusablePattern(
+        candidate.normalizedIntent,
+        candidate.ownerAgent,
+        candidate.risk,
+        candidate.capabilities,
+        candidate.occurrenceCount,
+      );
+      const report = generateProposalReport(context, rendered, classification);
+
+      let pr: PrCreationResultType | undefined;
+      if (rendered.ok) {
+        pr = await createRunbookPr(rendered, report, { dryRun: dry_run ?? true });
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ rendered, report, pr }, null, 2),
+        }],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "definitions_status",
+    {
+      description:
+        "Show the catalogue status of runbook definitions, including Git provenance and computed metrics.",
+      inputSchema: {
+        name: z.string().optional().describe("Filter to a specific definition name"),
+      },
+    },
+    async ({ name }) => {
+      if (!catalogStore) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "catalogue store not initialized" }) }] };
+      }
+      const entries = name
+        ? [catalogStore.getCatalogEntry("runbook", name)].filter(Boolean)
+        : catalogStore.listCatalogEntries("runbook");
+      let metrics = null;
+      if (name) {
+        const runs = catalogStore.getRunsByName(name);
+        metrics = computeDefinitionMetrics(runs);
+      }
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ catalog: entries, metrics }, null, 2) }],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "evaluation_run",
+    {
+      description:
+        "Run an evaluation suite against loaded runbooks. Uses default fixtures for the named runbook or custom fixtures if provided.",
+      inputSchema: {
+        runbook_name: z.string().optional().describe("Run default evaluation fixtures for this runbook"),
+        fixtures: z.array(z.object({
+          request: z.string(),
+          shouldMatch: z.boolean(),
+          expectedRunbook: z.string().optional(),
+        })).optional().describe("Custom evaluation fixtures"),
+      },
+    },
+    async ({ runbook_name, fixtures: customFixtures }) => {
+      let fixtures = customFixtures as EvaluationFixtureType[] | undefined;
+      if (!fixtures && runbook_name === "transfer-ai-roadmaps") {
+        const { TRANSFER_AI_ROADMAPS_FIXTURES } = await import("../runbooks/__fixtures__/transfer-ai-roadmaps.eval.ts");
+        fixtures = TRANSFER_AI_ROADMAPS_FIXTURES;
+      }
+      if (!fixtures || fixtures.length === 0) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "no fixtures provided or found" }) }] };
+      }
+      const result = runEvaluationSuiteImpl(fixtures, { runbookName: runbook_name });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
       };
     },
   );

@@ -8,7 +8,7 @@ import type { Clock } from "../time/clock.ts";
 import { systemClock } from "../time/clock.ts";
 import { log } from "../logger.ts";
 import type { PipelineStore } from "./store/interface.ts";
-import type { PipelineOutboxRecord } from "./types.ts";
+import type { Assignment, PipelineOutboxRecord } from "./types.ts";
 import {
   dispatchAssignment,
   type DispatchDeps,
@@ -193,34 +193,37 @@ async function handleOutboxItem(
       }
     }
 
-    // Build resume prompt, deduplicating when follow-up text matches objective.
-    let prompt: string | undefined;
-    if (item.eventType === "assignment.resume") {
-      if (typeof item.payload.prompt === "string") {
-        // When the follow-up text is identical to the objective (common for
-        // new child assignments whose objective IS the human message), avoid
-        // prepending it again with a redundant [task-follow-up] wrapper.
-        if (item.payload.prompt === assignment.objective) {
-          prompt = assignment.objective;
-        } else {
-          prompt = `${assignment.objective}\n\n[task-follow-up]\n${item.payload.prompt}`;
-        }
-      } else if (typeof item.payload.readyUrl === "string") {
-        prompt = `${assignment.objective}\n\n[devserver.ready] ${item.payload.readyUrl}`;
-      } else {
-        prompt = `${assignment.objective}\n\n[pipeline.recovery] Resume from durable state without repeating completed mutations. Report a typed outcome before ending.`;
-      }
-    }
-
+    const sourceMessageTs =
+      typeof item.payload.sourceMessageTs === "string"
+        ? item.payload.sourceMessageTs
+        : undefined;
+    const sourceSlackUserId =
+      typeof item.payload.sourceSlackUserId === "string"
+        ? item.payload.sourceSlackUserId
+        : item.eventType === "assignment.dispatch"
+          ? assignment.sourceSlackUserId ?? undefined
+          : undefined;
     const result = await dispatchAssignment(
       { ...dispatchDeps, bugContext, productContext },
       {
         run,
         assignment,
-        prompt,
-        // Carry the original human Slack user ID so the synthetic event's
-        // `user` field preserves speaker identity for prompt attribution.
-        userId: assignment.sourceSlackUserId ?? undefined,
+        // Resume wakes can carry a human follow-up, a dev-server URL, or a
+        // generic recovery instruction. All retain the exact assignment.
+        prompt: item.eventType === "assignment.resume"
+          ? await buildResumePrompt(store, assignment, item.payload)
+          : undefined,
+        sourceMessageTs,
+        conversationalText:
+          item.eventType === "assignment.resume" &&
+            typeof item.payload.prompt === "string"
+            ? item.payload.prompt
+            : item.eventType === "assignment.dispatch"
+              ? assignment.objective
+              : undefined,
+        // Control-plane routing remains synthetic while trusted provenance
+        // supplies the conversational author for prompt attribution.
+        userId: sourceSlackUserId,
         dedupeKey: `pipeline-outbox:${item.idempotencyKey}`,
         pipelineInvocation: {
           runId: run.id,
@@ -301,6 +304,58 @@ async function handleOutboxItem(
     `skipping unknown outbox eventType=${item.eventType} id=${item.id}`,
   );
   return "skipped";
+}
+
+async function buildResumePrompt(
+  store: PipelineStore,
+  assignment: Assignment,
+  payload: Record<string, unknown>,
+): Promise<string> {
+  if (typeof payload.prompt === "string") {
+    // A newly-created human child assignment uses the message as its
+    // objective. Do not repeat the same text as a follow-up.
+    if (payload.prompt === assignment.objective) {
+      return assignment.objective;
+    }
+    return `${assignment.objective}\n\n[task-follow-up]\n${payload.prompt}`;
+  }
+  if (typeof payload.readyUrl === "string") {
+    return `${assignment.objective}\n\n[devserver.ready] ${payload.readyUrl}`;
+  }
+
+  const completedChildAssignmentId =
+    typeof payload.completedChildAssignmentId === "string"
+      ? payload.completedChildAssignmentId
+      : null;
+  if (completedChildAssignmentId) {
+    const child = await store.getAssignment(completedChildAssignmentId);
+    const outcomes = child
+      ? await store.listOutcomes(completedChildAssignmentId)
+      : [];
+    const latestOutcome = outcomes[outcomes.length - 1];
+    if (child && latestOutcome) {
+      return [
+        assignment.objective,
+        "",
+        "<delegated-result>",
+        `completed_child_assignment_id: ${child.id}`,
+        `target_agent: ${child.targetAgent}`,
+        `child_status: ${child.status}`,
+        `outcome_action: ${latestOutcome.action}`,
+        `outcome_status: ${latestOutcome.status}`,
+        `reason: ${latestOutcome.reason}`,
+        `evidence_refs: ${JSON.stringify(latestOutcome.evidenceRefs)}`,
+        `artifact_refs: ${JSON.stringify(latestOutcome.artifactRefs)}`,
+        `checks: ${JSON.stringify(latestOutcome.checks)}`,
+        "instruction: The delegated child has finished. Use this verdict to advance the parent; do not wait for the same child again.",
+        "</delegated-result>",
+        "",
+        "[pipeline.recovery] Resume from durable state without repeating completed mutations. Report a typed outcome before ending.",
+      ].join("\n");
+    }
+  }
+
+  return `${assignment.objective}\n\n[pipeline.recovery] Resume from durable state without repeating completed mutations. Report a typed outcome before ending.`;
 }
 
 async function auditOutbox(

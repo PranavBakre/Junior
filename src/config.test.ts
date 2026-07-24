@@ -42,6 +42,8 @@ const ENV_KEYS = [
   "SESSION_DEFAULT_VERBOSITY",
   "SESSION_IDLE_TIMEOUT_MS",
   "SESSION_MAX_IDLE_INTERRUPTS",
+  "SESSION_SHORT_FOLLOWUP_INTERRUPT_ENABLED",
+  "SESSION_SHORT_FOLLOWUP_MAX_LENGTH",
   "MEMORY_DB_PATH",
   "CHANNEL_DEFAULTS",
   "ADMIN_SLACK_USER_ID",
@@ -118,6 +120,17 @@ describe("loadConfig runner providers", () => {
     expect(config.memory.sqlitePath).toBe("data/memory.db");
     expect(config.session.idleTimeoutMs).toBe(300000);
     expect(config.session.maxIdleInterrupts).toBe(3);
+  });
+
+  it("uses conservative short-follow-up defaults", () => {
+    const config = loadConfig();
+    expect(config.session.shortFollowupInterruptEnabled).toBe(false);
+    expect(config.session.shortFollowupMaxLength).toBe(240);
+  });
+
+  it("rejects an invalid short-follow-up length", () => {
+    process.env.SESSION_SHORT_FOLLOWUP_MAX_LENGTH = "not-a-number";
+    expect(() => loadConfig()).toThrow(/SESSION_SHORT_FOLLOWUP_MAX_LENGTH/);
   });
 
   it("parses memory db path", () => {

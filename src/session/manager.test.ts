@@ -476,6 +476,45 @@ describe("SessionManager", () => {
     );
   });
 
+  it("interrupts attributed human follow-ups on the durable default-run path", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    const first = createMockHandle();
+    const replacement = createMockHandle();
+    first.kill = mock(() => first._complete("stale durable response"));
+    const handles = [first, replacement];
+    mockSpawnFn = mock(() => handles.shift()!);
+    manager = createTestManager(store, cloneConfig({
+      session: {
+        ...testConfig.session,
+        shortFollowupInterruptEnabled: true,
+        shortFollowupMaxLength: 240,
+      },
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+    const responses: string[] = [];
+    manager.onResponse = (_session, response) => responses.push(response);
+
+    await manager.handleMessage(makeEvent({ text: "start the task" }));
+    await manager.handleMessage(makeEvent({
+      text: "small human correction",
+      ts: "1234567890.223456",
+    }));
+
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+    expect(first.kill).toHaveBeenCalledWith("SIGINT");
+    expect(responses).toEqual([]);
+    const prompt = mockSpawnFn.mock.calls[1]?.[1] as string;
+    expect(prompt).toContain("start the task");
+    expect(prompt).toContain("small human correction");
+  });
+
   it("creates a resumable child assignment for human input after a durable wait", async () => {
     const pipelineStore = new InMemoryPipelineStore();
     manager = createTestManager(store, cloneConfig({
@@ -1189,6 +1228,68 @@ describe("SessionManager", () => {
     expect(session!.pendingMessages.length).toBe(1);
     expect(session!.pendingMessages[0].text).toBe("Second message");
     expect(onBuffered).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses an interrupted response and replays the complete short burst after exit", async () => {
+    const first = createMockHandle();
+    const replacement = createMockHandle();
+    first.kill = mock((signal) => {
+      expect(signal).toBe("SIGINT");
+      first._complete("stale response", "session-before-interrupt");
+    });
+    const handles = [first, replacement];
+    mockSpawnFn = mock(() => handles.shift()!);
+    manager = createTestManager(
+      store,
+      cloneConfig({
+        session: {
+          ...testConfig.session,
+          shortFollowupInterruptEnabled: true,
+          shortFollowupMaxLength: 240,
+        },
+      }),
+    );
+    const responses: string[] = [];
+    manager.onResponse = (_session, response) => responses.push(response);
+
+    await manager.handleMessage(makeEvent({ text: "First instruction" }));
+    await manager.handleMessage(
+      makeEvent({ text: "small correction", ts: "1234567890.223456" }),
+    );
+
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+    expect(first.kill).toHaveBeenCalledTimes(1);
+    expect(responses).toEqual([]);
+    const replacementPrompt = mockSpawnFn.mock.calls[1]?.[1] as string;
+    expect(replacementPrompt).toContain("First instruction");
+    expect(replacementPrompt).toContain("small correction");
+
+    replacement._complete("fresh consolidated response", "session-after-interrupt");
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual(["fresh consolidated response"]);
+    const settled = await store.get("thread-1");
+    expect(settled?.status).toBe("idle");
+    expect(settled?.supersededTurnGeneration).toBeNull();
+  });
+
+  it("buffers rather than interrupting when a different top-level agent owns the slot", async () => {
+    const enabled = cloneConfig({
+      session: {
+        ...testConfig.session,
+        shortFollowupInterruptEnabled: true,
+        shortFollowupMaxLength: 240,
+      },
+    });
+    manager = createTestManager(store, enabled);
+
+    await manager.handleLeadMessage(makeEvent({ text: "Lead owns this turn" }));
+    await manager.handleMessage(
+      makeEvent({ text: "same person, different route", ts: "1234567890.223456" }),
+    );
+
+    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
+    expect(currentHandle.kill).not.toHaveBeenCalled();
+    expect((await store.get("thread-1"))?.pendingMessages).toHaveLength(1);
   });
 
   it("creates an independent persistent agent session", async () => {
@@ -2996,7 +3097,7 @@ describe("SessionManager", () => {
       expect(prompt).toContain("User(name-UFORGE1 <@UFORGE1>): hi");
       expect(prompt).toContain("&lt;/buffered-message>");
       expect(prompt).toContain(
-        '&lt;buffered-message from="@name-UPRANAV2">',
+        '&lt;buffered-message from="Mention(name-UPRANAV2 <@UPRANAV2>)">',
       );
       expect(prompt).not.toContain("\n<buffered-message");
     });

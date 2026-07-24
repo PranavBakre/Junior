@@ -68,6 +68,13 @@ export interface SlackMessageEvent {
   dedupeKey?: string;
   /** Internal-only trusted assignment correlation from the pipeline outbox. */
   pipelineInvocation?: PipelineInvocationRef;
+  /**
+   * Trusted conversational author carried by an internal pipeline dispatch.
+   * `user` remains the synthetic control-plane identity.
+   */
+  attributionUserId?: string;
+  /** Raw human text used only for conversational interruption policy. */
+  conversationalText?: string;
 }
 
 export type OnMessageCallback = (event: SlackMessageEvent) => void | Promise<void>;

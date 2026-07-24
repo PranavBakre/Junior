@@ -344,7 +344,10 @@ export function loadConfig(): Config {
       idleTimeoutMs: Number(optional("SESSION_IDLE_TIMEOUT_MS", "300000")),
       maxIdleInterrupts: Number(optional("SESSION_MAX_IDLE_INTERRUPTS", "3")),
       shortFollowupInterruptEnabled: parseBooleanEnv("SESSION_SHORT_FOLLOWUP_INTERRUPT_ENABLED", false),
-      shortFollowupMaxLength: Number(optional("SESSION_SHORT_FOLLOWUP_MAX_LENGTH", "280")),
+      shortFollowupMaxLength: parsePositiveIntEnv(
+        "SESSION_SHORT_FOLLOWUP_MAX_LENGTH",
+        optional("SESSION_SHORT_FOLLOWUP_MAX_LENGTH", "240"),
+      ),
     },
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
