@@ -1272,6 +1272,50 @@ describe("SessionManager", () => {
     expect(settled?.supersededTurnGeneration).toBeNull();
   });
 
+  it("buffers a follow-up when completion has already claimed response publication", async () => {
+    const first = createMockHandle();
+    const drain = createMockHandle();
+    const handles = [first, drain];
+    mockSpawnFn = mock(() => handles.shift()!);
+    manager = createTestManager(
+      store,
+      cloneConfig({
+        session: {
+          ...testConfig.session,
+          shortFollowupInterruptEnabled: true,
+          shortFollowupMaxLength: 240,
+        },
+      }),
+    );
+    let releaseResponse!: () => void;
+    let responseEntered!: () => void;
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      responseEntered = resolve;
+    });
+    manager.onResponse = async () => {
+      responseEntered();
+      await responseGate;
+    };
+
+    await manager.handleMessage(makeEvent({ text: "Original instruction" }));
+    first._complete("completed response");
+    await entered;
+    expect((await store.get("thread-1"))?.activeTurnCompletionClaimed).toBe(true);
+
+    await manager.handleMessage(
+      makeEvent({ text: "late short follow-up", ts: "1234567890.223456" }),
+    );
+    expect(first.kill).not.toHaveBeenCalled();
+    expect((await store.get("thread-1"))?.pendingMessages).toHaveLength(1);
+
+    releaseResponse();
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+    expect(mockSpawnFn.mock.calls[1]?.[1]).toContain("late short follow-up");
+  });
+
   it("buffers rather than interrupting when a different top-level agent owns the slot", async () => {
     const enabled = cloneConfig({
       session: {

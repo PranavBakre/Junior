@@ -26,6 +26,7 @@ function baseContext(overrides: Partial<BusyFollowupContext> = {}): BusyFollowup
     maxElapsedMs: 20_000,
     activeTurnHasSideEffects: false,
     activeTurnAlreadyInterrupted: false,
+    activeTurnCompletionClaimed: false,
     sameAgentSlot: true,
     ownsExactHandle: true,
     providerSupportsInterruption: true,
@@ -52,6 +53,7 @@ describe("evaluateBusyFollowup", () => {
     [{ activeMessage: null }, "no-active-message"],
     [{ elapsedMs: 20_001 }, "outside-time-window"],
     [{ activeTurnHasSideEffects: true }, "side-effects-started"],
+    [{ activeTurnCompletionClaimed: true }, "completion-already-claimed"],
     [{ activeTurnAlreadyInterrupted: true }, "already-interrupted"],
   ] as const)("buffers unsafe context %#", (overrides, reason) => {
     expect(evaluateBusyFollowup(baseContext(overrides))).toEqual({

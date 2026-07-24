@@ -608,6 +608,8 @@ export class SessionManager {
           maxElapsedMs: 20_000,
           activeTurnHasSideEffects: this.activeTurnSideEffects.get(hk) === true,
           activeTurnAlreadyInterrupted: s.activeTurnWasInterrupted === true,
+          activeTurnCompletionClaimed:
+            s.activeTurnCompletionClaimed === true,
           sameAgentSlot: activeAgent === agentName,
           ownsExactHandle: Boolean(
             currentHandle && s.activeTurnGeneration &&
@@ -663,6 +665,8 @@ export class SessionManager {
               maxElapsedMs: 20_000,
               activeTurnHasSideEffects: this.activeTurnSideEffects.get(hk) === true,
               activeTurnAlreadyInterrupted: s.activeTurnWasInterrupted === true,
+              activeTurnCompletionClaimed:
+                s.activeTurnCompletionClaimed === true,
               sameAgentSlot: activeAgent === agentName,
               ownsExactHandle: Boolean(
                 currentHandle && s.activeTurnGeneration &&
@@ -700,6 +704,7 @@ export class SessionManager {
       s.activeTurnStartedAt = Date.now();
       s.activeTurnGeneration = crypto.randomUUID();
       s.supersededTurnGeneration = null;
+      s.activeTurnCompletionClaimed = false;
       outcome.action = "run";
     }).catch((err) => {
       if (outcome.generation) {
@@ -2258,12 +2263,28 @@ export class SessionManager {
         const activeGeneration = isTopLevel
           ? session.activeTurnGeneration ?? null
           : null;
-        const supersededBeforeSettlement = Boolean(
+        let supersededBeforeSettlement = Boolean(
           activeGeneration &&
-            (this.supersededTurnGenerations.has(activeGeneration) ||
-              (await this.store.get(session.threadId))
-                  ?.supersededTurnGeneration === activeGeneration),
+            this.supersededTurnGenerations.has(activeGeneration),
         );
+        if (activeGeneration && !supersededBeforeSettlement) {
+          let completionClaimed = false;
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            if (this.handles.get(handleKey) !== attemptHandle) {
+              throw new RunOwnershipChangedError();
+            }
+            if (
+              fresh.activeTurnGeneration === activeGeneration &&
+              fresh.supersededTurnGeneration !== activeGeneration
+            ) {
+              // This mutation serializes completion publication against the
+              // follow-up mutation. Once claimed, later follow-ups buffer.
+              fresh.activeTurnCompletionClaimed = true;
+              completionClaimed = true;
+            }
+          });
+          supersededBeforeSettlement = !completionClaimed;
+        }
         if (!supersededBeforeSettlement) {
           const pipelineResolution = await this.resolvePipelineInvocation(
             session,
@@ -2989,6 +3010,7 @@ export class SessionManager {
             s.activeTurnStartedAt = null;
             s.activeTurnGeneration = null;
             s.supersededTurnGeneration = null;
+            s.activeTurnCompletionClaimed = false;
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
             const drained = supersededGenerationMatches
@@ -3013,6 +3035,7 @@ export class SessionManager {
               s.activeTurnStartedAt = Date.now();
               s.activeTurnGeneration = crypto.randomUUID();
               s.supersededTurnGeneration = null;
+              s.activeTurnCompletionClaimed = false;
               // One automatic interruption per conversational burst.
               s.activeTurnWasInterrupted = true;
             } else {
@@ -3022,6 +3045,7 @@ export class SessionManager {
               s.activeTurnStartedAt = null;
               s.activeTurnGeneration = crypto.randomUUID();
               s.supersededTurnGeneration = null;
+              s.activeTurnCompletionClaimed = false;
             }
             s.status = "draining";
             settle.action = "drain";
@@ -3034,6 +3058,7 @@ export class SessionManager {
             s.activeTurnStartedAt = null;
             s.activeTurnGeneration = null;
             s.supersededTurnGeneration = null;
+            s.activeTurnCompletionClaimed = false;
             settle.action = "settle";
           }
         } else {

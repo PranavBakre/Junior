@@ -112,6 +112,7 @@ describe("createSession", () => {
       "activePipelineRunId",
       "activeRunId",
       "activeTurnAuthor",
+      "activeTurnCompletionClaimed",
       "activeTurnGeneration",
       "activeTurnInput",
       "activeTurnStartedAt",

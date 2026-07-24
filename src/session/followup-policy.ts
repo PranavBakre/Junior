@@ -28,6 +28,7 @@ export type BusyFollowupContext = {
   maxElapsedMs: number;
   activeTurnHasSideEffects: boolean;
   activeTurnAlreadyInterrupted: boolean;
+  activeTurnCompletionClaimed: boolean;
   sameAgentSlot: boolean;
   ownsExactHandle: boolean;
   providerSupportsInterruption: boolean;
@@ -82,6 +83,9 @@ export function evaluateBusyFollowup(ctx: BusyFollowupContext): BusyFollowupDeci
   }
   if (ctx.activeTurnHasSideEffects) {
     return { action: "buffer", reason: "side-effects-started" };
+  }
+  if (ctx.activeTurnCompletionClaimed) {
+    return { action: "buffer", reason: "completion-already-claimed" };
   }
   if (ctx.activeTurnAlreadyInterrupted) {
     return { action: "buffer", reason: "already-interrupted" };

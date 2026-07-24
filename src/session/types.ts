@@ -216,6 +216,8 @@ export interface ThreadSession {
   activeTurnGeneration?: string | null;
   /** Generation whose response must be suppressed and replayed as a burst. */
   supersededTurnGeneration?: string | null;
+  /** Completion won the publication race; later follow-ups must buffer. */
+  activeTurnCompletionClaimed?: boolean;
   /** Number of automatic lead-pipeline guard continuations attempted for the current turn. */
   pipelineGuardRetryCount?: number;
   /**
@@ -298,6 +300,7 @@ export function createSession(
     activeTurnStartedAt: null,
     activeTurnGeneration: null,
     supersededTurnGeneration: null,
+    activeTurnCompletionClaimed: false,
     pipelineGuardRetryCount: 0,
     stateVersion: 0,
     activePipelineRunId: null,
