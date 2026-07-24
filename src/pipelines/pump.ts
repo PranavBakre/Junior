@@ -291,6 +291,12 @@ async function handleOutboxItem(
   if (item.eventType === "assignment.escalate") {
     const run = await store.getRun(item.runId);
     if (!run) return "skipped";
+    // A default run is the durable envelope around an ordinary Slack turn.
+    // Its agent already owns the user-facing reply, so publishing the
+    // settlement reason here creates a second, internal-sounding recap in the
+    // thread. Typed pipelines still need a visible human-gate audit because
+    // their worker turns commonly finish with NO_SLACK_MESSAGE.
+    if (run.kind === "default") return "delivered";
     const reason = typeof item.payload.reason === "string"
       ? item.payload.reason
       : "The assignment needs human attention";
