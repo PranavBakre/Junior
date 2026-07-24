@@ -91,6 +91,7 @@ const pipelineToolRuntime: PipelineToolRuntime = {
   productPipelineEnabled: config.pipeline?.productPipelineEnabled ?? false,
   bugPipelineEnabled: config.pipeline?.bugPipelineEnabled ?? false,
   workspaceRoot: process.cwd(),
+  repos: config.repos,
   onOutcomeCommitted: async () => {
     // Shadow/off never dispatch — only active mode pumps the outbox.
     if (pipelineRuntimeMode !== "active") return;

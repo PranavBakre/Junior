@@ -1200,6 +1200,7 @@ export class SqlitePipelineStore implements PipelineStore {
           `UPDATE pipeline_runs SET
             phase = ?,
             status = ?,
+            repo_refs_json = ?,
             state_version = ?,
             terminal_outcome = ?,
             terminal_reason = ?,
@@ -1212,6 +1213,7 @@ export class SqlitePipelineStore implements PipelineStore {
         .run(
           decision.updatedRun.phase,
           decision.updatedRun.status,
+          JSON.stringify(decision.updatedRun.repoRefs),
           decision.updatedRun.stateVersion,
           decision.updatedRun.terminalOutcome,
           decision.updatedRun.terminalReason,

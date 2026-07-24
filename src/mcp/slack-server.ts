@@ -147,7 +147,7 @@ export function setPipelineRuntime(runtime: PipelineToolRuntime | undefined): vo
   pipelineRuntime = runtime;
 }
 
-function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
+export function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
   registerWhatsAppTools(server, {
     runContext,
     // Deny-by-default until the SessionManager/SessionStore are wired in:
@@ -789,13 +789,14 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         evidence_refs: z.array(z.string()).optional().describe("Durable evidence references supporting the transition"),
         artifact_refs: z.array(z.string()).optional().describe("Durable artifact references inherited by the child assignment"),
         acceptance_criteria: z.array(z.string()).optional().describe("Acceptance criteria for the child assignment"),
+        repo_refs: z.array(z.string().min(1).max(200)).max(20).optional().describe("Repositories to validate and atomically bind to the durable run before dispatch"),
         channel_id: z.string().optional().describe("Deprecated; authenticated channel is derived from signed context"),
         thread_ts: z.string().optional().describe("Deprecated; authenticated thread is derived from signed context"),
         user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
         trigger_ts: z.string().optional().describe("Slack message timestamp that caused the dispatch. Defaults to thread_ts."),
       },
     },
-    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, evidence_refs, artifact_refs, acceptance_criteria, channel_id, thread_ts, user_id, trigger_ts }) => {
+    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, evidence_refs, artifact_refs, acceptance_criteria, repo_refs, channel_id, thread_ts, user_id, trigger_ts }) => {
       if (!sessionManager) {
         return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
       }
@@ -831,6 +832,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           evidence_refs,
           artifact_refs,
           acceptance_criteria,
+          repo_refs,
         });
       }
       if (pipelineRuntime && session?.activeRunId) {
@@ -1248,11 +1250,15 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         "'gx-backend:repo'), their markdown profiles are fetched VERBATIM by key — no embedding, " +
         "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
         "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
-        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`kinds`). " +
+        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`tags`/`kinds`). " +
         "Returns the keyed profiles plus the top-k claims (text, score, repo, tags).",
       inputSchema: {
         query: z.string().describe("Natural-language query, embedded for semantic claim retrieval"),
         repo: z.string().optional().describe("Scope claims to a repo (e.g. 'gx-backend')"),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("Restrict claims to any matching tag (OR match)"),
         kinds: z
           .array(z.enum(["lesson", "fact", "situation-claim"]))
           .optional()
@@ -1266,10 +1272,10 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         limit: z.number().optional().describe("Max semantic claims to return (default 5, max 50)"),
       },
     },
-    async ({ query, repo, kinds, entity_refs, limit }) => {
+    async ({ query, repo, tags, kinds, entity_refs, limit }) => {
       return withMemoryStore(async (memory) => {
         const result = await recallMemory(
-          { query, repo, kinds, entityRefs: entity_refs, limit },
+          { query, repo, tags, kinds, entityRefs: entity_refs, limit },
           { store: memory, provider: await getEmbeddingProvider(), profileStore: getProfileStore() },
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -1731,6 +1737,8 @@ export interface RecallMemoryArgs {
   repo?: string;
   /** With `repo`, also include repo-less (global) claims. See ClaimRecallFilters. */
   repoIncludeGlobal?: boolean;
+  /** Restrict claims to any matching tag (OR match). */
+  tags?: string[];
   kinds?: ClaimKind[];
   entityRefs?: string[];
   limit?: number;
@@ -1791,6 +1799,7 @@ export async function recallMemory(
       filters.repo = args.repo;
       if (args.repoIncludeGlobal) filters.repoIncludeGlobal = true;
     }
+    if (args.tags && args.tags.length > 0) filters.tags = args.tags;
     if (kind) filters.kind = kind;
     const results = await deps.store.recallClaims({
       queryVector,

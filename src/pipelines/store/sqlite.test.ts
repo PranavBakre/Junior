@@ -396,12 +396,17 @@ describe("SqlitePipelineStore", () => {
         },
       }),
       toPhase: "reviewing",
+      repoRefs: ["example-frontend"],
       actorType: "agent",
       actorId: "build",
       idempotencyKey: "tx-1",
     });
     expect(receipt.status).toBe("accepted");
     expect(receipt.runVersion).toBe(1);
+    expect((await store.getRun("run-1"))?.repoRefs).toEqual([
+      "example-backend",
+      "example-frontend",
+    ]);
 
     const outcomes = await store.listOutcomes("asg-1");
     expect(outcomes).toHaveLength(1);

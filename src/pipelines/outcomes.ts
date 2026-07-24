@@ -41,6 +41,8 @@ export type ReportOutcomeInput = {
   outcome: AgentOutcome;
   /** Proposed phase advance. Omitted means keep current phase. */
   toPhase?: string;
+  /** Repository refs atomically bound when the transition commits. */
+  repoRefs?: string[];
   /** Optional event idempotency key for duplicate detection. */
   idempotencyKey?: string;
   auth: OutcomeAuthContext;
@@ -296,6 +298,7 @@ export async function reportOutcome(
       return reportOutcome(deps, {
         outcome: escalated,
         toPhase: "needs-human",
+        repoRefs: input.repoRefs,
         idempotencyKey:
           input.idempotencyKey ??
           `loop-escalate:${loopKey}:${assignment.id}`,
@@ -344,6 +347,7 @@ export async function reportOutcome(
   const receipt = await deps.store.recordOutcomeTransaction({
     outcome,
     toPhase: input.toPhase,
+    repoRefs: input.repoRefs,
     actorType: "agent",
     actorId: auth.agent,
     idempotencyKey: input.idempotencyKey,
@@ -392,6 +396,7 @@ export async function requestHandoff(
     evidenceRefs?: string[];
     artifactRefs?: string[];
     acceptanceCriteria?: string[];
+    repoRefs?: string[];
     mutationScope?: string[];
     contextRefs?: string[];
     dependsOn?: string[];
@@ -439,6 +444,7 @@ export async function requestHandoff(
   return reportOutcome(deps, {
     outcome,
     toPhase: args.toPhase,
+    repoRefs: args.repoRefs,
     idempotencyKey: args.idempotencyKey,
     auth: args.auth,
   });

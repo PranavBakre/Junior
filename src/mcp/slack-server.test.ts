@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +9,7 @@ import {
   addMemory,
   dispatchAgentDirectivesFromSlackPost,
   recallMemory,
+  registerTools,
   searchAgentDefinitions,
   sendSlackDirectMessage,
   type MemoryToolDeps,
@@ -13,6 +17,37 @@ import {
 import { createMemoryStore } from "../memory/factory.ts";
 import { HashingEmbeddingProvider } from "../memory/embedding/hashing.ts";
 import { createProfileStore } from "../memory/profiles/index.ts";
+
+describe("MCP Slack tool catalogue", () => {
+  it("serializes every registered tool through tools/list", async () => {
+    const server = new McpServer({ name: "slack-bot-test", version: "0.1.0" });
+    registerTools(server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "slack-bot-test-client", version: "0.1.0" });
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const { tools } = await client.listTools();
+      const names = tools.map((tool) => tool.name);
+
+      expect(names).toContain("pipeline_report_outcome");
+      expect(names).toContain("runbook_select");
+      expect(names).toContain("promotion_record");
+      const dispatch = tools.find((tool) => tool.name === "agent_dispatch");
+      expect(dispatch?.inputSchema).toMatchObject({
+        properties: {
+          repo_refs: { type: "array" },
+        },
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
 
 /**
  * Build memory-tool deps backed by REAL infrastructure (in-memory SQLite store,
@@ -82,6 +117,40 @@ describe("MCP memory v3 tools", () => {
 
       expect(result.claims.some((c) => c.id === id)).toBe(true);
       expect(result.profiles).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("memory_recall preserves legacy OR tag filtering", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const relevant = await addMemory(
+        {
+          text: "Reuse the event registration pricing helper for summary-card tooltips",
+          tags: ["gx-client-next", "event-registration"],
+        },
+        deps,
+      );
+      await addMemory(
+        {
+          text: "Event payout invoices join through payment identifiers",
+          tags: ["payouts", "mongodb"],
+        },
+        deps,
+      );
+
+      const result = await recallMemory(
+        {
+          query:
+            "price breakdown tooltip event registration summary card pricing helper",
+          tags: ["gx-client-next", "event-registration", "pricing"],
+          limit: 5,
+        },
+        deps,
+      );
+
+      expect(result.claims.map((claim) => claim.id)).toEqual([relevant.id]);
     } finally {
       cleanup();
     }

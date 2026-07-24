@@ -470,6 +470,11 @@ export type RecordOutcomeInput = {
   outcome: AgentOutcome;
   /** Proposed phase advance. Omitted means keep current phase. */
   toPhase?: PipelinePhase | string;
+  /**
+   * Effective repository refs to bind to the run in the same transaction as
+   * the accepted outcome/next assignment.
+   */
+  repoRefs?: string[];
   actorType: "agent" | "human" | "system";
   actorId: string;
   /** Optional event idempotency key for duplicate detection. */

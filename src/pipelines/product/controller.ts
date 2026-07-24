@@ -612,6 +612,8 @@ export async function reduceProductOutcome(
     actorType?: "agent" | "human" | "system";
     actorId: string;
     idempotencyKey?: string;
+    /** Repository refs atomically bound with an accepted transition. */
+    repoRefs?: string[];
     /** Optional review verdict for reviewing phase. */
     reviewVerdict?: "approved" | "changes_requested" | "comment" | null;
     /** When true, treat product decision as still open. */
@@ -911,6 +913,7 @@ export async function reduceProductOutcome(
   const receipt = await store.recordOutcomeTransaction({
     outcome: input.outcome,
     toPhase: suggested,
+    repoRefs: input.repoRefs,
     actorType: input.actorType ?? "agent",
     actorId: input.actorId,
     idempotencyKey: input.idempotencyKey,

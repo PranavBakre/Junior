@@ -4,6 +4,7 @@
  */
 
 import type { PipelineRuntimeMode } from "../config.ts";
+import type { RepoConfig } from "../config.ts";
 import {
   canEditProductCode,
   canWritePipelineArtifacts,
@@ -12,6 +13,7 @@ import {
 } from "../agents/capabilities.ts";
 import {
   canonicalAgentName,
+  resolveAgentManifest,
 } from "../agents/registry.ts";
 import { canDispatch } from "../support/agents.ts";
 import {
@@ -42,6 +44,7 @@ import {
 } from "./product/controller.ts";
 import { createBugRun, reduceBugOutcome } from "./bug/controller.ts";
 import type { BugMode } from "./bug/definition.ts";
+import { resolvePipelineRepos } from "../worktree/pipeline-routing.ts";
 
 export type PipelineToolRuntime = {
   store: PipelineStore;
@@ -51,6 +54,8 @@ export type PipelineToolRuntime = {
   productPipelineEnabled?: boolean;
   bugPipelineEnabled?: boolean;
   workspaceRoot?: string;
+  /** Configured repositories used to validate durable repo refs before dispatch. */
+  repos?: RepoConfig[];
   /** Optional post-outcome hook (e.g. pump outbox). */
   onOutcomeCommitted?: (receipt: TransitionReceipt) => Promise<void>;
   /** Optional immediate wake after a new or recovered pipeline start. */
@@ -699,6 +704,7 @@ export async function pipelineDispatchAgent(
     evidence_refs?: string[];
     artifact_refs?: string[];
     acceptance_criteria?: string[];
+    repo_refs?: string[];
   },
 ): Promise<ToolTextResult> {
   const disabled = requireActive(runtime);
@@ -749,6 +755,58 @@ export async function pipelineDispatchAgent(
       true,
     );
   }
+  const requestedRepoRefs = (args.repo_refs ?? [])
+    .map((ref) => ref.trim())
+    .filter(Boolean);
+  const effectiveRepoRefs = [
+    ...new Set([...run.repoRefs, ...requestedRepoRefs]),
+  ];
+  if (runtime.repos) {
+    const resolution = resolvePipelineRepos(runtime.repos, effectiveRepoRefs);
+    if (resolution.unresolvedRefs.length > 0) {
+      return textResult(
+        {
+          ok: false,
+          reason:
+            `repository refs are not uniquely configured: ${resolution.unresolvedRefs.join(", ")}`,
+          runId: run.id,
+          repoRefs: run.repoRefs,
+        },
+        true,
+      );
+    }
+  }
+  const targetRole = resolveAgentManifest(target)?.role;
+  const targetRequiresWorktree =
+    targetRole !== "orchestrator" && targetRole !== "planner";
+  if (targetRequiresWorktree && effectiveRepoRefs.length === 0) {
+    return textResult(
+      {
+        ok: false,
+        reason:
+          `agent "${target}" requires a configured repository and isolated worktree; retry agent_dispatch with repo_refs`,
+        runId: run.id,
+        repoRefs: run.repoRefs,
+      },
+      true,
+    );
+  }
+  if (
+    run.status === "needs-human" &&
+    run.kind !== "default" &&
+    !args.to_phase
+  ) {
+    return textResult(
+      {
+        ok: false,
+        reason:
+          `recovering a ${run.kind} run from needs-human requires to_phase plus any missing repo_refs`,
+        runId: run.id,
+        repoRefs: run.repoRefs,
+      },
+      true,
+    );
+  }
   const mutationScope = canEditProductCode(target)
     ? ["worktree-code"]
     : canWritePipelineArtifacts(target)
@@ -779,6 +837,9 @@ export async function pipelineDispatchAgent(
   }
   const inheritedBranch = source.contextRefs.find((ref) =>
     ref.startsWith("delegated-branch:")
+  );
+  const isHumanRecoveryBranch = source.contextRefs.includes(
+    "control-branch:human-input",
   );
   const delegatedBranch = inheritedBranch ??
     (args.mode === "delegate" ? `delegated-branch:${source.id}` : undefined);
@@ -817,7 +878,14 @@ export async function pipelineDispatchAgent(
     },
   };
   const genericDispatch =
-    run.kind === "default" || args.mode === "delegate" || Boolean(inheritedBranch);
+    run.kind === "default" ||
+    args.mode === "delegate" ||
+    Boolean(inheritedBranch) ||
+    isHumanRecoveryBranch;
+  const effectiveToPhase =
+    run.kind === "default" && run.status === "needs-human"
+      ? "working"
+      : args.to_phase;
   const receipt = genericDispatch
     ? await requestHandoff(
         {
@@ -834,6 +902,7 @@ export async function pipelineDispatchAgent(
           evidenceRefs: dispatchOutcome.evidenceRefs,
           artifactRefs: dispatchOutcome.artifactRefs,
           acceptanceCriteria: args.acceptance_criteria ?? run.acceptanceCriteria,
+          repoRefs: effectiveRepoRefs,
           mutationScope,
           contextRefs,
           attempt: source.attempt,
@@ -843,7 +912,7 @@ export async function pipelineDispatchAgent(
           idempotencyKey: stableKey,
           nextIdempotencyKey,
           action: args.mode,
-          toPhase: args.to_phase,
+          toPhase: effectiveToPhase,
           auth: authFromContext(runContext),
         },
       )
@@ -855,6 +924,7 @@ export async function pipelineDispatchAgent(
             toPhase: args.to_phase,
             actorId: caller,
             idempotencyKey: stableKey,
+            repoRefs: effectiveRepoRefs,
           },
         )
       : await reduceBugOutcome(
@@ -868,6 +938,7 @@ export async function pipelineDispatchAgent(
             toPhase: args.to_phase,
             actorId: caller,
             idempotencyKey: stableKey,
+            repoRefs: effectiveRepoRefs,
           },
         );
   if (receipt.status === "accepted" || receipt.status === "duplicate") {
@@ -880,6 +951,8 @@ export async function pipelineDispatchAgent(
       runId: run.id,
       sourceAssignmentId: source.id,
       targetAssignmentId: receipt.assignmentId,
+      repoRefs: effectiveRepoRefs,
+      recovered: run.status === "needs-human" && receipt.status === "accepted",
       receipt,
     },
     receipt.status === "rejected",

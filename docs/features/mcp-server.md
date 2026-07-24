@@ -110,6 +110,14 @@ pulled onto disk but the running process has not registered its `username` /
 `iconEmoji` yet. Agent prompts themselves are read from disk on each resolve;
 the registry reload is for persistent-agent identity/dispatch metadata.
 
+`agent_dispatch` accepts `repo_refs` for worktree-backed successors. The refs
+are validated against configured repositories and bound to the run in the same
+transaction that creates the successor assignment. Dispatch fails before
+mutation when a worktree-backed target has no effective repository. A
+human-input recovery assignment can retry an escalated run with corrected
+`repo_refs`; default runs resume to `working`, while typed runs require an
+explicit legal `to_phase`.
+
 ### WhatsApp tools
 
 The `whatsapp_*` tools (`src/mcp/whatsapp-tools.ts`) are the only read surface
@@ -149,7 +157,8 @@ perform the requested operation, and close the store after each call. The local
 embedding model (harrier-270 ONNX) is lazy-loaded on the first recall/add, never at
 server startup.
 
-- `memory_recall` accepts `query`, `repo`, `kinds`, `entity_refs`, and `limit`. It
+- `memory_recall` accepts `query`, `repo`, `tags` (OR match), `kinds`,
+  `entity_refs`, and `limit`. It
   fetches the keyed entity profiles verbatim by `entity_ref` (no vector) and embeds
   `query` locally to cosine-rank the atomic claim store; returns the profiles plus
   the top-k claims. Recall is cosine-only — there is no FTS channel.
