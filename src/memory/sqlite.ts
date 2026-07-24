@@ -333,6 +333,9 @@ export class SqliteMemoryStore implements MemoryStore {
         repo: row.repo,
         tags: row.tags ? (JSON.parse(row.tags) as string[]) : [],
         vector,
+        weight: row.weight ?? 1,
+        createdAt: row.created_at,
+        lastUsedAt: row.last_used_at,
       });
     }
     return out;

@@ -96,7 +96,7 @@ export function startHttpServer(deps: HttpServerDeps): void {
           return await handleMemoryRecall(memoryStore, url.searchParams);
         } else if (url.pathname === "/api/memory/projection") {
           if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
-          return await handleMemoryProjection(memoryStore);
+          return await handleMemoryProjection(memoryStore, url.searchParams);
         } else if (url.pathname === "/api/memory") {
           return await handleMemoryList();
         } else if (url.pathname.startsWith("/api/memory/")) {

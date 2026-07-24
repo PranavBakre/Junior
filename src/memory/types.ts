@@ -167,6 +167,10 @@ export interface ClaimVectorExport {
   repo: string | null;
   tags: string[];
   vector: Float32Array;
+  /** Value signal — the galaxy view sizes/brightens a star by it. */
+  weight: number;
+  createdAt: number;
+  lastUsedAt: number | null;
 }
 
 // --- memory v3: decay / forgetting (§7.1) ---------------------------------
