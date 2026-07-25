@@ -218,6 +218,10 @@ gap is not a tail case. Over 376 probes:
 - score floor 0.5 → **92** lose it (24.5%)
 - of the 87 probes whose best match sits at weight ≤ 0.6, **76** lose it (87%)
 
+(Those two rows are document-space, which is the right space for *this*
+comparison — both sides are stored vectors. The floor's own cost has to be
+measured in query space; see below.)
+
 Ranking stays on `score`, so weight still orders relevant candidates — it just
 no longer decides eligibility. A null cosine (no query vector, or a claim
 without an embedding) is ineligible: unmeasurable relevance is not relevance.
@@ -238,27 +242,60 @@ best-candidate cosine for ten chit-chat probes:
 
 Chit-chat spans **0.384–0.500**, so 0.50 sits *inside* the noise tail:
 "can you check this again" peaks at exactly 0.500 and would be admitted,
-emitting a claim and marking it used. Separation over 439 paraphrase probes:
+emitting a claim and marking it used.
 
-| floor | chit-chat rejected | best matches lost |
+**Measure the cost in query space.** Production embeds the query with the
+instruction prefix (`embed([query], "query")`, `slack-server.ts`) against claims
+stored as documents. Query mode runs systematically lower than
+document-vs-document — mean −0.052 over 250 probes — so a doc-space cost table
+overstates the headroom. Paraphrase probes, each claim's own text re-embedded as
+a query (n=250):
+
+| floor | chit-chat rejected | paraphrase matches lost |
 |---|---|---|
-| 0.50 | 9/10 | 0/439 |
-| **0.55** | **10/10** | **1/439 (0.2%)** |
-| 0.60 | 10/10 | 13/439 (3.0%) |
+| 0.50 | 9/10 | 0/250 |
+| **0.55** | **10/10** | **3/250 (1.2%)** |
+| 0.60 | 10/10 | 19/250 (7.6%) |
 
-`FALLBACK_MIN_COSINE = 0.55` is the first value that clears all ten, at a cost of
-one paraphrase match in 439.
+The corridor is **0.500 → 0.585** (noise ceiling → paraphrase p5), and 0.55 is
+the only round value inside it, with ~0.05 headroom on each side. The asymmetry
+justifies erring high within the corridor: a false admit pollutes
+`last_used_at` and re-opens the decay pathology `recordUsage: false` closed,
+while a false reject only returns `null` on a path where synthesis had already
+failed.
+
+> Raising the floor is **not** cheap insurance. In doc space 0.60 looks like it
+> costs 3.0%; in the space production actually uses it costs 7.6%, a quarter of
+> the p10 tail.
+
+**Retrieval discards more relevance than the floor does.** Measuring the same
+250 probes end-to-end rather than as a global scan — best cosine *inside*
+`recallClaims(limit 8)` rather than anywhere in the corpus — the emit-rate loss
+at 0.55 is 15.6%, not 1.2%. The gap is not the floor: for 93/250 probes (37%)
+the best neighbour never reached the shortlist at all, because `recallClaims`
+takes its top-k by **score**, so the same weight-suppresses-relevance defect
+this section fixes in the fallback also exists one layer earlier, in retrieval.
+Out of scope here — the floor is only accountable for the 1.2% — but it is the
+larger effect and worth its own change.
 
 > **Do not re-derive this from the test suite.** The unit and end-to-end tests
 > use `HashingEmbeddingProvider`, which is token overlap rather than semantics:
 > chit-chat is token-disjoint from the corpus and scores *exactly* 0.000, so
 > every floor in (0.36, 1.0] passes them. An earlier revision of this document
 > cited that 0.000 as if it were a corpus measurement and set the floor from it.
-> `describe.skipIf(!RUN_LOCAL)("fallback floor …")` in `pre-recall.test.ts` is
-> the test that can actually move this number — run it with
-> `RUN_LOCAL_EMBED_TEST=1`. It pins the floor from both sides: chit-chat must
-> emit nothing, and an on-topic paraphrase (measured `topcos=0.611`) must still
-> emit.
+
+**What each test actually pins.** No single test brackets this constant, so it
+is worth being precise about which edge each one holds:
+
+| Test | Holds | Notes |
+|---|---|---|
+| `FALLBACK_MIN_COSINE` corridor assertion | both edges | Runs in CI, no provider needed. Asserts the constant against the field numbers above: `> 0.500` (noise ceiling) and `< 0.585` (paraphrase p5). |
+| hashing end-to-end fixtures | lower edge | Incidental — the fixture cosines happen to bracket (0.500, 0.761]. Do not "clean up" as a stub artifact; that is what the corridor assertion is insurance against. |
+| `describe.skipIf(!RUN_LOCAL)("fallback floor …")` | upper edge | Real semantics, `RUN_LOCAL_EMBED_TEST=1`. Its five-claim fixture has no conversational surface area, so chit-chat only reaches ~0.31 there versus ~0.50 live — it would still pass at 0.45. It reliably catches a floor raised past real relevance (paraphrase measured at `topcos=0.611`), not one lowered into the noise. |
+
+Broadening the local fixture until chit-chat reproduced its live ceiling would
+mean shipping thousands of claims into a test file; recording the field
+measurement in an assertion is the cheaper equivalent.
 
 **Model output is prompt-injection surface.** Before this change the
 subprocess's output was only a search query, and every emitted line was a
@@ -344,6 +381,12 @@ filtering (`[{"text":"a"}]`, `["   "]`).
   can react to — a caller-side fix would have to be repeated for every future
   dispatch path. Drains and continuations thread no ts through, so only a
   top-level turn can recover one from the session row.
+  Known consequence: button-triggered turns (`<ts>:button:<action>`) get no
+  marker either, even though the real ts *is* recoverable as the prefix and
+  those turns are as slow as any other agent turn. Left alone deliberately —
+  recovering it means changing what `action-buttons.ts` puts in `event.ts`,
+  which also feeds `activeTopLevelMessageTs` and pending-message replay, so it
+  is a behaviour change rather than a signal fix. Worth doing on its own.
 - **The clear fires when the runner settles, marginally before the response
   posts.** It lives in a `finally` on `runRunnerWithAgent`, and the normal exit
   is `return this.onRunComplete(...)` — so the marker clears as the turn unwinds

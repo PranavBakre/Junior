@@ -8,6 +8,7 @@ import {
   buildSynthesisPrompt,
   createPreRecall,
   deriveRecallQueries,
+  FALLBACK_MIN_COSINE,
   maxCosine,
   parseSynthesisResult,
   selectFallbackCandidates,
@@ -300,6 +301,26 @@ describe("maxCosine", () => {
     expect(maxCosine([])).toBeNull();
     expect(maxCosine([candidate({ id: "a", score: 1, text: "x", cosine: null })])).toBeNull();
     expect(maxCosine([candidate({ id: "a", score: 0, text: "x", cosine: 0 })])).toBe(0);
+  });
+});
+
+describe("FALLBACK_MIN_COSINE", () => {
+  // This is the only assertion on the floor that runs in CI and does not depend
+  // on an embedding provider. It exists because the constant is otherwise
+  // pinned from below only by a hashing-stub fixture — and this file tells the
+  // reader that hashing numbers are meaningless for this constant, which invites
+  // exactly the "that fixture is a stub artifact, loosen it" change that would
+  // let the floor drop back through the noise ceiling with a green suite.
+  //
+  // Bounds are field measurements against the live corpus in QUERY space (what
+  // production embeds), through recallClaims(limit 8):
+  //   0.500  highest cosine any chit-chat probe reached ("can you check this
+  //          again"). At or below this, noise is admitted and marked used.
+  //   0.585  5th percentile of paraphrase-probe best matches (n=250). Above
+  //          this, the floor starts costing real recall — 0.60 loses 7.6%.
+  test("sits inside the measured noise/paraphrase corridor", () => {
+    expect(FALLBACK_MIN_COSINE).toBeGreaterThan(0.5);
+    expect(FALLBACK_MIN_COSINE).toBeLessThan(0.585);
   });
 });
 
@@ -645,10 +666,18 @@ describe("createPreRecall", () => {
 // ── The floor, against real semantics ────────────────────────────────────────
 //
 // Everything above runs on the hashing provider, which is token overlap, not
-// meaning: it cannot tell 0.55 from 0.9. These tests use the model that
-// produced every stored vector, so a floor change is measurable here rather
-// than hand-checked against a spreadsheet. Run with:
-//   RUN_LOCAL_EMBED_TEST=1 bun test src/memory/pre-recall.test.ts
+// meaning. These tests use the model that produced every stored vector. Run
+// with: RUN_LOCAL_EMBED_TEST=1 bun test src/memory/pre-recall.test.ts
+//
+// What they DO and DO NOT pin. Five fixture claims have no conversational
+// surface area, so chit-chat only reaches ~0.31 here against ~0.50 on the live
+// 2600-claim corpus. This suite therefore pins the floor's UPPER edge (a floor
+// past real relevance breaks the paraphrase case) but is weak on the lower one:
+// it would still pass at 0.45, which production would leak through. The lower
+// edge is held by the hashing fixture above and, authoritatively, by the
+// FALLBACK_MIN_COSINE corridor assertion. Broadening the fixture corpus until
+// chit-chat reached its live ceiling would mean shipping thousands of claims;
+// recording the field measurement in an assertion is the cheaper equivalent.
 
 describe.skipIf(!RUN_LOCAL)("fallback floor (model download required)", () => {
   const CORPUS = [

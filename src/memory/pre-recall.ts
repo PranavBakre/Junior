@@ -76,24 +76,41 @@ const FALLBACK_TOP_K = 3;
  * ── Which value ─────────────────────────────────────────────────────────────
  * Calibrated against the NOISE distribution, not only the paraphrase one. A
  * floor that keeps every good match is worthless if chit-chat also clears it,
- * and chit-chat is the case this exists for. Measured on the live corpus
- * through the production path (LocalEmbeddingProvider — the model that produced
- * every stored vector — then recallClaims(limit 8) → selectSynthesisCandidates):
+ * and chit-chat is the case this exists for. All numbers below are QUERY space
+ * — production embeds the query with the instruction prefix (`embed([q],
+ * "query")`) against claims stored as documents, and query mode runs ~0.05
+ * lower than document-vs-document. Measuring in doc space overstates the
+ * headroom.
  *
- *   chit-chat probes ("thanks, that worked", "lol", "any update on this?", …):
- *     best-candidate cosine spans 0.384-0.500, i.e. 0.50 sits INSIDE the noise
- *     tail — "can you check this again" peaks at exactly 0.500 and would be
- *     admitted, emitting a claim and marking it used.
- *   paraphrase side (each claim's own vector as probe, best OTHER match, 439
- *     probes): cosine floor 0.50 loses 0, 0.55 loses 1 (0.2%), 0.60 loses 13
- *     (3.0%). A 0.50 SCORE floor loses 118 (26.9%) — the axis defect again.
+ *   noise    chit-chat probes ("thanks, that worked", "lol", "any update on
+ *            this?", …) peak at cosine 0.384-0.500 through the production path.
+ *            0.50 is therefore INSIDE the noise tail: "can you check this
+ *            again" hits exactly 0.500 and would be admitted, emitting a claim
+ *            and marking it used.
+ *   cost     paraphrase probes (n=250, each claim's own text re-embedded as a
+ *            query — a generous upper bound on a real turn): p5=0.585,
+ *            p50=0.729. Floor 0.50 loses 0, 0.55 loses 3 (1.2%), 0.60 loses 19
+ *            (7.6%). Do NOT quote the doc-space figures (0.2% / 3.0%): raising
+ *            the floor to 0.60 as "cheap insurance" actually costs 7.6%.
  *
- * 0.55 is the first value that rejects 10/10 chit-chat probes, and it costs one
- * paraphrase match in 439. Do not re-tune from the hashing test provider: it is
- * token-overlap, not semantics, and scores chit-chat at exactly 0.000 by
- * construction, which makes any floor look correct.
+ * 0.55 is the only round value in the corridor between the 0.500 noise ceiling
+ * and the 0.585 paraphrase p5. The asymmetry justifies erring high inside it: a
+ * false admit pollutes `last_used_at` and re-opens the decay pathology
+ * recordUsage:false closed, while a false reject only returns null on a path
+ * where synthesis had already failed.
+ *
+ * Those loss figures are the floor's OWN cost (best neighbour anywhere in the
+ * corpus). End to end the fallback stays silent on ~15% of the same probes,
+ * because recallClaims takes its top-k by SCORE and the best neighbour never
+ * reaches the shortlist for 37% of them — the same weight-suppresses-relevance
+ * defect, one layer earlier. Not this constant's to fix; see the feature doc.
+ *
+ * Do not re-tune from the hashing test provider: it is token overlap, not
+ * semantics, and scores chit-chat at exactly 0.000 by construction, which makes
+ * any floor look correct. `RUN_LOCAL_EMBED_TEST=1` and the corridor assertion in
+ * pre-recall.test.ts are the tests that can move this number.
  */
-const FALLBACK_MIN_COSINE = 0.55;
+export const FALLBACK_MIN_COSINE = 0.55;
 /** Synthesized lines kept, and their length, so the injected block stays small. */
 const MAX_NOTES = 5;
 const MAX_NOTE_CHARS = 500;
@@ -376,8 +393,7 @@ export function selectSynthesisCandidates(
  * Filter on cosine (relevance), rank by score (relevance × value): a
  * low-weight but exactly-on-topic claim is precisely what the fallback exists
  * to surface. A null cosine — no queryVector, or a claim with no embedding — is
- * unmeasurable relevance, which is not relevance. The shortlist is
- * score-ordered, so filter-then-slice is "top K above the floor".
+ * unmeasurable relevance, which is not relevance.
  */
 export function selectFallbackCandidates(
   shortlist: SynthesisCandidate[],
@@ -496,7 +512,7 @@ export function formatPreRecallBlock(
   options?: { verbatim?: boolean },
 ): string {
   const header = options?.verbatim
-    ? "Claims recalled verbatim from Junior's memory. Use as context."
+    ? "Claim text recalled from Junior's memory, unedited (long claims end in …). Use as context."
     : "A model's summary of claims recalled from Junior's memory. Use as context, and prefer the underlying claim when a specific matters.";
   return [
     "<pre-recall>",
