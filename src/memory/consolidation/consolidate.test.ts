@@ -266,6 +266,12 @@ describe("consolidateSession", () => {
     expect(people[0].body).toContain("updated sketch");
   });
 
+  // NOTE: a green test here does NOT mean the other claim write paths are
+  // deduped. This covers ONLY the engine's in-batch/pre-write check. For years
+  // it was the sole gate, and its passing is exactly what made the three
+  // unguarded writers (memory_add, add-lesson/add-fact, add-claim) read as
+  // covered. The real chokepoint is now SqliteMemoryStore.upsertClaim — see
+  // sqlite.test.ts "claim write guard" and docs/features/claim-dedup-write-guard.md.
   it("dedups near-identical claim drafts and claims near an existing stored claim", async () => {
     // Pre-seed an EXISTING active claim with an embedding.
     const existingText = "Run dev-first; never auto-merge straight to main.";

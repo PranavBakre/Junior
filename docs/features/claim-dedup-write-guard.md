@@ -1,8 +1,16 @@
 # Claim dedup: move the guard into the write path
 
-> **Status: Proposal.** The defect is measured against the live corpus
-> (`data/memory.db`, 2621 embedded claims) and the current code; the fix is not
-> implemented. Measurements taken at commit `905621a`.
+> **Status: Shipped.** The guard lives in `SqliteMemoryStore.upsertClaim`, the
+> value-metadata erasure is fixed, `MEMORY_DEDUP_THRESHOLD` is configurable, the
+> backfill sweep ships as `workflows/memory-dedup-sweep.workflow.md` +
+> `dedup-sweep` CLI, and `memoryHealth()` reports the near-duplicate rate.
+> **The 432-duplicate backfill has NOT been applied to the live corpus** — the
+> sweep is dry-run by default and applying it is an operator action (see
+> [Backfill](#backfill)). The problem measurements below are historical, taken
+> against `data/memory.db` at commit `905621a`.
+>
+> Implementation notes are collected in [What shipped](#what-shipped), including
+> the three places the code deliberately diverges from this document.
 
 ## Problem
 
@@ -12,7 +20,8 @@ Semantic dedup exists, is tested, and is bypassed by most of the writers.
 `DEFAULT_DEDUP_THRESHOLD = 0.92` cosine of an existing claim or of another draft
 in the same batch (`src/memory/consolidation/consolidate.ts:24,149-150`). That
 works. But the check lives in *that caller*, not in the store, and there are four
-callers of `upsertClaim`:
+callers of `upsertClaim`. As of this document's Shipped status every row below is
+deduped by the store itself; the table records the state that motivated the fix:
 
 | Caller | Deduped? |
 |---|---|
@@ -68,7 +77,8 @@ rung-1 budget. A faster index would return the redundant results faster.
 claims near an existing stored claim"* — passes. A green test on the one guarded
 path is exactly what makes the three unguarded paths read as covered. Worth a
 comment on that test when the guard moves, so the next reader does not draw the
-same inference.
+same inference. *(Shipped: that comment is on the test now, pointing at the
+`claim write guard` block in `sqlite.test.ts`.)*
 
 ## Shape of the fix
 
@@ -203,6 +213,58 @@ permanently against its own success condition.
 Add the near-duplicate rate to `memoryHealth()` so it is a standing metric
 instead of a one-off measurement — without it, the next regression is as
 invisible as this one was.
+
+## What shipped
+
+Code index: [memory-system-v3.md](../code_index/memory-system-v3.md).
+
+| Piece | Where |
+|---|---|
+| The guard, the merge, the value-metadata fix | `SqliteMemoryStore.upsertClaim` + `findNearDuplicate` (`src/memory/sqlite.ts`) |
+| Shared threshold / winner ordering / scope key | `src/memory/dedup.ts` |
+| Backfill sweep | `src/memory/dedup-sweep.ts`, `dedup-sweep` CLI, `workflows/memory-dedup-sweep.workflow.md` |
+| Merge primitive for the sweep | `MemoryStore.collapseDuplicateClaims` |
+| Near-duplicate rate | `memoryHealth()` → `MemoryHealthKind.nearDuplicates` / `.nearDuplicateRate` |
+| Threshold config | `MEMORY_DEDUP_THRESHOLD` → `config.memory.dedupThreshold` → store option |
+
+### Deliberate divergences from this document
+
+1. **`action` has three values, not two.** The document specified
+   `"inserted" | "merged"`. The code also returns `"updated"`, because this
+   document's own §"Existing-id writes need patch semantics" establishes the
+   existing-id write as a distinct case — reporting it as `"inserted"` would be a
+   lie a caller could act on. `id` is always the row that HOLDS the knowledge
+   (the survivor on a merge), so a caller can never be handed an id that was
+   never written.
+2. **COALESCE preservation covers more than the three value columns.**
+   `last_used_at` is included (erasing it resets the fade clock — the same decay
+   signal the counters feed) and so are `embedding`/`embed_model`/`dim` (erasing
+   the vector makes the row both unguardable and unrecallable, which is the
+   defect this document opens with). `repo`, `tags`, `source_episode`, and
+   `active` keep caller-declared `excluded.` semantics — they are scope
+   declarations, not accumulated value.
+3. **The re-scan trigger includes archived rows.** The document says re-scan "on
+   any update where the text changed". The code also re-scans when the existing
+   row is `active = 0`, because without it, re-adding a claim the backfill sweep
+   archived would resurrect it one write at a time and quietly undo the sweep.
+
+Two smaller implementation choices worth naming:
+
+- **The sweep's scheduled run is report-only.** The document says "dry-run by
+  default like `migrate-v3.ts`"; the workflow therefore never passes `apply`.
+  Committing a collapse is `bun run src/memory/cli.ts dedup-sweep --apply`, run
+  by an operator with the bot stopped. A cron job that archives claims
+  unattended would be a destructive default.
+- **The near-duplicate rate is opt-out, not opt-in.** It is an all-pairs cosine
+  scan (O(n²) per dedup scope, seconds at a few thousand claims), so
+  `memoryHealth({ includeNearDuplicates: false })` returns `null` counts for a
+  latency-sensitive caller. It is on by default because a metric nobody asks for
+  is not a standing metric.
+
+`consolidateSession` keeps its own in-batch check: the store cannot see drafts
+that have not been written yet, so near-identical drafts inside one batch are
+still collapsed there. Its pre-check against existing claims is now an
+optimization (skip a pointless write round-trip), not the gate.
 
 ## Dependencies
 

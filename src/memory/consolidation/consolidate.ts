@@ -6,6 +6,7 @@
 // never reprocessed. The LLM and embedder are injected; there is no runner
 // spawn here (that is the production adapter, a separate follow-up).
 
+import { resolveDedupThreshold } from "../dedup.ts";
 import type { EmbeddingProvider } from "../embedding/types.ts";
 import type { ProfileStore } from "../profiles/store.ts";
 import type { ProfileKind } from "../profiles/types.ts";
@@ -20,8 +21,9 @@ import type {
   ConsolidationReport,
 } from "./types.ts";
 
-/** Cosine at/above which two claims are treated as near-duplicates. */
-export const DEFAULT_DEDUP_THRESHOLD = 0.92;
+// The threshold now lives in ../dedup.ts, shared with the store's write guard
+// and the backfill sweep — re-exported here so existing importers keep working.
+export { DEFAULT_DEDUP_THRESHOLD } from "../dedup.ts";
 
 export interface ConsolidateSessionArgs {
   store: MemoryStore;
@@ -50,14 +52,14 @@ export interface ConsolidateSessionArgs {
   resolvePeople?: PeopleResolver;
   /** Clock (epoch ms). Defaults to Date.now(). */
   now?: number;
-  /** Cosine dedup threshold. Defaults to DEFAULT_DEDUP_THRESHOLD (0.92). */
+  /** Cosine dedup threshold. Defaults to MEMORY_DEDUP_THRESHOLD / 0.92 — the same gate the store enforces. */
   dedupThreshold?: number;
 }
 
 export async function consolidateSession(args: ConsolidateSessionArgs): Promise<ConsolidationReport> {
   const { store, profileStore, embedder, invoke } = args;
   const now = args.now ?? Date.now();
-  const threshold = args.dedupThreshold ?? DEFAULT_DEDUP_THRESHOLD;
+  const threshold = args.dedupThreshold ?? resolveDedupThreshold();
 
   // a. Gather unconsolidated evidence — use the pre-fetched set when the caller
   //    (the bin-packing sweep) supplies one, else fetch by threadId/limit.
@@ -145,7 +147,11 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
     if (!text) continue;
     const [vector] = await embedder.embed([text], "document");
 
-    // Dedup vs existing active claims AND vs survivors already accepted this batch.
+    // In-batch dedup: the store's write guard cannot see drafts that have not
+    // been written yet, so near-identical drafts within one batch are still
+    // collapsed here. The pre-check against existing claims is kept as well —
+    // it avoids a pointless write round-trip — but it is no longer the only
+    // gate: the store re-checks scope-aware and merges rather than drops.
     const nearExisting = existingVectors.some((c) => cosine(vector, c.vector) >= threshold);
     const nearBatch = acceptedBatch.some((v) => cosine(vector, v) >= threshold);
     if (nearExisting || nearBatch) {
@@ -165,7 +171,13 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
       sourceEpisode: claimSourceEpisode,
       createdAt: now,
     };
-    await store.upsertClaim(claim);
+    const written = await store.upsertClaim(claim);
+    if (written.action === "merged") {
+      // The store found a neighbour this engine's own pre-check missed (e.g. a
+      // different repo scope, or a concurrent writer). Report it as deduped.
+      claimsDeduped += 1;
+      continue;
+    }
     acceptedBatch.push(vector);
     claimsWritten += 1;
   }

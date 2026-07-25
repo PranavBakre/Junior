@@ -21,6 +21,8 @@ execution, persistence, and dashboard projection.
 The current repository definitions are:
 
 - `workflows/memory-consolidation.workflow.md`
+- `workflows/memory-dedup-sweep.workflow.md` (native, report-only — see
+  [claim-dedup-write-guard.md](../features/claim-dedup-write-guard.md))
 - `workflows/release-notes.workflow.md`
 - `workflows/worklog.workflow.md`
 - `workflows/worktree-prune.workflow.md`

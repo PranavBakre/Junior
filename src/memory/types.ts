@@ -95,6 +95,38 @@ export interface ClaimInput {
   createdAt: number;
   lastUsedAt?: number | null;
   active?: boolean;
+  /**
+   * Write this row VERBATIM: skip the near-duplicate scan and waive the
+   * embedding requirement. Only restore paths set it — `migrate-v3.ts`, a backup
+   * restore, and test fixtures that seed a synthetic corpus. Ordinary writers
+   * must go through the guard, or the store stops being the chokepoint.
+   */
+  skipDedup?: boolean;
+}
+
+/**
+ * Outcome of a claim write. `id` is always the row that now HOLDS the knowledge,
+ * so callers can reference it safely: on a merge that is the survivor, not the
+ * id the caller asked for (that row was never written). Lets a caller — and the
+ * Stop hook — tell "stored" from "already knew that".
+ */
+export interface ClaimWriteResult {
+  id: string;
+  action: "inserted" | "updated" | "merged";
+  /** Survivor id when the write collapsed into an existing claim (equals `id`). */
+  mergedInto?: string;
+}
+
+export interface CollapseDuplicateClaimsOptions {
+  /** The claim that keeps its row and absorbs the duplicates' counters. */
+  survivorId: string;
+  /** Claims to ARCHIVE (`active = 0`) after folding their counters into the survivor. */
+  duplicateIds: string[];
+}
+
+export interface CollapseDuplicateClaimsResult {
+  /** Ids actually flipped to `active = 0` — already-archived duplicates are skipped. */
+  archivedIds: string[];
 }
 
 export interface ClaimRecallFilters {
@@ -203,6 +235,15 @@ export interface MemoryHealthOptions {
   olderThanMs?: number;
   /** Value ceiling used to compute the fade-candidate count. Defaults to 0.5. */
   maxWeight?: number;
+  /**
+   * Compute the near-duplicate rate (default true). It is an ALL-PAIRS cosine
+   * scan within each dedup scope — O(n²) in corpus size, seconds at a few
+   * thousand claims — so a latency-sensitive caller can turn it off and get
+   * `null` counts instead.
+   */
+  includeNearDuplicates?: boolean;
+  /** Cosine threshold for the near-duplicate rate. Defaults to the store's configured one. */
+  dedupThreshold?: number;
 }
 
 export interface MemoryHealthKind {
@@ -221,12 +262,24 @@ export interface MemoryHealthKind {
    * Episodes are never value-archived, so this is always 0 for `"episode"`.
    */
   fadeCandidates: number;
+  /**
+   * Active claims of this kind that have at least one twin at/above the dedup
+   * threshold INSIDE their own dedup scope (same kind, same repo). Scoped
+   * deliberately: the sweep archives duplicates rather than deleting them, so a
+   * corpus-wide measurement would fail against its own success condition.
+   * `null` when the scan was skipped; always `null` for `"episode"`.
+   */
+  nearDuplicates: number | null;
+  /** `nearDuplicates / total`, 0 when empty, `null` when the scan was skipped. */
+  nearDuplicateRate: number | null;
 }
 
 export interface MemoryHealth {
   generatedAt: number;
   olderThanMs: number;
   maxWeight: number;
+  /** Cosine threshold the near-duplicate counts were measured at. */
+  dedupThreshold: number;
   kinds: MemoryHealthKind[];
 }
 
