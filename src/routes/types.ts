@@ -117,6 +117,17 @@ export interface TaskRouteRecord {
   steps: TaskRouteStepRecord[];
 }
 
+/**
+ * The identity vocabulary a repo has actually accumulated. Handed back on a
+ * miss so a caller can retry exactly, and so a later save reuses an existing
+ * spelling instead of coining a synonym for the same thing.
+ */
+export interface RouteIdentity {
+  feature: string;
+  taskKind: string;
+  active: boolean;
+}
+
 export interface RouteRecallOptions {
   /** PRE-COMPUTED query vector. The store never embeds; the caller does. */
   queryVector?: Float32Array;

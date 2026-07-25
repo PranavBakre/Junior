@@ -24,8 +24,20 @@ export interface FixtureRepo {
   publish(): Promise<void>;
   /** Switch branches, creating the branch when `create` is set. */
   checkout(branch: string, options?: { create?: boolean }): Promise<void>;
+  /**
+   * A real `--no-ff` merge commit, optionally carrying edits made DURING the
+   * merge (a conflict resolution or a build fixup). Those edits exist only in
+   * the merge commit, which is why `git log --name-only` says nothing about
+   * them unless a diff against a parent is explicitly requested.
+   */
+  merge(branch: string, filesInMerge?: Record<string, string>): Promise<string>;
   /** Current `origin/main` commit. */
   originSha(): Promise<string>;
+  /**
+   * Rewind the LOCAL `origin/main` remote-tracking ref without touching the
+   * bare remote — i.e. "this box has not fetched in a while".
+   */
+  rewindOriginRef(sha: string): Promise<void>;
   cleanup(): void;
 }
 
@@ -83,8 +95,38 @@ export async function createFixtureRepo(prefix = "junior-routes-"): Promise<Fixt
         : ["git", "checkout", "-q", branch];
       await run(args, path);
     },
+    async merge(branch, filesInMerge) {
+      await run(["git", "merge", "--no-ff", "--no-commit", branch], path, {
+        // A conflicting merge exits non-zero and leaves the tree for us to fix,
+        // which is exactly the case worth exercising.
+        allowFailure: true,
+      });
+      if (filesInMerge) repo.write(filesInMerge);
+      await run(["git", "add", "-A"], path);
+      await run(
+        [
+          "git",
+          "-c",
+          "user.email=fixture@junior.test",
+          "-c",
+          "user.name=fixture",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-q",
+          "--no-edit",
+          "-m",
+          `merge ${branch}`,
+        ],
+        path,
+      );
+      return (await run(["git", "rev-parse", "HEAD"], path)).trim();
+    },
     async originSha() {
       return (await run(["git", "rev-parse", "origin/main"], path)).trim();
+    },
+    async rewindOriginRef(sha) {
+      await run(["git", "update-ref", "refs/remotes/origin/main", sha], path);
     },
     cleanup() {
       rmSync(root, { recursive: true, force: true });
@@ -93,13 +135,19 @@ export async function createFixtureRepo(prefix = "junior-routes-"): Promise<Fixt
   return repo;
 }
 
-async function run(args: string[], cwd: string): Promise<string> {
+async function run(
+  args: string[],
+  cwd: string,
+  options: { allowFailure?: boolean } = {},
+): Promise<string> {
   const proc = Bun.spawn(args, { cwd, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
   ]);
   const code = await proc.exited;
-  if (code !== 0) throw new Error(`${args.join(" ")} failed: ${stderr.trim()}`);
+  if (code !== 0 && !options.allowFailure) {
+    throw new Error(`${args.join(" ")} failed: ${stderr.trim()}`);
+  }
   return stdout;
 }

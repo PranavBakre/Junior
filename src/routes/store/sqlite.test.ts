@@ -97,6 +97,34 @@ describe("SqliteTaskRouteStore", () => {
     expect(steps?.n).toBe(1);
   });
 
+  it("raises rather than aliasing two identities onto one id", async () => {
+    await store.upsertRoute(route());
+    // `route_id()` slugs the identity, so `Memory View` and `memory-view` used
+    // to produce ONE id for TWO identities: the ON CONFLICT(repo, feature,
+    // task_kind) clause did not fire, the INSERT hit the primary key, and the
+    // agent got a raw SQLite string back from route_save. Normalising the
+    // identity columns is what prevents it; this is the constraint that was
+    // being violated, kept as a live guard.
+    await expect(store.upsertRoute(route({ feature: "Memory View" }))).rejects.toThrow(
+      /UNIQUE constraint failed: task_route\.id/,
+    );
+  });
+
+  it("lists every identity for a repo, archived ones included", async () => {
+    const stored = await store.upsertRoute(route());
+    await store.upsertRoute(
+      route({ id: "route_junior__other__debug", feature: "other", taskKind: "debug" }),
+    );
+    await store.upsertRoute(route({ id: "route_elsewhere", repo: "gx-backend" }));
+    await store.recordFetch(stored.id, { now: 1, repairs: [], brokenFetches: 3, active: false });
+
+    expect(await store.listRouteIdentities("junior")).toEqual([
+      { feature: "memory-view", taskKind: "add-ui-surface", active: false },
+      { feature: "other", taskKind: "debug", active: true },
+    ]);
+    expect(await store.listRouteIdentities("nothing-here")).toEqual([]);
+  });
+
   it("revives an archived row rather than inserting alongside it", async () => {
     const stored = await store.upsertRoute(route());
     await store.recordFetch(stored.id, { now: 2_000, repairs: [], brokenFetches: 3, active: false });

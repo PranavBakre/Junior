@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { join } from "node:path";
 import { HashingEmbeddingProvider } from "../memory/embedding/hashing.ts";
-import { resolveCanonicalRef } from "./freshness.ts";
+import { resetRefFetchThrottle, resolveCanonicalRef } from "./freshness.ts";
 import { InMemoryTaskRouteStore } from "./store/memory.ts";
 import { createFixtureRepo, type FixtureRepo } from "./test-fixture.ts";
 import {
@@ -60,6 +61,7 @@ describe("task-route tools", () => {
   ];
 
   beforeEach(async () => {
+    resetRefFetchThrottle();
     repo = await createFixtureRepo("junior-route-tools-");
     repo.write({
       "src/handler.ts": HANDLER,
@@ -89,6 +91,18 @@ describe("task-route tools", () => {
         taskKind: "add-ui-surface",
         taskDesc: "add a filter to the memory projection view",
         steps: baseSteps,
+        ...over,
+      },
+      deps,
+    );
+
+  const fetchIt = (over: Partial<Parameters<typeof routeFetch>[0]> = {}) =>
+    routeFetch(
+      {
+        repo: "fixture",
+        task: "add a filter",
+        feature: "memory-projection",
+        taskKind: "add-ui-surface",
         ...over,
       },
       deps,
@@ -437,6 +451,284 @@ describe("task-route tools", () => {
     const stored = await store.getRoute(saved.route_id);
     expect(stored?.steps).toHaveLength(3);
     expect(stored?.steps.map((s) => s.ord)).toEqual([1, 2, 3]);
+  });
+
+  it("sees an edit that arrived as a merge commit, and does not bump past it", async () => {
+    // The workflow here is always 3-way merges, never squash, so a merge that
+    // carries a conflict resolution or a build fixup is ordinary. Such an edit
+    // exists only in the merge commit, which `git log --name-only` describes
+    // with no file names at all — so the step used to answer `untouched` with
+    // `verified_by: git-untouched`, the strongest label in the system, while
+    // the fingerprint said `drifted`. It then self-concealed: a clean fetch
+    // bumps verified_sha past the merge and the next log sees zero commits.
+    const saved = await save();
+    const originalSha = (await store.getRoute(saved.route_id))?.verifiedSha;
+
+    await repo.checkout("feature/merge-fixup", { create: true });
+    repo.write({ "src/shared.ts": SHARED.replace("value * 2", "value * 5") });
+    await repo.commit("branch work elsewhere");
+    await repo.checkout("main");
+    await repo.merge("feature/merge-fixup", {
+      "src/handler.ts": HANDLER.replace("return scaled + 1;", "return scaled * 9;"),
+    });
+    await repo.publish();
+
+    const result = await fetchIt();
+    assertFound(result);
+    expect(result.drift).toBe("1 commit");
+    expect(result.steps[0].status).toBe("drifted");
+    expect(result.steps[0].verified_by).toBe("fingerprint");
+    // The file the merge did not touch keeps its cheap tier-0 answer.
+    expect(result.steps[1].status).toBe("untouched");
+    expect((await store.getRoute(saved.route_id))?.verifiedSha).toBe(originalSha);
+  });
+
+  it("normalises the identity, so two spellings are one route", async () => {
+    // `Add-UI-Surface` and `add-ui-surface` slugged to the same route id but
+    // NOT to the same ON CONFLICT target, so the second save hit a raw
+    // `UNIQUE constraint failed: task_route.id` and could never be stored.
+    const first = await save();
+    const second = await save({
+      feature: "Memory Projection",
+      taskKind: "Add-UI-Surface",
+      taskDesc: "rewritten",
+      steps: [{ note: "just one step now", path: "src/shared.ts", symbol: "shared" }],
+    });
+
+    expect(second.route_id).toBe(first.route_id);
+    expect(second.identity).toEqual({
+      repo: "fixture",
+      feature: "memory-projection",
+      task_kind: "add-ui-surface",
+    });
+    expect(second.overwrote).toBe(true);
+    expect(second.previous_steps).toBe(3);
+    expect(first.overwrote).toBe(false);
+    expect(await store.listRouteIdentities("fixture")).toEqual([
+      { feature: "memory-projection", taskKind: "add-ui-surface", active: true },
+    ]);
+
+    // And the odd spelling finds it again on the way back out.
+    const found = await fetchIt({ feature: "Memory Projection", taskKind: "Add UI Surface" });
+    assertFound(found);
+    expect(found.route_id).toBe(first.route_id);
+    expect(found.matched_by).toBe("identity");
+  });
+
+  it("rejects an identity part with nothing to slug", async () => {
+    await expect(save({ feature: "***" })).rejects.toThrow(/letter or digit/);
+  });
+
+  it("takes an absolute path inside the checkout and rejects one outside it", async () => {
+    // The workspace agent instructions mandate absolute paths, so route_save
+    // receives them routinely — and `git show <ref>:<path>` accepts only
+    // repo-relative ones. Unhandled, every such step was recorded `pending`
+    // ("until it merges" — the wrong cause) and the route was never activated.
+    const inside = await save({
+      steps: [
+        {
+          note: "the projection entry point",
+          path: join(repo.path, "src/handler.ts"),
+          symbol: "handleMemoryProjection",
+        },
+      ],
+    });
+    expect(inside.resolved).toBe(1);
+    expect(inside.unresolved).toEqual([]);
+    expect(inside.active).toBe(true);
+    expect((await store.getRoute(inside.route_id))?.steps[0].path).toBe("src/handler.ts");
+
+    const outside = await save({
+      feature: "elsewhere",
+      steps: [
+        {
+          note: "a path from another checkout entirely",
+          path: "/Users/someone/other-repo/src/handler.ts",
+          symbol: "handleMemoryProjection",
+        },
+      ],
+    });
+    expect(outside.active).toBe(false);
+    expect(outside.unresolved).toHaveLength(1);
+    expect(outside.unresolved[0].reason).toContain("not inside the repo checkout");
+    expect(outside.unresolved[0].reason).not.toContain("pending");
+
+    // A relative path that escapes the root is the same mistake wearing a
+    // different hat, and must not degrade to "pending until it merges" either.
+    const escaping = await save({
+      feature: "escaping",
+      steps: [{ note: "up and out", path: "../other-repo/src/handler.ts" }],
+    });
+    expect(escaping.active).toBe(false);
+    expect(escaping.unresolved[0].reason).toContain("not inside the repo checkout");
+  });
+
+  it("reports an expects_ref that is not in the file at save time", async () => {
+    // Unchecked, a typo survives the first fetch (tier 0 short-circuits before
+    // the edge check), then flips the step to edge-broken forever — and three
+    // such fetches archive the route over a typo, not a code change.
+    const result = await save({
+      steps: [
+        {
+          note: "the route table hands off to it",
+          path: "src/server.ts",
+          symbol: "route",
+          expectsRef: "handleMemoryProjektion",
+        },
+      ],
+    });
+    expect(result.resolved).toBe(1);
+    expect(result.unresolved).toHaveLength(1);
+    expect(result.unresolved[0].reason).toContain("expects_ref");
+    expect(result.unresolved[0].reason).toContain("src/server.ts");
+
+    const good = await save({
+      feature: "good-edge",
+      steps: [
+        {
+          note: "the route table hands off to it",
+          path: "src/server.ts",
+          symbol: "route",
+          expectsRef: "handleMemoryProjection",
+        },
+      ],
+    });
+    expect(good.unresolved).toEqual([]);
+  });
+
+  it("advances origin before verifying, and dates the ref it verified against", async () => {
+    // Nothing else in this feature fetches, so without this a route could read
+    // `untouched` / `git-untouched` — maximum confidence — against a tree three
+    // weeks stale, and the reader could not tell.
+    const saved = await save();
+    const savedSha = (await store.getRoute(saved.route_id))?.verifiedSha;
+    const staleSha = await repo.originSha();
+    repo.write({ "src/handler.ts": HANDLER.replace("return scaled + 1;", "return scaled * 4;") });
+    await repo.commit("later work");
+    await repo.publish();
+    // Pretend this box has not fetched since the save.
+    await repo.rewindOriginRef(staleSha);
+    resetRefFetchThrottle();
+
+    const result = await fetchIt();
+    assertFound(result);
+    expect(result.ref_committed_at).not.toBeNull();
+    expect(result.drift).toBe("1 commit");
+    expect(result.steps[0].status).toBe("drifted");
+    // The drift is only visible because the ref moved; the sha stays put while
+    // that step is outstanding.
+    expect(savedSha).toBe(staleSha);
+    expect((await store.getRoute(saved.route_id))?.verifiedSha).toBe(staleSha);
+
+    // Throttled: a second fetch inside the window does not re-hit the network,
+    // and the ref it already advanced to still answers.
+    await repo.rewindOriginRef(staleSha);
+    const throttled = await fetchIt();
+    assertFound(throttled);
+    expect(throttled.ref).toBe("origin/main");
+  });
+
+  it("names the repo's known identities on a miss", async () => {
+    await save();
+    const miss = await routeFetch(
+      { repo: "fixture", task: "rotate the postgres credentials", feature: "nope", taskKind: "nada" },
+      deps,
+    );
+    if (miss.found) throw new Error("expected a miss");
+    expect(miss.known).toEqual([
+      { feature: "memory-projection", task_kind: "add-ui-surface", active: true },
+    ]);
+  });
+
+  it("an unreadable repo neither advances nor resets the broken streak", async () => {
+    const saved = await save();
+    repo.write({
+      "src/handler.ts": "export const nothing = 1;\n",
+      "src/server.ts": "export const alsoNothing = 2;\n",
+    });
+    await repo.commit("gut it");
+    await repo.publish();
+
+    await fetchIt();
+    await fetchIt();
+    expect((await store.getRoute(saved.route_id))?.brokenFetches).toBe(2);
+
+    const offline: TaskRouteToolDeps = { ...deps, resolveRepoPath: () => null };
+    const unknown = await routeFetch(
+      {
+        repo: "fixture",
+        task: "add a filter",
+        feature: "memory-projection",
+        taskKind: "add-ui-surface",
+      },
+      offline,
+    );
+    assertFound(unknown);
+    // The streak is evidence about the route; an unreadable checkout is no
+    // evidence at all, so it must neither advance NOR reset it.
+    expect((await store.getRoute(saved.route_id))?.brokenFetches).toBe(2);
+
+    const third = await fetchIt();
+    assertFound(third);
+    expect(third.archived).toBe(true);
+  });
+
+  it("activates a pending anchor whose file was renamed before it merged", async () => {
+    await repo.checkout("feature/renamed", { create: true });
+    repo.write({ "src/panel.ts": "export function renderPanel() {\n  return null;\n}\n" });
+    await repo.commit("unmerged work");
+
+    const saved = await save({
+      steps: [
+        { note: "the new panel", path: "src/panel.ts", symbol: "renderPanel" },
+        {
+          note: "the projection entry point",
+          path: "src/handler.ts",
+          symbol: "handleMemoryProjection",
+        },
+      ],
+    });
+    expect(saved.resolved).toBe(1);
+
+    // It merges under a different name than the one the agent recorded.
+    await repo.checkout("main");
+    repo.write({ "src/panels/panel.ts": "export function renderPanel() {\n  return null;\n}\n" });
+    await repo.commit("land the panel, renamed");
+    await repo.publish();
+
+    const result = await fetchIt();
+    assertFound(result);
+    expect(result.steps[0].status).toBe("moved");
+    expect(result.steps[0].resolved_path).toBe("src/panels/panel.ts");
+    expect(result.repaired).toEqual([1]);
+    expect((await store.getRoute(saved.route_id))?.steps[0].path).toBe("src/panels/panel.ts");
+  });
+
+  it("does not activate a pending anchor onto its own import line", async () => {
+    await repo.checkout("feature/import-only", { create: true });
+    repo.write({ "src/panel.ts": "export function renderPanel() {\n  return null;\n}\n" });
+    await repo.commit("unmerged work");
+
+    const saved = await save({
+      steps: [{ note: "the new panel", path: "src/panel.ts", symbol: "renderPanel" }],
+    });
+
+    // It lands elsewhere, leaving only a re-export behind at the recorded path.
+    await repo.checkout("main");
+    repo.write({
+      "src/panel.ts": `import { renderPanel } from "./panels/render.ts";\n\nexport { renderPanel };\n`,
+      "src/panels/render.ts": "export function renderPanel() {\n  return null;\n}\n",
+    });
+    await repo.commit("land it elsewhere");
+    await repo.publish();
+
+    const result = await fetchIt();
+    assertFound(result);
+    // A loose bare-occurrence match would have fingerprinted the import line and
+    // called it `ok` at the old path — a pattern the agent never asserted.
+    expect(result.steps[0].status).toBe("moved");
+    expect(result.steps[0].resolved_path).toBe("src/panels/render.ts");
+    expect((await store.getRoute(saved.route_id))?.steps[0].path).toBe("src/panels/render.ts");
   });
 
   it("falls back to the process cwd when Junior is itself the repo", async () => {

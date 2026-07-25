@@ -9,6 +9,7 @@ import {
 import type { TaskRouteStore } from "./interface.ts";
 import type {
   RouteFetchBookkeeping,
+  RouteIdentity,
   RouteRecallOptions,
   RouteRecallResult,
   TaskRouteRecord,
@@ -194,6 +195,20 @@ export class SqliteTaskRouteStore implements TaskRouteStore {
       route: this.hydrate(entry.row),
       cosine: entry.cosine,
     }));
+  }
+
+  async listRouteIdentities(repo: string): Promise<RouteIdentity[]> {
+    return this.db
+      .query<{ feature: string; task_kind: string; active: number | null }, [string]>(
+        `SELECT feature, task_kind, active FROM task_route
+         WHERE repo = ? ORDER BY feature ASC, task_kind ASC`,
+      )
+      .all(repo)
+      .map((row) => ({
+        feature: row.feature,
+        taskKind: row.task_kind,
+        active: (row.active ?? 1) === 1,
+      }));
   }
 
   async recordFetch(routeId: string, book: RouteFetchBookkeeping): Promise<void> {

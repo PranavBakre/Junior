@@ -1,4 +1,4 @@
-import { basename } from "node:path";
+import { basename, isAbsolute, relative as relativePath, resolve } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../mcp/register-tool.ts";
@@ -8,6 +8,7 @@ import {
   describeDrift,
   evaluateDecay,
   gitFileExists,
+  gitShowFile,
   resolveCanonicalRef,
   routeDrift,
 } from "./freshness.ts";
@@ -75,6 +76,12 @@ export interface RouteSaveResult {
    * stored but not searchable until a later fetch finds its anchors merged.
    */
   active: boolean;
+  /** The identity actually written, after normalisation (see `normalizeKey`). */
+  identity: { repo: string; feature: string; task_kind: string };
+  /** A save is last-writer-wins by design; it should at least say so. */
+  overwrote: boolean;
+  /** Steps the overwritten route had, so a caller can notice it clobbered more. */
+  previous_steps?: number;
 }
 
 /**
@@ -92,9 +99,10 @@ export async function routeSave(
   args: RouteSaveArgs,
   deps: TaskRouteToolDeps,
 ): Promise<RouteSaveResult> {
-  const repo = required(args.repo, "repo");
-  const feature = required(args.feature, "feature");
-  const taskKind = required(args.taskKind, "task_kind");
+  const repoInput = required(args.repo, "repo");
+  const repo = normalizeKey(repoInput, "repo");
+  const feature = normalizeKey(required(args.feature, "feature"), "feature");
+  const taskKind = normalizeKey(required(args.taskKind, "task_kind"), "task_kind");
   const taskDesc = required(args.taskDesc, "task_desc");
   if (args.steps.length === 0) {
     throw new Error("route_save: a route needs at least one step");
@@ -107,10 +115,10 @@ export async function routeSave(
     );
   }
 
-  const ctx = await resolveCanonicalRef(
-    repoPathFor(repo, deps),
-    deps.resolveDefaultBase?.(repo),
-  );
+  const repoPath = repoPathFor(repoInput, repo, deps);
+  const ctx = await resolveCanonicalRef(repoPath, defaultBaseFor(repoInput, repo, deps), {
+    fetch: true,
+  });
 
   const steps: TaskRouteStepRecord[] = [];
   const unresolved: RouteSaveResult["unresolved"] = [];
@@ -120,49 +128,89 @@ export async function routeSave(
   for (const [index, input] of args.steps.entries()) {
     const ord = index + 1;
     const note = required(input.note, `steps[${index}].note`);
-    const path = blankToNull(input.path);
+    const given = blankToNull(input.path);
     const symbol = blankToNull(input.symbol);
+    const expectsRef = blankToNull(input.expectsRef);
     const step: TaskRouteStepRecord = {
       ord,
       note,
-      path,
+      path: given,
       symbol,
       declPattern: null,
       sigHash: null,
       blockHash: null,
-      expectsRef: blankToNull(input.expectsRef),
+      expectsRef,
       touchCount: 0,
     };
     steps.push(step);
     // A pure tooling note ("the Chrome extension is not connected") has nothing
     // to anchor and cannot rot. It gets equal billing, not a fingerprint.
-    if (!path) continue;
+    if (!given) continue;
     anchored += 1;
 
     if (!ctx) {
-      unresolved.push({ ord, path, symbol, reason: "repo or canonical ref unavailable" });
+      unresolved.push({ ord, path: given, symbol, reason: "repo or canonical ref unavailable" });
       continue;
     }
-    if (!symbol) {
-      if (await gitFileExists(ctx, path)) resolved += 1;
-      else unresolved.push({ ord, path, symbol, reason: `path not on ${ctx.ref}` });
-      continue;
-    }
-    const anchor = await resolveAnchorInFile(ctx, path, symbol);
-    if (!anchor) {
+    // The agent instructions in this workspace tell agents to always use
+    // ABSOLUTE paths, so `route_save` routinely receives one. `git show
+    // <ref>:<path>` only accepts repo-relative paths, so an absolute one used
+    // to fail resolution and be recorded `pending` with a reason blaming an
+    // unmerged branch — a permanently inactive route with a misleading cause.
+    const relative = toRepoRelative(given, repoPath);
+    if (!relative) {
       unresolved.push({
         ord,
-        path,
+        path: given,
         symbol,
-        reason: `symbol not found on ${ctx.ref} (pending until it merges)`,
+        reason:
+          `path is not inside the repo checkout${repoPath ? ` (${repoPath})` : ""}` +
+          " — record it relative to the repo root, not as an absolute path",
       });
       continue;
     }
-    step.path = anchor.path;
-    step.declPattern = anchor.declPattern;
-    step.sigHash = anchor.sigHash;
-    step.blockHash = anchor.blockHash;
-    resolved += 1;
+    step.path = relative;
+
+    if (!symbol) {
+      if (await gitFileExists(ctx, relative)) resolved += 1;
+      else unresolved.push({ ord, path: relative, symbol, reason: `path not on ${ctx.ref}` });
+    } else {
+      const anchor = await resolveAnchorInFile(ctx, relative, symbol);
+      if (anchor) {
+        step.path = anchor.path;
+        step.declPattern = anchor.declPattern;
+        step.sigHash = anchor.sigHash;
+        step.blockHash = anchor.blockHash;
+        resolved += 1;
+      } else {
+        unresolved.push({
+          ord,
+          path: relative,
+          symbol,
+          reason: `symbol not found on ${ctx.ref} (pending until it merges)`,
+        });
+      }
+    }
+
+    // `expects_ref` was previously never checked at save. A typo survives the
+    // first fetch (tier 0 answers `untouched` and the edge check is only
+    // reached through tiers 0-2), then the first commit touching the file
+    // pushes the step to `edge-broken` permanently — and `edge-broken` counts
+    // as broken for decay, so a single-anchor route is archived after
+    // ROUTE_ARCHIVE_BROKEN_FETCHES fetches because of a typo, not a code change.
+    if (expectsRef) {
+      const content = await gitShowFile(ctx, step.path);
+      // A file that is not on the ref is already reported above; do not blame
+      // the edge for it.
+      if (content !== null && !content.includes(expectsRef)) {
+        unresolved.push({
+          ord,
+          path: step.path,
+          symbol,
+          reason: `expects_ref not found in ${step.path} on ${ctx.ref}`,
+        });
+      }
+    }
   }
 
   // A route whose anchors all failed to resolve is not activated — it would
@@ -170,6 +218,7 @@ export async function routeSave(
   // checked against. A route of pure tooling notes has nothing to resolve and
   // nothing to rot, so it is active on the spot.
   const active = anchored === 0 || resolved > 0;
+  const previous = await deps.store.getRouteByIdentity(repo, feature, taskKind);
   const [embedding] = await deps.embedder.embed([taskDesc], "document");
   const record = await deps.store.upsertRoute({
     id: routeId(repo, feature, taskKind),
@@ -193,6 +242,9 @@ export async function routeSave(
     verified_sha: record.verifiedSha,
     ref: ctx?.ref ?? null,
     active: record.active,
+    identity: { repo, feature, task_kind: taskKind },
+    overwrote: previous !== null,
+    ...(previous ? { previous_steps: previous.steps.length } : {}),
   };
 }
 
@@ -229,6 +281,12 @@ export interface RouteFetchResult {
   verified_sha: string;
   /** The ref everything was verified against, or null when it is unreachable. */
   ref: string | null;
+  /**
+   * ISO-8601 commit date of that ref. Every `untouched` answer is only as
+   * current as this: nothing guarantees the box fetched recently, so the reader
+   * needs the age of the tree the confidence was measured against.
+   */
+  ref_committed_at: string | null;
   /** "untouched" | "N commits" | "unknown" — scoped to the route's own paths. */
   drift: string;
   matched_by: "identity" | "semantic";
@@ -244,6 +302,13 @@ export interface RouteFetchMiss {
   found: false;
   repo: string;
   reason: string;
+  /**
+   * Every `(feature, task_kind)` this repo does have. A bare reason leaves the
+   * caller guessing at the vocabulary — and guessing wrong is what produces two
+   * spellings of the same identity. It also lets `route_save` reuse an existing
+   * spelling rather than coining a synonym.
+   */
+  known: Array<{ feature: string; task_kind: string; active: boolean }>;
 }
 
 /**
@@ -254,18 +319,30 @@ export async function routeFetch(
   args: RouteFetchArgs,
   deps: TaskRouteToolDeps,
 ): Promise<RouteFetchResult | RouteFetchMiss> {
-  const repo = required(args.repo, "repo");
+  const repoInput = required(args.repo, "repo");
+  const repo = normalizeKey(repoInput, "repo");
   const now = (deps.now ?? Date.now)();
 
   const match = await lookupRoute(repo, args, deps);
   if (!match) {
-    return { found: false, repo, reason: "no route for this repo/feature/task-kind" };
+    const known = await deps.store.listRouteIdentities(repo);
+    return {
+      found: false,
+      repo,
+      reason: "no route for this repo/feature/task-kind",
+      known: known.slice(0, KNOWN_IDENTITY_LIMIT).map((identity) => ({
+        feature: identity.feature,
+        task_kind: identity.taskKind,
+        active: identity.active,
+      })),
+    };
   }
   const route = match.route;
 
   const ctx = await resolveCanonicalRef(
-    repoPathFor(repo, deps),
-    deps.resolveDefaultBase?.(repo),
+    repoPathFor(repoInput, repo, deps),
+    defaultBaseFor(repoInput, repo, deps),
+    { fetch: true, now },
   );
 
   // Repo absent or ref unresolvable: every step is `unknown`, never `ok`. An
@@ -278,11 +355,18 @@ export async function routeFetch(
       tier: null,
       verifiedBy: "none",
     }));
-    // The fetch happened, so it counts; the broken streak does not advance,
-    // because an unreadable repo is no evidence at all about the route.
-    await deps.store.recordFetch(route.id, { now, repairs: [], brokenFetches: 0 });
+    // The fetch happened, so it counts; the broken streak neither advances nor
+    // RESETS, because an unreadable repo is no evidence at all about the route
+    // — writing 0 here would have let an unreachable checkout silently rescue a
+    // route whose anchors really are gone.
+    await deps.store.recordFetch(route.id, {
+      now,
+      repairs: [],
+      brokenFetches: route.brokenFetches,
+    });
     return buildResult(route, verifications, {
       ref: null,
+      refCommittedAt: null,
       drift: "unknown",
       verifiedSha: route.verifiedSha,
       matchedBy: match.matchedBy,
@@ -336,6 +420,7 @@ export async function routeFetch(
 
   return buildResult(route, verifications, {
     ref: ctx.ref,
+    refCommittedAt: ctx.committedAt,
     drift: describeDrift(drift),
     verifiedSha: clean ? ctx.sha : route.verifiedSha,
     matchedBy: match.matchedBy,
@@ -362,8 +447,11 @@ async function lookupRoute(
   args: RouteFetchArgs,
   deps: TaskRouteToolDeps,
 ): Promise<RouteMatch | null> {
-  if (args.feature && args.taskKind) {
-    const exact = await deps.store.getRouteByIdentity(repo, args.feature, args.taskKind);
+  // Normalised on both sides, so `Memory View` finds what `memory-view` saved.
+  const feature = args.feature?.trim() ? slug(args.feature) : null;
+  const taskKind = args.taskKind?.trim() ? slug(args.taskKind) : null;
+  if (feature && taskKind) {
+    const exact = await deps.store.getRouteByIdentity(repo, feature, taskKind);
     if (exact) return { route: exact, matchedBy: "identity" };
   }
   const task = args.task?.trim();
@@ -372,7 +460,7 @@ async function lookupRoute(
   const results = await deps.store.recallRoutes({
     queryVector,
     repo,
-    ...(args.feature ? { feature: args.feature } : {}),
+    ...(feature ? { feature } : {}),
     limit: 1,
   });
   const best = results[0];
@@ -385,6 +473,7 @@ function buildResult(
   verifications: StepVerification[],
   meta: {
     ref: string | null;
+    refCommittedAt: string | null;
     drift: string;
     /** The sha as of AFTER this fetch's bookkeeping, not the row we read. */
     verifiedSha: string;
@@ -422,6 +511,7 @@ function buildResult(
     task_desc: route.taskDesc,
     verified_sha: meta.verifiedSha,
     ref: meta.ref,
+    ref_committed_at: meta.refCommittedAt,
     drift: meta.drift,
     matched_by: meta.matchedBy,
     steps,
@@ -492,7 +582,14 @@ export interface TaskRouteToolRuntime {
 
 const STEP_SCHEMA = z.object({
   note: z.string().min(1).max(2_000).describe("Why this step, one sentence"),
-  path: z.string().max(500).optional().describe("Repo-relative path; omit for a pure tooling note"),
+  path: z
+    .string()
+    .max(500)
+    .optional()
+    .describe(
+      "Path RELATIVE TO THE REPO ROOT (e.g. 'src/http/server.ts'), not an absolute one; " +
+        "omit entirely for a pure tooling note",
+    ),
   symbol: z
     .string()
     .max(200)
@@ -656,11 +753,15 @@ function toolResult(payload: unknown, isError = false) {
 }
 
 /**
- * Deterministic id from the identity, so the primary-key conflict and the
- * unique-index conflict are always the same row.
+ * Deterministic id from the identity. The identity columns are stored already
+ * slugged (see `normalizeKey`), so the primary-key conflict and the
+ * unique-index conflict are always the same row — before that, `Memory View`
+ * and `memory-view` produced ONE id for TWO identities, the `ON CONFLICT(repo,
+ * feature, task_kind)` clause did not fire, and SQLite raised a raw
+ * `UNIQUE constraint failed: task_route.id` that reached the agent verbatim.
  */
 function routeId(repo: string, feature: string, taskKind: string): string {
-  return `route_${slug(repo)}__${slug(feature)}__${slug(taskKind)}`;
+  return `route_${repo}__${feature}__${taskKind}`;
 }
 
 function slug(value: string): string {
@@ -668,14 +769,75 @@ function slug(value: string): string {
 }
 
 /**
- * The configured checkout, falling back to the process cwd when Junior is
- * itself the repo in question (Junior's own workspace is not in REPOS).
+ * The canonical form of an identity column. `Add-UI-Surface` and
+ * `add-ui-surface` are the same identity, and an LLM caller will produce both;
+ * writing and looking up on the slug means the second spelling overwrites the
+ * first instead of colliding with it, and a fetch under either spelling finds
+ * the route.
  */
-function repoPathFor(repo: string, deps: TaskRouteToolDeps): string | null {
-  const configured = deps.resolveRepoPath(repo);
+function normalizeKey(value: string, field: string): string {
+  const normalized = slug(value);
+  if (!normalized) {
+    throw new Error(`route tools: \`${field}\` must contain at least one letter or digit`);
+  }
+  return normalized;
+}
+
+/** How many known identities a miss reports back. */
+const KNOWN_IDENTITY_LIMIT = 25;
+
+/**
+ * The configured checkout, falling back to the process cwd when Junior is
+ * itself the repo in question (Junior's own workspace is not in REPOS). Both
+ * the caller's spelling and the normalised one are tried, so a route saved as
+ * `Junior` still resolves the `junior` checkout.
+ */
+function repoPathFor(
+  repoInput: string,
+  repo: string,
+  deps: TaskRouteToolDeps,
+): string | null {
+  const configured = deps.resolveRepoPath(repoInput) ?? deps.resolveRepoPath(repo);
   if (configured) return configured;
-  const cwd = process.cwd();
-  return basename(cwd) === repo ? cwd : null;
+  const name = basename(process.cwd());
+  return name === repoInput || name === repo ? process.cwd() : null;
+}
+
+function defaultBaseFor(
+  repoInput: string,
+  repo: string,
+  deps: TaskRouteToolDeps,
+): string | undefined {
+  return deps.resolveDefaultBase?.(repoInput) ?? deps.resolveDefaultBase?.(repo);
+}
+
+/**
+ * A path relative to the repo root, or null when it points outside the
+ * checkout. `git show <ref>:<path>` and `git cat-file -e <ref>:<path>` accept
+ * repo-relative paths only, and this workspace's agent instructions mandate
+ * absolute paths everywhere else — so the two conventions meet here, and the
+ * meeting has to be explicit rather than a silent resolution failure.
+ *
+ * A worktree path (`…/junior-wt-feature/src/x.ts`) is deliberately NOT rescued:
+ * guessing which prefix to strip could anchor a route to a same-named file in
+ * an entirely different repo, which is a silent wrong answer where a rejection
+ * is a loud, fixable one.
+ */
+function toRepoRelative(path: string, repoPath: string | null): string | null {
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+  const relative = isAbsolute(trimmed)
+    ? repoPath
+      ? relativePath(resolve(repoPath), resolve(trimmed))
+      : null
+    : trimmed.replace(/^(\.\/)+/, "");
+  // `../sibling-repo/src/x.ts` escapes the root just as an absolute path does,
+  // and would otherwise fall through to the misleading "pending until it
+  // merges" reason.
+  if (!relative || isAbsolute(relative) || relative === ".." || relative.startsWith("../")) {
+    return null;
+  }
+  return relative;
 }
 
 function required(value: string | undefined, field: string): string {

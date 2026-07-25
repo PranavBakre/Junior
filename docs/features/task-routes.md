@@ -159,6 +159,24 @@ it. The latter is simpler and keeps one row per identity forever.
 > because a new step list renumbers what each `ord` means. Route ids are a
 > deterministic slug of the identity, so the primary-key conflict and the
 > unique-index conflict are always the same row.
+>
+> **The identity columns are stored slugged.** "Always the same row" only holds
+> if one identity has one spelling. `route_id` lowercases and collapses every
+> non-alphanumeric run, so `Memory View` and `memory-view` produced ONE id for
+> TWO identities: `ON CONFLICT(repo, feature, task_kind)` did not fire, the
+> INSERT hit the primary key, and the agent got a raw
+> `UNIQUE constraint failed: task_route.id` back through `route_save`'s catch —
+> permanently, for that spelling. An LLM caller producing `Add-UI-Surface`
+> alongside `add-ui-surface` is the expected case, not an edge one. `repo`,
+> `feature`, and `task_kind` are therefore normalised through the same slug on
+> both write and lookup, so the second spelling overwrites the first and a fetch
+> under either spelling finds the route. An identity part with nothing to slug
+> (`***`) is rejected outright. The repo's *checkout* is still resolved from the
+> caller's original spelling first, falling back to the slug.
+>
+> `InMemoryTaskRouteStore` enforces the id constraint too, raising the same
+> message SQLite does. Without that it silently overwrote the clashing row,
+> which is why every tool test passed against this bug.
 
 ## Anchors: expensive at write, free at read
 
@@ -223,7 +241,16 @@ error signal.
 > 2. **Tier 0 is scoped per path, not per route.** The single
 >    `git log --name-only` yields both the route-level commit count *and* the set
 >    of paths touched, so one churning file does not force every sibling step out
->    of its tier-0 answer.
+>    of its tier-0 answer. That log runs with **`--diff-merges=first-parent`**:
+>    git shows no diff for a merge commit unless one is asked for, so
+>    `--name-only` prints a bare header for it and the commit is counted while
+>    its paths stay invisible. This workflow is always 3-way merges and never
+>    squash, so a merge carrying a conflict resolution or a build fixup is
+>    ordinary — and without the flag such a step answered `untouched` /
+>    `git-untouched`, the strongest label in the system, over a file the merge
+>    had rewritten. Worse, it was self-concealing: every status then looked
+>    clean, so `verified_sha` advanced past the merge and the next
+>    `git log <newsha>..origin/main` legitimately saw nothing.
 > 3. **Four extra statuses.** `note` (a pure tooling step — nothing on disk to
 >    verify), `pending` (an anchor that has never resolved on the canonical ref),
 >    `unknown` (repo or ref unreadable), and `untouched` as distinct from `ok`.
@@ -288,8 +315,29 @@ steps report `unknown` — never `ok`.
 > semantic search only ever returns active routes. A route of pure tooling notes
 > has nothing to anchor and is active on the spot.
 >
-> An `unknown` fetch counts as a fetch but never advances the broken-fetch
-> streak: an unreadable repo is no evidence at all about the route.
+> An `unknown` fetch counts as a fetch but neither advances **nor resets** the
+> broken-fetch streak: an unreadable repo is no evidence at all about the route,
+> in either direction.
+>
+> **Something has to actually fetch.** The whole design rests on `git fetch`
+> advancing the remote-tracking ref, and nothing in this feature used to do it —
+> the only fetch in the system is `WorktreeManager.createWorktree`, which fires
+> only when a thread creates a worktree for that repo, and never for the
+> `process.cwd()` fallback. On a box that had not fetched a repo in three weeks
+> every route came back `untouched` / `git-untouched` — maximum confidence —
+> describing a tree nobody was working on, with nothing in the response to say
+> so. Both halves of the fix ship:
+>
+> - `resolveCanonicalRef(..., { fetch: true })` runs a bounded
+>   `git fetch origin +refs/heads/<b>:refs/remotes/origin/<b>`: SIGKILLed after
+>   5s, at most once per repo+ref per `REF_FETCH_MIN_INTERVAL_MS` (10 min), and
+>   best-effort — a failure just leaves the ref where it was. It touches only
+>   remote-tracking refs, never the working tree or a local branch. The throttle
+>   is stamped *before* the call, so an unreachable remote is not re-paid every
+>   fetch. Both `route_save` and `route_fetch` ask for it.
+> - `GitRefContext.committedAt` carries the ref's commit date out to
+>   `route_fetch`'s `ref_committed_at`, so when the fetch does fail the reader
+>   can still see how old the verified tree is.
 
 ## Tools
 
@@ -313,12 +361,18 @@ route_fetch(repo, task: string, feature?: string, task_kind?: string)
 Side effect: increments `fetch_count`, sets `last_used_at`, and auto-repairs (below).
 
 > **[shipped:]** The response is a superset of the sketch above: it also carries
-> `repo` / `feature` / `task_kind`, the `ref` verified against, `matched_by`
+> `repo` / `feature` / `task_kind`, the `ref` verified against and its
+> `ref_committed_at`, `matched_by`
 > (`identity` | `semantic`), `repaired` (the ords rewritten by this fetch),
 > `active`, and `archived`. `confidence` counts every status, not just the four
 > named — an `edge-broken` step that vanished from the summary would defeat the
 > point of reporting per-step status. Each step reports both `verified_by` and a
 > numeric `tier`.
+>
+> A **miss** carries `known`: every `(feature, task_kind)` the repo does have,
+> capped at 25. A bare "no route for this repo/feature/task-kind" leaves the
+> caller guessing at the vocabulary, and guessing wrong is precisely what
+> produces two spellings of one identity.
 
 #### Retrieval — routes are searched directly
 
@@ -385,6 +439,35 @@ Resolves and fingerprints every step against `origin/<default-branch>` (see
 `(repo, feature, task_kind)` identity inside one transaction with its step rows.
 Rejects >8 steps — that cap is the feature, not a limitation.
 
+> **[shipped:]** Three things save does that the sketch does not say.
+>
+> 1. **Paths are made repo-relative, and absolute ones outside the checkout are
+>    rejected by name.** `git show <ref>:<path>` accepts repo-relative paths
+>    only, while this workspace's agent instructions mandate absolute paths
+>    everywhere else — so `route_save` routinely receives
+>    `/Users/…/gx-backend/src/handler.ts`. Unhandled, every such step failed to
+>    resolve, was recorded `pending` with the reason "symbol not found on
+>    origin/main (pending until it merges)" — entirely the wrong cause — and
+>    `active` computed to `false`, leaving the route invisible to semantic
+>    search forever, with the retry re-using the same bad path. A leading
+>    checkout prefix is now stripped; anything still absolute gets its own
+>    `unresolved` reason. A path from a *different* checkout (a sibling
+>    worktree) is deliberately NOT rescued by guessing a prefix — that could
+>    anchor a route to a same-named file in an unrelated repo, and a silent
+>    wrong answer is worse than a loud rejection.
+> 2. **`expects_ref` is resolved.** It used to be stored unchecked. The first
+>    fetch masked a typo (tier 0 answers `untouched`, and the edge check is only
+>    reached through tiers 0-2), then the first commit touching that file pushed
+>    the step to `edge-broken` permanently — and `edge-broken` counts as broken
+>    for decay, so with one anchored step that is a strict majority and the
+>    route was archived after `ROUTE_ARCHIVE_BROKEN_FETCHES` fetches because of a
+>    typo, not a code change. A missing edge is now its own `unresolved` reason
+>    at save. It is reported, not dropped: a not-yet-merged edge is legitimate
+>    and pending-shaped, and the agent is the one who can tell the difference.
+> 3. **The response says it overwrote.** Last-writer-wins is the design, but
+>    silently clobbering is not — the result carries `overwrote`, the previous
+>    step count, and the `identity` actually written after normalisation.
+
 ### `route_report_usage`
 
 ```
@@ -420,7 +503,16 @@ and this makes routes survive them for free. A route then only dies when the
 > the content changed, so the note may now be wrong, and that is the agent's call.
 >
 > The same repair path activates a `pending` anchor that has since merged, which
-> is why a pending step counts as a repair for the decay streak.
+> is why a pending step counts as a repair for the decay streak. Activation runs
+> the full ladder: declaration candidates in the recorded file, then tier 2
+> repo-wide, then the loose bare-occurrence form. Both orderings matter — a file
+> renamed between the save and the merge used to leave the step `pending`
+> forever because activation never fell through to tier 2, and putting the loose
+> form last stops activation from fingerprinting the *import line* the symbol
+> left behind and reporting `verified_by: fingerprint` for it. Save is
+> deliberately loose (section markers and HTML ids have no declaration shape),
+> but at save the agent asserted the file; at activation the pattern is
+> manufactured, and the repair would persist it.
 
 **Usage-weighted pruning** *(gated on adoption)*. Steps never reported used
 across N fetches are noise and get dropped; steps consistently reported get
@@ -499,6 +591,39 @@ Six lines against roughly a dozen tool calls and three failed attempts.
 - [Agent definitions](agent-definitions.md) — the standing step-0 wiring.
 - [Worktree manager](worktree-manager.md) — resolving a repo's default worktree
   for verification.
+
+## Deliberate divergences from the hardening review
+
+The five findings above were fixed as briefed except where noted here.
+
+- **Merge attribution uses BOTH offered fixes, not one.** The brief asked to
+  pick `--diff-merges=first-parent` *or* the conservative "commit header with
+  zero path lines touches every scoped path" rule. Shipped: the flag first —
+  it attributes the merge's edit to the exact path, so sibling steps keep their
+  cheap tier-0 answer (measured: with the flag the probe prints `src/a.ts`;
+  with only the conservative rule the whole scoped set is marked changed). The
+  flag needs git ≥ 2.31 (this box has 2.39.5) and rather than pin a version
+  floor, a failed log is retried once without it. The conservative rule then
+  runs in *both* modes, so correctness never depends on the git version and any
+  other shape git declines to attribute is also covered. Cost: one extra
+  `git log` only when the first one fails.
+- **Absolute paths from a sibling worktree are rejected, not rescued.** Only a
+  literal `ctx.repoPath` prefix is stripped. Trimming leading segments until
+  something resolves would silently anchor to a same-named file in another repo.
+- **The bounded fetch shipped, on both tools.** `route_save` fetches too: an
+  anchor resolved against a three-week-old ref is recorded `pending` when the
+  code is in fact already on main.
+- **A bad `expects_ref` is reported, not dropped.** Nulling it at save would
+  discard a legitimately not-yet-merged edge.
+- **All five minors shipped.** Pending anchors fall through to tier 2 and prefer
+  declaration candidates; an `unknown` fetch writes `brokenFetches:
+  route.brokenFetches`; a miss returns the repo's known identities (capped at
+  25); `route_save` reports `overwrote` / `previous_steps`.
+- **No data migration.** The corpus is empty — the adoption wiring below is
+  still unbuilt — so nothing exists under an un-normalised spelling.
+- **Still deliberately unbuilt:** the adoption wiring and usage-weighted
+  pruning, unchanged from the notes in [Adoption](#adoption) and
+  [Self-healing and decay](#self-healing-and-decay).
 
 ## Open questions
 

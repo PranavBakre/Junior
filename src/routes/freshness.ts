@@ -20,16 +20,51 @@ export interface GitRefContext {
   ref: string;
   /** The commit that ref currently points at. */
   sha: string;
+  /**
+   * ISO-8601 committer date of `sha`, or null when it cannot be read.
+   *
+   * Reported all the way out to the caller, because nothing else in the system
+   * guarantees the remote-tracking ref is current: if the box has not fetched
+   * this repo in three weeks, every step still answers `untouched` /
+   * `git-untouched` — maximum confidence about a tree nobody is working on. The
+   * bounded fetch below usually prevents that; the date is what makes the
+   * annotation honest when it does not.
+   */
+  committedAt: string | null;
 }
 
 /** Number of consecutive majority-broken, unrepaired fetches before archival. */
 export const ROUTE_ARCHIVE_BROKEN_FETCHES = 3;
+
+/** At most one `git fetch` per repo+ref in this window. */
+export const REF_FETCH_MIN_INTERVAL_MS = 10 * 60_000;
+/** A network hang must never hold a tool call open. */
+const REF_FETCH_TIMEOUT_MS = 5_000;
 
 /** Refs tried, in order, when the caller gives no hint. */
 const FALLBACK_BRANCHES = ["main", "master"];
 
 /** Marks a commit header in `git log --name-only` output. Never a valid path. */
 const COMMIT_SENTINEL = "@@junior-route-commit@@";
+
+/** `${repoPath}::${ref}` → when it was last fetched, for the throttle. */
+const lastFetchAt = new Map<string, number>();
+
+/** Tests only: forget the fetch throttle so a case can force a second fetch. */
+export function resetRefFetchThrottle(): void {
+  lastFetchAt.clear();
+}
+
+export interface ResolveRefOptions {
+  /**
+   * Advance the remote-tracking ref before reading it (throttled + bounded).
+   * The design rests on `git fetch` advancing `origin/<branch>`, and nothing
+   * else in this feature fetches — `WorktreeManager.createWorktree` only fires
+   * when a thread creates a worktree, and never for the cwd fallback.
+   */
+  fetch?: boolean;
+  now?: number;
+}
 
 /**
  * Resolve the canonical ref for a repo, or null when the repo is not on this
@@ -44,6 +79,7 @@ const COMMIT_SENTINEL = "@@junior-route-commit@@";
 export async function resolveCanonicalRef(
   repoPath: string | null,
   defaultBase?: string,
+  options: ResolveRefOptions = {},
 ): Promise<GitRefContext | null> {
   if (!repoPath) return null;
   try {
@@ -66,10 +102,59 @@ export async function resolveCanonicalRef(
 
   for (const ref of dedupe(candidates)) {
     const resolved = await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoPath);
-    const sha = resolved.stdout.trim();
-    if (resolved.ok && sha) return { repoPath, ref, sha };
+    if (!resolved.ok || !resolved.stdout.trim()) continue;
+    let sha = resolved.stdout.trim();
+    if (options.fetch) {
+      const advanced = await maybeFetchRef(repoPath, ref, options.now ?? Date.now());
+      if (advanced) sha = advanced;
+    }
+    return { repoPath, ref, sha, committedAt: await commitDate(repoPath, sha) };
   }
   return null;
+}
+
+/**
+ * Best-effort `git fetch origin <branch>`: at most once per repo+ref per
+ * window, killed after a few seconds, and only ever touching remote-tracking
+ * refs (never the working tree or a local branch). A failure is not an error —
+ * the caller falls back to whatever the ref already pointed at, and the
+ * reported `committedAt` still tells the reader how old that is.
+ *
+ * Returns the new sha when the fetch moved the ref, otherwise null.
+ */
+async function maybeFetchRef(
+  repoPath: string,
+  ref: string,
+  now: number,
+): Promise<string | null> {
+  // Only a remote-tracking ref advances on fetch; a local `refs/heads/...` base
+  // would be untouched, so spending the network call on it is pointless.
+  if (!ref.startsWith("origin/")) return null;
+  const branch = ref.slice("origin/".length);
+  if (!branch) return null;
+  const key = `${repoPath}::${ref}`;
+  if (now - (lastFetchAt.get(key) ?? 0) < REF_FETCH_MIN_INTERVAL_MS) return null;
+  // Stamp BEFORE the call: a repo whose remote is unreachable must not re-pay
+  // the timeout on every single fetch.
+  lastFetchAt.set(key, now);
+  const fetched = await git(
+    // An explicit refspec rather than `fetch origin <branch>`: the plain form
+    // only updates the remote-tracking ref opportunistically, through whatever
+    // refspec the remote happens to be configured with.
+    ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+    repoPath,
+    REF_FETCH_TIMEOUT_MS,
+  );
+  if (!fetched.ok) return null;
+  const resolved = await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoPath);
+  const sha = resolved.stdout.trim();
+  return resolved.ok && sha ? sha : null;
+}
+
+async function commitDate(repoPath: string, sha: string): Promise<string | null> {
+  const result = await git(["show", "-s", "--format=%cI", sha], repoPath);
+  const date = result.stdout.trim();
+  return result.ok && date ? date : null;
 }
 
 /** `main` / `origin/main` / `refs/heads/main` → the remote-tracking ref. */
@@ -167,22 +252,35 @@ export async function routeDrift(
   // A route of pure tooling notes has no paths, so nothing can have staled it.
   if (scoped.length === 0) return { commits: 0, changedPaths: new Set() };
   if (!verifiedSha) return { commits: null, changedPaths: new Set() };
-  const result = await git(
-    [
-      "log",
-      "--name-only",
-      `--pretty=format:${COMMIT_SENTINEL}%H`,
-      `${verifiedSha}..${ctx.ref}`,
-      "--",
-      ...scoped,
-    ],
-    ctx.repoPath,
-  );
+  const args = (diffMerges: boolean) => [
+    "log",
+    "--name-only",
+    // A merge commit has NO diff unless one is asked for, so `--name-only`
+    // prints a bare header for it. This repo's workflow is always 3-way merges,
+    // never squash, so a merge carrying a conflict resolution or a build fixup
+    // is the norm; without this flag such a commit is counted in `commits` but
+    // never lands in `changedPaths`, and tier 0 then answers `untouched` —
+    // `git-untouched`, the strongest label in the system — for a path the merge
+    // actually rewrote. First-parent is the right side: it is exactly "what
+    // changed on the canonical branch when this landed".
+    ...(diffMerges ? ["--diff-merges=first-parent"] : []),
+    `--pretty=format:${COMMIT_SENTINEL}%H`,
+    `${verifiedSha}..${ctx.ref}`,
+    "--",
+    ...scoped,
+  ];
+  let result = await git(args(true), ctx.repoPath);
+  // `--diff-merges` landed in git 2.31. Rather than pin a version floor, retry
+  // without it and let the opaque-commit rule below carry the correctness.
+  if (!result.ok) result = await git(args(false), ctx.repoPath);
   // An unresolvable verified_sha (a squashed or never-pushed commit) is unknown
   // drift, not zero drift — reporting `untouched` there would be a lie.
   if (!result.ok) return { commits: null, changedPaths: new Set() };
 
   let commits = 0;
+  let pathsInCommit = 0;
+  /** A commit git listed but attributed no path to — see below. */
+  let opaqueCommit = false;
   const changedPaths = new Set<string>();
   for (const raw of result.stdout.split("\n")) {
     const line = raw.trim();
@@ -190,11 +288,24 @@ export async function routeDrift(
     // The sentinel discriminates commit headers from the file names that follow
     // them; a bare `%H` would be ambiguous with an all-hex path.
     if (line.startsWith(COMMIT_SENTINEL)) {
+      if (commits > 0 && pathsInCommit === 0) opaqueCommit = true;
       commits += 1;
+      pathsInCommit = 0;
       continue;
     }
+    pathsInCommit += 1;
     changedPaths.add(line);
   }
+  if (commits > 0 && pathsInCommit === 0) opaqueCommit = true;
+  // The pathspec already decided this commit is relevant, so a commit with no
+  // named path is one whose diff git declined to compute (a merge on an old
+  // git, or a shape `--diff-merges=first-parent` still shows without a
+  // first-parent diff). Which of the scoped paths it touched is unknown, so
+  // assume all of them: that costs a tier-1 fingerprint check per step and
+  // yields `ok` when nothing really changed. The opposite error — a silent
+  // `git-untouched` over a real edit — is self-concealing, because a clean
+  // fetch bumps `verified_sha` past the commit and erases it from the record.
+  if (opaqueCommit) for (const path of scoped) changedPaths.add(path);
   return { commits, changedPaths };
 }
 
@@ -246,21 +357,29 @@ interface GitResult {
  * `core.quotepath=false` keep the output machine-readable (and non-ASCII paths
  * unescaped).
  */
-async function git(args: string[], cwd: string): Promise<GitResult> {
+async function git(args: string[], cwd: string, timeoutMs?: number): Promise<GitResult> {
   try {
     const proc = Bun.spawn(["git", "--no-pager", "-c", "core.quotepath=false", ...args], {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
     });
-    // Drain both pipes BEFORE awaiting exit — a repo-wide grep can outrun the
-    // pipe buffer, and a blocked writer never exits.
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const code = await proc.exited;
-    return { ok: code === 0, stdout, stderr };
+    // Only the network-bound call passes a timeout; a local object-store read
+    // cannot hang, and killing one would only mask a real failure.
+    const killer =
+      timeoutMs === undefined ? null : setTimeout(() => proc.kill("SIGKILL"), timeoutMs);
+    try {
+      // Drain both pipes BEFORE awaiting exit — a repo-wide grep can outrun the
+      // pipe buffer, and a blocked writer never exits.
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      const code = await proc.exited;
+      return { ok: code === 0, stdout, stderr };
+    } finally {
+      if (killer) clearTimeout(killer);
+    }
   } catch (error) {
     // The checkout can vanish mid-verification (a worktree prune, a removed
     // mount). That is an unresolvable ref, not a crashed fetch.

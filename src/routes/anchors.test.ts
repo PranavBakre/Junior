@@ -265,6 +265,36 @@ describe("task-route anchors", () => {
     expect([...related.changedPaths]).toEqual(["src/shared.ts"]);
   });
 
+  it("attributes a merge commit's own edits to the path they changed", async () => {
+    // `git log --name-only` prints NO file names for a merge commit — git shows
+    // no diff for a merge unless one is asked for. This repo's workflow is
+    // always 3-way merges, never squash, so a merge carrying a conflict
+    // resolution or a build fixup is the norm; without a diff against the first
+    // parent the commit is counted but its paths are invisible, and tier 0 then
+    // answers `untouched` / `git-untouched` over a file the merge rewrote.
+    const base = ctx.sha;
+    await repo.checkout("feature/merge-fixup", { create: true });
+    repo.write({ "src/shared.ts": SHARED.replace("value * 2", "value * 5") });
+    await repo.commit("branch touches shared only");
+
+    await repo.checkout("main");
+    await repo.merge("feature/merge-fixup", {
+      // Made during the merge, so this edit exists ONLY in the merge commit.
+      "src/handler.ts": HANDLER.replace("scaled + 1", "scaled + 2"),
+    });
+    await repo.publish();
+    const next = await resolveCanonicalRef(repo.path);
+    if (!next) throw new Error("ref vanished");
+
+    const drift = await routeDrift(next, base, ["src/handler.ts"]);
+    expect(drift.commits).toBe(1);
+    expect([...drift.changedPaths]).toEqual(["src/handler.ts"]);
+
+    // Sibling paths the merge did not touch keep their tier-0 answer.
+    const both = await routeDrift(next, base, ["src/handler.ts", "src/server.ts"]);
+    expect([...both.changedPaths]).toEqual(["src/handler.ts"]);
+  });
+
   it("reports unknown drift for a sha the repo has never seen", async () => {
     const drift = await routeDrift(ctx, "0".repeat(40), ["src/handler.ts"]);
     expect(drift.commits).toBeNull();

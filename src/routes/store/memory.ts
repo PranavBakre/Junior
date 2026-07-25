@@ -1,6 +1,7 @@
 import type { TaskRouteStore } from "./interface.ts";
 import type {
   RouteFetchBookkeeping,
+  RouteIdentity,
   RouteRecallOptions,
   RouteRecallResult,
   TaskRouteRecord,
@@ -10,7 +11,10 @@ import type {
 /**
  * In-memory task-route store for tests and dev. Mirrors the SQLite semantics
  * that matter — one row per `(repo, feature, task_kind)`, revive-and-overwrite
- * on save, cosine recall over active routes only.
+ * on save, cosine recall over active routes only, AND the primary-key
+ * constraint on `id`. That last one is not decoration: while this store
+ * silently overwrote an id-clashing row, every tool test passed against a bug
+ * that made SQLite raise `UNIQUE constraint failed` in production.
  */
 export class InMemoryTaskRouteStore implements TaskRouteStore {
   private routes = new Map<string, TaskRouteRecord>();
@@ -24,6 +28,16 @@ export class InMemoryTaskRouteStore implements TaskRouteStore {
   async upsertRoute(route: TaskRouteUpsert): Promise<TaskRouteRecord> {
     const existing = this.findByIdentity(route.repo, route.feature, route.taskKind);
     const id = existing?.id ?? route.id;
+    if (!existing) {
+      const clash = this.routes.get(id);
+      if (clash) {
+        // Exactly what SQLite raises, so a caller cannot pass here and fail there.
+        throw new Error(
+          `UNIQUE constraint failed: task_route.id (${id} already belongs to ` +
+            `${clash.repo}/${clash.feature}/${clash.taskKind})`,
+        );
+      }
+    }
     const record: TaskRouteRecord = {
       id,
       repo: route.repo,
@@ -72,6 +86,21 @@ export class InMemoryTaskRouteStore implements TaskRouteStore {
     }
     scored.sort((a, b) => (b.cosine ?? 0) - (a.cosine ?? 0));
     return scored.slice(0, limit);
+  }
+
+  async listRouteIdentities(repo: string): Promise<RouteIdentity[]> {
+    return [...this.routes.values()]
+      .filter((record) => record.repo === repo)
+      .map((record) => ({
+        feature: record.feature,
+        taskKind: record.taskKind,
+        active: record.active,
+      }))
+      .sort((a, b) =>
+        a.feature === b.feature
+          ? a.taskKind.localeCompare(b.taskKind)
+          : a.feature.localeCompare(b.feature),
+      );
   }
 
   async recordFetch(routeId: string, book: RouteFetchBookkeeping): Promise<void> {

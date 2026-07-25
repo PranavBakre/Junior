@@ -186,9 +186,42 @@ export async function verifyStep(
   // An anchor captured from an unmerged branch never resolved on the canonical
   // ref, so it cannot be short-circuited by tier 0. Try to activate it: if the
   // work has since merged, this fetch fingerprints it for free.
+  //
+  // Declaration candidates FIRST. At save the agent asserted the file, so a
+  // loose bare-occurrence match there is its word; at activation the pattern is
+  // manufactured, and a loose match would happily fingerprint an import line
+  // and persist that pattern as the repair. The loose form stays as a last
+  // resort, because section markers and HTML ids have no declaration shape.
   if (step.symbol && !step.declPattern) {
-    const activated = await resolveAnchorInFile(ctx, step.path, step.symbol);
-    if (!activated) {
+    const symbol = step.symbol;
+    const declared = await resolveAnchorInFile(ctx, step.path, symbol, {
+      declarationsOnly: true,
+    });
+    if (declared) {
+      return withEdgeCheck(ctx, step, {
+        ord: step.ord,
+        status: "ok",
+        tier: 1,
+        verifiedBy: "fingerprint",
+        repair: toRepair(step.ord, declared),
+      });
+    }
+    // The file may have been renamed between the save and the merge. Falling
+    // through to tier 2 activates the step instead of leaving it pending
+    // forever in a path that no longer exists.
+    const moved = await resolveAnchorRepoWide(ctx, symbol, null, step.path);
+    if (moved) {
+      return withEdgeCheck(ctx, step, {
+        ord: step.ord,
+        status: "moved",
+        tier: 2,
+        verifiedBy: "decl-pattern",
+        resolvedPath: moved.path,
+        repair: toRepair(step.ord, moved),
+      });
+    }
+    const loose = await resolveAnchorInFile(ctx, step.path, symbol);
+    if (!loose) {
       return { ord: step.ord, status: "pending", tier: null, verifiedBy: "none" };
     }
     return withEdgeCheck(ctx, step, {
@@ -196,7 +229,7 @@ export async function verifyStep(
       status: "ok",
       tier: 1,
       verifiedBy: "fingerprint",
-      repair: toRepair(step.ord, activated),
+      repair: toRepair(step.ord, loose),
     });
   }
 

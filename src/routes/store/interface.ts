@@ -1,5 +1,6 @@
 import type {
   RouteFetchBookkeeping,
+  RouteIdentity,
   RouteRecallOptions,
   RouteRecallResult,
   TaskRouteRecord,
@@ -29,6 +30,12 @@ export interface TaskRouteStore {
    * route is reachable by exact identity, never by search.
    */
   recallRoutes(options: RouteRecallOptions): Promise<RouteRecallResult[]>;
+  /**
+   * Every `(feature, task_kind)` stored for a repo, active or not, in a stable
+   * order. Reported on a fetch miss so the caller sees the repo's actual
+   * vocabulary instead of guessing at a synonym.
+   */
+  listRouteIdentities(repo: string): Promise<RouteIdentity[]>;
   /**
    * Record one fetch: bump `fetch_count` / `last_used_at`, apply auto-repairs
    * (each bumping `repair_count`), and update the decay counters. One
