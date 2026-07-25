@@ -73,6 +73,17 @@ export interface RouteSaveResult {
   verified_sha: string;
   ref: string | null;
   /**
+   * Same signal `route_fetch` reports, and needed here for the same reason.
+   * Every `unresolved` reason below is relative to this ref: if the fetch came
+   * back `failed`, "symbol not found on origin/main (pending until it merges)"
+   * can be flatly wrong — the symbol is on the remote's main, this box's
+   * tracking ref is simply behind, and nothing is waiting to merge. Withholding
+   * the status leaves the caller with a confident wrong cause, which is the
+   * same defect absolute-path rejection exists to prevent.
+   */
+  ref_fetch: RefFetchStatus | null;
+  ref_committed_at: string | null;
+  /**
    * False when nothing could be anchored on the canonical ref — the route is
    * stored but not searchable until a later fetch finds its anchors merged.
    */
@@ -128,6 +139,14 @@ export async function routeSave(
   const unresolved: RouteSaveResult["unresolved"] = [];
   let anchored = 0;
   let resolved = 0;
+  // Every ref-relative reason below is only as true as the ref. When the fetch
+  // failed, "pending until it merges" may name a cause that does not exist —
+  // the work IS on the remote and this box is simply behind — so the reason
+  // carries the doubt rather than leaving it to `ref_fetch` alone.
+  const staleNote =
+    ctx?.fetchStatus === "failed"
+      ? ` [fetching ${ctx.ref} failed, so it may be behind the remote]`
+      : "";
 
   for (const [index, input] of args.steps.entries()) {
     const ord = index + 1;
@@ -177,7 +196,14 @@ export async function routeSave(
 
     if (!symbol) {
       if (await gitFileExists(ctx, relative)) resolved += 1;
-      else unresolved.push({ ord, path: relative, symbol, reason: `path not on ${ctx.ref}` });
+      else {
+        unresolved.push({
+          ord,
+          path: relative,
+          symbol,
+          reason: `path not on ${ctx.ref}${staleNote}`,
+        });
+      }
     } else {
       const anchor = await resolveAnchorInFile(ctx, relative, symbol);
       if (anchor) {
@@ -191,7 +217,7 @@ export async function routeSave(
           ord,
           path: relative,
           symbol,
-          reason: `symbol not found on ${ctx.ref} (pending until it merges)`,
+          reason: `symbol not found on ${ctx.ref} (pending until it merges)${staleNote}`,
         });
       }
     }
@@ -211,7 +237,7 @@ export async function routeSave(
           ord,
           path: step.path,
           symbol,
-          reason: `expects_ref not found in ${step.path} on ${ctx.ref}`,
+          reason: `expects_ref not found in ${step.path} on ${ctx.ref}${staleNote}`,
         });
       }
     }
@@ -245,6 +271,8 @@ export async function routeSave(
     unresolved,
     verified_sha: record.verifiedSha,
     ref: ctx?.ref ?? null,
+    ref_fetch: ctx?.fetchStatus ?? null,
+    ref_committed_at: ctx?.committedAt ?? null,
     active: record.active,
     identity: { repo, feature, task_kind: taskKind },
     overwrote: previous !== null,

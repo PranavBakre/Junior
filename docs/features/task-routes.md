@@ -350,10 +350,30 @@ steps report `unknown` — never `ok`.
 >   deliberately left alone — the private repos this fetches authenticate
 >   through it, and clearing it would turn every fetch into a silent failure.
 > - `GitRefContext.committedAt` carries the ref's commit date out to
->   `route_fetch`'s `ref_committed_at`, and `fetchStatus` out to `ref_fetch`
->   (`ok` / `throttled` / `failed` / `skipped`). A stale date is only an error
->   signal to a reader who thinks to check it; the status states it outright,
->   for the same reason every step reports the tier that answered it.
+>   `ref_committed_at`, and `fetchStatus` out to `ref_fetch` (`ok` /
+>   `throttled` / `failed` / `skipped`) — **on `route_save` as well as
+>   `route_fetch`**. A stale date is only an error signal to a reader who thinks
+>   to check it. Every `unresolved` reason a save returns is relative to the ref,
+>   so on a `failed` fetch "symbol not found on origin/main (pending until it
+>   merges)" can be flatly wrong — the symbol is on the remote's main, this box
+>   is behind, and nothing is waiting to merge. The reason carries the doubt
+>   inline too, rather than leaving the caller to correlate two fields.
+> - Both spellings of a configured base are understood. `remoteTrackingRef`
+>   passes a `refs/`-prefixed base through unchanged, so
+>   `defaultBase: "refs/remotes/origin/main"` names a ref that *does* advance on
+>   fetch; matching only the short `origin/…` spelling reported it `skipped` —
+>   the one status meaning "nothing was missed" — and silently disabled fetching
+>   for that repo.
+> - `core.sshCommand` is seeded into `GIT_SSH_COMMAND` before the flags are
+>   appended. The env var outranks the config key, so setting it blind would drop
+>   an operator's deploy key or jump host — auth fails, the fetch reports
+>   `failed`, and the ref goes stale. That is this same argument pointing the
+>   other way, and it is why `credential.helper` is left alone as well.
+> - `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=5` and `-oConnectTimeout=5`
+>   make the transport bound itself. The race is still the guarantee; these stop
+>   an orphaned helper from outliving it for as long as the peer holds the
+>   connection open (measured surviving 50s+, dying within 3s of the peer going
+>   away).
 >
 > Out of scope on this branch, worth knowing: `WorktreeManager.createWorktree`
 > runs `git fetch origin --prune` with no timeout at all, so the hang *class*
@@ -487,6 +507,10 @@ Rejects >8 steps — that cap is the feature, not a limitation.
 > 3. **The response says it overwrote.** Last-writer-wins is the design, but
 >    silently clobbering is not — the result carries `overwrote`, the previous
 >    step count, and the `identity` actually written after normalisation.
+> 4. **It reports `ref_fetch` and `ref_committed_at`,** for the reason in
+>    [which git state](#which-git-state--save-and-verify-must-agree): a save's
+>    every `unresolved` reason is only as true as the ref it was measured
+>    against.
 
 ### `route_report_usage`
 
@@ -656,10 +680,13 @@ The five findings above were fixed as briefed except where noted here.
 - **The pending-activation ladder keeps repo-wide ahead of the loose in-file
   match,** which inverts the normal ladder for marker-style anchors. Accepted
   with the hazard commented at `anchors.ts`: a marker whose identifier is also
-  declared elsewhere can be repaired to that other file. The alternative is
-  worse — loose-first lets activation fingerprint the import line a moved symbol
-  left behind and report `ok` / `fingerprint` at a stale path, which is wrong
-  *and* invisible, where this failure surfaces as `moved` with a `resolved_path`.
+  a genuine declaration elsewhere can be repaired to that other file. The
+  visibility is a one-shot window — the repair persists the fingerprints, so
+  later fetches skip the pending branch and verify at the wrong file as `ok` —
+  but the alternative is worse and equally sticky: loose-first lets activation
+  fingerprint the import line a moved symbol left behind and report `ok` /
+  `fingerprint` at a stale path, invisible from the first turn, where this
+  surfaces once as `moved` with a `resolved_path`.
 - **The identity cap and collation live in the store,** not in `tools.ts`:
   applied above the store, the two implementations would return different pages
   of the same corpus past 25. `listRouteIdentities(repo, limit)` orders by

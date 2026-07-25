@@ -212,13 +212,18 @@ export async function verifyStep(
     //
     // RESIDUAL HAZARD, accepted deliberately: this inverts the normal ladder
     // for a marker-style anchor. A section marker recorded on an unmerged
-    // branch, whose identifier is ALSO declared somewhere else in the repo,
-    // repairs to that other file and rewrites `path` away from the file the
-    // agent named. The alternative ordering is worse: putting the loose in-file
-    // match first lets activation fingerprint the import line a moved symbol
-    // left behind and report `ok` / `fingerprint` at the stale path — wrong,
-    // and invisible. This way the mistake surfaces as `moved` with a
-    // `resolved_path` the reader can see and the agent can overwrite.
+    // branch, whose identifier is ALSO declared somewhere else in the repo
+    // (tier 2 is declarations-only, so it takes both), repairs to that other
+    // file and rewrites `path` away from the file the agent named.
+    //
+    // The visibility is a ONE-SHOT WINDOW, not a standing signal: the repair
+    // persists `path` + `decl_pattern` + hashes, so the next fetch never enters
+    // this branch again and verifies happily at the wrong file as `ok` /
+    // `untouched`. Only the fetch that did it reports `moved` + `resolved_path`.
+    // Still strictly better than loose-first, which is equally sticky and
+    // invisible from the very first turn — it fingerprints the import line a
+    // moved symbol left behind and calls it `ok` / `fingerprint` at the stale
+    // path, with nothing anywhere to notice.
     const moved = await resolveAnchorRepoWide(ctx, symbol, null, step.path);
     if (moved) {
       return withEdgeCheck(ctx, step, {

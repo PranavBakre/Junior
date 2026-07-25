@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { resolveAnchorInFile, resolveAnchorRepoWide, verifyStep } from "./anchors.ts";
 import {
   REF_FETCH_TIMEOUT_MS,
@@ -315,6 +317,46 @@ describe("task-route anchors", () => {
     expect(conservative.commits).toBe(1);
     expect([...conservative.changedPaths].sort()).toEqual(["src/handler.ts", "src/server.ts"]);
   });
+
+  it("fetches for a fully-qualified remote-tracking defaultBase too", async () => {
+    // `remoteTrackingRef` passes a `refs/`-prefixed base through unchanged, so a
+    // configured `refs/remotes/origin/main` names a ref that DOES advance on
+    // fetch. Testing only the short spelling reported it `skipped` — the status
+    // that means "nothing was missed" — and silently disabled the fetch.
+    const stale = ctx.sha;
+    repo.write({ "src/handler.ts": HANDLER.replace("scaled + 1", "scaled + 6") });
+    await repo.commit("later work");
+    await repo.publish();
+    await repo.rewindOriginRef(stale);
+    resetRefFetchThrottle();
+
+    const resolved = await resolveCanonicalRef(repo.path, "refs/remotes/origin/main", {
+      fetch: true,
+    });
+    expect(resolved?.ref).toBe("refs/remotes/origin/main");
+    expect(resolved?.fetchStatus).toBe("ok");
+    expect(resolved?.sha).not.toBe(stale);
+    expect(resolved?.sha).toBe(await repo.originSha());
+  });
+
+  it("honours a config-only core.sshCommand instead of clobbering it", async () => {
+    // GIT_SSH_COMMAND outranks core.sshCommand, so setting the env var without
+    // seeding it from the config drops an operator's deploy key or jump host —
+    // auth fails, the fetch reports `failed`, and the ref quietly goes stale.
+    const marker = join(repo.path, ".ssh-was-invoked");
+    const wrapper = join(repo.path, "fake-ssh.sh");
+    writeFileSync(wrapper, `#!/bin/sh\ntouch "${marker}"\nexit 1\n`, { mode: 0o755 });
+    await repo.gitConfig("core.sshCommand", wrapper);
+    await repo.setRemoteUrl("ssh://git@127.0.0.1:1/hung.git");
+    resetRefFetchThrottle();
+
+    const resolved = await resolveCanonicalRef(repo.path, undefined, { fetch: true });
+    expect(existsSync(marker)).toBe(true);
+    // The wrapper refuses, so the fetch fails — and says so rather than
+    // pretending the ref is current.
+    expect(resolved?.fetchStatus).toBe("failed");
+    expect(resolved?.sha).toBe(ctx.sha);
+  }, 20_000);
 
   it("bounds a fetch against a remote that accepts and never answers", async () => {
     // `proc.kill()` alone does NOT bound this: over any helper transport git

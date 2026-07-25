@@ -144,8 +144,18 @@ async function maybeFetchRef(
 ): Promise<{ status: RefFetchStatus; sha: string | null }> {
   // Only a remote-tracking ref advances on fetch; a local `refs/heads/...` base
   // would be untouched, so spending the network call on it is pointless.
-  if (!ref.startsWith("origin/")) return { status: "skipped", sha: null };
-  const branch = ref.slice("origin/".length);
+  //
+  // `remoteTrackingRef` passes a `refs/`-prefixed configured base through
+  // unchanged, so `defaultBase: "refs/remotes/origin/main"` names a ref that IS
+  // remote-tracking and WOULD advance. Testing the short spelling alone reported
+  // that as `skipped` — the one status meaning "nothing was missed" — and
+  // silently disabled fetching for that repo. `defaultBase` is operator JSON, so
+  // both spellings have to be understood.
+  const tracking = ref.startsWith("refs/remotes/")
+    ? ref.slice("refs/remotes/".length)
+    : ref;
+  if (!tracking.startsWith("origin/")) return { status: "skipped", sha: null };
+  const branch = tracking.slice("origin/".length);
   if (!branch) return { status: "skipped", sha: null };
   const key = `${repoPath}::${ref}`;
   if (now - (lastFetchAt.get(key) ?? 0) < REF_FETCH_MIN_INTERVAL_MS) {
@@ -155,12 +165,25 @@ async function maybeFetchRef(
   // the timeout on every single fetch.
   lastFetchAt.set(key, now);
   const fetched = await git(
-    // An explicit refspec rather than `fetch origin <branch>`: the plain form
-    // only updates the remote-tracking ref opportunistically, through whatever
-    // refspec the remote happens to be configured with.
-    ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
+    [
+      // Make the transport bound ITSELF rather than depend on the peer: without
+      // these, a killed git leaves a helper alive for as long as the far side
+      // holds the connection open. The race in `git()` is still the guarantee;
+      // this just stops the orphan outliving it.
+      "-c",
+      "http.lowSpeedLimit=1",
+      "-c",
+      "http.lowSpeedTime=5",
+      // An explicit refspec rather than `fetch origin <branch>`: the plain form
+      // only updates the remote-tracking ref opportunistically, through whatever
+      // refspec the remote happens to be configured with.
+      "fetch",
+      "--quiet",
+      "origin",
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ],
     repoPath,
-    { timeoutMs: REF_FETCH_TIMEOUT_MS, env: nonInteractiveEnv() },
+    { timeoutMs: REF_FETCH_TIMEOUT_MS, env: await nonInteractiveEnv(repoPath) },
   );
   if (!fetched.ok) return { status: "failed", sha: null };
   const resolved = await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoPath);
@@ -179,14 +202,23 @@ async function maybeFetchRef(
  * staleness this fix exists to remove straight back. A helper that does hang is
  * covered by the hard bound in `git()`.
  */
-function nonInteractiveEnv(): Record<string, string> {
-  const sshCommand = process.env.GIT_SSH_COMMAND?.trim();
+async function nonInteractiveEnv(repoPath: string): Promise<Record<string, string>> {
+  // Appended, not replaced: an operator's custom identity or jump host must
+  // survive. `GIT_SSH_COMMAND` outranks `core.sshCommand` in git's precedence,
+  // so setting the env var without seeding it from the config SILENTLY DROPS a
+  // config-only ssh command — auth then fails, the fetch reports `failed`, and
+  // the ref goes stale. That is the same silent-staleness this fetch exists to
+  // remove, so the config is read when the env var is unset.
+  let sshCommand = process.env.GIT_SSH_COMMAND?.trim();
+  if (!sshCommand) {
+    const configured = await git(["config", "--get", "core.sshCommand"], repoPath);
+    const value = configured.stdout.trim();
+    if (configured.ok && value) sshCommand = value;
+  }
   return {
     GIT_TERMINAL_PROMPT: "0",
-    // Appended, not replaced: an operator's custom identity/config must survive.
-    GIT_SSH_COMMAND: sshCommand
-      ? `${sshCommand} -oBatchMode=yes`
-      : "ssh -oBatchMode=yes",
+    // ConnectTimeout is the ssh half of the self-bounding above.
+    GIT_SSH_COMMAND: `${sshCommand || "ssh"} -oBatchMode=yes -oConnectTimeout=5`,
   };
 }
 

@@ -115,6 +115,10 @@ describe("task-route tools", () => {
     expect(result.ref).toBe("origin/main");
     expect(result.verified_sha).toBe(await repo.originSha());
     expect(result.active).toBe(true);
+    // Every `unresolved` reason a save can return is relative to this ref, so
+    // the same fetch signal route_fetch reports has to be reported here too.
+    expect(result.ref_fetch).toBe("ok");
+    expect(result.ref_committed_at).not.toBeNull();
 
     const stored = await store.getRoute(result.route_id);
     expect(stored?.steps).toHaveLength(3);
@@ -638,6 +642,30 @@ describe("task-route tools", () => {
     expect(throttled.ref_fetch).toBe("throttled");
     expect(throttled.drift).toBe("untouched");
   });
+
+  it("does not blame an unmerged branch when the fetch is what failed", async () => {
+    // The executed failure: the symbol IS on the remote's main, this box's
+    // tracking ref is behind, and the fetch could not fix that. Reporting only
+    // "pending until it merges" names a cause that does not exist — nothing is
+    // waiting to merge — and stores the route inactive and unsearchable.
+    const stale = await repo.originSha();
+    repo.write({ "src/late.ts": "export function lateThing() {\n  return 1;\n}\n" });
+    await repo.commit("landed on main");
+    await repo.publish();
+    await repo.rewindOriginRef(stale);
+    // Refused, not hung: the point is a failed fetch, not the timeout path.
+    await repo.setRemoteUrl("ssh://git@127.0.0.1:1/nope.git");
+    resetRefFetchThrottle();
+
+    const result = await save({
+      steps: [{ note: "the late arrival", path: "src/late.ts", symbol: "lateThing" }],
+    });
+    expect(result.ref_fetch).toBe("failed");
+    expect(result.ref_committed_at).not.toBeNull();
+    expect(result.active).toBe(false);
+    expect(result.unresolved[0].reason).toContain("pending until it merges");
+    expect(result.unresolved[0].reason).toContain("may be behind the remote");
+  }, 20_000);
 
   it("names the repo's known identities on a miss", async () => {
     await save();

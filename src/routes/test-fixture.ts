@@ -40,6 +40,8 @@ export interface FixtureRepo {
   rewindOriginRef(sha: string): Promise<void>;
   /** Point `origin` somewhere else — e.g. at a host that never answers. */
   setRemoteUrl(url: string): Promise<void>;
+  /** Set a repo-local git config key. */
+  gitConfig(key: string, value: string): Promise<void>;
   cleanup(): void;
 }
 
@@ -132,6 +134,9 @@ export async function createFixtureRepo(prefix = "junior-routes-"): Promise<Fixt
     },
     async setRemoteUrl(url) {
       await run(["git", "remote", "set-url", "origin", url], path);
+    },
+    async gitConfig(key, value) {
+      await run(["git", "config", key, value], path);
     },
     cleanup() {
       rmSync(root, { recursive: true, force: true });
