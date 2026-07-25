@@ -151,6 +151,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SLACK_BOT_TOKEN` | *(required)* | `xoxb-…` bot token |
 | `SLACK_APP_TOKEN` | *(required)* | `xapp-…` app token for Socket Mode |
 | `REPOS` | `[]` | JSON array of `RepoConfig` (see below) |
+| `REPO_DISCOVERY_ROOTS` | `[]` | JSON array of local directories whose immediate child Git checkouts Junior may use; explicit `REPOS` entries override discovered metadata |
 | `CHANNEL_DEFAULTS` | `{"C05557KKV37":{"agentType":"lead"}}` | Per-channel default agent type. Channels with `agentType:"lead"` go through the support router (multi-agent dispatcher) |
 | `SESSION_STORE` | `sqlite` | `sqlite` or `memory` |
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
@@ -197,6 +198,19 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 ```
 
 See [`src/config.ts`](src/config.ts) for the full set including `worktreeSetupCommand`, `readyUrl`, verbosity, cleanup intervals, etc.
+
+To make every primary Git checkout under a local projects directory available
+without maintaining `REPOS` by hand:
+
+```bash
+REPO_DISCOVERY_ROOTS=["~/Projects"]
+```
+
+Discovery is intentionally scoped to the listed roots and only includes direct
+children with a real `.git` directory, an `origin` remote, and a locally-known
+`origin/main`, `origin/dev`, or `origin/master` base (or `origin/HEAD`). Linked
+worktrees and sibling `.junior-worktrees` directories are excluded. If a repo
+has an executable `scripts/setup-worktree.sh`, Junior uses it automatically.
 
 ---
 

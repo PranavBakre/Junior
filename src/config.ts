@@ -8,6 +8,10 @@ import {
 import { DEFAULT_DEDUP_THRESHOLD, resolveDedupThreshold } from "./memory/dedup.ts";
 import type { EmbeddingProviderKind } from "./memory/embedding/factory.ts";
 import type { WhatsAppConfig } from "./whatsapp/types.ts";
+import {
+  mergeConfiguredAndDiscoveredRepos,
+  parseRepoDiscoveryRoots,
+} from "./repos/discovery.ts";
 
 export interface RepoConfig {
   name: string;
@@ -331,14 +335,10 @@ export function loadConfig(): Config {
       isolatedHomePath:
         process.env.CODEX_ISOLATED_HOME_PATH?.trim() || "data/codex-home",
     },
-    repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({
-      ...r,
-      // Strip any trailing slashes so path-construction sites can do
-      // `${r.path}.junior-worktrees/...` without producing
-      // `<repo>//.junior-worktrees/...` (which collapses to a path INSIDE
-      // the repo and recreates the recursive-copy bug).
-      path: r.path.replace(/\/+$/, ""),
-    })),
+    repos: mergeConfiguredAndDiscoveredRepos(
+      JSON.parse(optional("REPOS", "[]")) as RepoConfig[],
+      parseRepoDiscoveryRoots(process.env.REPO_DISCOVERY_ROOTS),
+    ),
     session: {
       staleTimeoutMs: Number(optional("SESSION_STALE_TIMEOUT_MS", "86400000")),
       cleanupIntervalMs: Number(
