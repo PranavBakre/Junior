@@ -3491,6 +3491,10 @@ describe("SessionManager", () => {
 
   describe("turn-progress reaction", () => {
     const EMOJI = "hourglass_flowing_sand";
+    // Real Slack ts shapes: the marker is gated on this format, because
+    // internal dispatches synthesize `event.ts` as an identity key.
+    const TS_A = "1700000001.000100";
+    const TS_B = "1700000002.000200";
 
     function recordReactions(): Array<{ action: string; ts: string; emoji: string }> {
       const calls: Array<{ action: string; ts: string; emoji: string }> = [];
@@ -3503,22 +3507,22 @@ describe("SessionManager", () => {
     it("marks the triggering message and clears it when the runner posts", async () => {
       const calls = recordReactions();
 
-      await manager.handleMessage(makeEvent({ ts: "ts-turn" }));
-      expect(calls).toEqual([{ action: "add", ts: "ts-turn", emoji: EMOJI }]);
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
+      expect(calls).toEqual([{ action: "add", ts: TS_A, emoji: EMOJI }]);
 
       currentHandle._complete("done");
       await waitFor(() => calls.length === 2);
-      expect(calls[1]).toEqual({ action: "remove", ts: "ts-turn", emoji: EMOJI });
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
     });
 
     it("clears when the runner fails or times out", async () => {
       const calls = recordReactions();
 
-      await manager.handleMessage(makeEvent({ ts: "ts-fail" }));
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
       currentHandle._error("claude timed out");
 
       await waitFor(() => calls.length === 2);
-      expect(calls[1]).toEqual({ action: "remove", ts: "ts-fail", emoji: EMOJI });
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
     });
 
     it("clears when the response is suppressed", async () => {
@@ -3526,27 +3530,27 @@ describe("SessionManager", () => {
       // in the turn would ever take the marker back off.
       const calls = recordReactions();
 
-      await manager.handleMessage(makeEvent({ ts: "ts-silent" }));
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
       currentHandle._complete("NO_SLACK_MESSAGE");
 
       await waitFor(() => calls.length === 2);
-      expect(calls[1]).toEqual({ action: "remove", ts: "ts-silent", emoji: EMOJI });
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
     });
 
     it("clears when the runner returns an empty response", async () => {
       const calls = recordReactions();
 
-      await manager.handleMessage(makeEvent({ ts: "ts-empty" }));
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
       currentHandle._complete("");
 
       await waitFor(() => calls.length === 2);
-      expect(calls[1]).toEqual({ action: "remove", ts: "ts-empty", emoji: EMOJI });
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
     });
 
     it("clears when the turn is cancelled by !reset", async () => {
       const calls = recordReactions();
 
-      await manager.handleMessage(makeEvent({ ts: "ts-cancel" }));
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
       await manager.handleMessage(
         makeEvent({ command: "reset", text: "", ts: "ts-reset" }),
       );
@@ -3554,7 +3558,24 @@ describe("SessionManager", () => {
       currentHandle._error("killed by reset");
 
       await waitFor(() => calls.length === 2);
-      expect(calls[1]).toEqual({ action: "remove", ts: "ts-cancel", emoji: EMOJI });
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
+    });
+
+    it("ignores synthetic dispatch timestamps", async () => {
+      // pipelines/dispatch.ts and slack/action-buttons.ts synthesize `event.ts`
+      // as an identity key. Reacting to those is an API call that can only
+      // fail, once per assignment on the highest-volume dispatch path.
+      const calls = recordReactions();
+
+      await manager.handleAgentMessage(
+        makeEvent({ ts: "pipeline:run_x:asg_y:1700000000000" }),
+        "build",
+      );
+      await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(calls).toEqual([]);
     });
 
     it("keeps the marker until the last turn on that message finishes", async () => {
@@ -3564,13 +3585,13 @@ describe("SessionManager", () => {
       const calls = recordReactions();
       const topLevel = currentHandle;
 
-      await manager.handleMessage(makeEvent({ ts: "ts-shared" }));
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
       const agent = createMockHandle();
       mockSpawnFn = mock(() => agent);
-      await manager.handleAgentMessage(makeEvent({ ts: "ts-shared" }), "build");
+      await manager.handleAgentMessage(makeEvent({ ts: TS_A }), "build");
       await waitFor(() => mockSpawnFn.mock.calls.length === 1);
       // One add for two overlapping turns.
-      expect(calls).toEqual([{ action: "add", ts: "ts-shared", emoji: EMOJI }]);
+      expect(calls).toEqual([{ action: "add", ts: TS_A, emoji: EMOJI }]);
 
       agent._complete("agent done");
       await new Promise((r) => setTimeout(r, 5));
@@ -3578,29 +3599,29 @@ describe("SessionManager", () => {
 
       topLevel._complete("lead done");
       await waitFor(() => calls.length === 2);
-      expect(calls[1]).toEqual({ action: "remove", ts: "ts-shared", emoji: EMOJI });
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
     });
 
     it("marks the newly drained message when a buffered turn follows", async () => {
       const calls = recordReactions();
       const first = currentHandle;
 
-      await manager.handleMessage(makeEvent({ ts: "ts-first" }));
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
       const second = createMockHandle();
       mockSpawnFn = mock(() => second);
-      await manager.handleMessage(makeEvent({ ts: "ts-buffered" }));
+      await manager.handleMessage(makeEvent({ ts: TS_B }));
 
       first._complete("done");
       await waitFor(() => calls.length === 3);
       expect(calls.slice(0, 3)).toEqual([
-        { action: "add", ts: "ts-first", emoji: EMOJI },
-        { action: "remove", ts: "ts-first", emoji: EMOJI },
-        { action: "add", ts: "ts-buffered", emoji: EMOJI },
+        { action: "add", ts: TS_A, emoji: EMOJI },
+        { action: "remove", ts: TS_A, emoji: EMOJI },
+        { action: "add", ts: TS_B, emoji: EMOJI },
       ]);
 
       second._complete("done");
       await waitFor(() => calls.length === 4);
-      expect(calls[3]).toEqual({ action: "remove", ts: "ts-buffered", emoji: EMOJI });
+      expect(calls[3]).toEqual({ action: "remove", ts: TS_B, emoji: EMOJI });
     });
   });
 });

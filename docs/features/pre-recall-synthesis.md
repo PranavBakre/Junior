@@ -183,7 +183,7 @@ Shipped in `src/memory/pre-recall.ts`, `src/session/manager.ts`,
 | Characters per claim | 600 | Truncated with `…`. Claim text has no schema ceiling. |
 | Total candidate characters | 6 000 | 12 × 600 = 7 200, so the ceiling is reachable and actually drops the lowest-scoring candidates. |
 | Request characters in the prompt | 1 200 | The proposal capped the *claims*; the request is untrusted-length too, so it is capped as well or the prompt is still unbounded. |
-| Raw claims on fallback | 3, each ≥ 0.5 **cosine** | Matches the previous per-query recall limit; the floor is new (see below). |
+| Raw claims on fallback | 3, each ≥ 0.55 **cosine** | Matches the previous per-query recall limit; the floor is new (see below). |
 | Lines emitted | 5, 500 chars each | The block is injected into every turn's prompt. Applies to synthesized and fallback lines alike. |
 
 **The fallback needs a relevance floor.** `recallClaims` is `slice(0, limit)`
@@ -218,27 +218,87 @@ gap is not a tail case. Over 376 probes:
 - score floor 0.5 → **92** lose it (24.5%)
 - of the 87 probes whose best match sits at weight ≤ 0.6, **76** lose it (87%)
 
-`FALLBACK_MIN_COSINE = 0.5` therefore admits every paraphrase-level match while
-still rejecting the "thanks, that worked" case (measured `topcos=0.000`).
 Ranking stays on `score`, so weight still orders relevant candidates — it just
 no longer decides eligibility. A null cosine (no query vector, or a claim
 without an embedding) is ineligible: unmeasurable relevance is not relevance.
 
+**Calibrate the value against the NOISE distribution, not the paraphrase one.**
+The table above only bounds what a floor *costs*; by itself it would justify any
+floor up to ~0.6. What sets the value is where chit-chat lands, because chit-chat
+is the case the floor exists for. Measured through the production path
+(`LocalEmbeddingProvider` → `recallClaims(limit 8)` → `selectSynthesisCandidates`),
+best-candidate cosine for ten chit-chat probes:
+
+```
+"thanks, that worked" 0.432   "ok cool"            0.413   "lol"          0.395
+"can you check this again" 0.500   "sounds good to me" 0.394  "good morning" 0.403
+"hey what's up"       0.435   "thanks!"            0.453   "nice one"     0.384
+"any update on this?" 0.477
+```
+
+Chit-chat spans **0.384–0.500**, so 0.50 sits *inside* the noise tail:
+"can you check this again" peaks at exactly 0.500 and would be admitted,
+emitting a claim and marking it used. Separation over 439 paraphrase probes:
+
+| floor | chit-chat rejected | best matches lost |
+|---|---|---|
+| 0.50 | 9/10 | 0/439 |
+| **0.55** | **10/10** | **1/439 (0.2%)** |
+| 0.60 | 10/10 | 13/439 (3.0%) |
+
+`FALLBACK_MIN_COSINE = 0.55` is the first value that clears all ten, at a cost of
+one paraphrase match in 439.
+
+> **Do not re-derive this from the test suite.** The unit and end-to-end tests
+> use `HashingEmbeddingProvider`, which is token overlap rather than semantics:
+> chit-chat is token-disjoint from the corpus and scores *exactly* 0.000, so
+> every floor in (0.36, 1.0] passes them. An earlier revision of this document
+> cited that 0.000 as if it were a corpus measurement and set the floor from it.
+> `describe.skipIf(!RUN_LOCAL)("fallback floor …")` in `pre-recall.test.ts` is
+> the test that can actually move this number — run it with
+> `RUN_LOCAL_EMBED_TEST=1`. It pins the floor from both sides: chit-chat must
+> emit nothing, and an on-topic paraphrase (measured `topcos=0.611`) must still
+> emit.
+
 **Model output is prompt-injection surface.** Before this change the
 subprocess's output was only a search query, and every emitted line was a
 verbatim corpus claim; now `notes` is free text from a model whose input quotes
-a raw Slack message. Three defences: the request is wrapped in `<request>` tags
-and labelled untrusted data in both the system and user prompt, any literal
-`</request>` in the message is stripped, and **notes are rejected unless
-`used` names at least one candidate** — a genuine merge always cites its
-sources, and unattributed notes are the injection signature. Rejected notes take
-the fallback path, so the turn still gets verbatim claims.
+a raw Slack message. Three defences:
+
+1. The request is enclosed in a **per-call nonce delimiter**
+   (`<request-a3f9>…</request-a3f9>`) and labelled untrusted in both prompts.
+   Stripping a fixed `</request>` was the first attempt and is bypassable:
+   `replaceAll` runs once, so `"</req</request>uest>"` reconstitutes the tag and
+   puts the payload outside the block, while `</REQUEST>` and `</request >`
+   never matched at all. A nonce the message has never seen cannot be forged, so
+   this is immune by construction rather than by an exhaustive-escape argument.
+2. **Notes are rejected unless `used` names at least one candidate.** Rejected
+   notes take the fallback path, so the turn still gets verbatim claims.
+3. The emitted block labels its own provenance (below).
+
+Defence 2 is worth stating precisely, because it is easy to overclaim: it
+proves an index was *named*, not that the note derives from it. The real bar is
+"arbitrary text plus a valid integer". It filters the lazy case and gives the
+fallback something to trigger on; it is not a guarantee of faithfulness. The
+residual risk is framing rather than access — the Slack message is already in
+the agent's prompt — but the block used to present model-authored text under a
+header claiming it was "recalled from memory". `formatPreRecallBlock` now
+labels the two paths differently: fallback lines are "recalled verbatim",
+synthesized lines are "a model's summary … prefer the underlying claim when a
+specific matters".
+
+Known limitation: a claim cited in `used` is marked used even if it did not
+really contribute, so a lying citation mildly refreshes that claim's decay
+clock. Bounded by the shortlist (≤ 12) and strictly better than the previous
+behaviour of marking every retrieved candidate.
 
 **A malformed `notes` is a failure, not a rejection.** `{"notes":"one line"}`
 coerced to `[]` would report a broken call as the deliberate "nothing applies"
 outcome — invisible in the telemetry and, worse, skipping the fallback so the
-turn gets no memory at all. Only an explicit `"notes": []` is a rejection;
-missing or non-array is a parse failure.
+turn gets no memory at all. Only an explicit `"notes": []` is a rejection.
+Malformed covers three shapes, all reaching the same trap by different routes:
+missing, non-array, and a non-empty array that leaves nothing usable after
+filtering (`[{"text":"a"}]`, `["   "]`).
 
 **Divergences from the proposal.**
 
@@ -268,11 +328,22 @@ missing or non-array is a parse failure.
   (deliberately swallowed), and let the add land afterwards and stick forever
   with nothing in the logs. `SlackResponder` chains reaction writes per
   `channel:ts`; unrelated messages still run concurrently.
-- **Dispatched agent turns are marked too.** The gate is "this turn has a Slack
-  message of its own", not "top-level": `handleAgentMessage` passes a real
-  `event.ts` for `@junior reproducer …`, and those are typically the longest
-  turns. Drains and continuations thread no ts through, so only a top-level turn
-  can recover one from the session row.
+- **Dispatched agent turns are marked too — when the ts is real.** The gate is
+  "this turn has a Slack message of its own", not "top-level":
+  `handleAgentMessage` passes a real `event.ts` for `@junior reproducer …`, and
+  those are typically the longest turns. But not every caller does: pipeline
+  dispatch synthesizes `pipeline:<run>:<assignment>:<updatedAt>`
+  (`pipelines/dispatch.ts`) and action buttons synthesize `<ts>:button:<action>`
+  (`slack/action-buttons.ts`), both as identity keys rather than Slack
+  timestamps. Reacting to those is an API call that can only fail — and
+  `addReaction` logs failures at error level, so it would have emitted one bogus
+  `reaction.add.fail` per pipeline assignment on the highest-volume dispatch
+  path. `markTurnProgress` therefore requires a real ts shape (`/^\d+\.\d+$/`).
+  Guarded centrally rather than at the two callers, because they use `ts`
+  legitimately as a dedupe key and only the manager claims it is something Slack
+  can react to — a caller-side fix would have to be repeated for every future
+  dispatch path. Drains and continuations thread no ts through, so only a
+  top-level turn can recover one from the session row.
 - **The clear fires when the runner settles, marginally before the response
   posts.** It lives in a `finally` on `runRunnerWithAgent`, and the normal exit
   is `return this.onRunComplete(...)` — so the marker clears as the turn unwinds
@@ -289,10 +360,13 @@ can skip it:
 [pre-recall] repo=gx-backend queries=2 candidates=11 topcos=0.812 top=0.734 claims=3 fallback=false ms=4210
 ```
 
-`topcos=` is the best candidate's raw cosine — the thresholded quantity, so the
-number to look at before moving `FALLBACK_MIN_COSINE`. `top=` is its score
-(cosine × weight), kept because it is what ranks candidates; the two diverging
-is the weight signal made visible. Both read `-` when unmeasured, never `0`.
+`topcos=` is the **best** cosine in the shortlist — the thresholded quantity, so
+the number to look at before moving `FALLBACK_MIN_COSINE`. It is a max, not the
+head of the list: the list is ordered by `score`, so a cosine-0.45/weight-1.0
+candidate outranks a cosine-0.70/weight-0.6 one and reading the head would
+understate relevance. `top=` is the top-ranked candidate's score, kept because
+that is what orders them; the two diverging is the weight signal made visible.
+Both read `-` when unmeasured, never `0`.
 `err=` is appended when synthesis failed (with `fallback=true`) or the attempt
 threw (with `claims=0`). The four zero-claim outcomes stay distinguishable: no
 candidates (`candidates=0`), curation rejected everything (`fallback=false`, no

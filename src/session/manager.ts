@@ -91,6 +91,14 @@ import { pumpOutbox } from "../pipelines/pump.ts";
  */
 const TURN_PROGRESS_EMOJI = "hourglass_flowing_sand";
 
+/**
+ * A real Slack message timestamp (`1700000000.123456`). Internal dispatches
+ * synthesize `event.ts` as an identity key — `pipeline:<run>:<assignment>:<ts>`
+ * (pipelines/dispatch.ts) and `<ts>:button:<actionId>` (slack/action-buttons.ts)
+ * — and reacting to those is an API call that can only fail.
+ */
+const SLACK_MESSAGE_TS = /^\d+\.\d+$/;
+
 export class SessionManager {
   private store: SessionStore;
   private config: Config;
@@ -3757,6 +3765,11 @@ export class SessionManager {
     action: "add" | "remove",
   ): void {
     if (!this.onTurnReaction) return;
+    // Guarded centrally rather than at each caller: the dispatch layers use
+    // `event.ts` legitimately as a dedupe/identity key, and only this layer
+    // claims it is something Slack can react to. A caller-side fix would have
+    // to be repeated for every future dispatch path.
+    if (!SLACK_MESSAGE_TS.test(messageTs)) return;
     const key = `${channel}:${messageTs}`;
     const refs = this.turnProgressRefs.get(key) ?? 0;
     if (action === "add") {
