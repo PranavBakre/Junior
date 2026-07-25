@@ -55,6 +55,7 @@ surfaces have dedicated indexes:
 - [Project setup and boot](code_index/project-setup.md)
 - [Runner providers](code_index/runner-providers.md)
 - [Support router](code_index/support-router.md)
+- [Task routes](code_index/task-routes.md)
 - [Workflows](code_index/workflows.md)
 
 The remaining indexes are listed by module in `docs/code_index/`.
@@ -63,9 +64,6 @@ The remaining indexes are listed by module in `docs/code_index/`.
 
 Active proposals (designed, not implemented):
 
-- [Task routes](features/task-routes.md): a per-task path through a codebase —
-  entry point, order, and tooling dead ends — with write-time fingerprinting,
-  ripgrep-only verification, auto-repair, and usage-weighted decay.
 - [Pre-recall synthesis](features/pre-recall-synthesis.md): move the LLM call
   after recall, add success telemetry, and signal turn start with a reaction.
 - [Claim dedup write guard](features/claim-dedup-write-guard.md): the 0.92

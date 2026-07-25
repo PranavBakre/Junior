@@ -48,6 +48,7 @@ import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 import { registerTool } from "./register-tool.ts";
 import { registerWhatsAppTools } from "./whatsapp-tools.ts";
+import { registerTaskRouteTools } from "../routes/tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 import { registerPendingApproval } from "./approval.ts";
 import { prepareSlackResponseWithActions, type SlackActionButtonSpec } from "../slack/formatting.ts";
@@ -162,6 +163,14 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         ? { channel: session.channel, humanParticipants: session.humanParticipants }
         : null;
     },
+  });
+  // Task routes share the memory DB and its embedding provider; the repo
+  // lookups come from the worktree manager's configured checkouts.
+  registerTaskRouteTools(server, {
+    dbPath: MEMORY_DB_PATH,
+    getEmbedder: getEmbeddingProvider,
+    resolveRepoPath: (repo) => worktreeManager?.getRepo(repo)?.path ?? null,
+    resolveDefaultBase: (repo) => worktreeManager?.getRepo(repo)?.defaultBase,
   });
   registerTool(
     server,
