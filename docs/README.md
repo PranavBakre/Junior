@@ -34,7 +34,9 @@ indexes, and the source links in those documents.
 - [GitHub reconciliation](code_index/github-reconciliation.md): review-state
   reads, idempotent comments, and optional polling/event wake-up.
 - [Memory v3](features/memory-system-v3.md): source records, claims, profiles,
-  local embeddings, recall, and consolidation.
+  local embeddings, recall, and consolidation. The
+  [claim dedup write guard](features/claim-dedup-write-guard.md) is the store's
+  near-duplicate merge on every claim write, plus the offline backfill sweep.
 - [Worktrees and dev servers](features/bug-pipeline-worktrees.md) plus
   [worktree runtime](features/worktree-manager.md): target-repo isolation and
   the serialized dev-server slot.
@@ -67,9 +69,10 @@ Active proposals (designed, not implemented):
 - [Task routes](features/task-routes.md): a per-task path through a codebase —
   entry point, order, and tooling dead ends — with write-time fingerprinting,
   ripgrep-only verification, auto-repair, and usage-weighted decay.
-- [Claim dedup write guard](features/claim-dedup-write-guard.md): the 0.92
-  similarity gate lives in one caller; move it to the store write path, merge
-  instead of dropping, and backfill the existing near-duplicates.
+(The claim dedup write guard and pre-recall synthesis both graduated out of this
+list — they are shipped and listed under
+[current runtime surfaces](#current-runtime-surfaces). The dedup backfill sweep
+is dry-run by default and has not been applied to the live corpus.)
 
 Feature files with an explicit `Historical`, `Proposal`, `Future`, or
 `Superseded` status are retained as design history. In particular, the older

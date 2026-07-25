@@ -29,6 +29,7 @@ import type {
   ClaimKind,
   ClaimRecallFilters,
   ClaimRecallResult,
+  ClaimWriteResult,
 } from "../memory/types.ts";
 import type { EmbeddingProvider } from "../memory/embedding/types.ts";
 // `import type` keeps the heavy harrier/transformers graph (pulled in by the
@@ -1291,7 +1292,9 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         "Add a single atomic claim to Junior's v3 semantic memory and embed it in one step. " +
         "The text is embedded locally (document mode) and stored as a lesson/fact/situation-claim row " +
         "with its embedding co-located, so it is immediately retrievable by `memory_recall`. Write ONE " +
-        "atomic claim per call (the unit of semantic recall), not a paragraph. Returns the stored claim id.",
+        "atomic claim per call (the unit of semantic recall), not a paragraph. Near-duplicates are " +
+        "merged into the existing claim rather than stored twice. Returns the claim id plus " +
+        "`action`: 'inserted' (new), 'updated' (same id re-saved), or 'merged' (Junior already knew it).",
       inputSchema: {
         text: z.string().describe("One atomic claim — the authoritative text that gets embedded"),
         kind: z
@@ -1853,12 +1856,15 @@ export interface AddMemoryArgs {
  * Add + embed a single atomic claim (§6.1). The text is embedded in DOCUMENT
  * mode and stored with its embedding co-located; the id is a deterministic slug
  * of the text, so re-adding the same claim upserts in place rather than
- * duplicating. Returns the stored id.
+ * duplicating. The store's write guard additionally collapses SEMANTIC
+ * near-duplicates (a one-word edit produces a different id but the same claim),
+ * so the result reports whether the claim was stored or merged into an existing
+ * one — "already knew that".
  */
 export async function addMemory(
   args: AddMemoryArgs,
   deps: MemoryToolDeps,
-): Promise<{ id: string }> {
+): Promise<ClaimWriteResult> {
   const text = args.text.trim();
   if (!text) throw new Error("memory_add: `text` must be a non-empty claim");
 
@@ -1866,7 +1872,7 @@ export async function addMemory(
   const [embedding] = await deps.provider.embed([text], "document");
   const id = claimIdFromText(text);
 
-  await deps.store.upsertClaim({
+  return deps.store.upsertClaim({
     id,
     kind,
     text,
@@ -1877,8 +1883,6 @@ export async function addMemory(
     tags: args.tags ?? [],
     createdAt: Date.now(),
   });
-
-  return { id };
 }
 
 /** Deterministic claim id: a readable slug of the text + a short content hash. */

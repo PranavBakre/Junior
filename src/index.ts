@@ -62,7 +62,9 @@ const app = createSlackApp(config);
 const store = createSessionStore(config);
 log.info("boot", `Session store: ${config.session.store}`);
 const actionStore = new SlackActionStore(resolve(config.session.sqlitePath));
-const memoryStore = createMemoryStore(config.memory.sqlitePath);
+const memoryStore = createMemoryStore(config.memory.sqlitePath, {
+  dedupThreshold: config.memory.dedupThreshold,
+});
 const memoryIngestor = new MemoryIngestor(memoryStore);
 let pipelineAudit: SlackAuditCallback | undefined;
 const sessionManager = new SessionManager(store, config);

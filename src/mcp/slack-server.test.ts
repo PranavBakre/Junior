@@ -102,6 +102,38 @@ describe("MCP memory v3 tools", () => {
     }
   });
 
+  it("memory_add merges a reworded claim instead of storing a near-duplicate", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      // memory_add derives its id from the text, so a one-word edit used to
+      // produce a different id and a brand-new row: exact-match dedup, not
+      // semantic. The store's write guard is what closes that.
+      const first = await addMemory(
+        {
+          text: "`command <tool>` is the escape hatch when a wrapper alias or hook is rewriting your invocation",
+          kind: "lesson",
+        },
+        deps,
+      );
+      expect(first.action).toBe("inserted");
+
+      const second = await addMemory(
+        {
+          text: "`command <tool>` is the escape hatch when a wrapper alias or hook is silently rewriting your invocation",
+          kind: "lesson",
+        },
+        deps,
+      );
+
+      expect(second.action).toBe("merged");
+      expect(second.mergedInto).toBe(first.id);
+      // One row, not two: recall gets one distinct idea back, not a paraphrase pair.
+      expect(await deps.store.exportClaimVectors()).toHaveLength(1);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("memory_recall returns the added claim for a related query", async () => {
     const { deps, cleanup } = makeMemoryDeps();
     try {

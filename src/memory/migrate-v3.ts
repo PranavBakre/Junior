@@ -217,6 +217,11 @@ export async function migrateV3(opts: MigrateV3Options): Promise<MigrateV3Report
           weight: s.weight,
           createdAt: s.createdAt,
           active: s.active,
+          // Historical rows go in VERBATIM: this pass has already run its own
+          // clustering dedup above, and the store's write guard would otherwise
+          // re-merge survivors (and re-bump their counters) at a different
+          // threshold. Archived legacy rows must also stay archived.
+          skipDedup: true,
         });
         claimsWritten++;
       }

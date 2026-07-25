@@ -31,6 +31,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How does the bot Slack MCP server work? | [docs/features/mcp-server.md](docs/features/mcp-server.md) |
 | How does the WhatsApp message archive + read tools work? | [docs/features/whatsapp-tools.md](docs/features/whatsapp-tools.md) |
 | How does Junior's long-term memory work (claims, episodes, profiles, embeddings, recall, consolidation)? | [docs/features/memory-system-v3.md](docs/features/memory-system-v3.md) |
+| How are duplicate claims prevented on write, and how are old ones swept? | [docs/features/claim-dedup-write-guard.md](docs/features/claim-dedup-write-guard.md) |
 | Headless vs tmux driver, why two paths exist, how tmux runs the TUI? | [docs/features/interactive-driver.md](docs/features/interactive-driver.md) |
 | How do persistent agents (orchestrator, reproducer, review, …) work? | [docs/features/persistent-agents.md](docs/features/persistent-agents.md) |
 | How are bug-pipeline worktrees laid out? | [docs/features/bug-pipeline-worktrees.md](docs/features/bug-pipeline-worktrees.md) |
@@ -172,8 +173,11 @@ junior/
       verification.ts     -- definition and policy checks
     memory/               -- v3 long-term memory (see docs/features/memory-system-v3.md)
       sqlite.ts           -- SqliteMemoryStore: source records, claims, episodes, decay
+                             (upsertClaim is THE claim write chokepoint: dedup guard + merge)
       store.ts            -- MemoryStore interface
       types.ts            -- claim / episode / decay / source-record types
+      dedup.ts            -- shared dedup policy: threshold, winner order, scope key
+      dedup-sweep.ts      -- offline backfill for pre-guard near-duplicates (dry-run by default)
       ingestion.ts        -- MemoryIngestor: hot-path appendSourceRecord capture
       cli.ts              -- consolidate-v3 / recall-claims / add-claim / add-lesson / add-fact
       migrate-v3.ts       -- one-shot: legacy lesson+fact -> claim, then drop condemned tables
@@ -207,7 +211,7 @@ junior/
   docs/
     features/             -- feature design docs with iteration plans
     code_index/           -- code indexes per module
-  workflows/              -- executable workflow definitions (worklog, release notes, memory consolidation, worktree prune)
+  workflows/              -- executable workflow definitions (worklog, release notes, memory consolidation, memory dedup sweep, worktree prune)
   CLAUDE.md
   learnings.md
 ```

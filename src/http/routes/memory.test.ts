@@ -28,6 +28,10 @@ async function seedClaim(
     dim: vector.length,
     tags: ["t-" + id],
     createdAt: Date.now(),
+    // The projection tests seed deliberately TIGHT clusters (cosine ~0.99) to
+    // check that neighbourhood structure survives the 3D projection. The store's
+    // write guard would collapse them into one row, so seed past it.
+    skipDedup: true,
   });
 }
 
