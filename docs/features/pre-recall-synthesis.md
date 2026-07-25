@@ -183,7 +183,7 @@ Shipped in `src/memory/pre-recall.ts`, `src/session/manager.ts`,
 | Characters per claim | 600 | Truncated with `…`. Claim text has no schema ceiling. |
 | Total candidate characters | 6 000 | 12 × 600 = 7 200, so the ceiling is reachable and actually drops the lowest-scoring candidates. |
 | Request characters in the prompt | 1 200 | The proposal capped the *claims*; the request is untrusted-length too, so it is capped as well or the prompt is still unbounded. |
-| Raw claims on fallback | 3, each ≥ 0.5 score | Matches the previous per-query recall limit; the floor is new (see below). |
+| Raw claims on fallback | 3, each ≥ 0.5 **cosine** | Matches the previous per-query recall limit; the floor is new (see below). |
 | Lines emitted | 5, 500 chars each | The block is injected into every turn's prompt. Applies to synthesized and fallback lines alike. |
 
 **The fallback needs a relevance floor.** `recallClaims` is `slice(0, limit)`
@@ -193,9 +193,36 @@ chit-chat. So a candidate set is essentially never empty. Without a floor,
 "thanks, that worked" plus an unavailable subprocess emits three arbitrary
 nearest neighbours as operational knowledge and marks them used, re-opening
 through the fallback the exact decay pathology `recordUsage: false` closed at
-retrieval. `FALLBACK_MIN_SCORE = 0.5` is a starting value, not a tuned one;
-`top=` in the telemetry is there to tune it. The floor applies **only** to the
-fallback — synthesis has a model doing the filtering.
+retrieval. The floor applies **only** to the fallback — synthesis has a model
+doing the filtering.
+
+**The floor is on cosine, not on `score`.** `score = cosine × weight`
+(`sqlite.ts`), so thresholding `score` lets a claim's *value* set its
+*relevance* bar: cosine ≥ 0.50 at weight 1.0, but ≥ 0.83 at weight 0.6. That is
+backwards — a low-weight, exactly-on-topic claim is what the fallback exists to
+surface.
+
+Measured against the live corpus (2636 active claims, 2626 with embeddings)
+using each claim's own embedding as a probe and taking its best OTHER match — a
+paraphrase-level neighbour, so a generous upper bound on any real Slack message:
+
+| | p10 | p50 | p90 | max |
+|---|---|---|---|---|
+| best-match cosine | 0.645 | 0.761 | 0.911 | 0.920 |
+| best-match score | 0.451 | 0.588 | 0.911 | 0.920 |
+
+Weight is heavily bimodal — 39.2% of claims at 1.00 and 22.5% at 0.60 — so the
+gap is not a tail case. Over 376 probes:
+
+- cosine floor 0.5 → **0** lose their best match
+- score floor 0.5 → **92** lose it (24.5%)
+- of the 87 probes whose best match sits at weight ≤ 0.6, **76** lose it (87%)
+
+`FALLBACK_MIN_COSINE = 0.5` therefore admits every paraphrase-level match while
+still rejecting the "thanks, that worked" case (measured `topcos=0.000`).
+Ranking stays on `score`, so weight still orders relevant candidates — it just
+no longer decides eligibility. A null cosine (no query vector, or a claim
+without an embedding) is ineligible: unmeasurable relevance is not relevance.
 
 **Model output is prompt-injection surface.** Before this change the
 subprocess's output was only a search query, and every emitted line was a
@@ -259,15 +286,18 @@ missing or non-array is a parse failure.
 can skip it:
 
 ```
-[pre-recall] repo=gx-backend queries=2 candidates=11 top=0.734 claims=3 fallback=false ms=4210
+[pre-recall] repo=gx-backend queries=2 candidates=11 topcos=0.812 top=0.734 claims=3 fallback=false ms=4210
 ```
 
-`top=` is the best candidate's score — the number to look at before moving
-`FALLBACK_MIN_SCORE`. `err=` is appended when synthesis failed (with
-`fallback=true`) or the attempt threw (with `claims=0`). The four zero-claim
-outcomes stay distinguishable: no candidates (`candidates=0`), curation
-rejected everything (`fallback=false`, no `err=`), fallback below the floor
-(`fallback=true` with `err=`), and a thrown attempt (`top=-`).
+`topcos=` is the best candidate's raw cosine — the thresholded quantity, so the
+number to look at before moving `FALLBACK_MIN_COSINE`. `top=` is its score
+(cosine × weight), kept because it is what ranks candidates; the two diverging
+is the weight signal made visible. Both read `-` when unmeasured, never `0`.
+`err=` is appended when synthesis failed (with `fallback=true`) or the attempt
+threw (with `claims=0`). The four zero-claim outcomes stay distinguishable: no
+candidates (`candidates=0`), curation rejected everything (`fallback=false`, no
+`err=`), fallback below the floor (`fallback=true` with `err=`), and a thrown
+attempt (`topcos=-`).
 
 ## Dependencies
 

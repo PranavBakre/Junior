@@ -60,15 +60,25 @@ const MAX_QUERY_CHARS = 2_000;
 /** Raw claims emitted when synthesis fails — the previous behaviour. */
 const FALLBACK_TOP_K = 3;
 /**
- * Score (cosine × weight) a claim must clear to be emitted WITHOUT synthesis.
- * Retrieval applies no threshold — it is `slice(0, limit)` over every active
- * claim — so a candidate set is essentially never empty, even for "thanks, that
- * worked". Without a floor the fallback would inject arbitrary nearest
- * neighbours as operational knowledge AND mark them used, re-opening through
- * the fallback exactly the decay pathology that recordUsage:false closed at
- * retrieval. Starting value; `top=` in the telemetry makes it tunable.
+ * Raw COSINE a claim must clear to be emitted WITHOUT synthesis. Retrieval
+ * applies no threshold — it is `slice(0, limit)` over every active claim — so a
+ * candidate set is essentially never empty, even for "thanks, that worked".
+ * Without a floor the fallback would inject arbitrary nearest neighbours as
+ * operational knowledge AND mark them used, re-opening through the fallback
+ * exactly the decay pathology that recordUsage:false closed at retrieval.
+ *
+ * The floor is on cosine, NOT on `score`: `score = cosine × weight`
+ * (sqlite.ts), so a score floor makes the relevance bar depend on the
+ * candidate's VALUE — cosine ≥ 0.83 at weight 0.6 versus ≥ 0.5 at weight 1.0.
+ * Measured against the live 2636-claim corpus (each claim's own embedding as a
+ * probe, best OTHER match — the friendliest query the system will ever see):
+ * best-match cosine p50 0.761, so the 22.5% of claims at weight 0.6 were being
+ * held to a bar above the median paraphrase. A 0.5 score floor drops the best
+ * match for 92/376 probes — 76/87 of those whose best match sits at weight
+ * ≤ 0.6. A 0.5 cosine floor drops 0/376. Weight still decides ORDER among
+ * relevant candidates; it no longer decides eligibility.
  */
-const FALLBACK_MIN_SCORE = 0.5;
+const FALLBACK_MIN_COSINE = 0.5;
 /** Synthesized lines kept, and their length, so the injected block stays small. */
 const MAX_NOTES = 5;
 const MAX_NOTE_CHARS = 500;
@@ -119,7 +129,10 @@ export interface PreRecallOverrides {
 export interface SynthesisCandidate {
   id: string;
   text: string;
+  /** cosine × weight — ranks candidates. */
   score: number;
+  /** Raw cosine — gates the fallback. Null when relevance is unmeasurable. */
+  cosine: number | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────
@@ -172,6 +185,7 @@ export function createPreRecall(
     let claimCount = 0;
     let fallbackFired = false;
     let topScore: number | null = null;
+    let topCosine: number | null = null;
     let failure: string | null = null;
 
     try {
@@ -188,6 +202,8 @@ export function createPreRecall(
       // Step 2: synthesize over the capped candidate set.
       const shortlist = selectSynthesisCandidates(candidates);
       topScore = shortlist[0]?.score ?? null;
+      // The fallback gates on cosine, so cosine is what has to be observable.
+      topCosine = shortlist[0]?.cosine ?? null;
       let notes: string[];
       let usedIds: string[];
       try {
@@ -234,7 +250,7 @@ export function createPreRecall(
       _log.info(
         "pre-recall",
         `repo=${options?.repo ?? "-"} queries=${queries.length} candidates=${candidateCount} ` +
-          `top=${topScore === null ? "-" : topScore.toFixed(3)} claims=${claimCount} ` +
+          `topcos=${fixed(topCosine)} top=${fixed(topScore)} claims=${claimCount} ` +
           `fallback=${fallbackFired} ms=${Date.now() - startedAt}` +
           (failure ? ` err=${failure}` : ""),
       );
@@ -291,7 +307,12 @@ async function recallCandidates(
     for (const claim of result.claims) {
       if (seen.has(claim.id)) continue;
       seen.add(claim.id);
-      candidates.push({ id: claim.id, text: claim.text, score: claim.score });
+      candidates.push({
+        id: claim.id,
+        text: claim.text,
+        score: claim.score,
+        cosine: claim.cosine,
+      });
     }
   }
 
@@ -333,14 +354,22 @@ export function selectSynthesisCandidates(
 /**
  * Claims emitted when synthesis fails. Nothing filtered this set, so the
  * relevance floor stands in for the model: below it, emit nothing rather than
- * dressing up arbitrary nearest neighbours as recalled knowledge. The shortlist
- * is score-ordered, so filter-then-slice is "top K above the floor".
+ * dressing up arbitrary nearest neighbours as recalled knowledge.
+ *
+ * Filter on cosine (relevance), rank by score (relevance × value): a
+ * low-weight but exactly-on-topic claim is precisely what the fallback exists
+ * to surface. A null cosine — no queryVector, or a claim with no embedding — is
+ * unmeasurable relevance, which is not relevance. The shortlist is
+ * score-ordered, so filter-then-slice is "top K above the floor".
  */
 export function selectFallbackCandidates(
   shortlist: SynthesisCandidate[],
 ): SynthesisCandidate[] {
   return shortlist
-    .filter((candidate) => candidate.score >= FALLBACK_MIN_SCORE)
+    .filter(
+      (candidate) =>
+        candidate.cosine !== null && candidate.cosine >= FALLBACK_MIN_COSINE,
+    )
     .slice(0, FALLBACK_TOP_K);
 }
 
@@ -444,6 +473,11 @@ async function recordClaimUsage(
       `usage.record.fail err=${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+/** Telemetry formatting: a missing measurement reads as "-", never as 0. */
+function fixed(value: number | null): string {
+  return value === null ? "-" : value.toFixed(3);
 }
 
 function truncate(text: string, max: number): string {
