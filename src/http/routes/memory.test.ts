@@ -56,8 +56,12 @@ describe("memory HTTP routes", () => {
       const response = await handleMemoryProjection(store);
       expect(response.status).toBe(200);
       const body = (await response.json()) as {
-        points: Array<{ id: string; x: number; y: number; kind: string; text: string; tags: string[] }>;
+        points: Array<{
+          id: string; x: number; y: number; z: number; kind: string; text: string;
+          tags: string[]; repo: string | null; weight: number;
+        }>;
         edges: Array<{ a: string; b: string; sim: number }>;
+        facets: { tags: Array<{ value: string; count: number }>; kinds: Array<{ value: string; count: number }> };
       };
 
       expect(body.points).toHaveLength(5);
@@ -66,10 +70,18 @@ describe("memory HTTP routes", () => {
       for (const p of body.points) {
         expect(Number.isFinite(p.x)).toBe(true);
         expect(Number.isFinite(p.y)).toBe(true);
+        // The galaxy view needs a third axis — a 2D projection would collapse it.
+        expect(Number.isFinite(p.z)).toBe(true);
         expect(p.kind).toBe("fact");
         expect(Array.isArray(p.tags)).toBe(true);
         expect(typeof p.text).toBe("string");
+        expect(typeof p.weight).toBe("number");
       }
+
+      // Facets drive the filter chips; they must count the projected points.
+      expect(body.facets.kinds).toEqual([{ value: "fact", count: 5 }]);
+      expect(body.facets.tags).toHaveLength(5);
+      expect(body.facets.tags.every((t) => t.count === 1)).toBe(true);
 
       expect(body.edges.length).toBeGreaterThan(0);
       for (const e of body.edges) {
@@ -107,14 +119,42 @@ describe("memory HTTP routes", () => {
       const response = await handleMemoryProjection(store);
       expect(response.status).toBe(200);
       const body = (await response.json()) as {
-        points: Array<{ id: string; x: number; y: number }>;
+        points: Array<{ id: string; x: number; y: number; z: number }>;
         edges: unknown[];
       };
       expect(body.points).toHaveLength(1);
       expect(body.points[0].id).toBe("solo");
       expect(body.points[0].x).toBe(0);
       expect(body.points[0].y).toBe(0);
+      expect(body.points[0].z).toBe(0);
       expect(body.edges).toEqual([]);
+    });
+  });
+
+  it("serves a cache hit for an unchanged claim set, and rebuilds on ?refresh=1", async () => {
+    await withStore(async (store) => {
+      await seedClaim(store, "c1", [1, 0, 0, 0, 0, 0, 0, 0]);
+      await seedClaim(store, "c2", [0, 1, 0, 0, 0, 0, 0, 0]);
+      await seedClaim(store, "c3", [0, 0, 1, 0, 0, 0, 0, 0]);
+
+      const first = await handleMemoryProjection(store);
+      expect(first.headers.get("X-Projection-Cache")).toBe("miss");
+      const firstBody = await first.text();
+
+      const second = await handleMemoryProjection(store);
+      expect(second.headers.get("X-Projection-Cache")).toBe("hit");
+      expect(await second.text()).toBe(firstBody);
+
+      const forced = await handleMemoryProjection(store, new URLSearchParams({ refresh: "1" }));
+      expect(forced.headers.get("X-Projection-Cache")).toBe("miss");
+      // The layout is deterministic, so a rebuild of the same corpus is identical.
+      expect(await forced.text()).toBe(firstBody);
+
+      // A new claim changes the signature, so the next read must recompute.
+      await seedClaim(store, "c4", [0, 0, 0, 1, 0, 0, 0, 0]);
+      const afterWrite = await handleMemoryProjection(store);
+      expect(afterWrite.headers.get("X-Projection-Cache")).toBe("miss");
+      expect((await afterWrite.json()).points).toHaveLength(4);
     });
   });
 });

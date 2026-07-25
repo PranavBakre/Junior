@@ -19,7 +19,8 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 | `handleMemoryList()` | `routes/memory.ts` | `GET /api/memory` — list files under `docs/` |
 | `handleMemoryRead(filePath)` | `routes/memory.ts` | `GET /api/memory/:path` — read a doc file (path-traversal guarded) |
 | `handleMemoryRecall(store, params)` | `routes/memory.ts` | `GET /api/memory/recall` — semantic claim recall without recording dashboard usage |
-| `handleMemoryProjection(store)` | `routes/memory.ts` | `GET /api/memory/projection` — PCA/KNN projection for the memory cloud view |
+| `handleMemoryProjection(store, params?)` | `routes/memory.ts` | `GET /api/memory/projection` — 3D PCA + spread + KNN projection for the memory galaxy; memoised per claim set, `?refresh=1` rebuilds |
+| `projectClaims(claims, k?, spread?)` | `projection.ts` | PCA to 3D (power iteration + deflation) → separation relaxation → cosine KNN edges |
 
 ## Routes
 
@@ -35,6 +36,7 @@ GET /api/memory             → handleMemoryList
 GET /api/memory/<path>      → handleMemoryRead
 GET /api/memory/recall      → handleMemoryRecall (503 if unavailable)
 GET /api/memory/projection  → handleMemoryProjection (503 if unavailable)
+    ?refresh=1                force a rebuild instead of the memoised result
 ```
 
 ## Key Concepts
@@ -47,6 +49,24 @@ Binds `127.0.0.1`. No CORS headers — same-origin from `public/index.html`. Don
 
 - Logs: `date` must match `^\d{4}-\d{2}-\d{2}$` exactly.
 - Memory: rejects `..` and absolute paths; verifies resolved path stays inside `docs/`.
+
+### Memory galaxy projection
+
+`projection.ts` runs entirely at request time, nothing is persisted:
+
+1. **PCA to 3D** — top-3 principal components via matrix-free power iteration plus
+   deflation (never materialises the 640×640 covariance).
+2. **Spread** — a separation relaxation pushes stars closer than `minSep` apart
+   while KNN edges spring true neighbours back together. Local forces only, so
+   PCA's global arrangement survives; a uniform spatial hash keeps it O(n) per
+   iteration. Deterministic — no RNG, fixed iteration count. (A full UMAP SGD was
+   tried and rejected: near-uniform cosine edge weights let attraction dominate and
+   the corpus collapsed into two pinpoint balls.)
+3. **KNN edges** — cosine over the FULL-dim vectors, not the projection.
+
+Cost is O(n²·d) in the KNN, seconds on a multi-thousand-claim corpus, so the
+serialized body is memoised against a count+id fingerprint of the active claim set.
+`X-Projection-Cache: hit|miss` reports which path served the request.
 
 ### Boot wiring
 
