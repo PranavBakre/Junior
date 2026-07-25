@@ -6,7 +6,7 @@
 // never reprocessed. The LLM and embedder are injected; there is no runner
 // spawn here (that is the production adapter, a separate follow-up).
 
-import { resolveDedupThreshold } from "../dedup.ts";
+import { dedupScopeKey, resolveDedupThreshold } from "../dedup.ts";
 import type { EmbeddingProvider } from "../embedding/types.ts";
 import type { ProfileStore } from "../profiles/store.ts";
 import type { ProfileKind } from "../profiles/types.ts";
@@ -130,8 +130,20 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
   }
 
   // --- claims (embed + proximity-dedup) ---
-  const existingVectors = await store.exportClaimVectors();
-  const acceptedBatch: Float32Array[] = [];
+  // Bucketed by DEDUP SCOPE (same kind, same repo), the same partition the store's
+  // guard and the backfill sweep use. Comparing across scopes would drop a
+  // `repo: "gx-backend"` draft that merely sits near a GLOBAL claim — a claim the
+  // store would never merge it into, so the draft would be lost outright rather
+  // than folded, and cross-scope near-duplicates are supposed to be reported, not
+  // merged (claim-dedup-write-guard.md §"Scope and winner selection").
+  const existingByScope = new Map<string, Float32Array[]>();
+  for (const existing of await store.exportClaimVectors()) {
+    const key = dedupScopeKey(existing.kind, existing.repo);
+    const bucket = existingByScope.get(key);
+    if (bucket) bucket.push(existing.vector);
+    else existingByScope.set(key, [existing.vector]);
+  }
+  const acceptedByScope = new Map<string, Float32Array[]>();
   let claimsWritten = 0;
   let claimsDeduped = 0;
 
@@ -149,11 +161,17 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
 
     // In-batch dedup: the store's write guard cannot see drafts that have not
     // been written yet, so near-identical drafts within one batch are still
-    // collapsed here. The pre-check against existing claims is kept as well —
-    // it avoids a pointless write round-trip — but it is no longer the only
-    // gate: the store re-checks scope-aware and merges rather than drops.
-    const nearExisting = existingVectors.some((c) => cosine(vector, c.vector) >= threshold);
-    const nearBatch = acceptedBatch.some((v) => cosine(vector, v) >= threshold);
+    // collapsed here. The pre-check against EXISTING claims is kept as well — it
+    // avoids a pointless write round-trip — but it is no longer the only gate:
+    // the store re-checks and MERGES rather than drops. Both halves are scoped,
+    // because a drop here is strictly worse than the store's merge.
+    const scope = dedupScopeKey(draft.kind, draft.repo ?? null);
+    const nearExisting = (existingByScope.get(scope) ?? []).some(
+      (v) => cosine(vector, v) >= threshold,
+    );
+    const nearBatch = (acceptedByScope.get(scope) ?? []).some(
+      (v) => cosine(vector, v) >= threshold,
+    );
     if (nearExisting || nearBatch) {
       claimsDeduped += 1;
       continue;
@@ -178,7 +196,9 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
       claimsDeduped += 1;
       continue;
     }
-    acceptedBatch.push(vector);
+    const accepted = acceptedByScope.get(scope);
+    if (accepted) accepted.push(vector);
+    else acceptedByScope.set(scope, [vector]);
     claimsWritten += 1;
   }
 

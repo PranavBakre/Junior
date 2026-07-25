@@ -66,8 +66,19 @@ async function mirrorClaim(
   embedder: EmbeddingProvider,
   claim: { id: string; kind: "lesson" | "fact"; text: string; tags?: string[]; weight?: number; createdAt: number },
 ): Promise<ClaimWriteResult | null> {
+  // Embed and store are reported separately: one catch around both blamed the
+  // embedder for every store-side throw (a failed guard, a locked DB), which
+  // sends the reader looking at the wrong component.
+  let embedding: Float32Array;
   try {
-    const [embedding] = await embedder.embed([claim.text], "document");
+    [embedding] = await embedder.embed([claim.text], "document");
+  } catch (err) {
+    console.error(
+      `[add] claim mirror skipped (embed failed): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+  try {
     return await store.upsertClaim({
       id: claim.id,
       kind: claim.kind,
@@ -84,7 +95,7 @@ async function mirrorClaim(
     });
   } catch (err) {
     console.error(
-      `[add] claim mirror skipped (embed failed): ${err instanceof Error ? err.message : String(err)}`,
+      `[add] claim mirror skipped (store write failed): ${err instanceof Error ? err.message : String(err)}`,
     );
     return null;
   }

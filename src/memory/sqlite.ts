@@ -33,6 +33,24 @@ import type {
  */
 const CLAIM_MERGE_WEIGHT_BUMP = 0.1;
 
+/**
+ * Hard ceiling the merge bump may raise a survivor's weight to.
+ *
+ * The bump above is additive and a merge writes no row for the twin, so the SAME
+ * input text merges again on every call: without a ceiling a Stop hook or an
+ * agent that re-asserts one lesson each session adds +0.1 per session forever.
+ * `recallClaims` scores `cosine * weight`, so at weight 5.0 that claim outranks a
+ * cosine-0.9 match at cosine 0.2, and `archiveStaleClaims` (weight <= maxWeight,
+ * 0.5 by default) can never fade it. At 2.0 a rediscovered claim can outrank a
+ * fresh one of at most double its cosine, and no further — repeated merges
+ * converge instead of growing without bound.
+ *
+ * The cap only ever holds a bump DOWN; it never pulls an explicitly-set higher
+ * weight back to the ceiling. `helpful_count` is deliberately NOT capped — it
+ * feeds no ranking, and the honest count of rediscoveries is the useful signal.
+ */
+const CLAIM_MERGE_WEIGHT_CEILING = 2.0;
+
 type ClaimRow = {
   id: string;
   kind: string;
@@ -86,6 +104,14 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db = new Database(dbPath);
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA synchronous = NORMAL");
+    // Absorb write contention instead of throwing. `data/memory.db` has more than
+    // one writer: the in-process consolidation sweep and any `bun run
+    // src/memory/cli.ts add-lesson` a workflow shells out. With the default
+    // busy_timeout of 0 the second writer fails immediately; with a timeout it
+    // waits for the first one's write lock. Paired with the IMMEDIATE
+    // transactions below — a busy handler cannot rescue a DEFERRED read-then-write
+    // txn, whose failure mode is the non-retryable SQLITE_BUSY_SNAPSHOT.
+    this.db.run("PRAGMA busy_timeout = 5000");
     this.dedupThreshold = options.dedupThreshold ?? resolveDedupThreshold();
     this.migrate();
   }
@@ -189,7 +215,8 @@ export class SqliteMemoryStore implements MemoryStore {
    * 1. NEAR-DUPLICATE GUARD. The claim is compared against active claims in its
    *    own dedup scope; on a hit it MERGES into the survivor instead of adding a
    *    twin row. Consolidation used to be the only writer that deduped, so
-   *    `memory_add` and the CLI walked straight past it.
+   *    `memory_add` and the CLI walked straight past it. An UPDATE that merges
+   *    folds its own (now unasserted) row into the survivor and archives it.
    * 2. EMBEDDING REQUIRED. The store never embeds (callers embed at the
    *    boundary), so a vector-less claim is both unguardable and invisible to
    *    cosine recall. Reject it rather than store an unrecallable row.
@@ -221,12 +248,24 @@ export class SqliteMemoryStore implements MemoryStore {
     const now = Date.now();
 
     // Scan and write in ONE transaction: a concurrent writer must not be able to
-    // insert a near-duplicate between the check and the write.
+    // insert a near-duplicate between the check and the write. IMMEDIATE, not the
+    // default DEFERRED: this transaction READS (the lookup below, then the full
+    // corpus scan) before its first write, so under WAL a deferred txn takes a
+    // read snapshot and then fails with SQLITE_BUSY_SNAPSHOT if another writer
+    // commits inside that window — an error a busy handler cannot retry away.
+    // Taking the write lock up front turns that into ordinary lock contention,
+    // which `PRAGMA busy_timeout` absorbs.
     const txn = this.db.transaction((): ClaimWriteResult => {
       const existing = this.db
-        .query<{ text: string; active: number | null }, [string]>(
-          "SELECT text, active FROM claim WHERE id = ?",
-        )
+        .query<
+          {
+            text: string;
+            active: number | null;
+            helpful_count: number | null;
+            unhelpful_count: number | null;
+          },
+          [string]
+        >("SELECT text, active, helpful_count, unhelpful_count FROM claim WHERE id = ?")
         .get(claim.id);
 
       // Re-scan whenever this TEXT is new to the corpus under this id: a fresh
@@ -242,15 +281,39 @@ export class SqliteMemoryStore implements MemoryStore {
           // evidence that it matters, so the survivor gets harder to fade
           // (archiveStaleClaims is "stale AND low-value") rather than the
           // rediscovery being a silent no-op.
+          //
+          // When the merging write was an UPDATE of a still-ACTIVE row, that row
+          // is ALSO folded in — collapseDuplicateClaims semantics: its counters
+          // move to the survivor, then `active = 0`. Its text is no longer
+          // asserted by anyone (the caller just replaced it), and leaving it
+          // active would strand dead text in recall permanently: no later write
+          // can repair it, because every subsequent edit of that id re-merges
+          // exactly the same way and never rewrites the row.
+          //
+          // An ALREADY-ARCHIVED row is not folded. The sweep that archived it
+          // moved its counters at the time, so re-folding on every re-add would
+          // double-count; the plain bump below is the whole effect there.
+          const absorbed = existing && existing.active !== 0 ? existing : null;
           this.db
             .query(
               `UPDATE claim
-               SET helpful_count = COALESCE(helpful_count, 0) + 1,
-                   weight = COALESCE(weight, 1.0) + ?,
+               SET helpful_count = COALESCE(helpful_count, 0) + ?,
+                   unhelpful_count = COALESCE(unhelpful_count, 0) + ?,
+                   weight = MAX(COALESCE(weight, 1.0), MIN(COALESCE(weight, 1.0) + ?, ?)),
                    last_used_at = ?
                WHERE id = ?`,
             )
-            .run(CLAIM_MERGE_WEIGHT_BUMP, now, survivor.id);
+            .run(
+              1 + (absorbed?.helpful_count ?? 0),
+              absorbed?.unhelpful_count ?? 0,
+              CLAIM_MERGE_WEIGHT_BUMP,
+              CLAIM_MERGE_WEIGHT_CEILING,
+              now,
+              survivor.id,
+            );
+          if (absorbed) {
+            this.db.query("UPDATE claim SET active = 0 WHERE id = ?").run(claim.id);
+          }
           return { id: survivor.id, action: "merged", mergedInto: survivor.id };
         }
       }
@@ -308,7 +371,7 @@ export class SqliteMemoryStore implements MemoryStore {
         );
       return { id: claim.id, action: existing ? "updated" : "inserted" };
     });
-    return txn();
+    return txn.immediate();
   }
 
   /**
@@ -647,6 +710,12 @@ export class SqliteMemoryStore implements MemoryStore {
     const duplicateIds = unique(options.duplicateIds).filter((id) => id !== options.survivorId);
     if (duplicateIds.length === 0) return { archivedIds: [] };
 
+    // IMMEDIATE for the same reason as `upsertClaim`: this transaction reads the
+    // survivor and the cluster before it writes, and a DEFERRED read-then-write
+    // txn under WAL dies with the non-retryable SQLITE_BUSY_SNAPSHOT if another
+    // writer commits inside the read window. Every other transaction in this file
+    // opens with a write, where DEFERRED already takes the write lock on its
+    // first statement.
     const txn = this.db.transaction((): string[] => {
       const survivor = this.db
         .query<{ last_used_at: number | null }, [string]>(
@@ -696,7 +765,7 @@ export class SqliteMemoryStore implements MemoryStore {
       return archivedIds;
     });
 
-    return { archivedIds: txn() };
+    return { archivedIds: txn.immediate() };
   }
 
   /**
@@ -713,7 +782,7 @@ export class SqliteMemoryStore implements MemoryStore {
     const maxWeight = options.maxWeight ?? 0.5;
     const cutoff = now - olderThanMs;
     const dedupThreshold = options.dedupThreshold ?? this.dedupThreshold;
-    const nearDuplicatesByKind =
+    const nearDuplicateStats =
       options.includeNearDuplicates === false
         ? null
         : this.countNearDuplicatesByKind(dedupThreshold);
@@ -745,7 +814,11 @@ export class SqliteMemoryStore implements MemoryStore {
         .get(kind, maxWeight, cutoff, cutoff);
       const total = summary?.total ?? 0;
       const neverUsed = summary?.never_used ?? 0;
-      const nearDuplicates = nearDuplicatesByKind?.get(kind) ?? null;
+      const nearDuplicates = nearDuplicateStats?.twinned.get(kind) ?? 0;
+      // Denominator is the EMBEDDED active claims of this kind, not `total`. Only
+      // vector-carrying rows can be counted as twins, so measuring them against a
+      // corpus that still holds vector-less legacy rows understates the rate.
+      const embedded = nearDuplicateStats?.embedded.get(kind) ?? 0;
       kinds.push({
         kind,
         total,
@@ -753,10 +826,10 @@ export class SqliteMemoryStore implements MemoryStore {
         pctNeverUsed: total > 0 ? neverUsed / total : 0,
         oldestLastUsedAt: summary?.oldest ?? null,
         fadeCandidates: fade?.n ?? 0,
-        nearDuplicates: nearDuplicatesByKind ? (nearDuplicates ?? 0) : null,
-        nearDuplicateRate: nearDuplicatesByKind
-          ? total > 0
-            ? (nearDuplicates ?? 0) / total
+        nearDuplicates: nearDuplicateStats ? nearDuplicates : null,
+        nearDuplicateRate: nearDuplicateStats
+          ? embedded > 0
+            ? nearDuplicates / embedded
             : 0
           : null,
       });
@@ -788,15 +861,28 @@ export class SqliteMemoryStore implements MemoryStore {
 
   /**
    * Per-kind count of active claims that have at least one twin at/above the
-   * threshold INSIDE their own dedup scope (same kind, same repo).
+   * threshold INSIDE their own dedup scope (same kind, same repo), alongside the
+   * per-kind count of claims that were eligible to be counted at all (i.e. carry
+   * a vector) — the rate's denominator, so it is not diluted by vector-less
+   * legacy rows that no cosine can ever match.
    *
    * All-pairs within each scope — O(n²) cosine, seconds at a few thousand claims.
    * That is the price of the standing metric; `includeNearDuplicates: false`
    * opts a latency-sensitive caller out. Scoping is not an optimization: the
    * sweep ARCHIVES duplicates rather than deleting them, so a corpus-wide count
    * would keep reporting the rows it just collapsed.
+   *
+   * WARNING to whoever wires `memoryHealth` into the HTTP dashboard or any other
+   * request path: this loop is SYNCHRONOUS and blocks the event loop for its full
+   * duration (measured 1464ms at 2600 claims, growing quadratically). It has no
+   * production caller today. Either pass `includeNearDuplicates: false` on the
+   * request path and compute the rate on a schedule, or move this off the hot
+   * path before exposing it.
    */
-  private countNearDuplicatesByKind(threshold: number): Map<string, number> {
+  private countNearDuplicatesByKind(threshold: number): {
+    twinned: Map<string, number>;
+    embedded: Map<string, number>;
+  } {
     const rows = this.db
       .query<{ id: string; kind: string; repo: string | null; embedding: Uint8Array | null }, []>(
         "SELECT id, kind, repo, embedding FROM claim WHERE active = 1 AND embedding IS NOT NULL",
@@ -804,9 +890,11 @@ export class SqliteMemoryStore implements MemoryStore {
       .all();
 
     const scopes = new Map<string, Array<{ kind: string; vec: Float32Array }>>();
+    const embedded = new Map<string, number>();
     for (const row of rows) {
       const vec = deserializeEmbedding(row.embedding);
       if (!vec) continue;
+      embedded.set(row.kind, (embedded.get(row.kind) ?? 0) + 1);
       const key = dedupScopeKey(row.kind, row.repo);
       const bucket = scopes.get(key);
       if (bucket) bucket.push({ kind: row.kind, vec });
@@ -830,7 +918,7 @@ export class SqliteMemoryStore implements MemoryStore {
         counts.set(members[i].kind, (counts.get(members[i].kind) ?? 0) + 1);
       }
     }
-    return counts;
+    return { twinned: counts, embedded };
   }
 
   private upsertNode(id: string, kind: string, createdAt: number): void {

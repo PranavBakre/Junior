@@ -488,6 +488,18 @@ describe("SqliteMemoryStore", () => {
         )
         .get(id) ?? null;
 
+    // --- write-lock safety -------------------------------------------------
+
+    it("opens the DB with a busy timeout so a second writer waits instead of failing", async () => {
+      // `data/memory.db` has more than one writer (the in-process consolidation
+      // sweep, plus any `bun run src/memory/cli.ts add-lesson` a workflow shells
+      // out). At the SQLite default of 0 the loser of a race throws immediately.
+      const timeout = (store as unknown as { db: Database }).db
+        .query<{ timeout: number }, []>("PRAGMA busy_timeout")
+        .get();
+      expect(timeout?.timeout).toBeGreaterThan(0);
+    });
+
     // --- the value-metadata data-loss bug --------------------------------
 
     it("defaults value columns on a fresh insert", async () => {
@@ -609,6 +621,59 @@ describe("SqliteMemoryStore", () => {
       expect(survivor?.helpful_count).toBe(1);
       expect(survivor?.weight).toBeCloseTo(1.1, 5);
       expect(survivor?.last_used_at).not.toBeNull();
+    });
+
+    it("converges on a weight ceiling when the same text merges over and over", async () => {
+      await store.upsertClaim({
+        id: "b-anchor",
+        kind: "lesson",
+        text: "the anchor",
+        embedding: NEAR_A,
+        createdAt: now,
+      });
+
+      // A merge writes NO row for the twin, so the same input merges again on
+      // every call — a Stop hook re-asserting one lesson each session would add
+      // +0.1 forever. recallClaims scores `cosine * weight`, so an unbounded
+      // weight lets a low-cosine claim outrank everything and archiveStaleClaims
+      // (weight <= 0.5) can never fade it.
+      for (let i = 0; i < 30; i += 1) {
+        const result = await store.upsertClaim({
+          id: `b-twin-${i}`,
+          kind: "lesson",
+          text: "the anchor, reworded",
+          embedding: NEAR_B,
+          createdAt: now,
+        });
+        expect(result.mergedInto).toBe("b-anchor");
+      }
+
+      // Converged, not growing: 1.0 + 30 * 0.1 would be 4.0 without the ceiling.
+      expect(rowOf("b-anchor")?.weight).toBeCloseTo(2.0, 5);
+      // The count itself is uncapped — it feeds no ranking and is the honest
+      // record of how many times this was rediscovered.
+      expect(rowOf("b-anchor")?.helpful_count).toBe(30);
+    });
+
+    it("never lowers a weight that is already above the merge ceiling", async () => {
+      await store.upsertClaim({
+        id: "b-heavy",
+        kind: "lesson",
+        text: "a deliberately heavy claim",
+        embedding: NEAR_A,
+        createdAt: now,
+        weight: 9,
+        skipDedup: true,
+      });
+      await store.upsertClaim({
+        id: "b-heavy-twin",
+        kind: "lesson",
+        text: "a deliberately heavy claim, reworded",
+        embedding: NEAR_B,
+        createdAt: now,
+      });
+      // The cap holds a BUMP down; it must not pull an explicitly-set weight back.
+      expect(rowOf("b-heavy")?.weight).toBe(9);
     });
 
     it("stores a genuinely distinct claim rather than merging it", async () => {
@@ -754,11 +819,55 @@ describe("SqliteMemoryStore", () => {
         createdAt: now,
       });
       expect(result).toMatchObject({ action: "merged", mergedInto: "u-anchor" });
-      // The drifting row keeps its ORIGINAL text — the update never landed.
+      // The updated row is FOLDED into the survivor and ARCHIVED. Its stored text
+      // is no longer asserted by anyone — the caller just replaced it — so leaving
+      // it active would keep serving text nobody stands behind, and no later write
+      // could repair it: every subsequent edit of this id re-merges the same way.
+      expect(rowOf("u-drifting")?.active).toBe(0);
       const text = (store as unknown as { db: Database }).db
         .query<{ text: string }, [string]>("SELECT text FROM claim WHERE id = ?")
         .get("u-drifting")?.text;
+      // Archived, not rewritten: the row stays as provenance of what it said.
       expect(text).toBe("something unrelated");
+    });
+
+    it("stops the superseded text from competing in recall (the correct-a-lesson path)", async () => {
+      // The live repro, through the shape `add-lesson --id <existing>` produces:
+      // an id that already holds one claim is re-saved with text that belongs to
+      // a DIFFERENT existing claim.
+      await store.upsertClaim({
+        id: "npm-rule",
+        kind: "lesson",
+        text: "All GrowthX repos use npm.",
+        embedding: NEAR_A,
+        createdAt: now,
+      });
+      await store.upsertClaim({
+        id: "pkg-mgr",
+        kind: "lesson",
+        text: "Something completely different about docker.",
+        embedding: FAR,
+        createdAt: now,
+        helpfulCount: 4,
+        unhelpfulCount: 1,
+      });
+
+      // The correction.
+      const result = await store.upsertClaim({
+        id: "pkg-mgr",
+        kind: "lesson",
+        text: "All GrowthX repos use npm.",
+        embedding: NEAR_B,
+        createdAt: now,
+      });
+      expect(result).toEqual({ id: "npm-rule", action: "merged", mergedInto: "npm-rule" });
+
+      // The docker sentence is out of the active corpus...
+      const hits = await store.recallClaims({ queryVector: FAR, limit: 5, recordUsage: false });
+      expect(hits.map((h) => h.id)).not.toContain("pkg-mgr");
+      // ...and its accumulated counters moved to the survivor rather than being
+      // stranded on an archived row (+1 for the rediscovery itself).
+      expect(rowOf("npm-rule")).toMatchObject({ helpful_count: 5, unhelpful_count: 1 });
     });
 
     // --- bypass ------------------------------------------------------------
@@ -885,6 +994,45 @@ describe("SqliteMemoryStore", () => {
       });
       expect(result).toMatchObject({ action: "merged", mergedInto: "r-survivor" });
       expect(rowOf("r-dup")?.active).toBe(0);
+    });
+
+    it("re-adds of an ARCHIVED row never re-fold its counters into the survivor", async () => {
+      await store.upsertClaim({
+        id: "z-survivor",
+        kind: "lesson",
+        text: "the surviving claim",
+        embedding: NEAR_A,
+        createdAt: now,
+      });
+      await store.upsertClaim({
+        id: "z-dup",
+        kind: "lesson",
+        text: "the surviving claim, reworded",
+        embedding: NEAR_B,
+        createdAt: now,
+        helpfulCount: 6,
+        skipDedup: true,
+      });
+      await store.collapseDuplicateClaims({ survivorId: "z-survivor", duplicateIds: ["z-dup"] });
+      // The sweep already moved z-dup's 6 into the survivor.
+      expect(rowOf("z-survivor")?.helpful_count).toBe(6);
+
+      const readd = () =>
+        store.upsertClaim({
+          id: "z-dup",
+          kind: "lesson",
+          text: "the surviving claim, reworded",
+          embedding: NEAR_B,
+          createdAt: now,
+        });
+      await readd();
+      await readd();
+
+      // +1 per rediscovery and nothing more. Folding the archived row again on
+      // each re-add would double-count counters the sweep already banked.
+      expect(rowOf("z-survivor")?.helpful_count).toBe(8);
+      expect(rowOf("z-dup")?.helpful_count).toBe(6);
+      expect(rowOf("z-dup")?.active).toBe(0);
     });
 
     // --- standing metric ---------------------------------------------------

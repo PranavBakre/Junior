@@ -96,19 +96,31 @@ export interface ClaimInput {
   lastUsedAt?: number | null;
   active?: boolean;
   /**
-   * Write this row VERBATIM: skip the near-duplicate scan and waive the
-   * embedding requirement. Only restore paths set it — `migrate-v3.ts`, a backup
-   * restore, and test fixtures that seed a synthetic corpus. Ordinary writers
-   * must go through the guard, or the store stops being the chokepoint.
+   * Skip the near-duplicate scan and waive the embedding requirement. Only
+   * restore paths set it — `migrate-v3.ts`, a backup restore, and test fixtures
+   * that seed a synthetic corpus. Ordinary writers must go through the guard, or
+   * the store stops being the chokepoint.
+   *
+   * It does NOT waive the COALESCE patching of the value and vector columns: an
+   * omitted `helpfulCount` / `unhelpfulCount` / `weight` / `lastUsedAt` /
+   * `embedding` still keeps whatever is already stored under this id, because
+   * "the caller left it out" must never mean "reset it". A restore that has to
+   * write a lower or null-equivalent value must state it explicitly (0, or the
+   * historical number) rather than relying on omission — omission is a patch, in
+   * every write mode. For the nullable fields (`lastUsedAt`, `embedding`) an
+   * explicit `null` is indistinguishable from omission and also means "keep": a
+   * restore cannot CLEAR them through this path, only overwrite them.
    */
   skipDedup?: boolean;
 }
 
 /**
  * Outcome of a claim write. `id` is always the row that now HOLDS the knowledge,
- * so callers can reference it safely: on a merge that is the survivor, not the
- * id the caller asked for (that row was never written). Lets a caller — and the
- * Stop hook — tell "stored" from "already knew that".
+ * so callers can reference it safely: on a merge that is the survivor, never the
+ * id the caller asked for — that id either was never written (a fresh insert
+ * that merged) or was folded into the survivor and archived (an update that
+ * merged). Lets a caller — and the Stop hook — tell "stored" from "already knew
+ * that".
  */
 export interface ClaimWriteResult {
   id: string;
@@ -270,7 +282,12 @@ export interface MemoryHealthKind {
    * `null` when the scan was skipped; always `null` for `"episode"`.
    */
   nearDuplicates: number | null;
-  /** `nearDuplicates / total`, 0 when empty, `null` when the scan was skipped. */
+  /**
+   * `nearDuplicates` over the EMBEDDED active claims of this kind — not over
+   * `total`. Only a vector-carrying row can be counted as a twin, so dividing by
+   * a corpus that still holds vector-less legacy rows would understate the rate.
+   * 0 when nothing of this kind is embedded, `null` when the scan was skipped.
+   */
   nearDuplicateRate: number | null;
 }
 
