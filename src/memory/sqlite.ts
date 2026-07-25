@@ -27,9 +27,8 @@ import type {
 
 /**
  * Weight added to the survivor each time a near-duplicate write merges into it.
- * Small and additive: rediscovery should nudge a claim away from the fade
- * ceiling (`archiveStaleClaims` defaults to `maxWeight: 0.5`), not let a chatty
- * writer inflate one claim past everything else in recall ranking.
+ * Small and additive: rediscovery should nudge a claim up the recall ranking,
+ * not let a chatty writer inflate one claim past everything else.
  */
 const CLAIM_MERGE_WEIGHT_BUMP = 0.1;
 
@@ -39,11 +38,18 @@ const CLAIM_MERGE_WEIGHT_BUMP = 0.1;
  * The bump above is additive and a merge writes no row for the twin, so the SAME
  * input text merges again on every call: without a ceiling a Stop hook or an
  * agent that re-asserts one lesson each session adds +0.1 per session forever.
- * `recallClaims` scores `cosine * weight`, so at weight 5.0 that claim outranks a
- * cosine-0.9 match at cosine 0.2, and `archiveStaleClaims` (weight <= maxWeight,
- * 0.5 by default) can never fade it. At 2.0 a rediscovered claim can outrank a
- * fresh one of at most double its cosine, and no further — repeated merges
- * converge instead of growing without bound.
+ * `recallClaims` scores `cosine * weight`, so an unbounded weight lets a
+ * cosine-0.2 claim outrank a cosine-0.9 one — that is a live recall-ranking
+ * defect today. At 2.0 a rediscovered claim can outrank a fresh one of at most
+ * double its cosine, and no further; repeated merges converge.
+ *
+ * NOTE what does NOT save you here: nothing in this codebase ever decrements a
+ * claim's `weight` — there is no downweight-on-unhelpful and no time decay — and
+ * `archiveStaleClaims` (the only thing that could retire an over-weighted claim)
+ * has no production caller at all. An over-weighted claim is permanent, so the
+ * ceiling is the ONLY bound. Do not relax it on the assumption that decay will
+ * clean up afterwards. See the backlog note in
+ * docs/features/claim-dedup-write-guard.md.
  *
  * The cap only ever holds a bump DOWN; it never pulls an explicitly-set higher
  * weight back to the ceiling. `helpful_count` is deliberately NOT capped — it
@@ -111,6 +117,12 @@ export class SqliteMemoryStore implements MemoryStore {
     // waits for the first one's write lock. Paired with the IMMEDIATE
     // transactions below — a busy handler cannot rescue a DEFERRED read-then-write
     // txn, whose failure mode is the non-retryable SQLITE_BUSY_SNAPSHOT.
+    //
+    // Per CONNECTION, not per database: any other process that opens this file
+    // with its own handle (`migrate-v3.ts`, the routing-log migration) still gets
+    // SQLite's default of 0. Those are operator-run with the bot stopped, so they
+    // do not contend — but a new handle that runs alongside the bot needs its own
+    // busy_timeout.
     this.db.run("PRAGMA busy_timeout = 5000");
     this.dedupThreshold = options.dedupThreshold ?? resolveDedupThreshold();
     this.migrate();
@@ -278,9 +290,11 @@ export class SqliteMemoryStore implements MemoryStore {
         const survivor = this.findNearDuplicate(claim, embedding);
         if (survivor) {
           // Merge, don't drop. The same claim independently derived twice is
-          // evidence that it matters, so the survivor gets harder to fade
-          // (archiveStaleClaims is "stale AND low-value") rather than the
-          // rediscovery being a silent no-op.
+          // evidence that it matters, so the survivor gains value signal
+          // (`weight`, `helpful_count`, a fresh `last_used_at`) rather than the
+          // rediscovery being a silent no-op. That signal is what the decay
+          // contract would read — `archiveStaleClaims` is "stale AND low-value" —
+          // once anything actually calls it; today nothing does.
           //
           // When the merging write was an UPDATE of a still-ACTIVE row, that row
           // is ALSO folded in — collapseDuplicateClaims semantics: its counters

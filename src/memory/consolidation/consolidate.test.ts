@@ -315,6 +315,86 @@ describe("consolidateSession", () => {
     expect(vectors).toHaveLength(2);
   });
 
+  // The pre-check is an OPTIMIZATION (skip a pointless write round-trip), never a
+  // gate — so it must be bucketed by the same dedup scope the store uses. Unscoped
+  // it DROPS a draft the store would have kept, and a drop is strictly worse than
+  // the merge the store deliberately refuses to make across scopes: the claim is
+  // gone, counted as `claimsDeduped`, with no row and no provenance anywhere.
+  it("keeps a repo-scoped draft that only resembles a GLOBAL claim", async () => {
+    const text = "Run dev-first; never auto-merge straight to main.";
+    const [vector] = await embedder.embed([text], "document");
+    await store.upsertClaim({
+      id: "claim-global",
+      kind: "lesson",
+      text,
+      embedding: vector,
+      embedModel: embedder.model,
+      dim: embedder.dim,
+      createdAt: Date.now(),
+    });
+
+    await seedRecord({ id: "src-scope", body: "session" });
+
+    // Same kind, same text, IDENTICAL vector — but a different repo scope. The
+    // store would never merge these (that would narrow knowledge that applies
+    // everywhere), so the pre-check must not decide the question on its behalf.
+    const report = await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      invoke: mockInvoke({
+        episodes: [],
+        profiles: [],
+        claims: [{ kind: "lesson", text, repo: "gx-backend" }],
+      }),
+    });
+
+    expect(report).toMatchObject({ claimsWritten: 1, claimsDeduped: 0 });
+    const repos = db()
+      .query<{ repo: string | null }, []>(
+        "SELECT repo FROM claim WHERE active = 1 ORDER BY repo IS NULL, repo",
+      )
+      .all()
+      .map((r) => r.repo);
+    expect(repos).toEqual(["gx-backend", null]);
+  });
+
+  it("keeps both halves of an in-batch near-duplicate pair when their scopes differ", async () => {
+    await seedRecord({ id: "src-scope-batch", body: "session" });
+
+    // 0.9354 cosine under the hashing embedder — over the 0.92 gate, so an
+    // unscoped in-batch check collapses them. Distinct text (hence distinct
+    // `claim_<fnv1a(text)>` ids) so the two writes cannot alias onto one row.
+    const report = await consolidateSession({
+      store,
+      profileStore,
+      embedder,
+      invoke: mockInvoke({
+        episodes: [],
+        profiles: [],
+        claims: [
+          {
+            kind: "fact",
+            text: "The gx-backend server listens on port 8000 locally.",
+            repo: "gx-backend",
+          },
+          {
+            kind: "fact",
+            text: "The gx-backend server listens on port 8000 locally too.",
+            repo: "gx-client-next",
+          },
+        ],
+      }),
+    });
+
+    expect(report).toMatchObject({ claimsWritten: 2, claimsDeduped: 0 });
+    const repos = db()
+      .query<{ repo: string | null }, []>("SELECT repo FROM claim WHERE active = 1 ORDER BY repo")
+      .all()
+      .map((r) => r.repo);
+    expect(repos).toEqual(["gx-backend", "gx-client-next"]);
+  });
+
   it("marks source records consolidated so a second pass skips them", async () => {
     await seedRecord({ id: "src-once", body: "only processed once" });
 

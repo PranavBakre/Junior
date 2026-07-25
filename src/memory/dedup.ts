@@ -4,6 +4,15 @@
 // the write guard, the consolidation engine, and the offline backfill sweep all
 // judge "same claim" by the same rule. A sweep that clustered differently from
 // the guard would keep re-collapsing rows the guard had just accepted.
+//
+// KNOWN GAP, not fixed here: the similarity FUNCTION is still forked. The store's
+// `cosineSim` (`sqlite.ts`) and the consolidation engine's `cosine`
+// (`consolidation/consolidate.ts`) are byte-identical duplicates. That sits badly
+// against this module's whole point — the components agree on the threshold, the
+// winner ordering, and the scope, then each brings its own cosine, so editing one
+// silently desynchronizes the judgement. Worth hoisting in here; deliberately not
+// done as a late edit on the dedup-guard branch, where a numerical change is the
+// hardest kind to review.
 
 /** Cosine at/above which two claims are treated as near-duplicates. */
 export const DEFAULT_DEDUP_THRESHOLD = 0.92;

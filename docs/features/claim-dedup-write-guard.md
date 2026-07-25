@@ -183,26 +183,64 @@ immediate: concurrent writer blocked      ; own write succeeded
 Taking the write lock up front turns the failure into ordinary contention, which
 `PRAGMA busy_timeout` then absorbs — so both changes are needed, not either.
 
+Two caveats worth writing down:
+
+- **The busy timeout is a property of `SqliteMemoryStore`'s connection, not of the
+  database file.** Anything that opens `data/memory.db` with its own handle —
+  `migrate-v3.ts`, the routing-log migration — still runs at SQLite's default of
+  0. Both are operator-run with the bot stopped, so they do not contend today; a
+  future handle that runs *alongside* the bot has to set its own.
+- **`IMMEDIATE` means the corpus scan now happens while holding the write lock**,
+  so writes serialize on it: O(n) in corpus size, ~10ms at 2600 claims. At the
+  ~109 claims/day this document measures that is ~150ms of exclusive lock per
+  write within a year, which is no longer negligible. Revisit when the scan
+  exceeds **~100ms** — the fix is to narrow the candidate set (rung 2 of
+  [§6.2's](memory-system-v3.md) ladder), not to loosen the transaction.
+
 ### Merge, don't drop
 
 Consolidation currently *skips* a near-duplicate draft. Silently discarding it
 loses a real signal: the same claim being independently derived twice is evidence
 it matters. On a near-duplicate hit, bump the surviving claim instead —
-`helpful_count` and `weight`, and refresh `last_used_at`. That feeds the existing
-decay contract (`archiveStaleClaims` is "stale **and** low-value"), so repeated
-rediscovery makes a claim harder to fade rather than a no-op.
+`helpful_count` and `weight`, and refresh `last_used_at`. That is the value
+signal the decay contract is written against (`archiveStaleClaims` is "stale
+**and** low-value"), so rediscovery accumulates evidence instead of being a
+no-op. Note what that sentence does *not* say: see
+[the decay wiring gap](#the-decay-half-is-not-wired-up) — nothing calls
+`archiveStaleClaims` today, so this feeds a contract with no reader yet.
 
 **The weight bump needs a ceiling.** A merge writes no row for the twin, so the
 same input text merges again on every call — the bump is not idempotent by
-construction. `recallClaims` scores `cosine * weight` and `archiveStaleClaims`
-only fades `weight <= 0.5`, so a Stop hook or an agent re-asserting one lesson
-each session would add +0.1 per session with no bound: after ~40 sessions that
-claim outranks a cosine-0.9 match at cosine 0.2 and can never fade. Clamp the
-merged weight (`CLAIM_MERGE_WEIGHT_CEILING = 2.0` — a rediscovered claim may
-outrank a fresh one of at most double its cosine, and no further) so repeated
-merges converge. The clamp only holds a bump down; it never pulls an explicitly
-set higher weight back. `helpful_count` stays uncapped: it feeds no ranking, and
-the honest count of rediscoveries is the signal worth keeping.
+construction. `recallClaims` scores `cosine * weight`, so a Stop hook or an agent
+re-asserting one lesson each session would add +0.1 per session with no bound:
+after ~40 sessions that claim outranks a cosine-0.9 match at cosine 0.2. That is
+a live recall-ranking defect on its own; it does not need the decay argument to
+justify a fix, and it must not be justified by one, because **nothing ever
+lowers a weight again** (below). Clamp the merged weight
+(`CLAIM_MERGE_WEIGHT_CEILING = 2.0` — a rediscovered claim may outrank a fresh
+one of at most double its cosine, and no further) so repeated merges converge.
+The clamp only holds a bump down; it never pulls an explicitly set higher weight
+back. `helpful_count` stays uncapped: it feeds no ranking, and the honest count
+of rediscoveries is the signal worth keeping.
+
+#### The decay half is not wired up
+
+Do not read the ceiling as "a safety net until decay cleans it up". Verified
+against the current tree:
+
+- **`weight` has no decrement path anywhere.** It is written in exactly three
+  places — the merge bump, an explicit caller-supplied `weight`, and the insert
+  default. There is no downweight-on-unhelpful and no time decay.
+- **A default-weight claim is not even a fade candidate.** Inserts default to
+  `weight = 1.0`; the ceiling `memoryHealth` previews fade candidates at is
+  `maxWeight = 0.5`. Nothing written at the default is eligible, merged or not.
+- **`archiveStaleClaims` has no caller.** It appears only in `src/memory/sqlite.ts`,
+  the `MemoryStore` interface, and one test. No workflow, CLI, or scheduler
+  invokes it.
+
+So an over-weighted claim is permanent, and the ceiling is the only bound that
+exists. Wiring decay up is real work and deliberately **not** part of this
+branch — it is in the [cut list](#cut-list-true-v2).
 
 The response should say which happened — `{ id, action: "inserted" | "merged",
 mergedInto? }` — so a caller (and the Stop hook) can tell the difference between
@@ -348,3 +386,11 @@ cross-scope near-duplicates are supposed to be reported, not merged.
   genuine twins from distinct claims.
 - Cross-kind dedup (a `lesson` merging into a `fact`). Same-kind only until
   there is evidence the corpus needs it.
+- **Wiring up decay.** `archiveStaleClaims` exists, is tested, and is called by
+  nothing; `weight` has no decrement path at all
+  ([above](#the-decay-half-is-not-wired-up)). Retiring stale claims and
+  downweighting unhelpful ones are both real features with their own design
+  questions (who schedules it, what a downweight signal even is), not a line to
+  slip into a dedup branch. Naming it here so the next reader knows the gap is
+  known rather than overlooked — until it lands, `CLAIM_MERGE_WEIGHT_CEILING` is
+  load-bearing on its own.

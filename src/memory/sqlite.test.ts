@@ -500,6 +500,62 @@ describe("SqliteMemoryStore", () => {
       expect(timeout?.timeout).toBeGreaterThan(0);
     });
 
+    it("survives a concurrent commit landing inside the guard's read window", async () => {
+      // The half a busy timeout CANNOT rescue. upsertClaim's transaction reads
+      // (id lookup, then the whole corpus scan) before it writes; DEFERRED, that
+      // takes a read snapshot, and a commit from another connection inside the
+      // window kills the eventual write with SQLITE_BUSY_SNAPSHOT — an error
+      // SQLite specifically does not let a busy handler retry.
+      await store.upsertClaim({
+        id: "x-anchor",
+        kind: "lesson",
+        text: "an existing claim to scan past",
+        embedding: FAR,
+        createdAt: now,
+      });
+
+      const db = (store as unknown as { db: Database }).db;
+      const other = new Database(join(tmpDir, "memory.db"));
+      other.run("PRAGMA journal_mode = WAL");
+      other.run("PRAGMA busy_timeout = 50"); // keep the blocked case fast
+      const realQuery = db.query.bind(db);
+      // An object rather than a `let`: the writes happen inside the hook below,
+      // where control-flow narrowing would otherwise pin the type at `null`.
+      const interloper: { committed: boolean | null } = { committed: null };
+      // Fire exactly once, on the neighbour scan — i.e. after the transaction's
+      // first read has fixed its snapshot and before its first write.
+      (db as unknown as { query: typeof db.query }).query = ((sql: string) => {
+        // `id <> ?` is unique to findNearDuplicate's scan.
+        if (interloper.committed === null && sql.includes("id <> ?")) {
+          try {
+            other.run("UPDATE claim SET last_used_at = 1 WHERE id = 'x-anchor'");
+            interloper.committed = true;
+          } catch {
+            interloper.committed = false;
+          }
+        }
+        return realQuery(sql);
+      }) as typeof db.query;
+
+      try {
+        const result = await store.upsertClaim({
+          id: "x-writer",
+          kind: "lesson",
+          text: "a genuinely new claim",
+          embedding: NEAR_A,
+          createdAt: now,
+        });
+        // The store's write WINS and the interloper is the one who backs off.
+        // Deferred, this reverses: the interloper commits and this call throws.
+        expect(result.action).toBe("inserted");
+        expect(interloper.committed).toBe(false);
+        expect(rowOf("x-writer")).not.toBeNull();
+      } finally {
+        (db as unknown as { query: typeof db.query }).query = realQuery;
+        other.close();
+      }
+    });
+
     // --- the value-metadata data-loss bug --------------------------------
 
     it("defaults value columns on a fresh insert", async () => {
@@ -635,8 +691,9 @@ describe("SqliteMemoryStore", () => {
       // A merge writes NO row for the twin, so the same input merges again on
       // every call — a Stop hook re-asserting one lesson each session would add
       // +0.1 forever. recallClaims scores `cosine * weight`, so an unbounded
-      // weight lets a low-cosine claim outrank everything and archiveStaleClaims
-      // (weight <= 0.5) can never fade it.
+      // weight lets a low-cosine claim outrank everything, permanently: nothing
+      // in the codebase decrements a weight, and archiveStaleClaims has no
+      // caller. The ceiling is the only bound there is.
       for (let i = 0; i < 30; i += 1) {
         const result = await store.upsertClaim({
           id: `b-twin-${i}`,
@@ -1054,12 +1111,23 @@ describe("SqliteMemoryStore", () => {
       // Same vector as the twins but a DIFFERENT scope — not a near-duplicate,
       // because the sweep would never merge it.
       await seed("h-other-repo", NEAR_A, "gx-backend");
+      // A vector-less legacy row. It counts toward `total` but no cosine can
+      // ever match it, so including it in the RATE's denominator would just
+      // understate the rate (4/5 vs 4/4 of the corpus that can be measured).
+      await store.upsertClaim({
+        id: "h-no-vector",
+        kind: "lesson",
+        text: "a legacy claim with no embedding",
+        createdAt: now,
+        skipDedup: true,
+      });
 
       const health = await store.memoryHealth({ now });
       const lesson = health.kinds.find((k) => k.kind === "lesson");
       expect(health.dedupThreshold).toBe(0.92);
-      expect(lesson?.total).toBe(4);
+      expect(lesson?.total).toBe(5);
       expect(lesson?.nearDuplicates).toBe(2);
+      // 2 twins over the 4 EMBEDDED lessons. Over `total` this would be 0.4.
       expect(lesson?.nearDuplicateRate).toBeCloseTo(0.5, 5);
 
       const skipped = await store.memoryHealth({ now, includeNearDuplicates: false });
