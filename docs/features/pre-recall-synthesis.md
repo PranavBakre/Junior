@@ -77,6 +77,11 @@ One bounded LLM call over the retrieved claim set, producing the merged
 
 Worst case becomes strictly better than the current worst case of nothing.
 
+> **As shipped**, the timeout row carries a relevance floor: retrieval applies
+> no score threshold, so an unfiltered top-K on "thanks, that worked" would
+> inject arbitrary nearest neighbours *and* mark them used. See
+> [Implementation notes](#implementation-notes).
+
 **What this does and does not fix.** It does not remove blocking latency: the
 call is still a subprocess awaited before the runner spawns
 (`session/manager.ts:1932-1941`), still under `PRE_RECALL_TIMEOUT_MS`. What
@@ -178,8 +183,35 @@ Shipped in `src/memory/pre-recall.ts`, `src/session/manager.ts`,
 | Characters per claim | 600 | Truncated with `…`. Claim text has no schema ceiling. |
 | Total candidate characters | 6 000 | 12 × 600 = 7 200, so the ceiling is reachable and actually drops the lowest-scoring candidates. |
 | Request characters in the prompt | 1 200 | The proposal capped the *claims*; the request is untrusted-length too, so it is capped as well or the prompt is still unbounded. |
-| Raw claims on fallback | 3 | Matches the previous per-query recall limit. |
-| Synthesized lines emitted | 5, 500 chars each | The block is injected into every turn's prompt. |
+| Raw claims on fallback | 3, each ≥ 0.5 score | Matches the previous per-query recall limit; the floor is new (see below). |
+| Lines emitted | 5, 500 chars each | The block is injected into every turn's prompt. Applies to synthesized and fallback lines alike. |
+
+**The fallback needs a relevance floor.** `recallClaims` is `slice(0, limit)`
+over cosine × weight with no threshold, and `deriveRecallQueries` returns `[]`
+only for whitespace — where the old extractor deliberately returned `[]` for
+chit-chat. So a candidate set is essentially never empty. Without a floor,
+"thanks, that worked" plus an unavailable subprocess emits three arbitrary
+nearest neighbours as operational knowledge and marks them used, re-opening
+through the fallback the exact decay pathology `recordUsage: false` closed at
+retrieval. `FALLBACK_MIN_SCORE = 0.5` is a starting value, not a tuned one;
+`top=` in the telemetry is there to tune it. The floor applies **only** to the
+fallback — synthesis has a model doing the filtering.
+
+**Model output is prompt-injection surface.** Before this change the
+subprocess's output was only a search query, and every emitted line was a
+verbatim corpus claim; now `notes` is free text from a model whose input quotes
+a raw Slack message. Three defences: the request is wrapped in `<request>` tags
+and labelled untrusted data in both the system and user prompt, any literal
+`</request>` in the message is stripped, and **notes are rejected unless
+`used` names at least one candidate** — a genuine merge always cites its
+sources, and unattributed notes are the injection signature. Rejected notes take
+the fallback path, so the turn still gets verbatim claims.
+
+**A malformed `notes` is a failure, not a rejection.** `{"notes":"one line"}`
+coerced to `[]` would report a broken call as the deliberate "nothing applies"
+outcome — invisible in the telemetry and, worse, skipping the fallback so the
+turn gets no memory at all. Only an explicit `"notes": []` is a rejection;
+missing or non-array is a parse failure.
 
 **Divergences from the proposal.**
 
@@ -187,7 +219,8 @@ Shipped in `src/memory/pre-recall.ts`, `src/session/manager.ts`,
   "synthesis returns" and "synthesis times out". A third case exists: synthesis
   succeeds and rejects every candidate. That is the curation this stage was
   added for, so it emits nothing and marks nothing used. Only *failure* falls
-  back to raw claims.
+  back to raw claims — and the fallback can itself emit nothing when no
+  candidate clears the relevance floor.
 - **Query expansion is one extra query, not a keyword list.** The optional
   "repo name, thread agent" expansion is a single `"<repo> <agent>: <message>"`
   variant that biases the same vector, rather than separate keyword queries. The
@@ -200,7 +233,19 @@ Shipped in `src/memory/pre-recall.ts`, `src/session/manager.ts`,
   event layer already adds `:eyes:` on receipt and never removes it; reusing it
   would mean clearing the acknowledgement. The marker is ref-counted per
   message because a cold-start restart or guard continuation starts its
-  replacement turn before the replaced one finishes tearing down.
+  replacement turn before the replaced one finishes tearing down, and because a
+  dispatched agent turn can share the triggering message with the top-level one.
+- **Reaction writes are serialized per message.** Add and remove are fired
+  without awaiting and the web client runs them concurrently, so on a
+  fast-exiting turn the remove can reach Slack first, return `no_reaction`
+  (deliberately swallowed), and let the add land afterwards and stick forever
+  with nothing in the logs. `SlackResponder` chains reaction writes per
+  `channel:ts`; unrelated messages still run concurrently.
+- **Dispatched agent turns are marked too.** The gate is "this turn has a Slack
+  message of its own", not "top-level": `handleAgentMessage` passes a real
+  `event.ts` for `@junior reproducer …`, and those are typically the longest
+  turns. Drains and continuations thread no ts through, so only a top-level turn
+  can recover one from the session row.
 - **The clear fires when the runner settles, marginally before the response
   posts.** It lives in a `finally` on `runRunnerWithAgent`, and the normal exit
   is `return this.onRunComplete(...)` — so the marker clears as the turn unwinds
@@ -214,11 +259,15 @@ Shipped in `src/memory/pre-recall.ts`, `src/session/manager.ts`,
 can skip it:
 
 ```
-[pre-recall] repo=gx-backend queries=2 candidates=11 claims=3 fallback=false ms=4210
+[pre-recall] repo=gx-backend queries=2 candidates=11 top=0.734 claims=3 fallback=false ms=4210
 ```
 
-`err=` is appended when synthesis failed (with `fallback=true`) or the attempt
-threw (with `claims=0`).
+`top=` is the best candidate's score — the number to look at before moving
+`FALLBACK_MIN_SCORE`. `err=` is appended when synthesis failed (with
+`fallback=true`) or the attempt threw (with `claims=0`). The four zero-claim
+outcomes stay distinguishable: no candidates (`candidates=0`), curation
+rejected everything (`fallback=false`, no `err=`), fallback below the floor
+(`fallback=true` with `err=`), and a thrown attempt (`top=-`).
 
 ## Dependencies
 

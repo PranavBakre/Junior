@@ -3557,6 +3557,30 @@ describe("SessionManager", () => {
       expect(calls[1]).toEqual({ action: "remove", ts: "ts-cancel", emoji: EMOJI });
     });
 
+    it("keeps the marker until the last turn on that message finishes", async () => {
+      // Ref-counting: a dispatched agent turn can share the triggering message
+      // with the top-level turn. The first to finish must not strip the other's
+      // marker.
+      const calls = recordReactions();
+      const topLevel = currentHandle;
+
+      await manager.handleMessage(makeEvent({ ts: "ts-shared" }));
+      const agent = createMockHandle();
+      mockSpawnFn = mock(() => agent);
+      await manager.handleAgentMessage(makeEvent({ ts: "ts-shared" }), "build");
+      await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+      // One add for two overlapping turns.
+      expect(calls).toEqual([{ action: "add", ts: "ts-shared", emoji: EMOJI }]);
+
+      agent._complete("agent done");
+      await new Promise((r) => setTimeout(r, 5));
+      expect(calls).toHaveLength(1);
+
+      topLevel._complete("lead done");
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: "ts-shared", emoji: EMOJI });
+    });
+
     it("marks the newly drained message when a buffered turn follows", async () => {
       const calls = recordReactions();
       const first = currentHandle;

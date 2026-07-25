@@ -594,4 +594,54 @@ describe("SlackResponder", () => {
       expect(chunks).toEqual(["a".repeat(3_000), "a".repeat(500)]);
     });
   });
+
+  describe("reaction ordering", () => {
+    /** Slow `add`, instant `remove` — the shape that strands a marker. */
+    function reactionApp() {
+      const order: string[] = [];
+      return {
+        order,
+        app: {
+          client: {
+            reactions: {
+              add: vi.fn(async () => {
+                await new Promise((r) => setTimeout(r, 20));
+                order.push("add");
+                return { ok: true };
+              }),
+              remove: vi.fn(async () => {
+                order.push("remove");
+                return { ok: true };
+              }),
+            },
+          },
+        } as unknown as import("@slack/bolt").App,
+      };
+    }
+
+    it("never lets a remove overtake the add for the same message", async () => {
+      const { app, order } = reactionApp();
+      const responder = new SlackResponder(app);
+
+      // Both are fired without awaiting, exactly as the session manager does.
+      const add = responder.addReaction("C123", "ts-1", "hourglass_flowing_sand");
+      const remove = responder.removeReaction("C123", "ts-1", "hourglass_flowing_sand");
+      await Promise.all([add, remove]);
+
+      expect(order).toEqual(["add", "remove"]);
+    });
+
+    it("does not serialize reactions on different messages", async () => {
+      const { app, order } = reactionApp();
+      const responder = new SlackResponder(app);
+
+      await Promise.all([
+        responder.addReaction("C123", "ts-slow", "eyes"),
+        responder.removeReaction("C123", "ts-other", "eyes"),
+      ]);
+
+      // The unrelated remove does not wait behind the slow add.
+      expect(order).toEqual(["remove", "add"]);
+    });
+  });
 });

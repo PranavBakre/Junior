@@ -1490,12 +1490,14 @@ export class SessionManager {
     let runnerStarted = false;
     // Between the message landing and the runner's first output the thread
     // shows nothing — prompt composition, worktree setup and pre-recall all run
-    // first. Mark the triggering message for the duration of the turn. Only
-    // top-level turns: a dispatched agent has no message of its own, and the
-    // top-level turn that does may still be marking the same one.
-    const progressMessageTs = isTopLevel
-      ? latestTs ?? session.activeTopLevelMessageTs ?? null
-      : null;
+    // first. Mark whichever message started this turn. Dispatched agent turns
+    // (`@junior reproducer …`) carry their own ts and are usually the longest,
+    // so they get the marker too; overlap with a top-level turn on the same
+    // message is what markTurnProgress ref-counts. Drains and continuations
+    // thread no ts through, so only a top-level turn can recover one from the
+    // session row.
+    const progressMessageTs =
+      latestTs ?? (isTopLevel ? session.activeTopLevelMessageTs ?? null : null);
     if (progressMessageTs) {
       this.markTurnProgress(session.channel, progressMessageTs, "add");
     }
