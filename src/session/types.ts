@@ -18,6 +18,12 @@ export interface PipelineInvocationRef {
   dispatchKey: string;
   outcomeCountAtDispatch: number;
   retryCount: number;
+  /**
+   * A completed user-facing response withheld while settlement recovery obtains
+   * the assignment's required durable outcome. Published exactly once after the
+   * outcome lands unless a later recovery turn replaces it or posts to Slack.
+   */
+  pendingUserResponse?: string | null;
 }
 
 export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";

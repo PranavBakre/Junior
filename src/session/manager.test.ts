@@ -4094,6 +4094,320 @@ describe("typed pipeline settlement", () => {
     ).toBeNull();
   });
 
+  it("publishes a withheld response after settlement recovery returns a sentinel", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-withheld-response",
+      targetAgent: "build",
+      idempotencyKey: "asg-withheld-response-key",
+    }));
+    const handles: MockHandle[] = [];
+    const prompts: string[] = [];
+    const responses: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, (_session, prompt) => {
+      prompts.push(prompt);
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.onResponse = (_session, response) => responses.push(response);
+    attachExistingPipelineWorktree(manager);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review the pull request",
+      dedupeKey: "pipeline-outbox:dispatch-withheld-response",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-withheld-response",
+        dispatchKey: "dispatch-withheld-response",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+
+    handles[0]!._complete(
+      "review: changes-requested — three warnings need attention",
+      "withheld-response-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    expect(responses).toEqual([]);
+    expect(prompts[1]).toContain("previous user-facing response was withheld");
+    expect(prompts[1]).toContain("has NOT been posted");
+    expect(
+      (await sessionStore.get("thread-1"))?.agentSessions.build
+        ?.activePipelineInvocation?.pendingUserResponse,
+    ).toBe("review: changes-requested — three warnings need attention");
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-withheld-response",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "review completed",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "withheld-response-complete",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "withheld-response-complete",
+    });
+    handles[1]!._complete(
+      "NO_SLACK_MESSAGE",
+      "withheld-response-session",
+    );
+
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual([
+      "review: changes-requested — three warnings need attention",
+    ]);
+    expect(
+      (await sessionStore.get("thread-1"))?.agentSessions.build
+        ?.activePipelineInvocation,
+    ).toBeNull();
+  });
+
+  it("prefers a newer recovery response over the withheld response", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-replaced-response",
+      targetAgent: "build",
+      idempotencyKey: "asg-replaced-response-key",
+    }));
+    const handles: MockHandle[] = [];
+    const responses: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.onResponse = (_session, response) => responses.push(response);
+    attachExistingPipelineWorktree(manager);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review the pull request",
+      dedupeKey: "pipeline-outbox:dispatch-replaced-response",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-replaced-response",
+        dispatchKey: "dispatch-replaced-response",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete(
+      "review: changes-requested — preliminary verdict",
+      "replaced-response-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-replaced-response",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "review completed",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "replaced-response-complete",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "replaced-response-complete",
+    });
+    handles[1]!._complete(
+      "review: changes-requested — final corrected verdict",
+      "replaced-response-session",
+    );
+
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual([
+      "review: changes-requested — final corrected verdict",
+    ]);
+  });
+
+  it("does not restore a withheld response after recovery posts directly to Slack", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-direct-slack-response",
+      targetAgent: "build",
+      idempotencyKey: "asg-direct-slack-response-key",
+    }));
+    const handles: MockHandle[] = [];
+    const responses: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.onResponse = (_session, response) => responses.push(response);
+    attachExistingPipelineWorktree(manager);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review the pull request",
+      dedupeKey: "pipeline-outbox:dispatch-direct-slack-response",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-direct-slack-response",
+        dispatchKey: "dispatch-direct-slack-response",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete(
+      "review: changes-requested — withheld verdict",
+      "direct-slack-response-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-direct-slack-response",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "review completed",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "direct-slack-response-complete",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "direct-slack-response-complete",
+    });
+    handles[1]!._complete(
+      "NO_SLACK_MESSAGE",
+      "direct-slack-response-session",
+      [{
+        type: "tool",
+        provider: "claude",
+        name: "mcp__slack-bot__slack_send_message",
+        input: { text: "review: changes-requested — posted directly" },
+      }],
+    );
+
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual(["NO_SLACK_MESSAGE"]);
+    expect(responses).not.toContain(
+      "review: changes-requested — withheld verdict",
+    );
+  });
+
+  it("keeps the withheld response when a settled recovery ends with partial output", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-partial-recovery-response",
+      targetAgent: "build",
+      idempotencyKey: "asg-partial-recovery-response-key",
+    }));
+    const handles: MockHandle[] = [];
+    const responses: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.onResponse = (_session, response) => responses.push(response);
+    attachExistingPipelineWorktree(manager);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review the pull request",
+      dedupeKey: "pipeline-outbox:dispatch-partial-recovery-response",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-partial-recovery-response",
+        dispatchKey: "dispatch-partial-recovery-response",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete(
+      "review: changes-requested — complete withheld verdict",
+      "partial-recovery-response-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-partial-recovery-response",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "review completed",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "partial-recovery-response-complete",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "partial-recovery-response-complete",
+    });
+    handles[1]!._complete(
+      "I recorded the outcome and was about to restate the verdict",
+      "partial-recovery-response-session",
+      [],
+      {
+        status: "incomplete",
+        reason: "max_turns",
+        retryable: true,
+        providerSubtype: "error_max_turns",
+        turns: 25,
+      },
+    );
+
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual([
+      "review: changes-requested — complete withheld verdict",
+    ]);
+  });
+
   it("posts one failure only after the bounded recovery budget is exhausted", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));

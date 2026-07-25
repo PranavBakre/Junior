@@ -130,7 +130,14 @@ If in bug pipeline (`$BUG_DIR` exists), also write `$BUG_DIR/review.md`:
 
 ## Runtime outcomes
 
-Follow the loaded durable-run contract. Post the GitHub verdict first, then use `pipeline_report_outcome` with evidence pointing to that review, or durable `agent_dispatch` for delegation/handoff.
+Follow the loaded durable-run contract. For an assignment-backed review, the
+order is strict: post the GitHub review, call `pipeline_report_outcome` with
+evidence pointing to that review, then return the Slack verdict as the final
+response. Junior withholds the final response until the typed outcome is
+durable, so never end the invocation with the verdict before reporting the
+outcome. On a settlement-recovery continuation, do not return
+`NO_SLACK_MESSAGE` merely because the prior verdict appeared as live status;
+live status is temporary and is not a durable Slack post.
 
 When those tools are unavailable or return disabled, use the existing Slack/GitHub patterns above (`review: <verdict>`, inline comments, optional `$BUG_DIR/review.md`). Slack is the human audit surface, not the control plane.
 

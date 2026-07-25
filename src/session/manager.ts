@@ -59,7 +59,11 @@ import {
   resolveUserName,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
-import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
+import {
+  hasSlackSendMessageEvent,
+  isDuplicateSlackToolResponse,
+  prepareSlackResponse,
+} from "../slack/formatting.ts";
 import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
 import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
@@ -2487,12 +2491,22 @@ export class SessionManager {
       outcomes.length > invocation.outcomeCountAtDispatch;
 
     if (durable) {
+      const currentResponseIsVisible =
+        prepareSlackResponse(result.response) !== null;
+      const currentTurnPostedToSlack =
+        hasSlackSendMessageEvent(result.events);
+      const response =
+        currentTurnPostedToSlack
+          ? result.response
+          : !result.error && currentResponseIsVisible
+            ? result.response
+            : invocation.pendingUserResponse ?? "";
       // The typed outcome is authoritative. A provider may hit its turn cap
       // immediately after committing it; that must not become a Slack error.
       return result.error
         ? {
             ...result,
-            response: "",
+            response,
             error: null,
             completion: {
               status: "success",
@@ -2502,7 +2516,7 @@ export class SessionManager {
               turns: result.completion?.turns,
             },
           }
-        : result;
+        : { ...result, response };
     }
 
     const sessionId = isTopLevel
@@ -2518,6 +2532,20 @@ export class SessionManager {
     ) {
       if (this.handles.get(handleKey) !== ownHandle) return null;
       const retryCount = invocation.retryCount + 1;
+      const currentResponseIsVisible =
+        prepareSlackResponse(result.response) !== null;
+      const currentTurnPostedToSlack =
+        hasSlackSendMessageEvent(result.events);
+      const duplicatesSlackToolPost =
+        currentResponseIsVisible &&
+        isDuplicateSlackToolResponse(result.response, result.events);
+      const pendingUserResponse =
+        duplicatesSlackToolPost ||
+        (!currentResponseIsVisible && currentTurnPostedToSlack)
+          ? null
+          : !result.error && currentResponseIsVisible
+            ? result.response
+            : invocation.pendingUserResponse ?? null;
       let continued: ThreadSession;
       try {
         continued = await this.mutateSession(fresh.threadId, (current) => {
@@ -2528,7 +2556,11 @@ export class SessionManager {
           if (!active || active.dispatchKey !== invocation.dispatchKey) {
             throw new Error("pipeline invocation ownership changed");
           }
-          owner.activePipelineInvocation = { ...active, retryCount };
+          owner.activePipelineInvocation = {
+            ...active,
+            retryCount,
+            pendingUserResponse,
+          };
           if (result.sessionId) {
             owner.sessionId = result.sessionId;
             owner.sessionCwd = invocationCwd;
@@ -2552,6 +2584,11 @@ export class SessionManager {
       const continuation = [
         "The pipeline assignment has not recorded a typed outcome yet.",
         `Recovery continuation ${retryCount} of ${maxRetries}. Resume this same session from durable state; do not repeat completed mutations.`,
+        ...(pendingUserResponse
+          ? [
+              "Your previous user-facing response was withheld and has NOT been posted. Junior will publish it after settlement unless you return a newer real response or explicitly post to Slack.",
+            ]
+          : []),
         "Finish any remaining work, then call pipeline_report_outcome for the active assignment before ending this invocation.",
       ].join("\n");
       _log.warn(

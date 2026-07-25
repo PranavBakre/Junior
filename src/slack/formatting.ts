@@ -464,7 +464,6 @@ export function isDuplicateSlackToolResponse(
 
   const normalizedResponse = normalizeSlackPostText(prepared);
   return events.some((event) => {
-    if (event.type !== "tool") return false;
     if (!isSlackSendMessageEvent(event)) return false;
     const postedText = findSlackPostText(event.input);
     return (
@@ -474,11 +473,17 @@ export function isDuplicateSlackToolResponse(
   });
 }
 
+/** True when this runner turn explicitly posted a Slack message via MCP. */
+export function hasSlackSendMessageEvent(events: RunnerEvent[]): boolean {
+  return events.some(isSlackSendMessageEvent);
+}
+
 function normalizeSlackPostText(text: string): string {
   return text.trim();
 }
 
-function isSlackSendMessageEvent(event: RunnerEventTool): boolean {
+function isSlackSendMessageEvent(event: RunnerEvent): event is RunnerEventTool {
+  if (event.type !== "tool") return false;
   if (isSlackSendMessageToolName(event.name)) return true;
 
   // Provider adapters don't all expose MCP tool names identically. Claude uses
