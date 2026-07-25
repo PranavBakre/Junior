@@ -374,6 +374,40 @@ export class SlackResponder {
     }
   }
 
+  /**
+   * Clear a reaction the bot added. Callers that mark work in progress must be
+   * able to unmark it on every terminal path, or the thread accumulates
+   * permanent "working" markers that are worse than no signal at all.
+   */
+  async removeReaction(
+    channel: string,
+    messageTs: string,
+    emoji: string,
+  ): Promise<void> {
+    try {
+      await this.app.client.reactions.remove({
+        channel,
+        timestamp: messageTs,
+        name: emoji,
+      });
+      log.info(
+        "responder",
+        `reaction.remove channel=${channel} ts=${messageTs} emoji=${emoji}`,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      // `no_reaction` / `message_not_found` mean there is nothing left to
+      // clear — the clear-on-every-path rule makes that a normal outcome.
+      if (reason.includes("no_reaction") || reason.includes("message_not_found")) {
+        return;
+      }
+      log.error(
+        "responder",
+        `reaction.remove.fail channel=${channel} ts=${messageTs} emoji=${emoji} err=${reason}`,
+      );
+    }
+  }
+
   private statusKey(threadTs: string, agentName: string): string {
     return `${threadTs}:${agentName}`;
   }

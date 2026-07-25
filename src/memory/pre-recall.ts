@@ -1,7 +1,15 @@
 // Pre-recall hook: runs BEFORE the runner spawns to inject operational memory
-// into the prompt. A cheap one-shot LLM extracts 0-3 recall queries from the
-// raw Slack message, then each query hits recallMemory() from the MCP server.
-// Results are formatted as a <pre-recall> XML block prepended to the prompt.
+// into the prompt.
+//
+// Retrieval is embedding-only. The raw Slack message is embedded directly by
+// the configured provider (milliseconds, in-process) instead of being fed to a
+// model for query extraction — that was the unbounded half of the pipeline, so
+// no timeout could be sized for it and expiry left the turn with zero memory.
+//
+// The single LLM call is SYNTHESIS over the retrieved claims: a bounded input
+// (capped candidate count, per-claim truncation, total candidate-character
+// ceiling) whose failure mode is the top-K raw claims rather than nothing.
+// Usage is recorded only for the claims that actually reached the prompt.
 //
 // The LLM call is a CLI subprocess (CLAUDE.md rule 1), not an SDK call. Same
 // timeout + process-tree SIGINT pattern as the consolidation runner. The module
@@ -12,7 +20,7 @@ import { join } from "node:path";
 import { readFile, rm } from "node:fs/promises";
 
 import type { Config } from "../config.ts";
-import type { MemoryToolDeps, RecallMemoryResult } from "../mcp/slack-server.ts";
+import type { MemoryToolDeps } from "../mcp/slack-server.ts";
 import { recallMemory } from "../mcp/slack-server.ts";
 import { createMemoryStore } from "./factory.ts";
 import { createProfileStore } from "./profiles/index.ts";
@@ -32,19 +40,41 @@ const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4-pro";
 const DEFAULT_CODEX_MODEL = "gpt-5.4-nano";
 
-// ── Extraction system prompt ─────────────────────────────────────────────────
-const EXTRACTION_SYSTEM_PROMPT = `You analyze incoming Slack messages and extract what should be recalled from long-term memory before processing.
+// ── Bounds ───────────────────────────────────────────────────────────────────
+// Claim text has no length ceiling in the schema, so "N claims" is not a
+// bounded prompt on its own. These three caps are what make the synthesis
+// budget sizeable; without them the "predictable timeout" argument is empty.
 
-Given a message, identify 0-3 recall queries — systems, APIs, procedures, people, or domain concepts mentioned that prior operational knowledge might help with.
+/** Claims recalled per derived query. */
+const CANDIDATE_LIMIT = 8;
+/** Candidates that reach the prompt after the per-query sets are merged. */
+const MAX_SYNTHESIS_CANDIDATES = 12;
+/** Per-claim truncation before a candidate enters the prompt. */
+const MAX_CLAIM_CHARS = 600;
+/** Total candidate characters; the lowest-scoring candidates are dropped. */
+const MAX_CANDIDATE_CHARS = 6_000;
+/** The request itself is untrusted-length input — cap it too. */
+const MAX_REQUEST_CHARS = 1_200;
+/** Retrieval query length. Embedding providers truncate anyway. */
+const MAX_QUERY_CHARS = 2_000;
+/** Raw claims emitted when synthesis fails — the previous behaviour. */
+const FALLBACK_TOP_K = 3;
+/** Synthesized lines kept, and their length, so the injected block stays small. */
+const MAX_NOTES = 5;
+const MAX_NOTE_CHARS = 500;
 
-Return ONLY a JSON array of query strings. Return [] if nothing worth recalling.
+// ── Synthesis system prompt ──────────────────────────────────────────────────
+const SYNTHESIS_SYSTEM_PROMPT = `You curate recalled operational memory for a coding agent.
 
-Examples:
-- "shift simran's ticket from bangalore to delhi" → ["event registration city shift procedure", "admin API event registration"]
-- "can you review PR #45 on gx-backend" → ["gx-backend review conventions"]
-- "hey what's up" → []
-- "use the admin api to approve it" → ["admin API event registration approve"]
-- "onboard rahul, phone 9876543210, email rahul@test.com" → ["member onboarding procedure"]`;
+You receive the agent's incoming request and a numbered list of candidate claims retrieved from long-term memory by semantic similarity. Similarity is not relevance — most candidates are noise.
+
+Return ONLY a JSON object:
+{"notes": ["..."], "used": [1, 4]}
+
+- "notes": at most ${MAX_NOTES} lines of merged operational knowledge that actually applies to this request. Merge overlapping candidates into one line and drop the rest. Keep concrete details (names, paths, commands, ids) verbatim — never generalize them away.
+- "used": the 1-based indexes of the candidates that contributed to "notes".
+
+Return {"notes": [], "used": []} when nothing applies. That is the common case and it is the correct answer — do not pad.`;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 export interface PreRecallOptions {
@@ -54,6 +84,8 @@ export interface PreRecallOptions {
    * Null/undefined recalls across the whole corpus (repo-less sessions).
    */
   repo?: string | null;
+  /** Agent the turn is routed to. Only used to bias the retrieval query. */
+  agent?: string | null;
 }
 
 export type PreRecallFn = (
@@ -61,15 +93,35 @@ export type PreRecallFn = (
   options?: PreRecallOptions,
 ) => Promise<string | null>;
 
+/**
+ * Seams at the two system boundaries this module owns — the synthesis
+ * subprocess and the memory store (CLAUDE.md rule 15). Production leaves both
+ * unset; tests replace them instead of reaching into the closure.
+ */
+export interface PreRecallOverrides {
+  runText?: RunTextFn;
+  deps?: MemoryToolDeps;
+}
+
+/** Minimal shape the synthesis stage needs from a recalled claim. */
+export interface SynthesisCandidate {
+  id: string;
+  text: string;
+  score: number;
+}
+
 // ── Factory ──────────────────────────────────────────────────────────────────
 
 /**
  * Create a pre-recall function that lazily initializes memory dependencies and
- * returns a closure. The closure extracts recall queries from a raw Slack
- * message via a cheap LLM call, runs them through recallMemory(), and returns
- * a formatted <pre-recall> block or null.
+ * returns a closure. The closure embeds the raw Slack message, recalls
+ * candidate claims WITHOUT recording usage, synthesizes them into a merged
+ * <pre-recall> block, and records usage only for the claims that contributed.
  */
-export function createPreRecall(config: Config): PreRecallFn {
+export function createPreRecall(
+  config: Config,
+  overrides?: PreRecallOverrides,
+): PreRecallFn {
   const preRecallConfig = config.memory.preRecall;
   if (!preRecallConfig?.enabled) {
     return async () => null;
@@ -77,7 +129,10 @@ export function createPreRecall(config: Config): PreRecallFn {
 
   const runner = preRecallConfig.runner;
   const model = preRecallConfig.model ?? defaultModelForRunner(runner);
+  // Same env knob, new meaning: this is the synthesis budget now, and it has a
+  // real fallback behind it.
   const timeoutMs = preRecallConfig.timeoutMs;
+  const runText = overrides?.runText ?? runTextForRunner(runner);
 
   // Lazy singleton deps for recallMemory()
   let deps: MemoryToolDeps | null = null;
@@ -99,104 +154,288 @@ export function createPreRecall(config: Config): PreRecallFn {
     message: string,
     options?: PreRecallOptions,
   ): Promise<string | null> => {
+    const startedAt = Date.now();
+    let queries: string[] = [];
+    let candidateCount = 0;
+    let claimCount = 0;
+    let fallbackFired = false;
+    let failure: string | null = null;
+
     try {
-      // Step 1: Extract recall queries via cheap LLM
-      const queries = await extractRecallQueries(message, runner, model, timeoutMs);
+      queries = deriveRecallQueries(message, options);
       if (queries.length === 0) return null;
 
-      // Step 2: Run each query through recallMemory(), scoped to the session's
-      // repo when one is set.
-      const memDeps = await getDeps();
-      const seenClaimIds = new Set<string>();
-      const allClaims: RecallMemoryResult["claims"] = [];
+      // Step 1: retrieve candidates. recordUsage stays false — nothing has
+      // decided these are useful yet.
+      const memDeps = overrides?.deps ?? (await getDeps());
+      const candidates = await recallCandidates(queries, options, memDeps);
+      candidateCount = candidates.length;
+      if (candidateCount === 0) return null;
 
-      for (const query of queries) {
-        const result = await recallMemory(
-          {
-            query,
-            limit: 3,
-            // "This repo or global, never other repos" — a strict repo filter
-            // would drop the repo-less lessons that make up most of the corpus.
-            repo: options?.repo ?? undefined,
-            repoIncludeGlobal: true,
-          },
-          memDeps,
-        );
-        for (const claim of result.claims) {
-          if (seenClaimIds.has(claim.id)) continue;
-          seenClaimIds.add(claim.id);
-          allClaims.push(claim);
-        }
+      // Step 2: synthesize over the capped candidate set.
+      const shortlist = selectSynthesisCandidates(candidates);
+      let notes: string[];
+      let usedIds: string[];
+      try {
+        const raw = await runText({
+          prompt: buildSynthesisPrompt(message, shortlist),
+          model,
+          timeoutMs,
+        });
+        const parsed = parseSynthesisResult(raw, shortlist.length);
+        if (!parsed) throw new Error("synthesis output was not parseable JSON");
+        notes = parsed.notes;
+        usedIds = parsed.usedIndexes.map((index) => shortlist[index - 1]!.id);
+      } catch (err) {
+        // The reason the model call sits AFTER retrieval: an expired budget
+        // still leaves something worth injecting.
+        fallbackFired = true;
+        failure = err instanceof Error ? err.message : String(err);
+        const top = shortlist.slice(0, FALLBACK_TOP_K);
+        notes = top.map((candidate) => candidate.text);
+        usedIds = top.map((candidate) => candidate.id);
       }
 
-      if (allClaims.length === 0) return null;
+      // Synthesis rejecting every candidate is a legitimate outcome — it is the
+      // curation this stage exists for, and nothing gets marked used.
+      if (notes.length === 0) return null;
 
-      // Step 3: Format as <pre-recall> block
-      const claimLines = allClaims.map((c) => `- ${c.text}`).join("\n");
-      return [
-        "<pre-recall>",
-        "The following operational knowledge was automatically recalled from memory. Use as context.",
-        "",
-        claimLines,
-        "</pre-recall>",
-      ].join("\n");
+      claimCount = notes.length;
+      await recordClaimUsage(memDeps, usedIds);
+      return formatPreRecallBlock(notes);
     } catch (err) {
-      _log.warn(
-        "pre-recall",
-        `fail err=${err instanceof Error ? err.message : String(err)}`,
-      );
+      failure = err instanceof Error ? err.message : String(err);
+      _log.warn("pre-recall", `fail err=${failure}`);
       return null;
+    } finally {
+      _log.info(
+        "pre-recall",
+        `repo=${options?.repo ?? "-"} queries=${queries.length} candidates=${candidateCount} ` +
+          `claims=${claimCount} fallback=${fallbackFired} ms=${Date.now() - startedAt}` +
+          (failure ? ` err=${failure}` : ""),
+      );
     }
   };
 }
 
-// ── Query extraction ─────────────────────────────────────────────────────────
+// ── Query derivation (no subprocess) ─────────────────────────────────────────
 
 /**
- * Spawn a cheap one-shot LLM to extract recall queries from the raw message.
- * Returns 0-3 query strings. On timeout, error, or malformed output, returns [].
+ * Derive retrieval queries from the raw message. No model call: the message IS
+ * the query, and the only expansion is a cheap repo/agent-scoped variant that
+ * biases the vector toward this session's own conventions.
  */
-async function extractRecallQueries(
+export function deriveRecallQueries(
   message: string,
-  runner: PreRecallRunner,
-  model: string,
-  timeoutMs: number,
-): Promise<string[]> {
-  const runText = runTextForRunner(runner);
-  const raw = await runText({ message, model, timeoutMs });
-  return parseQueryArray(raw);
+  options?: PreRecallOptions,
+): string[] {
+  const normalized = message.replace(/\s+/g, " ").trim().slice(0, MAX_QUERY_CHARS);
+  if (!normalized) return [];
+
+  const scope = [options?.repo, options?.agent]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .join(" ");
+  return scope ? [normalized, `${scope}: ${normalized}`] : [normalized];
 }
 
 /**
- * Parse the LLM's response as a JSON array of strings. Returns [] on any
- * parse failure — never throws.
+ * Run every derived query through recallMemory() and merge by claim id.
+ * `recordUsage: false` — see recordClaimUsage for why the bump waits.
  */
-function parseQueryArray(raw: string): string[] {
-  const trimmed = raw.trim();
-  // Strip code fences if present
-  const unfenced = trimmed.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+async function recallCandidates(
+  queries: string[],
+  options: PreRecallOptions | undefined,
+  deps: MemoryToolDeps,
+): Promise<SynthesisCandidate[]> {
+  const seen = new Set<string>();
+  const candidates: SynthesisCandidate[] = [];
 
-  try {
-    const parsed = JSON.parse(unfenced);
-    if (!Array.isArray(parsed)) return [];
-    const queries = parsed
-      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-      .slice(0, 3);
-    return queries;
-  } catch {
-    return [];
+  for (const query of queries) {
+    const result = await recallMemory(
+      {
+        query,
+        limit: CANDIDATE_LIMIT,
+        // "This repo or global, never other repos" — a strict repo filter
+        // would drop the repo-less lessons that make up most of the corpus.
+        repo: options?.repo ?? undefined,
+        repoIncludeGlobal: true,
+        recordUsage: false,
+      },
+      deps,
+    );
+    for (const claim of result.claims) {
+      if (seen.has(claim.id)) continue;
+      seen.add(claim.id);
+      candidates.push({ id: claim.id, text: claim.text, score: claim.score });
+    }
   }
+
+  return candidates;
+}
+
+// ── Synthesis ────────────────────────────────────────────────────────────────
+
+/**
+ * Enforce the three caps: at most MAX_SYNTHESIS_CANDIDATES claims, each
+ * truncated to MAX_CLAIM_CHARS, and a total candidate-character ceiling that
+ * drops the lowest-scoring claims when exceeded. Highest score first, so
+ * stopping at the ceiling IS dropping the lowest-scoring candidates.
+ */
+export function selectSynthesisCandidates(
+  candidates: SynthesisCandidate[],
+): SynthesisCandidate[] {
+  const ranked = [...candidates]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_SYNTHESIS_CANDIDATES)
+    .map((candidate) => ({
+      ...candidate,
+      text: truncate(candidate.text, MAX_CLAIM_CHARS),
+    }));
+
+  const kept: SynthesisCandidate[] = [];
+  let chars = 0;
+  for (const candidate of ranked) {
+    // Always keep one: a single claim is already bounded by MAX_CLAIM_CHARS.
+    if (kept.length > 0 && chars + candidate.text.length > MAX_CANDIDATE_CHARS) {
+      break;
+    }
+    kept.push(candidate);
+    chars += candidate.text.length;
+  }
+  return kept;
+}
+
+/** The user half of the synthesis call: bounded request + numbered candidates. */
+export function buildSynthesisPrompt(
+  message: string,
+  candidates: SynthesisCandidate[],
+): string {
+  const numbered = candidates
+    .map((candidate, index) => `[${index + 1}] ${candidate.text}`)
+    .join("\n");
+  return [
+    "Incoming request:",
+    truncate(message.trim(), MAX_REQUEST_CHARS),
+    "",
+    "Candidate claims:",
+    numbered,
+  ].join("\n");
+}
+
+export interface SynthesisResult {
+  notes: string[];
+  /** 1-based candidate indexes, validated against the shortlist length. */
+  usedIndexes: number[];
+}
+
+/**
+ * Parse the synthesis JSON envelope. Returns null on any malformed output so
+ * the caller falls back to raw claims — never throws.
+ */
+export function parseSynthesisResult(
+  raw: string,
+  candidateCount: number,
+): SynthesisResult | null {
+  const parsed = parseJsonObject(raw);
+  if (!parsed) return null;
+
+  const notes = Array.isArray(parsed.notes)
+    ? parsed.notes
+        .filter((note): note is string => typeof note === "string")
+        .map((note) => truncate(note.trim(), MAX_NOTE_CHARS))
+        .filter((note) => note.length > 0)
+        .slice(0, MAX_NOTES)
+    : [];
+
+  const usedIndexes: number[] = [];
+  if (Array.isArray(parsed.used)) {
+    for (const value of parsed.used) {
+      if (typeof value !== "number" || !Number.isInteger(value)) continue;
+      if (value < 1 || value > candidateCount) continue;
+      if (usedIndexes.includes(value)) continue;
+      usedIndexes.push(value);
+    }
+  }
+
+  return { notes, usedIndexes };
+}
+
+export function formatPreRecallBlock(notes: string[]): string {
+  return [
+    "<pre-recall>",
+    "The following operational knowledge was automatically recalled from memory. Use as context.",
+    "",
+    notes.map((note) => `- ${note}`).join("\n"),
+    "</pre-recall>",
+  ].join("\n");
+}
+
+/**
+ * Record usage for the claims that actually reached the prompt. Retrieval ran
+ * with recordUsage:false, so `last_used_at` keeps meaning "this claim reached
+ * an agent's prompt" — otherwise every candidate that synthesis rejects would
+ * be marked fresh on every turn and archiveStaleClaims (stale AND low-value)
+ * could never fade it. A failure here must not cost the caller its block.
+ */
+async function recordClaimUsage(
+  deps: MemoryToolDeps,
+  ids: string[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    await deps.store.markClaimsUsed(ids, Date.now());
+  } catch (err) {
+    _log.warn(
+      "pre-recall",
+      `usage.record.fail err=${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+/**
+ * Parse an object out of model stdout: strip code fences, and if the model
+ * wrapped the JSON in prose, retry on the outermost brace pair.
+ */
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  const unfenced = raw
+    .trim()
+    .replace(/^```(?:json)?\s*\n?/i, "")
+    .replace(/\n?```\s*$/i, "")
+    .trim();
+
+  const attempts = [unfenced];
+  const first = unfenced.indexOf("{");
+  const last = unfenced.lastIndexOf("}");
+  if (first > 0 && last > first) attempts.push(unfenced.slice(first, last + 1));
+
+  for (const attempt of attempts) {
+    try {
+      const parsed: unknown = JSON.parse(attempt);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Try the next attempt.
+    }
+  }
+  return null;
 }
 
 // ── Per-runner subprocess functions ──────────────────────────────────────────
 
-interface RunTextRequest {
-  message: string;
+export interface RunTextRequest {
+  prompt: string;
   model: string;
   timeoutMs: number;
 }
 
-type RunTextFn = (req: RunTextRequest) => Promise<string>;
+export type RunTextFn = (req: RunTextRequest) => Promise<string>;
 
 function defaultModelForRunner(runner: PreRecallRunner): string {
   if (runner === "opencode") return DEFAULT_OPENCODE_MODEL;
@@ -213,16 +452,16 @@ function runTextForRunner(runner: PreRecallRunner): RunTextFn {
 // ── Claude subprocess ────────────────────────────────────────────────────────
 
 /**
- * Locked down like the untrusted-content extraction runners: the input is a
- * raw Slack message, so the subprocess gets NO tools, NO MCP servers, NO
+ * Locked down like the untrusted-content extraction runners: the prompt quotes
+ * a raw Slack message, so the subprocess gets NO tools, NO MCP servers, NO
  * user/project hooks (a user-level Stop hook otherwise replaces the -p JSON
- * envelope's `result` with the hook reply). The message rides stdin, not argv
+ * envelope's `result` with the hook reply). The prompt rides stdin, not argv
  * (E2BIG on long messages). Exported for tests.
  */
 export function buildPreRecallClaudeArgs(model: string): string[] {
   return [
     "-p",
-    "--system-prompt", EXTRACTION_SYSTEM_PROMPT,
+    "--system-prompt", SYNTHESIS_SYSTEM_PROMPT,
     "--output-format", "json",
     "--model", sanitizeClaudeModel(model),
     "--tools", "",
@@ -240,7 +479,7 @@ async function claudeRunText(req: RunTextRequest): Promise<string> {
     cwd: tmpdir(),
     stdout: "pipe",
     stderr: "pipe",
-    stdin: new TextEncoder().encode(req.message),
+    stdin: new TextEncoder().encode(req.prompt),
     detached: true,
   });
 
@@ -273,14 +512,14 @@ function extractClaudeAssistantText(stdout: string): string {
 async function openCodeRunText(req: RunTextRequest): Promise<string> {
   // OpenCode does not support --system-prompt, so bake the system prompt
   // into the user prompt.
-  const combinedPrompt = `${EXTRACTION_SYSTEM_PROMPT}\n\n---\n\nMessage:\n${req.message}`;
+  const combinedPrompt = `${SYNTHESIS_SYSTEM_PROMPT}\n\n---\n\n${req.prompt}`;
   const args = ["run", "--format", "json"];
   if (req.model) args.push("--model", req.model);
   args.push(combinedPrompt);
 
   // Same lockdown intent as the claude branch: neutral cwd outside the repo
   // (no junior project config/MCP discovery), an inline config that denies
-  // every tool (the extractor only needs text-in/text-out), and no
+  // every tool (synthesis only needs text-in/text-out), and no
   // OPENCODE_CONFIG env layer from the developer shell.
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -317,7 +556,7 @@ function extractOpenCodeAssistantText(stdout: string): string {
 async function codexRunText(req: RunTextRequest): Promise<string> {
   const outFile = join(tmpdir(), `junior-pre-recall-codex-${crypto.randomUUID()}.txt`);
   // Bake system prompt into stdin since codex exec has no --system-prompt flag.
-  const combinedPrompt = `${EXTRACTION_SYSTEM_PROMPT}\n\n---\n\nMessage:\n${req.message}`;
+  const combinedPrompt = `${SYNTHESIS_SYSTEM_PROMPT}\n\n---\n\n${req.prompt}`;
 
   const args = [
     "exec",

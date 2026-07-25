@@ -3486,6 +3486,99 @@ describe("SessionManager", () => {
       expect(after.humanParticipants).toEqual(["U-A"]);
     });
   });
+
+  // --- turn-progress reaction ---
+
+  describe("turn-progress reaction", () => {
+    const EMOJI = "hourglass_flowing_sand";
+
+    function recordReactions(): Array<{ action: string; ts: string; emoji: string }> {
+      const calls: Array<{ action: string; ts: string; emoji: string }> = [];
+      manager.onTurnReaction = (action, _channel, messageTs, emoji) => {
+        calls.push({ action, ts: messageTs, emoji });
+      };
+      return calls;
+    }
+
+    it("marks the triggering message and clears it when the runner posts", async () => {
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: "ts-turn" }));
+      expect(calls).toEqual([{ action: "add", ts: "ts-turn", emoji: EMOJI }]);
+
+      currentHandle._complete("done");
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: "ts-turn", emoji: EMOJI });
+    });
+
+    it("clears when the runner fails or times out", async () => {
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: "ts-fail" }));
+      currentHandle._error("claude timed out");
+
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: "ts-fail", emoji: EMOJI });
+    });
+
+    it("clears when the response is suppressed", async () => {
+      // The silent-lead case: NO_SLACK_MESSAGE posts nothing, so nothing else
+      // in the turn would ever take the marker back off.
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: "ts-silent" }));
+      currentHandle._complete("NO_SLACK_MESSAGE");
+
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: "ts-silent", emoji: EMOJI });
+    });
+
+    it("clears when the runner returns an empty response", async () => {
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: "ts-empty" }));
+      currentHandle._complete("");
+
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: "ts-empty", emoji: EMOJI });
+    });
+
+    it("clears when the turn is cancelled by !reset", async () => {
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: "ts-cancel" }));
+      await manager.handleMessage(
+        makeEvent({ command: "reset", text: "", ts: "ts-reset" }),
+      );
+      // !reset kills the process; the settled result is what unwinds the turn.
+      currentHandle._error("killed by reset");
+
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: "ts-cancel", emoji: EMOJI });
+    });
+
+    it("marks the newly drained message when a buffered turn follows", async () => {
+      const calls = recordReactions();
+      const first = currentHandle;
+
+      await manager.handleMessage(makeEvent({ ts: "ts-first" }));
+      const second = createMockHandle();
+      mockSpawnFn = mock(() => second);
+      await manager.handleMessage(makeEvent({ ts: "ts-buffered" }));
+
+      first._complete("done");
+      await waitFor(() => calls.length === 3);
+      expect(calls.slice(0, 3)).toEqual([
+        { action: "add", ts: "ts-first", emoji: EMOJI },
+        { action: "remove", ts: "ts-first", emoji: EMOJI },
+        { action: "add", ts: "ts-buffered", emoji: EMOJI },
+      ]);
+
+      second._complete("done");
+      await waitFor(() => calls.length === 4);
+      expect(calls[3]).toEqual({ action: "remove", ts: "ts-buffered", emoji: EMOJI });
+    });
+  });
 });
 
 describe("typed pipeline settlement", () => {

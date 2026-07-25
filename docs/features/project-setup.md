@@ -174,7 +174,7 @@ interface Config {
 | `HTTP_DASHBOARD_PORT` | no | unset | localhost dashboard; must be a positive integer 1–65535 or unset |
 | `MCP_PORT` | no | `3456` | internal Slack-bot MCP server |
 | `MEMORY_EMBED_PROVIDER` | no | `local` | `local` or deterministic `hashing` test provider |
-| `PRE_RECALL_ENABLED` | no | `false` | optional pre-recall query extraction before runner turns |
+| `PRE_RECALL_ENABLED` | no | `false` | optional memory pre-recall + synthesis before runner turns |
 | `WHATSAPP_ENABLED` | no | `false` | enable read-only WhatsApp archive ingestion/tools |
 | `PIPELINE_RUNTIME_MODE` | no | `off` | `off`, `shadow`, or `active` |
 | `PRODUCT_PIPELINE_ENABLED` | no | `false` | typed product pipeline starts; requires active mode |

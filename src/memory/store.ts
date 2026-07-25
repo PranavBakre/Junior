@@ -47,6 +47,14 @@ export interface MemoryStore {
    */
   markEpisodesUsed(ids: string[], now: number): Promise<void>;
   /**
+   * Bump `last_used_at` on the given claims. Separate from `recallClaims`'s
+   * `recordUsage` because a caller can only know which candidates were useful
+   * AFTER it has filtered them (pre-recall synthesis): recording at retrieval
+   * would keep every rejected candidate permanently fresh, and
+   * `archiveStaleClaims` (stale AND low-value) could never fade it.
+   */
+  markClaimsUsed(ids: string[], now: number): Promise<void>;
+  /**
    * Decay: ARCHIVE (set `active = 0`, never delete — keep provenance) claims that
    * are BOTH stale AND low-value. Batch/offline only, never a hot-path TTL.
    */

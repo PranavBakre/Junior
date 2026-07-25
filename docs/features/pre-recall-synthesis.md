@@ -1,8 +1,10 @@
 # Pre-recall: synthesis placement, telemetry, and the turn-start signal
 
-> **Status: Proposal.** The defects described are real and verified against the
-> current code and logs; the fixes are not implemented. `src/memory/pre-recall.ts`
-> is unchanged as of commit 0a24cdf.
+> **Status: Shipped.** All three defects are fixed on `feat/pre-recall-synthesis`.
+> The Problem section below is retained as the record of what was wrong; see
+> [Implementation notes](#implementation-notes) for the shipped bounds and the
+> places the implementation deliberately diverged. Code index:
+> [pre-recall](../code_index/pre-recall.md).
 
 ## Problem
 
@@ -161,6 +163,62 @@ Wire the signal at the **turn level, not inside pre-recall**. Once synthesis is
 placed correctly the pre-recall latency largely disappears, so the signal is
 really about slow turns generally; wiring it into the recall path would cover
 only one cause.
+
+## Implementation notes
+
+Shipped in `src/memory/pre-recall.ts`, `src/session/manager.ts`,
+`src/slack/responder.ts`, `src/mcp/slack-server.ts`, and the memory store.
+
+**The bounds that were left as "explicit caps" in the proposal.**
+
+| Cap | Value | Why |
+|---|---|---|
+| Claims recalled per derived query | 8 | Was 3; the model now filters, so retrieval can be more generous. |
+| Candidates reaching the prompt | 12 | Two derived queries can merge to 16; the merged set needs its own ceiling. |
+| Characters per claim | 600 | Truncated with `…`. Claim text has no schema ceiling. |
+| Total candidate characters | 6 000 | 12 × 600 = 7 200, so the ceiling is reachable and actually drops the lowest-scoring candidates. |
+| Request characters in the prompt | 1 200 | The proposal capped the *claims*; the request is untrusted-length too, so it is capped as well or the prompt is still unbounded. |
+| Raw claims on fallback | 3 | Matches the previous per-query recall limit. |
+| Synthesized lines emitted | 5, 500 chars each | The block is injected into every turn's prompt. |
+
+**Divergences from the proposal.**
+
+- **Empty synthesis returns `null`, not raw claims.** The outcome table covers
+  "synthesis returns" and "synthesis times out". A third case exists: synthesis
+  succeeds and rejects every candidate. That is the curation this stage was
+  added for, so it emits nothing and marks nothing used. Only *failure* falls
+  back to raw claims.
+- **Query expansion is one extra query, not a keyword list.** The optional
+  "repo name, thread agent" expansion is a single `"<repo> <agent>: <message>"`
+  variant that biases the same vector, rather than separate keyword queries. The
+  manager now passes `agent` alongside `repo`.
+- **`recordUsage` rides on `RecallMemoryArgs`, not a pre-recall-local wrapper.**
+  `recallMemory` has exactly two callers: the `memory_recall` MCP tool (genuine
+  agent recall — still records) and pre-recall (now passes `false`). A new
+  `MemoryStore.markClaimsUsed(ids, now)` performs the deferred bump.
+- **Turn-progress reaction is `:hourglass_flowing_sand:`, not `:eyes:`.** The
+  event layer already adds `:eyes:` on receipt and never removes it; reusing it
+  would mean clearing the acknowledgement. The marker is ref-counted per
+  message because a cold-start restart or guard continuation starts its
+  replacement turn before the replaced one finishes tearing down.
+- **The clear fires when the runner settles, marginally before the response
+  posts.** It lives in a `finally` on `runRunnerWithAgent`, and the normal exit
+  is `return this.onRunComplete(...)` — so the marker clears as the turn unwinds
+  rather than after the Slack write. Making it strictly post-then-clear would
+  mean `return await`, which would route `onRunComplete` failures into the
+  setup-error catch and change unrelated error handling.
+- **Known limitation:** a process restart mid-turn leaves the marker on the
+  message. The ref-counts are in-memory only.
+
+**Telemetry.** One `log.info` per attempt, emitted from a `finally` so no path
+can skip it:
+
+```
+[pre-recall] repo=gx-backend queries=2 candidates=11 claims=3 fallback=false ms=4210
+```
+
+`err=` is appended when synthesis failed (with `fallback=true`) or the attempt
+threw (with `claims=0`).
 
 ## Dependencies
 

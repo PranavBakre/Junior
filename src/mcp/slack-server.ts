@@ -1742,6 +1742,12 @@ export interface RecallMemoryArgs {
   kinds?: ClaimKind[];
   entityRefs?: string[];
   limit?: number;
+  /**
+   * Bump `last_used_at` on the returned claims (default true). Callers that
+   * retrieve CANDIDATES and decide usefulness later — pre-recall synthesis —
+   * pass false and record usage themselves via `markClaimsUsed`.
+   */
+  recordUsage?: boolean;
 }
 
 export interface RecallMemoryResult {
@@ -1805,6 +1811,7 @@ export async function recallMemory(
       queryVector,
       filters,
       limit,
+      recordUsage: args.recordUsage,
     });
     for (const r of results) {
       if (seen.has(r.id)) continue;

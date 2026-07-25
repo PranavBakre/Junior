@@ -27,6 +27,7 @@ Core orchestrator: routes Slack messages to Claude, manages the buffer/drain sta
 | `onMessageBuffered(event)` | Message buffered while busy → `eyes` reaction |
 | `onCommandResponse(event, text)` | Command (`!status`, `!help`, etc.) returns text |
 | `onReaction(event, emoji)` | Used for admin-denied commands (`x` reaction) |
+| `onTurnReaction(action, channel, ts, emoji)` | Turn-progress marker (`hourglass_flowing_sand`) on the message that started a top-level turn. Added before pre-turn work (prompt composition, worktree setup, pre-recall), removed in `runRunnerWithAgent`'s `finally` so every terminal path clears it — including the suppressed-response one. Ref-counted per message by `markTurnProgress` because a cold-start restart or guard continuation overlaps the turn it replaces. Wired to `SlackResponder.addReaction` / `removeReaction`. |
 | `onError(session, error)` | Spawn fails or times out |
 
 ### SessionManager dependencies
