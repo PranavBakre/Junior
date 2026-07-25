@@ -88,7 +88,7 @@ export class InMemoryTaskRouteStore implements TaskRouteStore {
     return scored.slice(0, limit);
   }
 
-  async listRouteIdentities(repo: string): Promise<RouteIdentity[]> {
+  async listRouteIdentities(repo: string, limit = 25): Promise<RouteIdentity[]> {
     return [...this.routes.values()]
       .filter((record) => record.repo === repo)
       .map((record) => ({
@@ -96,11 +96,14 @@ export class InMemoryTaskRouteStore implements TaskRouteStore {
         taskKind: record.taskKind,
         active: record.active,
       }))
+      // Code-unit order, matching SQLite's BINARY collation — `localeCompare`
+      // would order differently and hand back a different page past the cap.
       .sort((a, b) =>
         a.feature === b.feature
-          ? a.taskKind.localeCompare(b.taskKind)
-          : a.feature.localeCompare(b.feature),
-      );
+          ? compareBinary(a.taskKind, b.taskKind)
+          : compareBinary(a.feature, b.feature),
+      )
+      .slice(0, limit);
   }
 
   async recordFetch(routeId: string, book: RouteFetchBookkeeping): Promise<void> {
@@ -147,6 +150,12 @@ export class InMemoryTaskRouteStore implements TaskRouteStore {
     }
     return undefined;
   }
+}
+
+/** SQLite BINARY collation: compare by code unit, never by locale. */
+function compareBinary(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
 }
 
 function clone(record: TaskRouteRecord): TaskRouteRecord {

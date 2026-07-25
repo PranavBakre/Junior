@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { resolveAnchorInFile, resolveAnchorRepoWide, verifyStep } from "./anchors.ts";
-import { resolveCanonicalRef, routeDrift, type GitRefContext } from "./freshness.ts";
+import {
+  REF_FETCH_TIMEOUT_MS,
+  resetRefFetchThrottle,
+  resolveCanonicalRef,
+  routeDrift,
+  type GitRefContext,
+} from "./freshness.ts";
 import { createFixtureRepo, type FixtureRepo } from "./test-fixture.ts";
 import type { TaskRouteStepRecord } from "./types.ts";
 
@@ -293,7 +299,52 @@ describe("task-route anchors", () => {
     // Sibling paths the merge did not touch keep their tier-0 answer.
     const both = await routeDrift(next, base, ["src/handler.ts", "src/server.ts"]);
     expect([...both.changedPaths]).toEqual(["src/handler.ts"]);
+
+    // On a git without `--diff-merges` (< 2.31) the retry drops the flag and
+    // the opaque-commit rule carries correctness instead: the merge names no
+    // path, so EVERY scoped path is assumed touched. Less precise, still safe —
+    // and unreachable in production on this box, which is why it is forced here.
+    // Without this case a tidy-up of the parser could restore the original
+    // blocker on an old git with the suite still green.
+    const conservative = await routeDrift(
+      next,
+      base,
+      ["src/handler.ts", "src/server.ts"],
+      { diffMerges: false },
+    );
+    expect(conservative.commits).toBe(1);
+    expect([...conservative.changedPaths].sort()).toEqual(["src/handler.ts", "src/server.ts"]);
   });
+
+  it("bounds a fetch against a remote that accepts and never answers", async () => {
+    // `proc.kill()` alone does NOT bound this: over any helper transport git
+    // spawns a separate `git-remote-https` / `ssh` process that inherits the
+    // piped stderr, so the pipe never closes and a drain-then-exit read hangs
+    // indefinitely (measured 30s+ on https, 25s+ on ssh, orphaned at ppid 1).
+    // Only `git://` — which nothing here uses — respected the old bound.
+    const hung = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data() {}, open() {}, close() {}, error() {} },
+    });
+    try {
+      await repo.setRemoteUrl(`https://127.0.0.1:${hung.port}/hung.git`);
+      resetRefFetchThrottle();
+      const startedAt = Date.now();
+      const resolved = await resolveCanonicalRef(repo.path, undefined, { fetch: true });
+      const elapsed = Date.now() - startedAt;
+
+      // The bound is what is under test; the slack absorbs process spawn.
+      expect(elapsed).toBeLessThan(REF_FETCH_TIMEOUT_MS + 4_000);
+      // A failed fetch is not a failed verification: the ref still reads, and
+      // the caller is told the fetch did not land.
+      expect(resolved?.ref).toBe("origin/main");
+      expect(resolved?.sha).toBe(ctx.sha);
+      expect(resolved?.fetchStatus).toBe("failed");
+    } finally {
+      hung.stop(true);
+    }
+  }, 20_000);
 
   it("reports unknown drift for a sha the repo has never seen", async () => {
     const drift = await routeDrift(ctx, "0".repeat(40), ["src/handler.ts"]);

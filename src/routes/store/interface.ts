@@ -31,11 +31,17 @@ export interface TaskRouteStore {
    */
   recallRoutes(options: RouteRecallOptions): Promise<RouteRecallResult[]>;
   /**
-   * Every `(feature, task_kind)` stored for a repo, active or not, in a stable
-   * order. Reported on a fetch miss so the caller sees the repo's actual
-   * vocabulary instead of guessing at a synonym.
+   * Every `(feature, task_kind)` stored for a repo, active or not, ordered by
+   * `feature` then `task_kind` under BINARY collation, capped at `limit`.
+   * Reported on a fetch miss so the caller sees the repo's actual vocabulary
+   * instead of guessing at a synonym.
+   *
+   * Both the cap and the collation are part of the contract, not the caller's
+   * job: a limit applied above the store would let two implementations return
+   * different 25 rows out of the same corpus, which is exactly the kind of
+   * store-shaped divergence that hid the id-collision bug.
    */
-  listRouteIdentities(repo: string): Promise<RouteIdentity[]>;
+  listRouteIdentities(repo: string, limit?: number): Promise<RouteIdentity[]>;
   /**
    * Record one fetch: bump `fetch_count` / `last_used_at`, apply auto-repairs
    * (each bumping `repair_count`), and update the decay counters. One

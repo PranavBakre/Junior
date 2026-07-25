@@ -1,4 +1,4 @@
-import { basename, isAbsolute, relative as relativePath, resolve } from "node:path";
+import { basename, isAbsolute, normalize, relative as relativePath, resolve } from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerTool } from "../mcp/register-tool.ts";
@@ -11,6 +11,7 @@ import {
   gitShowFile,
   resolveCanonicalRef,
   routeDrift,
+  type RefFetchStatus,
 } from "./freshness.ts";
 import { createTaskRouteStore } from "./store/factory.ts";
 import type { TaskRouteStore } from "./store/interface.ts";
@@ -116,8 +117,11 @@ export async function routeSave(
   }
 
   const repoPath = repoPathFor(repoInput, repo, deps);
+  // `now` threaded through so the fetch throttle uses the same injected clock
+  // the rest of the tool does, rather than reading the wall clock behind it.
   const ctx = await resolveCanonicalRef(repoPath, defaultBaseFor(repoInput, repo, deps), {
     fetch: true,
+    now: (deps.now ?? Date.now)(),
   });
 
   const steps: TaskRouteStepRecord[] = [];
@@ -287,6 +291,13 @@ export interface RouteFetchResult {
    * needs the age of the tree the confidence was measured against.
    */
   ref_committed_at: string | null;
+  /**
+   * What the pre-read fetch did: `ok` | `throttled` | `failed` | `skipped`.
+   * A stale date is only an error signal to a reader who thinks to check it;
+   * this states it outright, which is the same reason every step reports the
+   * tier that answered it.
+   */
+  ref_fetch: RefFetchStatus | null;
   /** "untouched" | "N commits" | "unknown" — scoped to the route's own paths. */
   drift: string;
   matched_by: "identity" | "semantic";
@@ -325,12 +336,12 @@ export async function routeFetch(
 
   const match = await lookupRoute(repo, args, deps);
   if (!match) {
-    const known = await deps.store.listRouteIdentities(repo);
+    const known = await deps.store.listRouteIdentities(repo, KNOWN_IDENTITY_LIMIT);
     return {
       found: false,
       repo,
       reason: "no route for this repo/feature/task-kind",
-      known: known.slice(0, KNOWN_IDENTITY_LIMIT).map((identity) => ({
+      known: known.map((identity) => ({
         feature: identity.feature,
         task_kind: identity.taskKind,
         active: identity.active,
@@ -367,6 +378,7 @@ export async function routeFetch(
     return buildResult(route, verifications, {
       ref: null,
       refCommittedAt: null,
+      refFetch: null,
       drift: "unknown",
       verifiedSha: route.verifiedSha,
       matchedBy: match.matchedBy,
@@ -421,6 +433,7 @@ export async function routeFetch(
   return buildResult(route, verifications, {
     ref: ctx.ref,
     refCommittedAt: ctx.committedAt,
+    refFetch: ctx.fetchStatus,
     drift: describeDrift(drift),
     verifiedSha: clean ? ctx.sha : route.verifiedSha,
     matchedBy: match.matchedBy,
@@ -474,6 +487,7 @@ function buildResult(
   meta: {
     ref: string | null;
     refCommittedAt: string | null;
+    refFetch: RefFetchStatus | null;
     drift: string;
     /** The sha as of AFTER this fetch's bookkeeping, not the row we read. */
     verifiedSha: string;
@@ -512,6 +526,7 @@ function buildResult(
     verified_sha: meta.verifiedSha,
     ref: meta.ref,
     ref_committed_at: meta.refCommittedAt,
+    ref_fetch: meta.refFetch,
     drift: meta.drift,
     matched_by: meta.matchedBy,
     steps,
@@ -830,10 +845,11 @@ function toRepoRelative(path: string, repoPath: string | null): string | null {
     ? repoPath
       ? relativePath(resolve(repoPath), resolve(trimmed))
       : null
-    : trimmed.replace(/^(\.\/)+/, "");
-  // `../sibling-repo/src/x.ts` escapes the root just as an absolute path does,
-  // and would otherwise fall through to the misleading "pending until it
-  // merges" reason.
+    : // Collapsed, not pattern-matched: `src/../../other/x.ts` escapes the root
+      // just as `../other/x.ts` does, and an in-repo `a/../src/x.ts` is a path
+      // git would refuse. Either would otherwise fall through to the misleading
+      // "pending until it merges" reason this exists to remove.
+      normalize(trimmed);
   if (!relative || isAbsolute(relative) || relative === ".." || relative.startsWith("../")) {
     return null;
   }

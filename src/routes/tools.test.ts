@@ -561,6 +561,14 @@ describe("task-route tools", () => {
     });
     expect(escaping.active).toBe(false);
     expect(escaping.unresolved[0].reason).toContain("not inside the repo checkout");
+
+    // And a mid-path `..` is the same escape wearing a disguise — the guard
+    // collapses the path rather than pattern-matching its prefix.
+    const midPath = await save({
+      feature: "mid-path",
+      steps: [{ note: "sneaking out", path: "src/../../other-repo/src/handler.ts" }],
+    });
+    expect(midPath.unresolved[0].reason).toContain("not inside the repo checkout");
   });
 
   it("reports an expects_ref that is not in the file at save time", async () => {
@@ -613,6 +621,7 @@ describe("task-route tools", () => {
     const result = await fetchIt();
     assertFound(result);
     expect(result.ref_committed_at).not.toBeNull();
+    expect(result.ref_fetch).toBe("ok");
     expect(result.drift).toBe("1 commit");
     expect(result.steps[0].status).toBe("drifted");
     // The drift is only visible because the ref moved; the sha stays put while
@@ -620,12 +629,14 @@ describe("task-route tools", () => {
     expect(savedSha).toBe(staleSha);
     expect((await store.getRoute(saved.route_id))?.verifiedSha).toBe(staleSha);
 
-    // Throttled: a second fetch inside the window does not re-hit the network,
-    // and the ref it already advanced to still answers.
+    // Throttled: a second fetch inside the window must NOT re-hit the network.
+    // Rewinding again and seeing `untouched` is the proof — had it fetched, the
+    // ref would have been restored and the drift would read "1 commit" again.
     await repo.rewindOriginRef(staleSha);
     const throttled = await fetchIt();
     assertFound(throttled);
-    expect(throttled.ref).toBe("origin/main");
+    expect(throttled.ref_fetch).toBe("throttled");
+    expect(throttled.drift).toBe("untouched");
   });
 
   it("names the repo's known identities on a miss", async () => {

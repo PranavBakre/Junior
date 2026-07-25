@@ -31,15 +31,30 @@ export interface GitRefContext {
    * annotation honest when it does not.
    */
   committedAt: string | null;
+  /**
+   * What the pre-read `git fetch` did. `failed` and `throttled` both mean the
+   * ref may be behind the remote, and the reader cannot infer that from a date
+   * alone — the annotation IS the error signal, so it is stated.
+   */
+  fetchStatus: RefFetchStatus;
 }
+
+/**
+ * `skipped` — no fetch was asked for, or the ref is not remote-tracking so a
+ * fetch could not advance it anyway.
+ */
+export type RefFetchStatus = "ok" | "throttled" | "failed" | "skipped";
 
 /** Number of consecutive majority-broken, unrepaired fetches before archival. */
 export const ROUTE_ARCHIVE_BROKEN_FETCHES = 3;
 
-/** At most one `git fetch` per repo+ref in this window. */
+/**
+ * At most one `git fetch` per repo+ref in this window. The window is
+ * process-local and in-memory: a restart forgets it and the next call fetches.
+ */
 export const REF_FETCH_MIN_INTERVAL_MS = 10 * 60_000;
-/** A network hang must never hold a tool call open. */
-const REF_FETCH_TIMEOUT_MS = 5_000;
+/** A network hang must never hold a tool call open. See `git()`. */
+export const REF_FETCH_TIMEOUT_MS = 5_000;
 
 /** Refs tried, in order, when the caller gives no hint. */
 const FALLBACK_BRANCHES = ["main", "master"];
@@ -104,36 +119,38 @@ export async function resolveCanonicalRef(
     const resolved = await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoPath);
     if (!resolved.ok || !resolved.stdout.trim()) continue;
     let sha = resolved.stdout.trim();
+    let fetchStatus: RefFetchStatus = "skipped";
     if (options.fetch) {
-      const advanced = await maybeFetchRef(repoPath, ref, options.now ?? Date.now());
-      if (advanced) sha = advanced;
+      const fetched = await maybeFetchRef(repoPath, ref, options.now ?? Date.now());
+      fetchStatus = fetched.status;
+      if (fetched.sha) sha = fetched.sha;
     }
-    return { repoPath, ref, sha, committedAt: await commitDate(repoPath, sha) };
+    return { repoPath, ref, sha, committedAt: await commitDate(repoPath, sha), fetchStatus };
   }
   return null;
 }
 
 /**
  * Best-effort `git fetch origin <branch>`: at most once per repo+ref per
- * window, killed after a few seconds, and only ever touching remote-tracking
- * refs (never the working tree or a local branch). A failure is not an error —
- * the caller falls back to whatever the ref already pointed at, and the
- * reported `committedAt` still tells the reader how old that is.
- *
- * Returns the new sha when the fetch moved the ref, otherwise null.
+ * window, hard-bounded in time, and only ever touching remote-tracking refs
+ * (never the working tree or a local branch). A failure is not an error — the
+ * caller falls back to whatever the ref already pointed at, and the reported
+ * `fetchStatus` + `committedAt` tell the reader exactly that.
  */
 async function maybeFetchRef(
   repoPath: string,
   ref: string,
   now: number,
-): Promise<string | null> {
+): Promise<{ status: RefFetchStatus; sha: string | null }> {
   // Only a remote-tracking ref advances on fetch; a local `refs/heads/...` base
   // would be untouched, so spending the network call on it is pointless.
-  if (!ref.startsWith("origin/")) return null;
+  if (!ref.startsWith("origin/")) return { status: "skipped", sha: null };
   const branch = ref.slice("origin/".length);
-  if (!branch) return null;
+  if (!branch) return { status: "skipped", sha: null };
   const key = `${repoPath}::${ref}`;
-  if (now - (lastFetchAt.get(key) ?? 0) < REF_FETCH_MIN_INTERVAL_MS) return null;
+  if (now - (lastFetchAt.get(key) ?? 0) < REF_FETCH_MIN_INTERVAL_MS) {
+    return { status: "throttled", sha: null };
+  }
   // Stamp BEFORE the call: a repo whose remote is unreachable must not re-pay
   // the timeout on every single fetch.
   lastFetchAt.set(key, now);
@@ -143,12 +160,34 @@ async function maybeFetchRef(
     // refspec the remote happens to be configured with.
     ["fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`],
     repoPath,
-    REF_FETCH_TIMEOUT_MS,
+    { timeoutMs: REF_FETCH_TIMEOUT_MS, env: nonInteractiveEnv() },
   );
-  if (!fetched.ok) return null;
+  if (!fetched.ok) return { status: "failed", sha: null };
   const resolved = await git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], repoPath);
   const sha = resolved.stdout.trim();
-  return resolved.ok && sha ? sha : null;
+  return { status: "ok", sha: resolved.ok && sha ? sha : null };
+}
+
+/**
+ * A prompt is a hang with a nicer name. `git fetch` will ask for credentials on
+ * a terminal and `ssh` reads `/dev/tty` directly — closing stdin does not save
+ * you — so both are told up front to fail instead of asking.
+ *
+ * `credential.helper` is deliberately NOT cleared: the private repos this
+ * fetches (GX over https) authenticate through the keychain helper, and
+ * disabling it would turn every fetch into a silent `failed` and put the
+ * staleness this fix exists to remove straight back. A helper that does hang is
+ * covered by the hard bound in `git()`.
+ */
+function nonInteractiveEnv(): Record<string, string> {
+  const sshCommand = process.env.GIT_SSH_COMMAND?.trim();
+  return {
+    GIT_TERMINAL_PROMPT: "0",
+    // Appended, not replaced: an operator's custom identity/config must survive.
+    GIT_SSH_COMMAND: sshCommand
+      ? `${sshCommand} -oBatchMode=yes`
+      : "ssh -oBatchMode=yes",
+  };
 }
 
 async function commitDate(repoPath: string, sha: string): Promise<string | null> {
@@ -243,10 +282,21 @@ export interface RouteDrift {
  * the set of paths those commits touched (so an untouched step stays at tier 0
  * even when a sibling step's file moved under it).
  */
+export interface RouteDriftOptions {
+  /**
+   * Force the pre-2.31 command shape. Production always tries `true` first, so
+   * without this the no-flag branch and the opaque-commit rule below — the code
+   * that carries correctness on an old git — are unreachable in tests, and a
+   * later tidy-up of the parser could silently restore the original blocker.
+   */
+  diffMerges?: boolean;
+}
+
 export async function routeDrift(
   ctx: GitRefContext,
   verifiedSha: string,
   paths: string[],
+  options: RouteDriftOptions = {},
 ): Promise<RouteDrift> {
   const scoped = dedupe(paths.filter(Boolean));
   // A route of pure tooling notes has no paths, so nothing can have staled it.
@@ -269,10 +319,11 @@ export async function routeDrift(
     "--",
     ...scoped,
   ];
-  let result = await git(args(true), ctx.repoPath);
+  const diffMerges = options.diffMerges !== false;
+  let result = await git(args(diffMerges), ctx.repoPath);
   // `--diff-merges` landed in git 2.31. Rather than pin a version floor, retry
   // without it and let the opaque-commit rule below carry the correctness.
-  if (!result.ok) result = await git(args(false), ctx.repoPath);
+  if (!result.ok && diffMerges) result = await git(args(false), ctx.repoPath);
   // An unresolvable verified_sha (a squashed or never-pushed commit) is unknown
   // drift, not zero drift — reporting `untouched` there would be a lie.
   if (!result.ok) return { commits: null, changedPaths: new Set() };
@@ -357,28 +408,56 @@ interface GitResult {
  * `core.quotepath=false` keep the output machine-readable (and non-ASCII paths
  * unescaped).
  */
-async function git(args: string[], cwd: string, timeoutMs?: number): Promise<GitResult> {
+async function git(
+  args: string[],
+  cwd: string,
+  options: { timeoutMs?: number; env?: Record<string, string> } = {},
+): Promise<GitResult> {
+  const command = ["git", "--no-pager", "-c", "core.quotepath=false", ...args];
+  const spawnOptions = {
+    cwd,
+    ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
+  };
   try {
-    const proc = Bun.spawn(["git", "--no-pager", "-c", "core.quotepath=false", ...args], {
-      cwd,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
     // Only the network-bound call passes a timeout; a local object-store read
     // cannot hang, and killing one would only mask a real failure.
-    const killer =
-      timeoutMs === undefined ? null : setTimeout(() => proc.kill("SIGKILL"), timeoutMs);
-    try {
+    if (options.timeoutMs === undefined) {
+      const proc = Bun.spawn(command, { ...spawnOptions, stdout: "pipe", stderr: "pipe" });
       // Drain both pipes BEFORE awaiting exit — a repo-wide grep can outrun the
       // pipe buffer, and a blocked writer never exits.
       const [stdout, stderr] = await Promise.all([
         new Response(proc.stdout).text(),
         new Response(proc.stderr).text(),
       ]);
-      const code = await proc.exited;
-      return { ok: code === 0, stdout, stderr };
+      return { ok: (await proc.exited) === 0, stdout, stderr };
+    }
+
+    // A bounded call must NOT read its pipes, and must not wait on exit alone.
+    //
+    // `git fetch` over any helper transport spawns a SEPARATE process
+    // (`git-remote-https`, or `ssh`) that inherits the piped stderr. SIGKILLing
+    // git does not reach the helper, so the write end of that pipe stays open,
+    // `new Response(proc.stderr).text()` never resolves, and the tool call
+    // hangs indefinitely — measured at 30s+ on https and ssh, while only the
+    // pipe-less `git://` respected the bound. Ignoring both streams removes the
+    // pipe, and racing the timer against exit means even an unkillable child
+    // cannot hold the caller. The bounded caller discards output anyway.
+    const proc = Bun.spawn(command, { ...spawnOptions, stdout: "ignore", stderr: "ignore" });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<"timeout">((resolveTimeout) => {
+      timer = setTimeout(() => {
+        proc.kill("SIGKILL");
+        resolveTimeout("timeout");
+      }, options.timeoutMs);
+    });
+    try {
+      const outcome = await Promise.race([proc.exited, timedOut]);
+      if (outcome === "timeout") {
+        return { ok: false, stdout: "", stderr: `timed out after ${options.timeoutMs}ms` };
+      }
+      return { ok: outcome === 0, stdout: "", stderr: "" };
     } finally {
-      if (killer) clearTimeout(killer);
+      clearTimeout(timer);
     }
   } catch (error) {
     // The checkout can vanish mid-verification (a worktree prune, a removed

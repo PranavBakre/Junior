@@ -329,15 +329,35 @@ steps report `unknown` — never `ok`.
 > so. Both halves of the fix ship:
 >
 > - `resolveCanonicalRef(..., { fetch: true })` runs a bounded
->   `git fetch origin +refs/heads/<b>:refs/remotes/origin/<b>`: SIGKILLed after
->   5s, at most once per repo+ref per `REF_FETCH_MIN_INTERVAL_MS` (10 min), and
->   best-effort — a failure just leaves the ref where it was. It touches only
->   remote-tracking refs, never the working tree or a local branch. The throttle
->   is stamped *before* the call, so an unreachable remote is not re-paid every
->   fetch. Both `route_save` and `route_fetch` ask for it.
+>   `git fetch origin +refs/heads/<b>:refs/remotes/origin/<b>`: at most once per
+>   repo+ref per `REF_FETCH_MIN_INTERVAL_MS` (10 min, process-local — a restart
+>   forgets it), and best-effort, so a failure just leaves the ref where it was.
+>   It touches only remote-tracking refs, never the working tree or a local
+>   branch. The throttle is stamped *before* the call, so an unreachable remote
+>   is not re-paid every fetch. Both `route_save` and `route_fetch` ask for it.
+> - **The bound is a race, not a kill.** `proc.kill()` is not sufficient:
+>   over any helper transport git spawns a *separate* `git-remote-https` or
+>   `ssh` process that inherits the piped stderr, so killing git leaves the pipe
+>   open and a drain-then-exit read never returns — measured at 30s+ on https
+>   and 25s+ on ssh against a socket that accepts and never answers, with the
+>   helper orphaned at ppid 1; only the pipe-less `git://`, which nothing here
+>   uses, respected the kill. The timed call therefore takes `stdout`/`stderr`
+>   as `"ignore"` (it discards both anyway) and races the timer against
+>   `proc.exited`, so nothing downstream of git can hold a tool call open.
+>   `GIT_TERMINAL_PROMPT=0` and an appended `-oBatchMode=yes` close the other
+>   door: a credential or host-key prompt is a hang with a nicer name, and `ssh`
+>   reads `/dev/tty`, so closing stdin does not help. `credential.helper` is
+>   deliberately left alone — the private repos this fetches authenticate
+>   through it, and clearing it would turn every fetch into a silent failure.
 > - `GitRefContext.committedAt` carries the ref's commit date out to
->   `route_fetch`'s `ref_committed_at`, so when the fetch does fail the reader
->   can still see how old the verified tree is.
+>   `route_fetch`'s `ref_committed_at`, and `fetchStatus` out to `ref_fetch`
+>   (`ok` / `throttled` / `failed` / `skipped`). A stale date is only an error
+>   signal to a reader who thinks to check it; the status states it outright,
+>   for the same reason every step reports the tier that answered it.
+>
+> Out of scope on this branch, worth knowing: `WorktreeManager.createWorktree`
+> runs `git fetch origin --prune` with no timeout at all, so the hang *class*
+> exists elsewhere in the system.
 
 ## Tools
 
@@ -596,6 +616,20 @@ Six lines against roughly a dozen tool calls and three failed attempts.
 
 The five findings above were fixed as briefed except where noted here.
 
+- **`credential.helper` is not cleared,** though the re-review suggested it
+  alongside `GIT_TERMINAL_PROMPT=0` and ssh `BatchMode`. The GX repos this
+  fetches are private over https and authenticate through the keychain helper;
+  clearing it would make every one of those fetches fail silently and restore
+  the staleness this fix exists to remove. A helper that *does* hang is already
+  bounded by the timer race.
+- **The conservative merge rule is reachable only through a test option.**
+  `routeDrift(..., { diffMerges: false })` forces the pre-2.31 command shape,
+  because on git ≥ 2.31 neither the retry nor the opaque-commit branch can ever
+  execute — and those are precisely the lines that carry correctness on an old
+  git. The `anchors.test.ts` merge case is deliberately NOT version-gated: the
+  repo's only `skipIf` precedent is an opt-in for an expensive model download,
+  which is a different thing from a capability gate, and gating would stop
+  testing the flag path on the boxes where it works.
 - **Merge attribution uses BOTH offered fixes, not one.** The brief asked to
   pick `--diff-merges=first-parent` *or* the conservative "commit header with
   zero path lines touches every scoped path" rule. Shipped: the flag first —
@@ -619,6 +653,18 @@ The five findings above were fixed as briefed except where noted here.
   declaration candidates; an `unknown` fetch writes `brokenFetches:
   route.brokenFetches`; a miss returns the repo's known identities (capped at
   25); `route_save` reports `overwrote` / `previous_steps`.
+- **The pending-activation ladder keeps repo-wide ahead of the loose in-file
+  match,** which inverts the normal ladder for marker-style anchors. Accepted
+  with the hazard commented at `anchors.ts`: a marker whose identifier is also
+  declared elsewhere can be repaired to that other file. The alternative is
+  worse — loose-first lets activation fingerprint the import line a moved symbol
+  left behind and report `ok` / `fingerprint` at a stale path, which is wrong
+  *and* invisible, where this failure surfaces as `moved` with a `resolved_path`.
+- **The identity cap and collation live in the store,** not in `tools.ts`:
+  applied above the store, the two implementations would return different pages
+  of the same corpus past 25. `listRouteIdentities(repo, limit)` orders by
+  BINARY collation in both, pinned by a parity test that runs one corpus
+  through both stores.
 - **No data migration.** The corpus is empty — the adoption wiring below is
   still unbuilt — so nothing exists under an un-normalised spelling.
 - **Still deliberately unbuilt:** the adoption wiring and usage-weighted

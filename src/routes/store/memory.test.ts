@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { InMemoryTaskRouteStore } from "./memory.ts";
+import { SqliteTaskRouteStore } from "./sqlite.ts";
 import type { TaskRouteStepRecord, TaskRouteUpsert } from "../types.ts";
 
 function step(ord: number, over: Partial<TaskRouteStepRecord> = {}): TaskRouteStepRecord {
@@ -86,5 +90,30 @@ describe("InMemoryTaskRouteStore", () => {
       { feature: "other", taskKind: "debug", active: true },
     ]);
     expect(await store.listRouteIdentities("nothing-here")).toEqual([]);
+  });
+
+  it("pages identities identically to SQLite, cap and collation included", async () => {
+    // The cap and the ordering live in the store, not the caller: applied above
+    // them, the two implementations would hand back different subsets of the
+    // same corpus past the cap. `Beta` sorts before `alpha` under SQLite's
+    // BINARY collation and after it under `localeCompare` — the tools layer
+    // lowercases identities before they ever get here, but the store contract
+    // is what is being pinned.
+    const identities = ["Beta", "alpha", "gamma"];
+    const dir = mkdtempSync(join(tmpdir(), "junior-routes-parity-"));
+    const sqlite = new SqliteTaskRouteStore(join(dir, "memory.db"));
+    try {
+      for (const feature of identities) {
+        const input = route({ id: `route_junior__${feature}__k`, feature, taskKind: "k" });
+        await store.upsertRoute(input);
+        await sqlite.upsertRoute(input);
+      }
+      const fromMemory = await store.listRouteIdentities("junior", 2);
+      expect(fromMemory.map((i) => i.feature)).toEqual(["Beta", "alpha"]);
+      expect(await sqlite.listRouteIdentities("junior", 2)).toEqual(fromMemory);
+    } finally {
+      sqlite.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

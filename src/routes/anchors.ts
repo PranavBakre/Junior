@@ -209,6 +209,16 @@ export async function verifyStep(
     // The file may have been renamed between the save and the merge. Falling
     // through to tier 2 activates the step instead of leaving it pending
     // forever in a path that no longer exists.
+    //
+    // RESIDUAL HAZARD, accepted deliberately: this inverts the normal ladder
+    // for a marker-style anchor. A section marker recorded on an unmerged
+    // branch, whose identifier is ALSO declared somewhere else in the repo,
+    // repairs to that other file and rewrites `path` away from the file the
+    // agent named. The alternative ordering is worse: putting the loose in-file
+    // match first lets activation fingerprint the import line a moved symbol
+    // left behind and report `ok` / `fingerprint` at the stale path — wrong,
+    // and invisible. This way the mistake surfaces as `moved` with a
+    // `resolved_path` the reader can see and the agent can overwrite.
     const moved = await resolveAnchorRepoWide(ctx, symbol, null, step.path);
     if (moved) {
       return withEdgeCheck(ctx, step, {

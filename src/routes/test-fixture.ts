@@ -38,6 +38,8 @@ export interface FixtureRepo {
    * bare remote — i.e. "this box has not fetched in a while".
    */
   rewindOriginRef(sha: string): Promise<void>;
+  /** Point `origin` somewhere else — e.g. at a host that never answers. */
+  setRemoteUrl(url: string): Promise<void>;
   cleanup(): void;
 }
 
@@ -127,6 +129,9 @@ export async function createFixtureRepo(prefix = "junior-routes-"): Promise<Fixt
     },
     async rewindOriginRef(sha) {
       await run(["git", "update-ref", "refs/remotes/origin/main", sha], path);
+    },
+    async setRemoteUrl(url) {
+      await run(["git", "remote", "set-url", "origin", url], path);
     },
     cleanup() {
       rmSync(root, { recursive: true, force: true });

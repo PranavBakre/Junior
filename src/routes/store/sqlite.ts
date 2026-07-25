@@ -197,13 +197,15 @@ export class SqliteTaskRouteStore implements TaskRouteStore {
     }));
   }
 
-  async listRouteIdentities(repo: string): Promise<RouteIdentity[]> {
+  async listRouteIdentities(repo: string, limit = 25): Promise<RouteIdentity[]> {
     return this.db
-      .query<{ feature: string; task_kind: string; active: number | null }, [string]>(
+      .query<{ feature: string; task_kind: string; active: number | null }, [string, number]>(
+        // TEXT columns default to BINARY collation here, which the in-memory
+        // store mirrors with `<`/`>` rather than `localeCompare`.
         `SELECT feature, task_kind, active FROM task_route
-         WHERE repo = ? ORDER BY feature ASC, task_kind ASC`,
+         WHERE repo = ? ORDER BY feature ASC, task_kind ASC LIMIT ?`,
       )
-      .all(repo)
+      .all(repo, limit)
       .map((row) => ({
         feature: row.feature,
         taskKind: row.task_kind,
