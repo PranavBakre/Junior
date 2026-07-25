@@ -31,6 +31,7 @@ The server owns the lifecycle. When a Slack message arrives in a thread, the bot
 | How does the bot Slack MCP server work? | [docs/features/mcp-server.md](docs/features/mcp-server.md) |
 | How does the WhatsApp message archive + read tools work? | [docs/features/whatsapp-tools.md](docs/features/whatsapp-tools.md) |
 | How does Junior's long-term memory work (claims, episodes, profiles, embeddings, recall, consolidation)? | [docs/features/memory-system-v3.md](docs/features/memory-system-v3.md) |
+| How do task routes (stored paths through a codebase) get saved, verified, and repaired? | [docs/features/task-routes.md](docs/features/task-routes.md) |
 | How are duplicate claims prevented on write, and how are old ones swept? | [docs/features/claim-dedup-write-guard.md](docs/features/claim-dedup-write-guard.md) |
 | Headless vs tmux driver, why two paths exist, how tmux runs the TUI? | [docs/features/interactive-driver.md](docs/features/interactive-driver.md) |
 | How do persistent agents (orchestrator, reproducer, review, …) work? | [docs/features/persistent-agents.md](docs/features/persistent-agents.md) |
@@ -184,6 +185,11 @@ junior/
       embedding/          -- local harrier-270 ONNX provider + hashing stub (factory)
       profiles/           -- keyed markdown entity profiles (person/repo/situation), ProfileStore
       consolidation/      -- offline LLM write path: consolidateSession + sweep + claude -p runner
+    routes/               -- task routes: stored paths through a codebase (see docs/features/task-routes.md)
+      store/              -- TaskRouteStore interface + sqlite (shares MEMORY_DB_PATH) + memory impls
+      anchors.ts          -- symbol fingerprinting and tiered verification (grep only, no index/LSP)
+      freshness.ts        -- canonical-ref resolution, path-scoped drift, decay rules
+      tools.ts            -- route_fetch / route_save / route_report_usage
     lifecycle/
       timeout.ts          -- process timeout guard
       health.ts           -- orphan detection

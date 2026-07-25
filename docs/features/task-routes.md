@@ -1,9 +1,13 @@
 # Task Routes
 
-> **Status: Proposal.** Nothing here is implemented. No `src/routes/` module,
-> `task_route` table, or `route_fetch` / `route_save` tool exists yet. Measurements
-> and file references are current as of commit 0a24cdf; the design is not an
-> implementation contract until it ships.
+> **Status: Shipped.** `src/routes/` implements the store, anchors, git state,
+> and the `route_fetch` / `route_save` / `route_report_usage` MCP tools; the
+> `task_route` / `task_route_step` tables live in the memory DB. See
+> [docs/code_index/task-routes.md](../code_index/task-routes.md) for the file map.
+> Deliberate divergences from this design are marked **[shipped:]** inline.
+> Not shipped, by design: usage-weighted pruning/promotion (gated on adoption —
+> see [route_report_usage](#route_report_usage)) and the adoption wiring in
+> [Adoption](#adoption).
 
 ## Problem
 
@@ -62,6 +66,13 @@ src/routes/                     -- task routes (distinct from src/http/routes/)
 └── tools.ts                    -- route_fetch / route_save MCP handlers
 ```
 
+> **[shipped:]** As drawn, plus `types.ts` (shared types, matching
+> `src/memory/types.ts`) and `test-fixture.ts` (test-only: a real git repo with a
+> real bare `origin`, because verification IS git behaviour and a fake git layer
+> would prove nothing). `tools.ts` also owns `registerTaskRouteTools`, so
+> `src/mcp/slack-server.ts` gains one import and one call — the same shape
+> `registerWhatsAppTools` uses.
+
 ### Why not a new claim kind
 
 The earlier proposal was a `task-route` claim kind. Reading the schema, that is
@@ -118,6 +129,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS task_route_identity
   ON task_route (repo, feature, task_kind);
 ```
 
+> **[shipped:]** `task_route` carries one extra column, `broken_fetches INTEGER
+> DEFAULT 0`. The archival rule below is "a majority of steps are gone/edge-broken
+> **and** no repair has landed across N fetches", and that streak cannot be
+> derived from `fetch_count` and `repair_count` alone — it needs somewhere to
+> live. It resets to 0 on any repair, on any non-majority-broken fetch, and on
+> every save.
+
 That index is load-bearing, not decoration. "Unique by convention" is not an
 invariant — a concurrent or interrupted `route_save` would insert a second active
 route for the same identity and defeat the single-route guarantee outright. With
@@ -133,6 +151,32 @@ Note the interaction with archival: archived routes (`active = 0`) still occupy
 the identity. Either scope the index to active rows (a partial index) or have
 `route_save` revive and overwrite the archived row rather than insert alongside
 it. The latter is simpler and keeps one row per identity forever.
+
+> **[shipped:]** Revive-and-overwrite. `id` is deliberately absent from the
+> `DO UPDATE` set, so the pre-existing row keeps its primary key and its step
+> rows are replaced rather than orphaned. `fetch_count` and `repair_count` are
+> history of the *identity* and survive an overwrite; `touch_count` does not,
+> because a new step list renumbers what each `ord` means. Route ids are a
+> deterministic slug of the identity, so the primary-key conflict and the
+> unique-index conflict are always the same row.
+>
+> **The identity columns are stored slugged.** "Always the same row" only holds
+> if one identity has one spelling. `route_id` lowercases and collapses every
+> non-alphanumeric run, so `Memory View` and `memory-view` produced ONE id for
+> TWO identities: `ON CONFLICT(repo, feature, task_kind)` did not fire, the
+> INSERT hit the primary key, and the agent got a raw
+> `UNIQUE constraint failed: task_route.id` back through `route_save`'s catch —
+> permanently, for that spelling. An LLM caller producing `Add-UI-Surface`
+> alongside `add-ui-surface` is the expected case, not an edge one. `repo`,
+> `feature`, and `task_kind` are therefore normalised through the same slug on
+> both write and lookup, so the second spelling overwrites the first and a fetch
+> under either spelling finds the route. An identity part with nothing to slug
+> (`***`) is rejected outright. The repo's *checkout* is still resolved from the
+> caller's original spelling first, falling back to the slug.
+>
+> `InMemoryTaskRouteStore` enforces the id constraint too, raising the same
+> message SQLite does. Without that it silently overwrote the clashing row,
+> which is why every tool test passed against this bug.
 
 ## Anchors: expensive at write, free at read
 
@@ -186,6 +230,41 @@ confidently-wrong work with no error signal, which is the exact failure mode
 [CLAUDE.md](../../CLAUDE.md) principle 1 warns about. The annotation *is* the
 error signal.
 
+> **[shipped:]** Three details the table leaves open.
+>
+> 1. **The searcher is `git grep <ref>`, not a `rg` subprocess.** Everything here
+>    verifies against a ref, and a ref lives in git's object store — a
+>    working-tree scanner cannot read it, which is precisely the property the
+>    [git-state section](#which-git-state--save-and-verify-must-agree) is buying.
+>    The cut-list constraint that actually mattered holds: no language server, no
+>    ctags/gtags, no index, no long-lived process — one short-lived grep per call.
+> 2. **Tier 0 is scoped per path, not per route.** The single
+>    `git log --name-only` yields both the route-level commit count *and* the set
+>    of paths touched, so one churning file does not force every sibling step out
+>    of its tier-0 answer. That log runs with **`--diff-merges=first-parent`**:
+>    git shows no diff for a merge commit unless one is asked for, so
+>    `--name-only` prints a bare header for it and the commit is counted while
+>    its paths stay invisible. This workflow is always 3-way merges and never
+>    squash, so a merge carrying a conflict resolution or a build fixup is
+>    ordinary — and without the flag such a step answered `untouched` /
+>    `git-untouched`, the strongest label in the system, over a file the merge
+>    had rewritten. Worse, it was self-concealing: every status then looked
+>    clean, so `verified_sha` advanced past the merge and the next
+>    `git log <newsha>..origin/main` legitimately saw nothing.
+> 3. **Four extra statuses.** `note` (a pure tooling step — nothing on disk to
+>    verify), `pending` (an anchor that has never resolved on the canonical ref),
+>    `unknown` (repo or ref unreadable), and `untouched` as distinct from `ok`.
+>    `verified_by` is reported as `git-untouched` / `fingerprint` / `path-only` /
+>    `decl-pattern` / `expects-ref` / `none`, alongside the numeric tier.
+>
+> Tier 1 also falls back from the stored `decl_pattern` to the other
+> declaration-shaped candidates for the same symbol, so a symbol that merely
+> changed declaration form (`function x` → `const x = () =>`) is found in place
+> instead of being reported gone. That fallback excludes the loose
+> bare-occurrence pattern: after a symbol moves out of a file, the import line it
+> leaves behind still mentions it, and matching that would report `drifted` in
+> the old file instead of `moved` to the new one.
+
 ### Which git state — save and verify must agree
 
 An earlier draft had `route_save` stamp "the repo HEAD" and `route_fetch` verify
@@ -223,6 +302,83 @@ freshness query.
 If the repo is not present on the box, or the canonical ref cannot be resolved,
 steps report `unknown` — never `ok`.
 
+> **[shipped:]** Option 1 plus `pending`, as recommended. A pending anchor needs
+> no new column: it is a step that has `path`/`symbol` but NULL
+> `decl_pattern`/`sig_hash`/`block_hash`, which is exactly "recorded but never
+> resolved on the ref". `route_fetch` retries those first, before tier 0, and
+> activates them for free once the work merges.
+>
+> "The route is not activated" is implemented as `active = 0` when EVERY anchored
+> step is pending (a route with one pending step among four good ones is still
+> useful, and its pending step says so). Exact-identity lookup deliberately
+> ignores `active`, so a pending — or archived — route can still be revived;
+> semantic search only ever returns active routes. A route of pure tooling notes
+> has nothing to anchor and is active on the spot.
+>
+> An `unknown` fetch counts as a fetch but neither advances **nor resets** the
+> broken-fetch streak: an unreadable repo is no evidence at all about the route,
+> in either direction.
+>
+> **Something has to actually fetch.** The whole design rests on `git fetch`
+> advancing the remote-tracking ref, and nothing in this feature used to do it —
+> the only fetch in the system is `WorktreeManager.createWorktree`, which fires
+> only when a thread creates a worktree for that repo, and never for the
+> `process.cwd()` fallback. On a box that had not fetched a repo in three weeks
+> every route came back `untouched` / `git-untouched` — maximum confidence —
+> describing a tree nobody was working on, with nothing in the response to say
+> so. Both halves of the fix ship:
+>
+> - `resolveCanonicalRef(..., { fetch: true })` runs a bounded
+>   `git fetch origin +refs/heads/<b>:refs/remotes/origin/<b>`: at most once per
+>   repo+ref per `REF_FETCH_MIN_INTERVAL_MS` (10 min, process-local — a restart
+>   forgets it), and best-effort, so a failure just leaves the ref where it was.
+>   It touches only remote-tracking refs, never the working tree or a local
+>   branch. The throttle is stamped *before* the call, so an unreachable remote
+>   is not re-paid every fetch. Both `route_save` and `route_fetch` ask for it.
+> - **The bound is a race, not a kill.** `proc.kill()` is not sufficient:
+>   over any helper transport git spawns a *separate* `git-remote-https` or
+>   `ssh` process that inherits the piped stderr, so killing git leaves the pipe
+>   open and a drain-then-exit read never returns — measured at 30s+ on https
+>   and 25s+ on ssh against a socket that accepts and never answers, with the
+>   helper orphaned at ppid 1; only the pipe-less `git://`, which nothing here
+>   uses, respected the kill. The timed call therefore takes `stdout`/`stderr`
+>   as `"ignore"` (it discards both anyway) and races the timer against
+>   `proc.exited`, so nothing downstream of git can hold a tool call open.
+>   `GIT_TERMINAL_PROMPT=0` and an appended `-oBatchMode=yes` close the other
+>   door: a credential or host-key prompt is a hang with a nicer name, and `ssh`
+>   reads `/dev/tty`, so closing stdin does not help. `credential.helper` is
+>   deliberately left alone — the private repos this fetches authenticate
+>   through it, and clearing it would turn every fetch into a silent failure.
+> - `GitRefContext.committedAt` carries the ref's commit date out to
+>   `ref_committed_at`, and `fetchStatus` out to `ref_fetch` (`ok` /
+>   `throttled` / `failed` / `skipped`) — **on `route_save` as well as
+>   `route_fetch`**. A stale date is only an error signal to a reader who thinks
+>   to check it. Every `unresolved` reason a save returns is relative to the ref,
+>   so on a `failed` fetch "symbol not found on origin/main (pending until it
+>   merges)" can be flatly wrong — the symbol is on the remote's main, this box
+>   is behind, and nothing is waiting to merge. The reason carries the doubt
+>   inline too, rather than leaving the caller to correlate two fields.
+> - Both spellings of a configured base are understood. `remoteTrackingRef`
+>   passes a `refs/`-prefixed base through unchanged, so
+>   `defaultBase: "refs/remotes/origin/main"` names a ref that *does* advance on
+>   fetch; matching only the short `origin/…` spelling reported it `skipped` —
+>   the one status meaning "nothing was missed" — and silently disabled fetching
+>   for that repo.
+> - `core.sshCommand` is seeded into `GIT_SSH_COMMAND` before the flags are
+>   appended. The env var outranks the config key, so setting it blind would drop
+>   an operator's deploy key or jump host — auth fails, the fetch reports
+>   `failed`, and the ref goes stale. That is this same argument pointing the
+>   other way, and it is why `credential.helper` is left alone as well.
+> - `-c http.lowSpeedLimit=1 -c http.lowSpeedTime=5` and `-oConnectTimeout=5`
+>   make the transport bound itself. The race is still the guarantee; these stop
+>   an orphaned helper from outliving it for as long as the peer holds the
+>   connection open (measured surviving 50s+, dying within 3s of the peer going
+>   away).
+>
+> Out of scope on this branch, worth knowing: `WorktreeManager.createWorktree`
+> runs `git fetch origin --prune` with no timeout at all, so the hang *class*
+> exists elsewhere in the system.
+
 ## Tools
 
 Both go to the **working agent**. The recall agent gets neither: which files
@@ -243,6 +399,20 @@ route_fetch(repo, task: string, feature?: string, task_kind?: string)
 ```
 
 Side effect: increments `fetch_count`, sets `last_used_at`, and auto-repairs (below).
+
+> **[shipped:]** The response is a superset of the sketch above: it also carries
+> `repo` / `feature` / `task_kind`, the `ref` verified against and its
+> `ref_committed_at`, `matched_by`
+> (`identity` | `semantic`), `repaired` (the ords rewritten by this fetch),
+> `active`, and `archived`. `confidence` counts every status, not just the four
+> named — an `edge-broken` step that vanished from the summary would defeat the
+> point of reporting per-step status. Each step reports both `verified_by` and a
+> numeric `tier`.
+>
+> A **miss** carries `known`: every `(feature, task_kind)` the repo does have,
+> capped at 25. A bare "no route for this repo/feature/task-kind" leaves the
+> caller guessing at the vocabulary, and guessing wrong is precisely what
+> produces two spellings of one identity.
 
 #### Retrieval — routes are searched directly
 
@@ -267,6 +437,11 @@ Lookup is two-stage, most precise first:
 Scale makes the performance question moot: the corpus is one route per
 `(repo, feature, task_kind)` — dozens to low hundreds — against the 2617 claims
 already scanned linearly on every recall today.
+
+> **[shipped:]** Stage 2 applies a cosine floor of 0.35 and returns at most one
+> route. Below the floor the corpus has nothing for the task, and handing back
+> the nearest unrelated route is worse than a blank page: the reader cannot tell
+> a bad match from a stale one, and the tier annotations would all look healthy.
 
 #### Why not reach routes *through* a claim
 
@@ -304,6 +479,39 @@ Resolves and fingerprints every step against `origin/<default-branch>` (see
 `(repo, feature, task_kind)` identity inside one transaction with its step rows.
 Rejects >8 steps — that cap is the feature, not a limitation.
 
+> **[shipped:]** Three things save does that the sketch does not say.
+>
+> 1. **Paths are made repo-relative, and absolute ones outside the checkout are
+>    rejected by name.** `git show <ref>:<path>` accepts repo-relative paths
+>    only, while this workspace's agent instructions mandate absolute paths
+>    everywhere else — so `route_save` routinely receives
+>    `/Users/…/gx-backend/src/handler.ts`. Unhandled, every such step failed to
+>    resolve, was recorded `pending` with the reason "symbol not found on
+>    origin/main (pending until it merges)" — entirely the wrong cause — and
+>    `active` computed to `false`, leaving the route invisible to semantic
+>    search forever, with the retry re-using the same bad path. A leading
+>    checkout prefix is now stripped; anything still absolute gets its own
+>    `unresolved` reason. A path from a *different* checkout (a sibling
+>    worktree) is deliberately NOT rescued by guessing a prefix — that could
+>    anchor a route to a same-named file in an unrelated repo, and a silent
+>    wrong answer is worse than a loud rejection.
+> 2. **`expects_ref` is resolved.** It used to be stored unchecked. The first
+>    fetch masked a typo (tier 0 answers `untouched`, and the edge check is only
+>    reached through tiers 0-2), then the first commit touching that file pushed
+>    the step to `edge-broken` permanently — and `edge-broken` counts as broken
+>    for decay, so with one anchored step that is a strict majority and the
+>    route was archived after `ROUTE_ARCHIVE_BROKEN_FETCHES` fetches because of a
+>    typo, not a code change. A missing edge is now its own `unresolved` reason
+>    at save. It is reported, not dropped: a not-yet-merged edge is legitimate
+>    and pending-shaped, and the agent is the one who can tell the difference.
+> 3. **The response says it overwrote.** Last-writer-wins is the design, but
+>    silently clobbering is not — the result carries `overwrote`, the previous
+>    step count, and the `identity` actually written after normalisation.
+> 4. **It reports `ref_fetch` and `ref_committed_at`,** for the reason in
+>    [which git state](#which-git-state--save-and-verify-must-agree): a save's
+>    every `unresolved` reason is only as true as the ref it was measured
+>    against.
+
 ### `route_report_usage`
 
 ```
@@ -331,6 +539,25 @@ agent involvement. Ordinary refactors are the single biggest cause of map decay,
 and this makes routes survive them for free. A route then only dies when the
 *concept* disappears, not when the code moves.
 
+> **[shipped:]** `verified_sha` advances only when NOTHING is left outstanding —
+> every step came back `ok` / `untouched` / `moved` / `note`. Bumping it while a
+> sibling step is still `drifted` would make the next fetch answer that step at
+> tier 0 as `untouched` and never look at it again: one step's repair would
+> silently erase another step's drift signal. Drift itself is never auto-healed;
+> the content changed, so the note may now be wrong, and that is the agent's call.
+>
+> The same repair path activates a `pending` anchor that has since merged, which
+> is why a pending step counts as a repair for the decay streak. Activation runs
+> the full ladder: declaration candidates in the recorded file, then tier 2
+> repo-wide, then the loose bare-occurrence form. Both orderings matter — a file
+> renamed between the save and the merge used to leave the step `pending`
+> forever because activation never fell through to tier 2, and putting the loose
+> form last stops activation from fingerprinting the *import line* the symbol
+> left behind and reporting `verified_by: fingerprint` for it. Save is
+> deliberately loose (section markers and HTML ids have no declaration shape),
+> but at save the agent asserted the file; at activation the pattern is
+> manufactured, and the repair would persist it.
+
 **Usage-weighted pruning** *(gated on adoption)*. Steps never reported used
 across N fetches are noise and get dropped; steps consistently reported get
 promoted, so the route self-prunes toward the minimum useful set instead of
@@ -340,11 +567,22 @@ agents calling [`route_report_usage`](#route_report_usage) — the signal is
 reads. Ship the pruning rule only once the reports are actually arriving;
 until then `touch_count` stays informational and nothing is pruned on it.
 
+> **[shipped:]** `route_report_usage` writes `touch_count` and nothing reads it.
+> No pruning, no promotion, no touch-weighted aggregate — that rule stays gated
+> until the reports are demonstrably arriving. A pruning rule driven by a counter
+> that stays zero would quietly gut every working route.
+
 **Archival, never deletion** — matching the claim decay contract
 (`archiveStaleClaims`: archive, keep provenance). A route flips `active = 0` when
 a majority of steps are `gone`/`edge-broken` **and** no repair has landed across N
 fetches. That is the graceful end: it fades because it stopped being both useful
 and true, not because it got old.
+
+> **[shipped:]** N = 3 (`ROUTE_ARCHIVE_BROKEN_FETCHES`). Pure tooling notes are
+> excluded from the majority count — they cannot break — and `unknown` steps
+> never count as broken, so an unreadable repo can never archive a good route.
+> An archived route is still reachable by exact identity and is revived by a
+> `route_save` overwrite or by anchors coming back.
 
 Do **not** collapse this to a single staleness scalar. A route 90% fresh whose
 *entry point* moved is worse than one 60% fresh with a valid entry point. Report
@@ -359,6 +597,12 @@ A tool an agent must remember to call gets called never. Two wiring changes:
 - `route_save` gets a Stop-hook nudge alongside the lessons hook, with a
   comparable bar: only when the task crossed ≥2 modules or hit a tooling dead end.
   Most turns still write nothing.
+
+> **[shipped:]** NOT YET — this is the outstanding half. Both tools are
+> registered on the MCP server and are callable, but neither wiring change has
+> been made: no standing step 0 in the agent definitions, no Stop-hook nudge. The
+> bar is carried in the tool descriptions for now, which is strictly weaker.
+> Until the wiring lands, the corpus stays empty and the feature does nothing.
 
 ## Worked example
 
@@ -391,6 +635,68 @@ Six lines against roughly a dozen tool calls and three failed attempts.
 - [Agent definitions](agent-definitions.md) — the standing step-0 wiring.
 - [Worktree manager](worktree-manager.md) — resolving a repo's default worktree
   for verification.
+
+## Deliberate divergences from the hardening review
+
+The five findings above were fixed as briefed except where noted here.
+
+- **`credential.helper` is not cleared,** though the re-review suggested it
+  alongside `GIT_TERMINAL_PROMPT=0` and ssh `BatchMode`. The GX repos this
+  fetches are private over https and authenticate through the keychain helper;
+  clearing it would make every one of those fetches fail silently and restore
+  the staleness this fix exists to remove. A helper that *does* hang is already
+  bounded by the timer race.
+- **The conservative merge rule is reachable only through a test option.**
+  `routeDrift(..., { diffMerges: false })` forces the pre-2.31 command shape,
+  because on git ≥ 2.31 neither the retry nor the opaque-commit branch can ever
+  execute — and those are precisely the lines that carry correctness on an old
+  git. The `anchors.test.ts` merge case is deliberately NOT version-gated: the
+  repo's only `skipIf` precedent is an opt-in for an expensive model download,
+  which is a different thing from a capability gate, and gating would stop
+  testing the flag path on the boxes where it works.
+- **Merge attribution uses BOTH offered fixes, not one.** The brief asked to
+  pick `--diff-merges=first-parent` *or* the conservative "commit header with
+  zero path lines touches every scoped path" rule. Shipped: the flag first —
+  it attributes the merge's edit to the exact path, so sibling steps keep their
+  cheap tier-0 answer (measured: with the flag the probe prints `src/a.ts`;
+  with only the conservative rule the whole scoped set is marked changed). The
+  flag needs git ≥ 2.31 (this box has 2.39.5) and rather than pin a version
+  floor, a failed log is retried once without it. The conservative rule then
+  runs in *both* modes, so correctness never depends on the git version and any
+  other shape git declines to attribute is also covered. Cost: one extra
+  `git log` only when the first one fails.
+- **Absolute paths from a sibling worktree are rejected, not rescued.** Only a
+  literal `ctx.repoPath` prefix is stripped. Trimming leading segments until
+  something resolves would silently anchor to a same-named file in another repo.
+- **The bounded fetch shipped, on both tools.** `route_save` fetches too: an
+  anchor resolved against a three-week-old ref is recorded `pending` when the
+  code is in fact already on main.
+- **A bad `expects_ref` is reported, not dropped.** Nulling it at save would
+  discard a legitimately not-yet-merged edge.
+- **All five minors shipped.** Pending anchors fall through to tier 2 and prefer
+  declaration candidates; an `unknown` fetch writes `brokenFetches:
+  route.brokenFetches`; a miss returns the repo's known identities (capped at
+  25); `route_save` reports `overwrote` / `previous_steps`.
+- **The pending-activation ladder keeps repo-wide ahead of the loose in-file
+  match,** which inverts the normal ladder for marker-style anchors. Accepted
+  with the hazard commented at `anchors.ts`: a marker whose identifier is also
+  a genuine declaration elsewhere can be repaired to that other file. The
+  visibility is a one-shot window — the repair persists the fingerprints, so
+  later fetches skip the pending branch and verify at the wrong file as `ok` —
+  but the alternative is worse and equally sticky: loose-first lets activation
+  fingerprint the import line a moved symbol left behind and report `ok` /
+  `fingerprint` at a stale path, invisible from the first turn, where this
+  surfaces once as `moved` with a `resolved_path`.
+- **The identity cap and collation live in the store,** not in `tools.ts`:
+  applied above the store, the two implementations would return different pages
+  of the same corpus past 25. `listRouteIdentities(repo, limit)` orders by
+  BINARY collation in both, pinned by a parity test that runs one corpus
+  through both stores.
+- **No data migration.** The corpus is empty — the adoption wiring below is
+  still unbuilt — so nothing exists under an un-normalised spelling.
+- **Still deliberately unbuilt:** the adoption wiring and usage-weighted
+  pruning, unchanged from the notes in [Adoption](#adoption) and
+  [Self-healing and decay](#self-healing-and-decay).
 
 ## Open questions
 

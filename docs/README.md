@@ -58,6 +58,7 @@ surfaces have dedicated indexes:
 - [Project setup and boot](code_index/project-setup.md)
 - [Runner providers](code_index/runner-providers.md)
 - [Support router](code_index/support-router.md)
+- [Task routes](code_index/task-routes.md)
 - [Workflows](code_index/workflows.md)
 
 The remaining indexes are listed by module in `docs/code_index/`.
@@ -66,13 +67,13 @@ The remaining indexes are listed by module in `docs/code_index/`.
 
 Active proposals (designed, not implemented):
 
-- [Task routes](features/task-routes.md): a per-task path through a codebase —
-  entry point, order, and tooling dead ends — with write-time fingerprinting,
-  ripgrep-only verification, auto-repair, and usage-weighted decay.
-(The claim dedup write guard and pre-recall synthesis both graduated out of this
-list — they are shipped and listed under
-[current runtime surfaces](#current-runtime-surfaces). The dedup backfill sweep
-is dry-run by default and has not been applied to the live corpus.)
+None right now. The claim dedup write guard, pre-recall synthesis, and task
+routes all graduated out of this list — they are shipped and listed under
+[current runtime surfaces](#current-runtime-surfaces).
+
+Two things they shipped without, deliberately: the dedup backfill sweep is
+dry-run by default and has not been applied to the live corpus, and task routes
+have no adoption wiring yet, so nothing writes routes in normal operation.
 
 Feature files with an explicit `Historical`, `Proposal`, `Future`, or
 `Superseded` status are retained as design history. In particular, the older

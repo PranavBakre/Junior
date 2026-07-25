@@ -1069,15 +1069,19 @@ function rowToSourceRecord(row: SourceRecordRow): MemorySourceRecord {
   };
 }
 
-/** Serialize a Float32Array to a little-endian BLOB (Buffer) for SQLite. */
-function serializeEmbedding(vec: Float32Array): Buffer {
+/**
+ * Serialize a Float32Array to a little-endian BLOB (Buffer) for SQLite.
+ * Exported so every embedding-bearing table in this DB (claims, task routes)
+ * shares ONE definition of the BLOB layout rather than two that can drift.
+ */
+export function serializeEmbedding(vec: Float32Array): Buffer {
   const buf = Buffer.allocUnsafe(vec.length * 4);
   for (let i = 0; i < vec.length; i += 1) buf.writeFloatLE(vec[i], i * 4);
   return buf;
 }
 
 /** Deserialize a little-endian BLOB back into a Float32Array. */
-function deserializeEmbedding(blob: Uint8Array | null): Float32Array | null {
+export function deserializeEmbedding(blob: Uint8Array | null): Float32Array | null {
   if (!blob || blob.byteLength === 0) return null;
   const buf = Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
   const out = new Float32Array(Math.floor(buf.byteLength / 4));
@@ -1086,7 +1090,7 @@ function deserializeEmbedding(blob: Uint8Array | null): Float32Array | null {
 }
 
 /** Cosine similarity. Returns 0 for mismatched dims or a zero vector. */
-function cosineSim(a: Float32Array, b: Float32Array): number {
+export function cosineSim(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0;
   let dot = 0;
   let normA = 0;
