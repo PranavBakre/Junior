@@ -61,6 +61,17 @@ The remaining indexes are listed by module in `docs/code_index/`.
 
 ## Historical and proposal documents
 
+Active proposals (designed, not implemented):
+
+- [Task routes](features/task-routes.md): a per-task path through a codebase —
+  entry point, order, and tooling dead ends — with write-time fingerprinting,
+  ripgrep-only verification, auto-repair, and usage-weighted decay.
+- [Pre-recall synthesis](features/pre-recall-synthesis.md): move the LLM call
+  after recall, add success telemetry, and signal turn start with a reaction.
+- [Claim dedup write guard](features/claim-dedup-write-guard.md): the 0.92
+  similarity gate lives in one caller; move it to the store write path, merge
+  instead of dropping, and backfill the existing near-duplicates.
+
 Feature files with an explicit `Historical`, `Proposal`, `Future`, or
 `Superseded` status are retained as design history. In particular, the older
 Codex runner plans, associative-memory designs, and pre-v3 memory plans are
