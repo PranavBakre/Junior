@@ -486,8 +486,30 @@ export class SqliteMemoryStore implements MemoryStore {
       return { row, tags, weight, cosine, score: base * weight };
     });
 
-    scored.sort((a, b) => b.score - a.score);
-    const results = scored.slice(0, limit).map((entry) => ({
+    // Relevance and value answer different questions. Ranking the whole corpus
+    // by `cosine × weight` can hide the best semantic match before any caller
+    // gets a chance to curate it. Reserve one third of the result set for the
+    // strongest raw-cosine matches, then fill the remaining slots by weighted
+    // score. The selected set is still presented in value order.
+    let selected = scored;
+    if (queryVector && scored.length > limit) {
+      const relevanceQuota = Math.max(1, Math.ceil(limit / 3));
+      const byCosine = [...scored].sort(
+        (a, b) => (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity),
+      );
+      const chosen = byCosine.slice(0, relevanceQuota);
+      const chosenIds = new Set(chosen.map((entry) => entry.row.id));
+      const byValue = [...scored].sort((a, b) => b.score - a.score);
+      for (const entry of byValue) {
+        if (chosen.length >= limit) break;
+        if (chosenIds.has(entry.row.id)) continue;
+        chosen.push(entry);
+        chosenIds.add(entry.row.id);
+      }
+      selected = chosen;
+    }
+    selected.sort((a, b) => b.score - a.score);
+    const results = selected.slice(0, limit).map((entry) => ({
       id: entry.row.id,
       kind: entry.row.kind as ClaimKind,
       factKind:

@@ -81,7 +81,7 @@ inferences a Claude 5 model makes natively.
 ### Resolved by the runner switch
 
 An earlier draft of this doc gated the judgment-based cuts on model, because the
-default runner was `opencode` and 11 of 18 agents pinned `model: gpt-5.5`. **The
+default runner was `opencode` and 11 of 18 agents pinned `model: gpt-5.6-sol`. **The
 fleet is moving to the Claude runner on Opus 5, which removes that gate.**
 
 The pinned frontmatter does not need editing. Verified chain:
@@ -89,12 +89,12 @@ The pinned frontmatter does not need editing. Verified chain:
 `model:` frontmatter → `AgentDefinition.model` (`src/agents/loader.ts:114`) →
 `runSession.model` (`src/session/manager.ts:1754-1755`) → `sessionModel` →
 `resolveClaudeModel` precedence rule 3 (`src/claude/model.ts:20-22, 50-53`),
-which maps `gpt-5.5` → `opus`. The mapping is documented in that file as a
+which maps `gpt-5.6-sol` → `opus`. The mapping is documented in that file as a
 deliberate equivalent-capability-tier decision taken at the runner switch, and
-`src/claude/model.test.ts` covers it directly (`maps gpt-5.5 → opus`; 17/17
+`src/claude/model.test.ts` covers it directly (`maps gpt-5.6-sol → opus`; 17/17
 passing as of this doc).
 
-So every `model: gpt-5.5` agent resolves to Opus 5 without touching 11 files,
+So every `model: gpt-5.6-sol` agent resolves to Opus 5 without touching 11 files,
 and the whole fleet is Claude 5 generation.
 
 Two follow-ons worth noting, neither blocking:
@@ -242,7 +242,7 @@ Prompt edits have no typecheck. The checks that matter:
   outcome). That's a taste calibration against a strong completion bias, not a
   rule the model would infer.
 - Cutting worktree/workspace boundary rules — those encode a permission model.
-- Editing the `model: gpt-5.5` frontmatter pins as part of the runner switch.
+- Editing the `model: gpt-5.6-sol` frontmatter pins as part of the runner switch.
   `resolveClaudeModel` maps them to `opus` already; rewriting 11 files to say
   the same thing is churn. Revisit only if an agent needs a tier *other* than
   the default.

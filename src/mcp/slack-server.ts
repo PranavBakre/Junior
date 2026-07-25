@@ -30,6 +30,7 @@ import type {
   ClaimRecallFilters,
   ClaimRecallResult,
   ClaimWriteResult,
+  MemoryFactInput,
 } from "../memory/types.ts";
 import type { EmbeddingProvider } from "../memory/embedding/types.ts";
 // `import type` keeps the heavy harrier/transformers graph (pulled in by the
@@ -74,7 +75,7 @@ import {
   getRunbook,
   searchRunbooks,
 } from "../runbooks/registry.ts";
-import { selectRunbook } from "../runbooks/selector.ts";
+import { selectRunbookWithProcedureRecall } from "../runbooks/selector.ts";
 import type { RunbookRisk } from "../runbooks/types.ts";
 import type { RunbookRunEvidence } from "../runbooks/evidence.ts";
 import {
@@ -1048,10 +1049,37 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
       },
     },
     async ({ request, context, owner_agent, risk_ceiling }) => {
-      const result = selectRunbook(request, context ?? {}, {
-        ownerAgent: owner_agent,
-        riskCeiling: risk_ceiling as RunbookRisk | undefined,
-      });
+      const result = await selectRunbookWithProcedureRecall(
+        request,
+        context ?? {},
+        async (query) =>
+          withMemoryStore(async (memory) => {
+            const recalled = await recallMemory(
+              {
+                query,
+                factKinds: ["procedure"],
+                limit: 5,
+              },
+              {
+                store: memory,
+                provider: await getEmbeddingProvider(),
+                profileStore: getProfileStore(),
+              },
+            );
+            return recalled.claims.map((claim) => ({
+              id: claim.id,
+              text: claim.text,
+              score: claim.score,
+              cosine: claim.cosine,
+              repo: claim.repo,
+              tags: claim.tags,
+            }));
+          }),
+        {
+          ownerAgent: owner_agent,
+          riskCeiling: risk_ceiling as RunbookRisk | undefined,
+        },
+      );
       return {
         content: [
           {
@@ -1261,7 +1289,8 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
         "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
         "lesson/fact/situation-claim store by cosine (filtered by `repo`/`tags`/`kinds`). " +
-        "Returns the keyed profiles plus the top-k claims (text, score, repo, tags).",
+        "Fact subtypes such as procedures can be requested with `fact_kinds`. Returns the " +
+        "keyed profiles plus top-k claims including `factKind`, text, score, repo, and tags.",
       inputSchema: {
         query: z.string().describe("Natural-language query, embedded for semantic claim retrieval"),
         repo: z.string().optional().describe("Scope claims to a repo (e.g. 'gx-backend')"),
@@ -1273,6 +1302,12 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           .array(z.enum(["lesson", "fact", "situation-claim"]))
           .optional()
           .describe("Restrict claims to these kinds (default: all)"),
+        fact_kinds: z
+          .array(z.enum(["curated_fact", "routing_memory", "procedure"]))
+          .optional()
+          .describe(
+            "Restrict fact claims to semantic subtypes, e.g. ['procedure']. When set, only matching fact subtypes are returned.",
+          ),
         entity_refs: z
           .array(z.string())
           .optional()
@@ -1282,10 +1317,18 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         limit: z.number().optional().describe("Max semantic claims to return (default 5, max 50)"),
       },
     },
-    async ({ query, repo, tags, kinds, entity_refs, limit }) => {
+    async ({ query, repo, tags, kinds, fact_kinds, entity_refs, limit }) => {
       return withMemoryStore(async (memory) => {
         const result = await recallMemory(
-          { query, repo, tags, kinds, entityRefs: entity_refs, limit },
+          {
+            query,
+            repo,
+            tags,
+            kinds,
+            factKinds: fact_kinds,
+            entityRefs: entity_refs,
+            limit,
+          },
           { store: memory, provider: await getEmbeddingProvider(), profileStore: getProfileStore() },
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -1752,6 +1795,14 @@ export interface RecallMemoryArgs {
   /** Restrict claims to any matching tag (OR match). */
   tags?: string[];
   kinds?: ClaimKind[];
+  /** Restrict fact claims to legacy semantic subtypes such as `procedure`. */
+  factKinds?: MemoryFactInput["kind"][];
+  /**
+   * Reserve up to this many slots for procedure memories while keeping the
+   * total result count within `limit`. Used by automatic pre-recall so durable
+   * operational sequences cannot be crowded out by generic facts.
+   */
+  procedureQuota?: number;
   entityRefs?: string[];
   limit?: number;
   /**
@@ -1769,6 +1820,7 @@ export interface RecallMemoryResult {
   claims: Array<{
     id: string;
     kind: ClaimKind;
+    factKind: MemoryFactInput["kind"] | null;
     text: string;
     score: number;
     /**
@@ -1813,19 +1865,26 @@ export async function recallMemory(
   // 2. Semantic claim recall — embed the query once, run one filtered recall per
   //    kind (ClaimRecallFilters carries a single kind), then merge + re-rank.
   const [queryVector] = await deps.provider.embed([args.query], "query");
-  const kindScopes: Array<ClaimKind | undefined> =
-    args.kinds && args.kinds.length > 0 ? args.kinds : [undefined];
+  const scopes: Array<{
+    kind?: ClaimKind;
+    factKind?: MemoryFactInput["kind"];
+  }> = args.factKinds && args.factKinds.length > 0
+    ? args.factKinds.map((factKind) => ({ kind: "fact", factKind }))
+    : args.kinds && args.kinds.length > 0
+      ? args.kinds.map((kind) => ({ kind }))
+      : [{}];
 
   const seen = new Set<string>();
   const merged: ClaimRecallResult[] = [];
-  for (const kind of kindScopes) {
+  for (const scope of scopes) {
     const filters: ClaimRecallFilters = {};
     if (args.repo) {
       filters.repo = args.repo;
       if (args.repoIncludeGlobal) filters.repoIncludeGlobal = true;
     }
     if (args.tags && args.tags.length > 0) filters.tags = args.tags;
-    if (kind) filters.kind = kind;
+    if (scope.kind) filters.kind = scope.kind;
+    if (scope.factKind) filters.factKind = scope.factKind;
     const results = await deps.store.recallClaims({
       queryVector,
       filters,
@@ -1840,11 +1899,39 @@ export async function recallMemory(
   }
   merged.sort((a, b) => b.score - a.score);
 
+  const procedureQuota = args.factKinds?.length
+    ? 0
+    : Math.min(Math.max(Math.trunc(args.procedureQuota ?? 0), 0), limit);
+  let selected = merged.slice(0, limit);
+  if (procedureQuota > 0) {
+    const procedureResults = await deps.store.recallClaims({
+      queryVector,
+      filters: {
+        ...(args.repo
+          ? { repo: args.repo, repoIncludeGlobal: args.repoIncludeGlobal }
+          : {}),
+        ...(args.tags?.length ? { tags: args.tags } : {}),
+        kind: "fact",
+        factKind: "procedure",
+      },
+      limit: procedureQuota,
+      recordUsage: args.recordUsage,
+    });
+    const procedures = procedureResults.slice(0, procedureQuota);
+    const procedureIds = new Set(procedures.map((claim) => claim.id));
+    selected = [
+      ...procedures,
+      ...merged.filter((claim) => !procedureIds.has(claim.id)),
+    ].slice(0, limit);
+    selected.sort((a, b) => b.score - a.score);
+  }
+
   return {
     profiles,
-    claims: merged.slice(0, limit).map((c) => ({
+    claims: selected.map((c) => ({
       id: c.id,
       kind: c.kind,
+      factKind: c.factKind ?? null,
       text: c.text,
       score: c.score,
       cosine: c.cosine,

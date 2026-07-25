@@ -46,6 +46,7 @@ Entry point, configuration, logging, persona loading, and boot sequence. The pro
 | `MEMORY_DB_PATH` | no | `data/memory.db` | Semantic claim store |
 | `MEMORY_EMBED_PROVIDER` | no | `local` | Embedding provider (`local` or `hashing`) |
 | `PRE_RECALL_ENABLED` | no | `false` | Optional pre-recall hook |
+| `PRE_RECALL_SYNTHESIS_ENABLED` | no | `false` | Optional bounded LLM synthesis; deterministic filtering is the default |
 | `WHATSAPP_ENABLED` | no | `false` | Read-only archive ingestion/tools |
 | `PIPELINE_RUNTIME_MODE` | no | `off` | Typed pipeline mode (`off`, `shadow`, `active`) |
 | `PRODUCT_PIPELINE_ENABLED` | no | `false` | Product pipeline starts; requires active mode |

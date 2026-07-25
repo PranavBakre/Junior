@@ -5,6 +5,11 @@
 > [Implementation notes](#implementation-notes) for the shipped bounds and the
 > places the implementation deliberately diverged. Code index:
 > [pre-recall](../code_index/pre-recall.md).
+>
+> **Current runtime:** deterministic cosine-gated selection is now the default.
+> Set `PRE_RECALL_SYNTHESIS_ENABLED=true` to opt back into the bounded synthesis
+> subprocess. Automatic recall reserves two candidate slots for procedure
+> memories, so operational sequences do not depend on a later agent tool call.
 
 ## Problem
 

@@ -200,6 +200,38 @@ describe("SqliteMemoryStore", () => {
     expect(results[0].id).toBe("claim-heavy");
   });
 
+  it("keeps the strongest semantic match in the shortlist despite a low weight", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "best-semantic-match",
+      kind: "fact",
+      text: "exactly aligned but low value",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      weight: 0.1,
+      createdAt: now,
+      skipDedup: true,
+    });
+    for (let index = 0; index < 12; index += 1) {
+      await store.upsertClaim({
+        id: `weighted-distractor-${index}`,
+        kind: "fact",
+        text: `weighted distractor ${index}`,
+        embedding: new Float32Array([0.8, 0.6, 0, 0]),
+        weight: 1,
+        createdAt: now,
+        skipDedup: true,
+      });
+    }
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      limit: 5,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id)).toContain("best-semantic-match");
+  });
+
   it("applies WHERE filters BEFORE cosine, narrowing candidates", async () => {
     const now = Date.now();
     // repoA candidate is orthogonal (low cosine); repoB candidate is aligned.

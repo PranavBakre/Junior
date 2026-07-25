@@ -7,7 +7,7 @@
  * frontmatter when Codex was the active runner) to their Claude equivalents so
  * Claude doesn't choke.
  *
- * Product decision: `gpt-5.5` maps to `opus` — the two were considered
+ * Product decision: `gpt-5.6-sol` maps to `opus` — the two were considered
  * equivalent capability tiers at the point of the runner switch.
  */
 
@@ -18,7 +18,7 @@
  * agent frontmatter; anything not listed falls through to `configDefaultModel`.
  */
 const GPT_TO_CLAUDE: Record<string, string> = {
-  "gpt-5.5": "opus",
+  "gpt-5.6-sol": "opus",
 };
 
 /**

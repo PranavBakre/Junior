@@ -31,7 +31,8 @@ operations using the bot token and signed run context.
 | `reload_agent_registry` | Junior internal | — | — |
 | `slack_send_dm` | Slack Web API | `user_id`, `text` | identity fields |
 | `agent_dispatch` | Junior internal | agent, prompt, thread context | synthetic user/timestamp |
-| `memory_recall` / `memory_add` / `memory_consolidate` | Memory v3 | tool-specific | filters/options |
+| `memory_recall` / `memory_add` / `memory_consolidate` | Memory v3 | tool-specific | filters/options; `fact_kinds` exposes procedure/routing/curated-fact subtypes |
+| `runbook_select` | Runbooks + Memory v3 | `request` | Select reviewed runbook; on miss perform procedure-memory recall |
 | `github_read_pr_review_state` / `github_post_review` | Fixed GitHub API surface | review-specific | inline comments |
 | `pipeline_*` | Durable pipeline store | tool-specific | artifact/check fields |
 | `whatsapp_*` | Read-only archive | tool-specific | time/group filters |

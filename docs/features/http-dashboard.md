@@ -52,16 +52,23 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 
 ## Memory galaxy
 
-The `#memory` view renders the claim corpus as a navigable 3D star field, drawn by
-a hand-rolled perspective renderer on a 2D canvas (no WebGL, no library — the
-dashboard is one static file, and a 3D dependency would mean a build step). Stars
-composite additively, which is order-independent, so the draw loop needs no
-per-frame depth sort; distance reads through size and fog instead.
+The `#memory` view renders the claim corpus as a navigable Three.js scene. The
+server still owns semantic layout; the browser uploads projected claims as GPU
+point sprites and KNN relationships as dynamic line buffers. Selection and hover
+markers are native Three.js meshes. The scene owns the entire Memory viewport;
+search, facets, camera controls, and the accessible claim rail are glass overlays
+on that scene rather than a second visualization beside it. Three.js is served
+locally from the pinned package dependency, so the localhost dashboard does not
+depend on a CDN.
 
 - **Why 3D.** In 2D, thousands of claims overlap into an unreadable smear no matter
   how the projection is tuned. Depth plus orbit/zoom gives the corpus somewhere to
   go, and the server-side spread pass guarantees stars don't sit on top of each
   other (see [the projection notes](../code_index/http-dashboard.md)).
+- **GPU rendering.** One shader-driven `THREE.Points` draw call carries per-claim
+  kind color, weight-derived size, and filter opacity. Ambient and focused links
+  use separate `THREE.LineSegments` buffers so hover can brighten a local
+  neighbourhood without rebuilding the projection.
 - **Navigation.** Drag orbits, wheel zooms, shift-drag pans, click focuses a star
   and flies to it, double-click resets. The wheel handler is registered
   non-passive and calls `preventDefault` — otherwise the wheel scrolls the page
@@ -70,9 +77,10 @@ per-frame depth sort; distance reads through size and fog instead.
   substring-filters as you type and escalates to real semantic recall on ⏎ —
   the same embedding path an agent's `memory_recall` takes. Matches light up, the
   rest fade to background dust; `frame` fits the camera to the current match set.
-- **Layout containment.** The view is a fixed-height flex column, and the claim
-  rail scrolls inside itself with `overscroll-behavior: contain`. Without that,
-  a wheel over the rail chains up to `.content` and scrolls the whole dashboard.
+- **Layout containment.** The Three.js canvas fills the fixed-height view and the
+  claim rail overlays its right edge. The rail scrolls inside itself with
+  `overscroll-behavior: contain`; without that, a wheel over it would zoom or
+  scroll the scene behind the overlay.
 
 ## Configuration
 
@@ -97,6 +105,7 @@ HTTP_DASHBOARD_PORT=4567  # positive integer 1-65535. Unset = disabled.
 - [session-management.md](session-management.md) — shape of `ThreadSession` / `AgentSession` consumed by `/api/sessions`.
 - [session-persistence.md](session-persistence.md) — the `SessionStore` interface backing those reads.
 - [process-lifecycle.md](process-lifecycle.md) — `DevServerManager` / `DevServerQueue` invariants surfaced by `/api/dev-server`.
+- `three` — locally served WebGL runtime for the memory graph.
 
 ## Cut list (true v2)
 

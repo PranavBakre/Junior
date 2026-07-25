@@ -1,8 +1,9 @@
 # Code Index: Pre-recall
 
 Pre-recall injects operational memory into a turn's prompt before the runner
-spawns. Retrieval is embedding-only; the one LLM call is synthesis over the
-retrieved claims. Design: [pre-recall-synthesis](../features/pre-recall-synthesis.md).
+spawns. Retrieval is embedding-only. Deterministic relevance filtering is the
+default hot path; bounded LLM synthesis is optional through
+`PRE_RECALL_SYNTHESIS_ENABLED`.
 
 ## Sources
 
@@ -11,7 +12,7 @@ retrieved claims. Design: [pre-recall-synthesis](../features/pre-recall-synthesi
 | `createPreRecall(config, overrides?)` | `src/memory/pre-recall.ts` | Factory returning the `PreRecallFn` closure. `overrides` are the two test seams: `runText` (synthesis subprocess) and `deps` (memory store). |
 | `deriveRecallQueries` | `src/memory/pre-recall.ts` | Message → 1-2 retrieval queries. No model call; the second is a `"<repo> <agent>: <message>"` scoped variant. |
 | `selectSynthesisCandidates` | `src/memory/pre-recall.ts` | The three caps: candidate count, per-claim truncation, total candidate-character ceiling (drops lowest-scoring). |
-| `selectFallbackCandidates` | `src/memory/pre-recall.ts` | Top-3 above `FALLBACK_MIN_COSINE` (0.55), sorted by score. Retrieval has no threshold, so this floor is what stops an unfiltered fallback injecting nearest neighbours and marking them used. Gates on raw **cosine**, not `score` (= cosine × weight), or a claim's value would set its relevance bar; a null cosine is ineligible. Value calibrated against measured chit-chat cosines (0.384–0.500 on the production embedder), not against the test stub. |
+| `selectFallbackCandidates` | `src/memory/pre-recall.ts` | Default deterministic selector and synthesis-failure fallback: top-3 above `FALLBACK_MIN_COSINE` (0.55), sorted by score. Gates on raw **cosine**, not `score` (= cosine × weight). |
 | `maxCosine` | `src/memory/pre-recall.ts` | Best cosine in a shortlist, for telemetry. Not `shortlist[0].cosine` — that list is score-ordered. |
 | `buildSynthesisPrompt` / `parseSynthesisResult` | `src/memory/pre-recall.ts` | Request wrapped in a **per-call nonce delimiter** (`<request-a3f9>`) and labelled untrusted — a fixed tag is bypassable by nesting (`</req</request>uest>`). `{"notes":[…],"used":[1,4]}` envelope. Parse failure — missing, non-array, or an array with nothing usable in it — returns `null` → fallback. Only an explicit `"notes": []` is a rejection. |
 | `formatPreRecallBlock(notes, { verbatim })` | `src/memory/pre-recall.ts` | The `<pre-recall>` block prepended to the prompt. Labels provenance: fallback lines are corpus text, synthesized lines are a model summary. |
@@ -24,9 +25,10 @@ retrieved claims. Design: [pre-recall-synthesis](../features/pre-recall-synthesi
 
 ```
 message ──► deriveRecallQueries (embed, no subprocess)
-        ──► recallMemory × N   (recordUsage:false, limit 8, repo|global)
+        ──► recallMemory × N   (recordUsage:false, limit 8, 2 procedure slots)
         ──► dedupe by claim id ──► selectSynthesisCandidates (3 caps)
-        ──► runText (claude|opencode|codex, PRE_RECALL_TIMEOUT_MS)
+        ──► deterministic cosine floor (default)
+          or runText when PRE_RECALL_SYNTHESIS_ENABLED=true
               ├─ parsed + cited ──► notes + contributing ids
               └─ fail/uncited   ──► top-3 raw claims, cosine >= 0.55
         ──► markClaimsUsed(contributing ids)

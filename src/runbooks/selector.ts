@@ -60,3 +60,29 @@ export function selectRunbook(
     evidence,
   };
 }
+
+/**
+ * Selection boundary used by the MCP tool. A miss performs procedure recall
+ * immediately; returning only a suggested query would leave the advertised
+ * fallback dependent on a second model tool call that may never happen.
+ */
+export async function selectRunbookWithProcedureRecall(
+  request: string,
+  context: Record<string, string>,
+  recallProcedure: (
+    query: string,
+  ) => Promise<NonNullable<ProcedureFallback["claims"]>>,
+  options?: MatchOptions,
+): Promise<SelectionResult> {
+  const selection = selectRunbook(request, context, options);
+  if (selection.selected) return selection;
+
+  const claims = await recallProcedure(selection.procedureFallback.query);
+  return {
+    ...selection,
+    procedureFallback: {
+      ...selection.procedureFallback,
+      claims,
+    },
+  };
+}

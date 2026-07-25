@@ -213,7 +213,7 @@ dropped as unmapped and truncated in the log), and their message + `ref` are
 surfaced through `mapper.error` so Slack shows the real failure instead of a
 generic `Process exited with code 1`. The `--model` flag now receives a value
 resolved by `resolveOpenCodeModel`: only `provider/model` refs are passed
-through; runner-specific aliases (`gpt-5.5`, `opus`, `sonnet`, `haiku`) fall
+through; runner-specific aliases (`gpt-5.6-sol`, `opus`, `sonnet`, `haiku`) fall
 back to the configured default or are omitted so OpenCode uses its own default.
 
 Do not guess the tool event schema from docs.

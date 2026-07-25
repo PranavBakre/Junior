@@ -88,6 +88,14 @@ function generateRunId(): string {
 export interface ProcedureFallback {
   query: string;
   warning: string;
+  claims?: Array<{
+    id: string;
+    text: string;
+    score: number;
+    cosine: number | null;
+    repo: string | null;
+    tags: string[];
+  }>;
 }
 
 export function buildProcedureFallback(request: string): ProcedureFallback {

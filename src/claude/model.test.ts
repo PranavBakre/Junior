@@ -9,7 +9,7 @@ describe("resolveClaudeModel", () => {
       expect(
         resolveClaudeModel({
           modelClaude: "opus",
-          sessionModel: "gpt-5.5",
+          sessionModel: "gpt-5.6-sol",
           configDefaultModel: cfg,
         }),
       ).toBe("opus");
@@ -81,15 +81,15 @@ describe("resolveClaudeModel", () => {
   });
 
   describe("precedence 3 — GPT model mapping", () => {
-    it("maps gpt-5.5 → opus", () => {
+    it("maps gpt-5.6-sol → opus", () => {
       expect(
-        resolveClaudeModel({ sessionModel: "gpt-5.5", configDefaultModel: cfg }),
+        resolveClaudeModel({ sessionModel: "gpt-5.6-sol", configDefaultModel: cfg }),
       ).toBe("opus");
     });
 
-    it("is case-insensitive for the gpt-5.5 → opus mapping", () => {
+    it("is case-insensitive for the gpt-5.6-sol → opus mapping", () => {
       expect(
-        resolveClaudeModel({ sessionModel: "GPT-5.5", configDefaultModel: cfg }),
+        resolveClaudeModel({ sessionModel: "GPT-5.6-SOL", configDefaultModel: cfg }),
       ).toBe("opus");
     });
 

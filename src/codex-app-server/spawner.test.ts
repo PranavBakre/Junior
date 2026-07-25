@@ -128,9 +128,9 @@ describe("spawnCodexAppServer", () => {
 
 describe("resolveCodexModel", () => {
   it("ignores Claude agent aliases and falls back to Codex config", () => {
-    expect(resolveCodexModel("sonnet", "gpt-5.5")).toBe("gpt-5.5");
-    expect(resolveCodexModel("opus", "gpt-5.5")).toBe("gpt-5.5");
-    expect(resolveCodexModel("haiku", "gpt-5.5")).toBe("gpt-5.5");
+    expect(resolveCodexModel("sonnet", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(resolveCodexModel("opus", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(resolveCodexModel("haiku", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
   });
 
   it("omits unsupported Claude model names when no Codex fallback is configured", () => {
@@ -139,7 +139,7 @@ describe("resolveCodexModel", () => {
   });
 
   it("keeps explicit Codex-compatible model overrides", () => {
-    expect(resolveCodexModel("gpt-5.5", "gpt-5.1-codex")).toBe("gpt-5.5");
+    expect(resolveCodexModel("gpt-5.6-sol", "gpt-5.1-codex")).toBe("gpt-5.6-sol");
     expect(resolveCodexModel(null, "gpt-5.1-codex")).toBe("gpt-5.1-codex");
   });
 });

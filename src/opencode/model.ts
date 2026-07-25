@@ -6,12 +6,12 @@
  * addressing scheme.
  *
  * OpenCode's `--model` flag expects a `provider/model` reference (e.g.
- * `anthropic/claude-sonnet-4-5`, `openai/gpt-5.5`). A slashless string like
- * `gpt-5.5` parses as providerID=`gpt-5.5`, modelID=`` — no such provider
+ * `anthropic/claude-sonnet-4-5`, `openai/gpt-5.6-sol`). A slashless string like
+ * `gpt-5.6-sol` parses as providerID=`gpt-5.6-sol`, modelID=`` — no such provider
  * exists, so OpenCode's embedded server throws "Unexpected server error" and
  * the CLI exits 1 before producing any output.
  *
- * Agent frontmatter historically carried bare Claude/Codex aliases (`gpt-5.5`,
+ * Agent frontmatter historically carried bare Claude/Codex aliases (`gpt-5.6-sol`,
  * `opus`, `haiku`, `sonnet`) meant for those runners. None of them is a usable
  * OpenCode reference. Rather than invent a per-alias mapping, fall back to the
  * configured OpenCode default (when it is itself a valid ref), else return null.

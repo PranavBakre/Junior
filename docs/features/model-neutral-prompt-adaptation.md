@@ -11,7 +11,7 @@ When Junior runs on a more direct model with a smaller context budget, two failu
 
 **Finally:** Junior's prompts are provider-neutral, compact, explicit, and procedural. Agents classify the requested action first, receive only the context needed for their role, and follow state-machine style workflows instead of relying on broad inference.
 
-This is a prompt/runtime-behavior project, not a Codex-provider project. OpenCode is the current non-Claude provider. The adaptation target is GPT-5.5-class behavior behind the existing runner path: more literal, more direct, and less tolerant of buried instructions.
+This is a prompt/runtime-behavior project, not a Codex-provider project. OpenCode is the current non-Claude provider. The adaptation target is gpt-5.6-sol-class behavior behind the existing runner path: more literal, more direct, and less tolerant of buried instructions.
 
 OpenCode-specific constraint: Junior now has an OpenCode-specific prompt surface. PR #32 added `.opencode/agents/*`, `opencode.json` instruction wiring, OpenCode tool-use parsing, and duplicate Slack-post suppression. [PranavBakre/Junior#31](https://github.com/PranavBakre/Junior/pull/31) separately explored generated `agent.build.prompt` overrides. The overhaul must reconcile those two approaches instead of letting static OpenCode agents and generated OpenCode prompts drift apart.
 

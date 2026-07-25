@@ -158,10 +158,11 @@ embedding model (harrier-270 ONNX) is lazy-loaded on the first recall/add, never
 server startup.
 
 - `memory_recall` accepts `query`, `repo`, `tags` (OR match), `kinds`,
-  `entity_refs`, and `limit`. It
+  `fact_kinds`, `entity_refs`, and `limit`. It
   fetches the keyed entity profiles verbatim by `entity_ref` (no vector) and embeds
   `query` locally to cosine-rank the atomic claim store; returns the profiles plus
-  the top-k claims. Recall is cosine-only — there is no FTS channel.
+  the top-k claims. Returned facts retain `factKind`, so procedures are filterable
+  and identifiable end to end. Recall is cosine-only — there is no FTS channel.
 - `memory_add` accepts `text`, `kind`, `repo`, and `tags`, embeds the text locally
   (document mode), and stores one atomic claim with its embedding co-located. The
   store's write guard collapses semantic near-duplicates, so the result carries an

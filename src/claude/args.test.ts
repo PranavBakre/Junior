@@ -151,19 +151,19 @@ describe("buildClaudeArgs", () => {
   });
 
   it("uses config.defaultModel when session.model is null", () => {
-    const config = makeConfig({ defaultModel: "claude-opus-4-6[1M]" });
+    const config = makeConfig({ defaultModel: "claude-opus-5[1M]" });
     const args = buildClaudeArgs(makeSession(), "test", config, CWD);
     expect(args).toContain("--model");
-    expect(args).toContain("claude-opus-4-6[1M]");
+    expect(args).toContain("claude-opus-5[1M]");
   });
 
   it("prefers session.model over config.defaultModel", () => {
-    const config = makeConfig({ defaultModel: "claude-opus-4-6[1M]" });
+    const config = makeConfig({ defaultModel: "claude-opus-5[1M]" });
     const session = makeSession({ model: "haiku" });
     const args = buildClaudeArgs(session, "test", config, CWD);
     expect(args).toContain("--model");
     expect(args).toContain("haiku");
-    expect(args).not.toContain("claude-opus-4-6[1M]");
+    expect(args).not.toContain("claude-opus-5[1M]");
   });
 
   it("omits --model when neither session nor config provides one", () => {
@@ -242,15 +242,15 @@ describe("buildClaudeArgs", () => {
   });
 
   it("maps a GPT frontmatter model to its Claude equivalent", () => {
-    const session = makeSession({ model: "gpt-5.5" });
+    const session = makeSession({ model: "gpt-5.6-sol" });
     const args = buildClaudeArgs(session, "x", makeConfig(), CWD);
     expect(args).toContain("--model");
     expect(args).toContain("opus");
-    expect(args).not.toContain("gpt-5.5");
+    expect(args).not.toContain("gpt-5.6-sol");
   });
 
   it("honors an explicit model.claude override over the GPT map", () => {
-    const session = makeSession({ model: "gpt-5.5", modelClaude: "sonnet" });
+    const session = makeSession({ model: "gpt-5.6-sol", modelClaude: "sonnet" });
     const args = buildClaudeArgs(session, "x", makeConfig(), CWD);
     expect(args).toContain("--model");
     expect(args).toContain("sonnet");

@@ -86,6 +86,8 @@ function candidate(fields: {
   return {
     id: fields.id,
     text: fields.text,
+    kind: "lesson",
+    factKind: null,
     score: fields.score,
     cosine: fields.cosine === undefined ? fields.score : fields.cosine,
   };
@@ -476,6 +478,7 @@ function preRecallConfig(): Config {
         enabled: true,
         runner: "claude",
         timeoutMs: 15000,
+        synthesisEnabled: true,
       },
     },
     threadArchives: { dir: "data/thread-archives" },
@@ -510,6 +513,31 @@ function shortlistFromPrompt(prompt: string): string[] {
 }
 
 describe("createPreRecall", () => {
+  test("uses deterministic relevance filtering without spawning synthesis by default", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      await seedClaims(deps);
+      const config = preRecallConfig();
+      config.memory.preRecall!.synthesisEnabled = false;
+      let synthesisCalls = 0;
+      const preRecall = createPreRecall(config, {
+        runText: async () => {
+          synthesisCalls += 1;
+          throw new Error("must not run");
+        },
+        deps,
+      });
+
+      const block = await preRecall(CLAIM_TEXTS[0]!);
+
+      expect(block).toContain(`- ${CLAIM_TEXTS[0]!}`);
+      expect(synthesisCalls).toBe(0);
+      expect(await usedClaimTexts(deps)).toEqual([CLAIM_TEXTS[0]!]);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("records usage only for the claims synthesis used", async () => {
     const { deps, cleanup } = makeMemoryDeps();
     try {

@@ -299,7 +299,7 @@ body`;
       const content = `---
 name: claude-override
 description: Test
-model: gpt-5.5
+model: gpt-5.6-sol
 model.claude: sonnet
 ---
 
@@ -309,7 +309,7 @@ body`;
       try {
         const def = await loadAgentDefinition(tmpPath);
         expect(def).not.toBeNull();
-        expect(def!.model).toBe("gpt-5.5");
+        expect(def!.model).toBe("gpt-5.6-sol");
         expect(def!.modelClaude).toBe("sonnet");
       } finally {
         await fs.unlink(tmpPath).catch(() => {});
@@ -321,7 +321,7 @@ body`;
       const content = `---
 name: no-claude-override
 description: Test
-model: gpt-5.5
+model: gpt-5.6-sol
 ---
 
 body`;

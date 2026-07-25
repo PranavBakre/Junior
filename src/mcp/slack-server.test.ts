@@ -36,6 +36,12 @@ describe("MCP Slack tool catalogue", () => {
       expect(names).toContain("pipeline_report_outcome");
       expect(names).toContain("runbook_select");
       expect(names).toContain("promotion_record");
+      const memoryRecall = tools.find((tool) => tool.name === "memory_recall");
+      expect(memoryRecall?.inputSchema).toMatchObject({
+        properties: {
+          fact_kinds: { type: "array" },
+        },
+      });
       const dispatch = tools.find((tool) => tool.name === "agent_dispatch");
       expect(dispatch?.inputSchema).toMatchObject({
         properties: {
@@ -183,6 +189,59 @@ describe("MCP memory v3 tools", () => {
       );
 
       expect(result.claims.map((claim) => claim.id)).toEqual([relevant.id]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("memory_recall filters and identifies procedure fact subtypes", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const procedureId = "procedure-clean-merged-worktrees";
+      const procedureText =
+        "Clean merged worktrees only after verifying the pull request is merged";
+      const [embedding] = await deps.provider.embed([procedureText], "document");
+      await deps.store.upsertFact({
+        id: procedureId,
+        kind: "procedure",
+        body: procedureText,
+        createdAt: Date.now(),
+      });
+      await deps.store.upsertClaim({
+        id: procedureId,
+        kind: "fact",
+        text: procedureText,
+        embedding,
+        embedModel: deps.provider.model,
+        dim: deps.provider.dim,
+        tags: ["procedure", "worktree"],
+        createdAt: Date.now(),
+        skipDedup: true,
+      });
+      await addMemory(
+        {
+          text: "Worktree cards display their branch names",
+          kind: "fact",
+        },
+        deps,
+      );
+
+      const result = await recallMemory(
+        {
+          query: "how to clean merged worktrees",
+          factKinds: ["procedure"],
+          limit: 5,
+        },
+        deps,
+      );
+
+      expect(result.claims).toEqual([
+        expect.objectContaining({
+          id: procedureId,
+          kind: "fact",
+          factKind: "procedure",
+        }),
+      ]);
     } finally {
       cleanup();
     }

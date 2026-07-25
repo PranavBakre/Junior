@@ -76,6 +76,25 @@ export function startHttpServer(deps: HttpServerDeps): void {
           });
         }
 
+        const threeAsset = {
+          "/assets/three.module.js": "three.module.min.js",
+          "/assets/three.core.min.js": "three.core.min.js",
+        }[url.pathname];
+        if (threeAsset) {
+          const file = Bun.file(
+            path.resolve(import.meta.dir, "../../node_modules/three/build", threeAsset),
+          );
+          if (await file.exists()) {
+            return new Response(file, {
+              headers: {
+                "Content-Type": "text/javascript; charset=utf-8",
+                "Cache-Control": "public, max-age=86400",
+              },
+            });
+          }
+          return new Response("Three.js runtime not found", { status: 404 });
+        }
+
         if (url.pathname === "/api/health") {
           return await handleHealth(store, config, startedAt);
         } else if (url.pathname === "/api/sessions") {

@@ -170,10 +170,9 @@ export interface Config {
      */
     dedupThreshold?: number;
     /**
-     * Pre-recall hook: before each runner turn, a cheap LLM extracts recall
-     * queries from the incoming message and injects matching claims into the
-     * prompt. Optional so existing Config test fixtures stay valid; `loadConfig`
-     * always populates it.
+     * Pre-recall hook: before each runner turn, retrieve relevant claims and
+     * inject them into the prompt. Deterministic relevance filtering is the
+     * default hot path; optional synthesis is explicitly opt-in.
      */
     preRecall?: {
       enabled: boolean;
@@ -181,6 +180,8 @@ export interface Config {
       /** Override the pinned cheapest model for the chosen runner. */
       model?: string;
       timeoutMs: number;
+      /** Opt into the bounded synthesis subprocess. Defaults false. */
+      synthesisEnabled?: boolean;
     };
   };
   threadArchives: {
@@ -371,6 +372,10 @@ export function loadConfig(): Config {
         runner: parsePreRecallRunner(optional("PRE_RECALL_RUNNER", "claude")),
         model: process.env.PRE_RECALL_MODEL || undefined,
         timeoutMs: Number(optional("PRE_RECALL_TIMEOUT_MS", "15000")),
+        synthesisEnabled: parseBooleanEnv(
+          "PRE_RECALL_SYNTHESIS_ENABLED",
+          false,
+        ),
       },
     },
     threadArchives: {

@@ -355,9 +355,46 @@
      must never grow the document, and the claim rail scrolls INSIDE itself.
      `overscroll-behavior: contain` is the fix for the wheel over the rail
      chaining up to .content and scrolling the whole dashboard. */
-  #view-memory.active { display: flex; flex-direction: column; height: 100%; max-width: none; padding: 22px 26px 20px; }
-  #view-memory .view-head { margin-bottom: 12px; }
-  .mem-filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+  #view-memory.active {
+    position: relative;
+    display: block;
+    height: 100%;
+    max-width: none;
+    padding: 0;
+    overflow: hidden;
+    background: #030407;
+  }
+  #view-memory .view-head {
+    position: absolute;
+    inset: 0 0 auto;
+    z-index: 8;
+    min-height: calc(72 * var(--baseline-font));
+    margin: 0;
+    padding: calc(18 * var(--baseline-font)) calc(26 * var(--baseline-font)) calc(28 * var(--baseline-font));
+    background: linear-gradient(180deg, rgba(3,4,7,.97) 55%, rgba(3,4,7,0));
+    backdrop-filter: none;
+    pointer-events: none;
+  }
+  #view-memory .view-head .right,
+  #view-memory .view-head button,
+  #view-memory .view-head input { pointer-events: auto; }
+  .mem-filters {
+    position: absolute;
+    z-index: 9;
+    top: calc(72 * var(--baseline-font));
+    left: calc(26 * var(--baseline-font));
+    right: calc(410 * var(--baseline-font));
+    display: flex;
+    flex-direction: column;
+    gap: calc(7 * var(--baseline-font));
+    padding: calc(10 * var(--baseline-font));
+    margin: 0;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: calc(10 * var(--baseline-font));
+    background: rgba(5,7,12,.68);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
   .mem-filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   /* Chip rows scroll inside a two-row cap instead of pushing the galaxy down —
      with 1200+ tags and a dozen repos, an uncapped wrap eats the viewport. */
@@ -373,31 +410,35 @@
   .chip.tag .x { margin-left: 6px; color: var(--fg-faint); }
   .chip.tag:hover .x { color: var(--red); }
 
-  .mem-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) 372px; gap: 14px; }
-  @media (max-width: 1080px) {
-    .mem-layout { grid-template-columns: 1fr; grid-template-rows: minmax(300px, 1.5fr) minmax(190px, 1fr); }
-    .mem-filter-row .chips { max-height: 34px; }
-  }
+  .mem-layout { position: absolute; inset: 0; min-height: 0; }
 
   .galaxy-wrap {
-    position: relative; min-height: 0; min-width: 0; overflow: hidden;
-    border: 1px solid var(--border); border-radius: 12px;
-    background:
-      radial-gradient(120% 90% at 30% 18%, rgba(0,100,255,0.10), transparent 62%),
-      radial-gradient(90% 80% at 78% 82%, rgba(151,71,255,0.09), transparent 58%),
-      #050507;
+    position: absolute; inset: 0; min-height: 0; min-width: 0; overflow: hidden;
+    border: 0; border-radius: 0;
+    background: #030407;
   }
   #memory-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
   #memory-canvas.dragging { cursor: grabbing; }
   .galaxy-hud {
-    position: absolute; left: 12px; bottom: 10px; right: 12px; pointer-events: none;
+    position: absolute;
+    left: calc(26 * var(--baseline-font));
+    bottom: calc(20 * var(--baseline-font));
+    right: calc(420 * var(--baseline-font));
+    pointer-events: none;
     display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap;
     font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint);
   }
   .galaxy-hud .lg { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-dim); }
   .galaxy-hud .sw { width: 8px; height: 8px; border-radius: 50%; }
   .galaxy-hud .hint { margin-left: auto; text-align: right; line-height: 1.7; }
-  .galaxy-tools { position: absolute; right: 12px; top: 10px; display: flex; gap: 6px; }
+  .galaxy-tools {
+    position: absolute;
+    z-index: 5;
+    left: calc(26 * var(--baseline-font));
+    top: calc(166 * var(--baseline-font));
+    display: flex;
+    gap: calc(6 * var(--baseline-font));
+  }
   .galaxy-tools .ctrl { background: rgba(8,8,10,0.72); backdrop-filter: blur(4px); }
   .galaxy-tools .ctrl.on { color: var(--fg); border-color: var(--accent); }
   .galaxy-status {
@@ -406,7 +447,25 @@
     pointer-events: none; text-align: center; padding: 0 20px;
   }
 
-  .mem-rail { display: flex; flex-direction: column; min-height: 0; gap: 10px; }
+  .mem-rail {
+    position: absolute;
+    z-index: 6;
+    top: calc(86 * var(--baseline-font));
+    right: calc(20 * var(--baseline-font));
+    bottom: calc(20 * var(--baseline-font));
+    width: calc(372 * var(--baseline-font));
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    gap: calc(10 * var(--baseline-font));
+    padding: calc(12 * var(--baseline-font));
+    border: 1px solid rgba(113,116,121,.25);
+    border-radius: calc(12 * var(--baseline-font));
+    background: rgba(6,6,8,.76);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+    box-shadow: 0 calc(8 * var(--baseline-font)) calc(60 * var(--baseline-font)) rgba(0,0,0,.48);
+  }
   /* flex:1 + height:1px is the grid-safe way to get a scroll box — a max-height
      here would let the rail push the page instead of scrolling itself. */
   .mem-scroll { flex: 1; height: 1px; overflow-y: auto; overscroll-behavior: contain; }
@@ -455,13 +514,431 @@
   .doc-pane h2 { font-size: 15px; margin: 20px 0 8px; }
   .doc-pane p, .doc-pane li { color: var(--fg-dim); font-size: 13px; }
   .doc-pane pre { background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px 14px; font-size: 12px; overflow-x: auto; }
+
+  /* ---------- spatial control room ---------- */
+  :root {
+    --baseline-font: 1px;
+    --sidebar-w: calc(232 * var(--baseline-font));
+    --glass: rgba(7, 9, 15, 0.62);
+    --glass-strong: rgba(8, 10, 17, 0.82);
+    --electric: #4f8cff;
+    --cyan: #5ce1e6;
+  }
+  @media (min-width: 900px) {
+    :root {
+      --baseline-font: calc((12.5px + ((100vw - 400px) / 400) * 3) / 20);
+    }
+  }
+  @media (max-width: 899px) {
+    :root {
+      --baseline-font: calc((12.5px + (100vw - 400px) / 400) / 15.1);
+    }
+  }
+
+  html { background: #030407; }
+  body {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 72% 8%, rgba(0, 100, 255, 0.11), transparent 38%),
+      radial-gradient(circle at 18% 92%, rgba(151, 71, 255, 0.08), transparent 32%),
+      #030407;
+    font-size: calc(14 * var(--baseline-font));
+  }
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+    background-size: calc(64 * var(--baseline-font)) calc(64 * var(--baseline-font));
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,.8), transparent 80%);
+  }
+  aside {
+    width: var(--sidebar-w);
+    z-index: 20;
+    padding: calc(22 * var(--baseline-font)) calc(14 * var(--baseline-font));
+    border-right: 1px solid rgba(255,255,255,.09);
+    background: linear-gradient(180deg, rgba(5,7,12,.92), rgba(5,7,12,.68));
+    backdrop-filter: blur(36px) saturate(1.3);
+    -webkit-backdrop-filter: blur(36px) saturate(1.3);
+    box-shadow: inset -1px 0 rgba(0,100,255,.05);
+  }
+  .brand {
+    align-items: center;
+    gap: calc(10 * var(--baseline-font));
+    padding: 0 calc(10 * var(--baseline-font)) calc(26 * var(--baseline-font));
+  }
+  .brand-mark {
+    width: calc(32 * var(--baseline-font));
+    height: calc(32 * var(--baseline-font));
+    display: grid;
+    place-items: center;
+    border-radius: calc(10 * var(--baseline-font));
+    background: linear-gradient(145deg, rgba(0,100,255,.26), rgba(151,71,255,.12));
+    border: 1px solid rgba(100,157,255,.28);
+    box-shadow: inset 0 1px rgba(255,255,255,.12), 0 0 32px rgba(0,100,255,.13);
+  }
+  .brand-mark::before {
+    content: "";
+    width: calc(12 * var(--baseline-font));
+    height: calc(12 * var(--baseline-font));
+    border: 1px solid #85afff;
+    border-radius: 50%;
+    box-shadow: 0 0 14px #0064ff, inset 0 0 8px rgba(0,100,255,.5);
+  }
+  .brand-copy { min-width: 0; }
+  .brand h1 {
+    font-family: Gilroy-Bold, var(--font-sans);
+    font-size: calc(14 * var(--baseline-font));
+    line-height: 1.1;
+    letter-spacing: .18em;
+  }
+  .brand-sub {
+    margin-top: calc(3 * var(--baseline-font));
+    font-family: var(--font-mono);
+    font-size: calc(8.5 * var(--baseline-font));
+    color: var(--fg-faint);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+  .brand .env {
+    margin-left: auto;
+    font-size: calc(8 * var(--baseline-font));
+    border-color: rgba(92,225,230,.2);
+    color: var(--cyan);
+    background: rgba(92,225,230,.05);
+  }
+  nav { gap: calc(5 * var(--baseline-font)); }
+  nav::before {
+    content: "SYSTEM MAP";
+    padding: 0 calc(12 * var(--baseline-font)) calc(8 * var(--baseline-font));
+    font: calc(8 * var(--baseline-font))/1 var(--font-mono);
+    letter-spacing: .18em;
+    color: rgba(255,255,255,.28);
+  }
+  nav a {
+    position: relative;
+    min-height: calc(40 * var(--baseline-font));
+    gap: calc(11 * var(--baseline-font));
+    padding: calc(9 * var(--baseline-font)) calc(11 * var(--baseline-font));
+    border: 1px solid transparent;
+    border-radius: calc(10 * var(--baseline-font));
+    font-size: calc(12 * var(--baseline-font));
+    overflow: hidden;
+  }
+  nav a::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 23%;
+    bottom: 23%;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--electric);
+    opacity: 0;
+    box-shadow: 0 0 12px var(--electric);
+    transition: opacity .2s ease-in-out;
+  }
+  nav a:hover {
+    background: rgba(255,255,255,.04);
+    border-color: rgba(255,255,255,.06);
+  }
+  nav a.active {
+    color: #fff;
+    background: linear-gradient(90deg, rgba(0,100,255,.14), rgba(0,100,255,.035));
+    border-color: rgba(89,145,255,.15);
+  }
+  nav a.active::before { opacity: 1; }
+  nav a .ico {
+    width: calc(19 * var(--baseline-font));
+    color: rgba(255,255,255,.35);
+    font-size: calc(11 * var(--baseline-font));
+    transition: color .2s, text-shadow .2s;
+  }
+  nav a.active .ico { color: #82acff; text-shadow: 0 0 12px #0064ff; }
+  nav a .count {
+    font-size: calc(9 * var(--baseline-font));
+    padding: 0 calc(7 * var(--baseline-font));
+    background: rgba(255,255,255,.045);
+  }
+  .side-foot {
+    padding: calc(15 * var(--baseline-font)) calc(10 * var(--baseline-font)) 0;
+    font-size: calc(9.5 * var(--baseline-font));
+    border-color: rgba(255,255,255,.07);
+  }
+  .live-toggle {
+    padding: calc(8 * var(--baseline-font)) calc(9 * var(--baseline-font));
+    margin: calc(9 * var(--baseline-font)) calc(-9 * var(--baseline-font)) 0;
+    border: 1px solid rgba(34,197,94,.14);
+    border-radius: calc(9 * var(--baseline-font));
+    background: rgba(34,197,94,.035);
+  }
+
+  .content {
+    position: relative;
+    z-index: 2;
+    scroll-behavior: smooth;
+  }
+  .view {
+    width: 100%;
+    max-width: calc(1320 * var(--baseline-font));
+    min-height: 100vh;
+    padding: calc(30 * var(--baseline-font)) calc(38 * var(--baseline-font)) calc(72 * var(--baseline-font));
+    animation: viewArrival .5s cubic-bezier(.2,.8,.2,1);
+  }
+  @keyframes viewArrival {
+    from { opacity: 0; transform: translateY(calc(8 * var(--baseline-font))); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .view-head {
+    position: sticky;
+    top: 0;
+    z-index: 14;
+    min-height: calc(58 * var(--baseline-font));
+    align-items: center;
+    gap: calc(13 * var(--baseline-font));
+    margin: calc(-8 * var(--baseline-font)) 0 calc(24 * var(--baseline-font));
+    padding: calc(8 * var(--baseline-font)) 0 calc(10 * var(--baseline-font));
+    background: linear-gradient(180deg, rgba(3,4,7,.94) 55%, rgba(3,4,7,0));
+    backdrop-filter: blur(3px);
+  }
+  .view-head::before {
+    content: attr(data-index);
+    display: grid;
+    place-items: center;
+    width: calc(25 * var(--baseline-font));
+    height: calc(25 * var(--baseline-font));
+    border-radius: 50%;
+    font: calc(8 * var(--baseline-font))/1 var(--font-mono);
+    color: #8cb2ff;
+    border: 1px solid rgba(79,140,255,.3);
+    background: rgba(0,100,255,.08);
+    box-shadow: 0 0 22px rgba(0,100,255,.12);
+  }
+  .view-head h2 {
+    font-family: Gilroy-Bold, var(--font-sans);
+    font-size: calc(21 * var(--baseline-font));
+    letter-spacing: -.015em;
+  }
+  .view-head .sub { font-size: calc(11.5 * var(--baseline-font)); color: rgba(255,255,255,.48); }
+  h3.sect {
+    margin: calc(30 * var(--baseline-font)) 0 calc(11 * var(--baseline-font));
+    font-size: calc(9 * var(--baseline-font));
+    letter-spacing: .17em;
+    color: rgba(255,255,255,.48);
+  }
+  .panel, .stat, .attn-card, .ds-card, .wf-row, .claim-detail {
+    border-color: rgba(128,149,190,.19);
+    background:
+      linear-gradient(135deg, rgba(255,255,255,.052), rgba(255,255,255,.018)),
+      rgba(5,7,12,.62);
+    backdrop-filter: blur(28px) saturate(1.25);
+    -webkit-backdrop-filter: blur(28px) saturate(1.25);
+    box-shadow: inset 0 1px rgba(255,255,255,.055);
+  }
+  .panel { border-radius: calc(13 * var(--baseline-font)); }
+  .attn-card, .ds-card {
+    border-radius: calc(13 * var(--baseline-font));
+    transform-style: preserve-3d;
+  }
+  .attn-card:hover, .ds-card:hover {
+    border-color: rgba(112,157,255,.32);
+    transform: translateY(calc(-2 * var(--baseline-font)));
+  }
+  .stat-grid {
+    grid-template-columns: repeat(auto-fit, minmax(calc(150 * var(--baseline-font)), 1fr));
+    gap: calc(10 * var(--baseline-font));
+  }
+  .stat {
+    position: relative;
+    min-height: calc(104 * var(--baseline-font));
+    padding: calc(16 * var(--baseline-font));
+    border-radius: calc(12 * var(--baseline-font));
+    overflow: hidden;
+  }
+  .stat::after {
+    content: "";
+    position: absolute;
+    width: calc(80 * var(--baseline-font));
+    height: calc(80 * var(--baseline-font));
+    right: calc(-35 * var(--baseline-font));
+    bottom: calc(-46 * var(--baseline-font));
+    border: 1px solid rgba(79,140,255,.16);
+    border-radius: 50%;
+    box-shadow: 0 0 30px rgba(0,100,255,.08);
+  }
+  .stat .lbl { font-size: calc(8.5 * var(--baseline-font)); letter-spacing: .15em; }
+  .stat .num { font-size: calc(27 * var(--baseline-font)); margin-top: calc(7 * var(--baseline-font)); }
+  .stat .sub { font-size: calc(9.5 * var(--baseline-font)); }
+  .pill, .chip, .apill, button.ctrl {
+    font-size: calc(9.5 * var(--baseline-font));
+    border-color: rgba(255,255,255,.1);
+    background: rgba(255,255,255,.045);
+  }
+  button.ctrl, input.search, select.ctrl, input.ctrl {
+    min-height: calc(32 * var(--baseline-font));
+    border-radius: calc(8 * var(--baseline-font));
+  }
+  input.search, select.ctrl, input.ctrl {
+    font-size: calc(10.5 * var(--baseline-font));
+    background: rgba(8,10,16,.78);
+    backdrop-filter: blur(16px);
+  }
+  .th-row, .log-line, .feed-row, .wf-row, .claim-row {
+    border-color: rgba(255,255,255,.055);
+  }
+  .th-row:hover, .log-line:hover, .wf-row:hover, .claim-row:hover {
+    background: linear-gradient(90deg, rgba(0,100,255,.055), rgba(255,255,255,.018));
+  }
+  .drawer {
+    background: rgba(6,8,13,.9);
+    border-color: rgba(112,157,255,.18);
+    backdrop-filter: blur(40px) saturate(1.3);
+    -webkit-backdrop-filter: blur(40px) saturate(1.3);
+    box-shadow: calc(-30 * var(--baseline-font)) 0 calc(100 * var(--baseline-font)) rgba(0,0,0,.55);
+  }
+  .drawer-scrim { backdrop-filter: blur(5px); }
+  .galaxy-wrap { background: #030407; }
+  .doc-pane h1 { font-size: calc(20 * var(--baseline-font)); }
+  .doc-pane h2 { font-size: calc(15 * var(--baseline-font)); }
+  .doc-pane p, .doc-pane li { font-size: calc(12 * var(--baseline-font)); }
+
+  @media (max-width: 780px) {
+    body { display: block; overflow: hidden; }
+    aside {
+      width: 100%;
+      height: auto;
+      min-height: calc(65 * var(--baseline-font));
+      position: fixed;
+      inset: auto 0 0;
+      padding: calc(8 * var(--baseline-font)) calc(10 * var(--baseline-font));
+      border: 1px solid rgba(255,255,255,.1);
+      border-width: 1px 0 0;
+      background: rgba(5,7,12,.88);
+    }
+    .brand, .side-foot, nav::before { display: none; }
+    nav {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: calc(2 * var(--baseline-font));
+    }
+    nav a {
+      min-width: 0;
+      min-height: calc(48 * var(--baseline-font));
+      flex-direction: column;
+      justify-content: center;
+      gap: calc(2 * var(--baseline-font));
+      padding: calc(4 * var(--baseline-font)) calc(2 * var(--baseline-font));
+      font-size: calc(7.5 * var(--baseline-font));
+      text-align: center;
+    }
+    nav a::before {
+      inset: auto 28% 0;
+      width: auto;
+      height: 2px;
+    }
+    nav a .ico { width: auto; font-size: calc(12 * var(--baseline-font)); }
+    nav a .count { display: none !important; }
+    .content { height: calc(100vh - 64 * var(--baseline-font)); }
+    .view {
+      padding: calc(18 * var(--baseline-font)) calc(16 * var(--baseline-font)) calc(92 * var(--baseline-font));
+    }
+    .view-head {
+      align-items: flex-start;
+      margin-top: 0;
+      flex-direction: column;
+      gap: calc(5 * var(--baseline-font));
+    }
+    .view-head::before { display: none; }
+    .view-head .right {
+      width: 100%;
+      margin: calc(5 * var(--baseline-font)) 0 0;
+      flex-wrap: wrap;
+    }
+    input.search { width: 100%; }
+    .two-col, .docs-layout { grid-template-columns: 1fr; }
+    .th-row {
+      grid-template-columns: 1fr auto;
+      gap: calc(8 * var(--baseline-font));
+    }
+    .th-row .agents-cell { grid-column: 1 / -1; }
+    .th-row .last { display: none; }
+    .log-line { grid-template-columns: calc(64 * var(--baseline-font)) calc(45 * var(--baseline-font)) 1fr; }
+    .log-line .msg { grid-column: 1 / -1; padding-bottom: calc(4 * var(--baseline-font)); }
+    .ds-grid { grid-template-columns: 1fr; }
+    #view-memory .view-head {
+      min-height: calc(92 * var(--baseline-font));
+      padding: calc(14 * var(--baseline-font)) calc(14 * var(--baseline-font)) calc(20 * var(--baseline-font));
+    }
+    #view-memory .view-head .sub,
+    #view-memory .view-head .right button { display: none; }
+    #view-memory .view-head .right {
+      width: 100%;
+      margin-top: calc(3 * var(--baseline-font));
+    }
+    .mem-filters {
+      top: calc(94 * var(--baseline-font));
+      left: calc(10 * var(--baseline-font));
+      right: calc(10 * var(--baseline-font));
+      max-height: calc(160 * var(--baseline-font));
+      overflow: hidden;
+    }
+    .mem-filter-row .chips {
+      max-height: calc(30 * var(--baseline-font));
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+    }
+    .mem-filter-row .lbl { width: calc(36 * var(--baseline-font)); }
+    #mem-tag-q { width: calc(132 * var(--baseline-font)) !important; }
+    .galaxy-tools {
+      top: calc(260 * var(--baseline-font));
+      left: calc(10 * var(--baseline-font));
+    }
+    .galaxy-tools #gal-links,
+    .galaxy-tools #gal-spin { display: none; }
+    .galaxy-hud {
+      left: calc(12 * var(--baseline-font));
+      right: calc(12 * var(--baseline-font));
+      bottom: calc(10 * var(--baseline-font));
+    }
+    .galaxy-hud .hint { display: none; }
+    .mem-rail {
+      top: auto;
+      left: calc(12 * var(--baseline-font));
+      right: calc(12 * var(--baseline-font));
+      bottom: calc(12 * var(--baseline-font));
+      width: auto;
+      height: 34vh;
+      padding: calc(10 * var(--baseline-font));
+    }
+    #mem-detail { max-height: 56%; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      scroll-behavior: auto !important;
+      animation-duration: .01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .01ms !important;
+    }
+  }
 </style>
 </head>
 
 <body>
   <aside>
-    <div class="brand"><h1>JUNIOR</h1><span class="env">local</span></div>
-    <nav id="nav">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-copy"><h1>JUNIOR</h1><span class="brand-sub">operator console</span></span>
+      <span class="env">local</span>
+    </div>
+    <nav id="nav" aria-label="Dashboard views">
       <a href="#overview" data-view="overview"><span class="ico">◉</span>Overview</a>
       <a href="#threads" data-view="threads"><span class="ico">≡</span>Threads<span class="count" id="nav-threads" style="display:none"></span></a>
       <a href="#logs" data-view="logs"><span class="ico">▤</span>Logs<span class="count err" id="nav-logs" style="display:none"></span></a>
@@ -484,7 +961,7 @@
 
     <!-- ================= OVERVIEW ================= -->
     <section class="view" id="view-overview">
-      <div class="view-head">
+      <div class="view-head" data-index="01">
         <h2>Overview</h2>
         <span class="sub">what needs you, then the numbers</span>
         <span class="right mono faint" id="ov-refreshed">—</span>
@@ -520,7 +997,7 @@
 
     <!-- ================= THREADS ================= -->
     <section class="view" id="view-threads">
-      <div class="view-head">
+      <div class="view-head" data-index="02">
         <h2>Threads</h2>
         <span class="sub">click a row for full session detail</span>
         <span class="right"><input class="search" id="th-search" placeholder="filter channel / thread / repo…" /></span>
@@ -531,7 +1008,7 @@
 
     <!-- ================= LOGS ================= -->
     <section class="view" id="view-logs">
-      <div class="view-head">
+      <div class="view-head" data-index="03">
         <h2>Logs</h2>
         <span class="sub">logs/&lt;date&gt;.log — parsed, filterable, no more ssh + tail</span>
       </div>
@@ -563,7 +1040,7 @@
 
     <!-- ================= DEV SERVERS ================= -->
     <section class="view" id="view-devservers">
-      <div class="view-head">
+      <div class="view-head" data-index="04">
         <h2>Dev Servers</h2>
         <span class="sub">one slot per repo · TTL meter shows time until idle reap</span>
       </div>
@@ -572,7 +1049,7 @@
 
     <!-- ================= WORKFLOWS ================= -->
     <section class="view" id="view-workflows">
-      <div class="view-head">
+      <div class="view-head" data-index="05">
         <h2>Workflows</h2>
         <span class="sub">scheduled runs · last outcomes per workflow</span>
       </div>
@@ -581,7 +1058,7 @@
 
     <!-- ================= MEMORY ================= -->
     <section class="view" id="view-memory">
-      <div class="view-head">
+      <div class="view-head" data-index="06">
         <h2>Memory</h2>
         <span class="sub">3D projection — local neighbourhoods are meaningful, global distances are not</span>
         <span class="right">
@@ -634,7 +1111,7 @@
 
     <!-- ================= DOCS ================= -->
     <section class="view" id="view-docs">
-      <div class="view-head">
+      <div class="view-head" data-index="07">
         <h2>Docs</h2>
         <span class="sub">read-only browser over docs/**/*.md</span>
       </div>
@@ -650,7 +1127,8 @@
   <div class="drawer-scrim" id="drawer-scrim"></div>
   <div class="drawer" id="drawer"></div>
 
-<script>
+<script type="module">
+import * as THREE from "/assets/three.module.js";
 
 
 /* =================== helpers =================== */
@@ -1461,23 +1939,29 @@ function renderWorkflows() {
 }
 
 /* =================== memory galaxy =================== */
-/* A hand-rolled 3D renderer on a 2D canvas: perspective projection, additive
-   star blending, no WebGL and no library. The dashboard is one static file
-   served by the bot process, so a 3D dependency here would mean a build step.
-   Stars are composited with "lighter", which is order-independent — that is what
-   lets the draw loop skip a per-frame depth sort of the whole corpus. */
+/* The server owns semantic layout (PCA + spread + KNN); Three.js owns the
+   interactive view. Claims are GPU point sprites, links are dynamic line
+   buffers, and the existing DOM rail remains the accessible detail surface. */
 const KINDS = ["lesson", "fact", "situation-claim"];
 const PALETTE = [[52, 211, 153], [59, 130, 246], [167, 110, 255], [150, 150, 150]];
-const ALPHA_STEPS = 8;
-const TAU = Math.PI * 2;
 const MAX_ROWS = 200;
 const kindIdx = (kind) => { const i = KINDS.indexOf(kind); return i < 0 ? 3 : i; };
-const rgba = (c, a) => "rgba(" + c[0] + "," + c[1] + "," + c[2] + "," + a.toFixed(3) + ")";
 const kindColor = (kind) => { const c = PALETTE[kindIdx(kind)]; return "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")"; };
 
 const GAL = {
   canvas: $("memory-canvas"),
-  ctx: null,
+  renderer: null,
+  scene: null,
+  camera3: null,
+  pointCloud: null,
+  linkLines: null,
+  focusLines: null,
+  hoverMarker: null,
+  selectionMarker: null,
+  pointSize: null,
+  pointAlpha: null,
+  pointStyleState: null,
+  linkState: null,
   tip: $("cloud-tip"),
   status: $("cloud-status"),
   points: [],
@@ -1486,8 +1970,7 @@ const GAL = {
   edgeA: null, edgeB: null, edgeSim: null,  // KNN edges as index pairs
   facets: { tags: [], kinds: [], repos: [] },
   w: 0, h: 0, dpr: 1,
-  sx: null, sy: null, sr: null, sz: null, svis: null, // per-point screen cache
-  buckets: [],
+  sx: null, sy: null, sr: null, sz: null, svis: null, // picking + tooltip screen cache
   cam: { yaw: 0.6, pitch: 0.32, dist: 2.1, tx: 0, ty: 0, tz: 0 },
   vYaw: 0, vPitch: 0,
   drag: null,
@@ -1561,8 +2044,7 @@ function ingestGalaxy(data) {
   GAL.sr = new Float32Array(n);
   GAL.sz = new Float32Array(n);
   GAL.svis = new Uint8Array(n);
-  GAL.buckets = [];
-  for (let i = 0; i < PALETTE.length * ALPHA_STEPS; i += 1) GAL.buckets.push([]);
+  buildGalaxyScene();
 
   setGalStatus(n ? null : "No claims with embeddings yet.");
   resetView(false);
@@ -1649,148 +2131,313 @@ function galaxyFrame(now) {
 }
 
 /* ---------- render ---------- */
+function ensureGalaxyRenderer() {
+  if (GAL.renderer) return;
+  GAL.renderer = new THREE.WebGLRenderer({
+    canvas: GAL.canvas,
+    alpha: true,
+    antialias: true,
+    powerPreference: "high-performance",
+  });
+  GAL.renderer.outputColorSpace = THREE.SRGBColorSpace;
+  GAL.renderer.setClearColor(0x030408, 0);
+  GAL.scene = new THREE.Scene();
+  GAL.scene.fog = new THREE.FogExp2(0x030408, 0.075);
+  GAL.camera3 = new THREE.PerspectiveCamera(58, 1, 0.02, 80);
+
+  const markerGeometry = new THREE.RingGeometry(0.017, 0.022, 40);
+  GAL.hoverMarker = new THREE.Mesh(
+    markerGeometry,
+    new THREE.MeshBasicMaterial({
+      color: 0xb7d0ff,
+      transparent: true,
+      opacity: 0.58,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    }),
+  );
+  GAL.selectionMarker = new THREE.Mesh(
+    markerGeometry.clone(),
+    new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    }),
+  );
+  GAL.selectionMarker.scale.setScalar(1.3);
+  GAL.hoverMarker.visible = false;
+  GAL.selectionMarker.visible = false;
+  GAL.scene.add(GAL.hoverMarker, GAL.selectionMarker);
+}
+
+function disposeGalaxyObject(object) {
+  if (!object) return;
+  GAL.scene.remove(object);
+  object.geometry?.dispose();
+  if (Array.isArray(object.material)) object.material.forEach((material) => material.dispose());
+  else object.material?.dispose();
+}
+
+function buildGalaxyScene() {
+  ensureGalaxyRenderer();
+  disposeGalaxyObject(GAL.pointCloud);
+  disposeGalaxyObject(GAL.linkLines);
+  disposeGalaxyObject(GAL.focusLines);
+
+  const pointCount = GAL.points.length;
+  const positions = new Float32Array(pointCount * 3);
+  const colors = new Float32Array(pointCount * 3);
+  const sizes = new Float32Array(pointCount);
+  const alphas = new Float32Array(pointCount);
+  for (let index = 0; index < pointCount; index += 1) {
+    const point = GAL.points[index];
+    positions[index * 3] = point.x;
+    positions[index * 3 + 1] = point.y;
+    positions[index * 3 + 2] = point.z;
+    const color = PALETTE[kindIdx(point.kind)];
+    colors[index * 3] = color[0] / 255;
+    colors[index * 3 + 1] = color[1] / 255;
+    colors[index * 3 + 2] = color[2] / 255;
+    sizes[index] = 8.5 + Math.min(2, Math.max(0, point.weight || 0)) * 3.2;
+    alphas[index] = 0.66;
+  }
+
+  const pointGeometry = new THREE.BufferGeometry();
+  pointGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  pointGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  GAL.pointSize = new THREE.BufferAttribute(sizes, 1);
+  GAL.pointAlpha = new THREE.BufferAttribute(alphas, 1);
+  GAL.pointSize.setUsage(THREE.DynamicDrawUsage);
+  GAL.pointAlpha.setUsage(THREE.DynamicDrawUsage);
+  pointGeometry.setAttribute("pointSize", GAL.pointSize);
+  pointGeometry.setAttribute("pointAlpha", GAL.pointAlpha);
+
+  const pointMaterial = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    vertexColors: true,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      pixelRatio: { value: Math.min(window.devicePixelRatio || 1, 1.75) },
+    },
+    vertexShader: `
+      attribute float pointSize;
+      attribute float pointAlpha;
+      varying vec3 vColor;
+      varying float vAlpha;
+      uniform float pixelRatio;
+      void main() {
+        vColor = color;
+        vAlpha = pointAlpha;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        float depthScale = clamp(1.8 / max(0.15, -mvPosition.z), 0.42, 2.8);
+        gl_PointSize = pointSize * pixelRatio * depthScale;
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        float radius = length(gl_PointCoord - vec2(0.5));
+        if (radius > 0.5) discard;
+        float glow = 1.0 - smoothstep(0.08, 0.5, radius);
+        float core = 1.0 - smoothstep(0.0, 0.13, radius);
+        gl_FragColor = vec4(vColor * (0.72 + core * 0.75), vAlpha * max(glow, core));
+      }
+    `,
+  });
+  GAL.pointCloud = new THREE.Points(pointGeometry, pointMaterial);
+  GAL.pointCloud.frustumCulled = false;
+  GAL.scene.add(GAL.pointCloud);
+  GAL.pointStyleState = null;
+  GAL.linkState = null;
+
+  const linkGeometry = new THREE.BufferGeometry();
+  const linkPositions = new THREE.BufferAttribute(
+    new Float32Array(Math.max(6, (GAL.edgeCount || 0) * 6)),
+    3,
+  );
+  linkPositions.setUsage(THREE.DynamicDrawUsage);
+  linkGeometry.setAttribute("position", linkPositions);
+  GAL.linkLines = new THREE.LineSegments(
+    linkGeometry,
+    new THREE.LineBasicMaterial({
+      color: 0x6595df,
+      transparent: true,
+      opacity: 0.06,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  GAL.scene.add(GAL.linkLines);
+
+  const focusGeometry = new THREE.BufferGeometry();
+  const focusPositions = new THREE.BufferAttribute(
+    new Float32Array(Math.max(6, (GAL.edgeCount || 0) * 6)),
+    3,
+  );
+  focusPositions.setUsage(THREE.DynamicDrawUsage);
+  focusGeometry.setAttribute("position", focusPositions);
+  GAL.focusLines = new THREE.LineSegments(
+    focusGeometry,
+    new THREE.LineBasicMaterial({
+      color: 0xb1d0ff,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  GAL.scene.add(GAL.focusLines);
+  resizeGalaxy();
+}
+
 function resizeGalaxy() {
   const wrap = $("galaxy-wrap");
   if (!wrap) return;
   const rect = wrap.getBoundingClientRect();
   GAL.w = Math.max(1, Math.round(rect.width));
   GAL.h = Math.max(1, Math.round(rect.height));
-  GAL.dpr = window.devicePixelRatio || 1;
-  GAL.canvas.width = Math.round(GAL.w * GAL.dpr);
-  GAL.canvas.height = Math.round(GAL.h * GAL.dpr);
+  ensureGalaxyRenderer();
+  GAL.dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+  GAL.renderer.setPixelRatio(GAL.dpr);
+  GAL.renderer.setSize(GAL.w, GAL.h, false);
+  GAL.camera3.aspect = GAL.w / GAL.h;
+  GAL.camera3.updateProjectionMatrix();
+  if (GAL.pointCloud) GAL.pointCloud.material.uniforms.pixelRatio.value = GAL.dpr;
   GAL.dirty = true;
 }
 
-function paintGalaxy() {
-  if (!GAL.ctx) GAL.ctx = GAL.canvas.getContext("2d");
-  const ctx = GAL.ctx;
-  const { w, h, points, cam } = GAL;
-  const n = points.length;
-  ctx.setTransform(GAL.dpr, 0, 0, GAL.dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  if (!n || !w) return;
-
-  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
-  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
-  const focal = Math.min(w, h) * 0.85;
-  const ox = w / 2, oy = h / 2;
-  const matches = GAL.matches;
-
-  for (let i = 0; i < n; i += 1) {
-    const p = points[i];
-    const px = p.x - cam.tx, py = p.y - cam.ty, pz = p.z - cam.tz;
-    const rx = px * cy - pz * sy;
-    const rzy = px * sy + pz * cy;
-    const ry = py * cp - rzy * sp;
-    const rz = py * sp + rzy * cp + cam.dist;
-    if (rz <= 0.04) { GAL.svis[i] = 0; continue; }
-    const f = focal / rz;
-    const x = ox + rx * f;
-    const y = oy - ry * f;
-    GAL.sx[i] = x; GAL.sy[i] = y; GAL.sz[i] = rz;
-    // Size carries both weight (how much the claim has earned) and depth.
-    const base = 1.05 + Math.min(1.8, Math.max(0, p.weight)) * 0.7;
-    GAL.sr[i] = Math.max(0.55, Math.min(16, base * (cam.dist / rz)));
-    GAL.svis[i] = x > -40 && x < w + 40 && y > -40 && y < h + 40 ? 1 : 0;
-  }
-
-  // Links behind the stars, in two passes: one faint ambient web (a single flat
-  // alpha — per-edge alpha would mean a stroke call per edge) and a bright pass
-  // for whatever is hovered or selected, which is the one you actually read.
-  const focusId = GAL.hoverId != null ? GAL.hoverId : GAL.selId;
-  if (GAL.edgeCount) {
-    ctx.lineWidth = 1;
-    if (GAL.linksOn) {
-      ctx.strokeStyle = "rgba(120,170,255,0.055)";
-      ctx.beginPath();
-      for (let e = 0; e < GAL.edgeCount; e += 1) {
-        const a = GAL.edgeA[e], b = GAL.edgeB[e];
-        if (!GAL.svis[a] || !GAL.svis[b]) continue;
-        if (matches && !(matches.has(points[a].id) && matches.has(points[b].id))) continue;
-        ctx.moveTo(GAL.sx[a], GAL.sy[a]);
-        ctx.lineTo(GAL.sx[b], GAL.sy[b]);
-      }
-      ctx.stroke();
-    }
-    if (focusId != null) {
-      ctx.strokeStyle = "rgba(160,200,255,0.62)";
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      for (let e = 0; e < GAL.edgeCount; e += 1) {
-        const a = GAL.edgeA[e], b = GAL.edgeB[e];
-        if (points[a].id !== focusId && points[b].id !== focusId) continue;
-        if (!GAL.svis[a] || !GAL.svis[b]) continue;
-        ctx.moveTo(GAL.sx[a], GAL.sy[a]);
-        ctx.lineTo(GAL.sx[b], GAL.sy[b]);
-      }
-      ctx.stroke();
-    }
-  }
-
-  // Stars, batched by (kind, alpha bucket). Additive blending is commutative, so
-  // no depth sort is needed — distance reads through size and fog alone.
-  for (const bucket of GAL.buckets) bucket.length = 0;
-  for (let i = 0; i < n; i += 1) {
-    if (!GAL.svis[i]) continue;
-    const p = points[i];
-    const fog = Math.max(0.07, Math.min(0.62, 1.05 - GAL.sz[i] / (cam.dist * 1.5)));
-    let alpha = fog;
-    let r = GAL.sr[i];
-    if (matches && !matches.has(p.id)) { alpha *= 0.16; r *= 0.7; }
-    else if (matches) {
-      alpha = Math.min(0.95, alpha + 0.3);
-      r *= 1.25;
-      if (GAL.scores) {
-        // Rank shows up as brightness when a semantic query is driving the view.
-        const s = GAL.scores.get(p.id) || 0;
-        r *= 1 + Math.min(1, s / (GAL.topScore || 1)) * 0.5;
-      }
-    }
-    // Quantise alpha into buckets so each (kind, alpha) pair is one fill call.
-    // The bucket paints at its midpoint alpha, so the quantisation is unbiased.
-    const slot = Math.max(0, Math.min(ALPHA_STEPS - 1, Math.floor(alpha * ALPHA_STEPS)));
-    GAL.buckets[kindIdx(p.kind) * ALPHA_STEPS + slot].push(GAL.sx[i], GAL.sy[i], r);
-  }
-  ctx.globalCompositeOperation = "lighter";
-  for (let b = 0; b < GAL.buckets.length; b += 1) {
-    const arr = GAL.buckets[b];
-    if (!arr.length) continue;
-    ctx.fillStyle = rgba(PALETTE[Math.floor(b / ALPHA_STEPS)], ((b % ALPHA_STEPS) + 0.5) / ALPHA_STEPS);
-    ctx.beginPath();
-    for (let i = 0; i < arr.length; i += 3) {
-      ctx.moveTo(arr[i] + arr[i + 2], arr[i + 1]);
-      ctx.arc(arr[i], arr[i + 1], arr[i + 2], 0, TAU);
-    }
-    ctx.fill();
-  }
-  ctx.globalCompositeOperation = "source-over";
-
-  drawMarker(ctx, GAL.hoverId, 0.5);
-  drawMarker(ctx, GAL.selId, 1);
-  updateGalStats();
+function updateGalaxyCamera() {
+  const cam = GAL.cam;
+  const cosPitch = Math.cos(cam.pitch);
+  GAL.camera3.position.set(
+    cam.tx + Math.sin(cam.yaw) * cosPitch * cam.dist,
+    cam.ty + Math.sin(cam.pitch) * cam.dist,
+    cam.tz + Math.cos(cam.yaw) * cosPitch * cam.dist,
+  );
+  GAL.camera3.lookAt(cam.tx, cam.ty, cam.tz);
+  GAL.camera3.updateMatrixWorld();
 }
 
-function drawMarker(ctx, id, strength) {
-  if (id == null) return;
-  const p = GAL.byId.get(id);
-  if (!p) return;
-  const i = GAL.idxById.get(id);
-  if (i === undefined || !GAL.svis[i]) return;
-  const x = GAL.sx[i], y = GAL.sy[i];
-  const r = Math.max(7, GAL.sr[i] + 5);
-  const color = PALETTE[kindIdx(p.kind)];
-  const glow = ctx.createRadialGradient(x, y, 0, x, y, r * 3);
-  glow.addColorStop(0, rgba(color, 0.5 * strength));
-  glow.addColorStop(1, rgba(color, 0));
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.arc(x, y, r * 3, 0, TAU);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255," + (0.45 + 0.45 * strength).toFixed(2) + ")";
-  ctx.lineWidth = strength > 0.9 ? 1.5 : 1;
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, TAU);
-  ctx.stroke();
+function syncGalaxyLinks(focusId) {
+  if (!GAL.linkLines || !GAL.focusLines) return;
+  const matches = GAL.matches;
+  if (
+    GAL.linkState &&
+    GAL.linkState.matches === matches &&
+    GAL.linkState.linksOn === GAL.linksOn &&
+    GAL.linkState.focusId === focusId
+  ) return;
+  GAL.linkState = { matches, linksOn: GAL.linksOn, focusId };
+  const linkArray = GAL.linkLines.geometry.attributes.position.array;
+  const focusArray = GAL.focusLines.geometry.attributes.position.array;
+  let linkOffset = 0;
+  let focusOffset = 0;
+  for (let edgeIndex = 0; edgeIndex < (GAL.edgeCount || 0); edgeIndex += 1) {
+    const a = GAL.edgeA[edgeIndex];
+    const b = GAL.edgeB[edgeIndex];
+    const pointA = GAL.points[a];
+    const pointB = GAL.points[b];
+    const visibleMatch = !matches || (matches.has(pointA.id) && matches.has(pointB.id));
+    if (GAL.linksOn && visibleMatch) {
+      linkArray[linkOffset++] = pointA.x;
+      linkArray[linkOffset++] = pointA.y;
+      linkArray[linkOffset++] = pointA.z;
+      linkArray[linkOffset++] = pointB.x;
+      linkArray[linkOffset++] = pointB.y;
+      linkArray[linkOffset++] = pointB.z;
+    }
+    if (focusId != null && (pointA.id === focusId || pointB.id === focusId)) {
+      focusArray[focusOffset++] = pointA.x;
+      focusArray[focusOffset++] = pointA.y;
+      focusArray[focusOffset++] = pointA.z;
+      focusArray[focusOffset++] = pointB.x;
+      focusArray[focusOffset++] = pointB.y;
+      focusArray[focusOffset++] = pointB.z;
+    }
+  }
+  GAL.linkLines.geometry.setDrawRange(0, linkOffset / 3);
+  GAL.focusLines.geometry.setDrawRange(0, focusOffset / 3);
+  GAL.linkLines.geometry.attributes.position.needsUpdate = true;
+  GAL.focusLines.geometry.attributes.position.needsUpdate = true;
+}
+
+function syncGalaxyMarker(marker, id) {
+  const point = id != null ? GAL.byId.get(id) : null;
+  marker.visible = !!point;
+  if (!point) return;
+  marker.position.set(point.x, point.y, point.z);
+  marker.lookAt(GAL.camera3.position);
+}
+
+function paintGalaxy() {
+  if (!GAL.renderer || !GAL.pointCloud) return;
+  const { w, h, points, cam } = GAL;
+  const n = points.length;
+  if (!n || !w) return;
+  updateGalaxyCamera();
+  const matches = GAL.matches;
+  const styleChanged = !GAL.pointStyleState ||
+    GAL.pointStyleState.matches !== matches ||
+    GAL.pointStyleState.scores !== GAL.scores ||
+    GAL.pointStyleState.hoverId !== GAL.hoverId ||
+    GAL.pointStyleState.selId !== GAL.selId;
+  const projected = new THREE.Vector3();
+  const worldPoint = new THREE.Vector3();
+  for (let i = 0; i < n; i += 1) {
+    const p = points[i];
+    worldPoint.set(p.x, p.y, p.z);
+    projected.copy(worldPoint).project(GAL.camera3);
+    const depth = GAL.camera3.position.distanceTo(worldPoint);
+    GAL.sx[i] = (projected.x * 0.5 + 0.5) * w;
+    GAL.sy[i] = (-projected.y * 0.5 + 0.5) * h;
+    GAL.sz[i] = depth;
+    const baseSize = 8.5 + Math.min(2, Math.max(0, p.weight || 0)) * 3.2;
+    const depthScale = Math.max(0.42, Math.min(2.8, 1.8 / Math.max(0.15, depth)));
+    let size = baseSize;
+    let alpha = 0.66;
+    if (matches && !matches.has(p.id)) { alpha = 0.055; size *= 0.72; }
+    else if (matches) {
+      alpha = 0.94;
+      size *= 1.28;
+      if (GAL.scores) {
+        const s = GAL.scores.get(p.id) || 0;
+        size *= 1 + Math.min(1, s / (GAL.topScore || 1)) * 0.5;
+      }
+    }
+    if (p.id === GAL.selId) size *= 1.65;
+    else if (p.id === GAL.hoverId) size *= 1.35;
+    if (styleChanged) {
+      GAL.pointSize.array[i] = size;
+      GAL.pointAlpha.array[i] = alpha;
+    }
+    GAL.sr[i] = Math.max(2, size * depthScale * 0.5);
+    GAL.svis[i] = projected.z > -1 && projected.z < 1 &&
+      projected.x > -1.1 && projected.x < 1.1 &&
+      projected.y > -1.1 && projected.y < 1.1 ? 1 : 0;
+  }
+  if (styleChanged) {
+    GAL.pointSize.needsUpdate = true;
+    GAL.pointAlpha.needsUpdate = true;
+    GAL.pointStyleState = {
+      matches,
+      scores: GAL.scores,
+      hoverId: GAL.hoverId,
+      selId: GAL.selId,
+    };
+  }
+  const focusId = GAL.hoverId != null ? GAL.hoverId : GAL.selId;
+  syncGalaxyLinks(focusId);
+  syncGalaxyMarker(GAL.hoverMarker, GAL.hoverId);
+  syncGalaxyMarker(GAL.selectionMarker, GAL.selId);
+  GAL.renderer.render(GAL.scene, GAL.camera3);
+  updateGalStats();
 }
 
 function updateGalStats() {
@@ -2257,7 +2904,6 @@ async function refreshMain() {
   renderThreads();
   renderDevServers();
   renderWorkflows();
-
   // panel-level errors when first load fails
   if (!s.ok && sessions.length === 0) {
     $("th-list").innerHTML = '<div class="empty">Failed to load sessions.</div>';

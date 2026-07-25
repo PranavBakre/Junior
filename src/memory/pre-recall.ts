@@ -47,6 +47,8 @@ const DEFAULT_CODEX_MODEL = "gpt-5.4-nano";
 
 /** Claims recalled per derived query. */
 const CANDIDATE_LIMIT = 8;
+/** Slots inside that limit reserved for procedure memories. */
+const PROCEDURE_CANDIDATE_QUOTA = 2;
 /** Candidates that reach the prompt after the per-query sets are merged. */
 const MAX_SYNTHESIS_CANDIDATES = 12;
 /** Per-claim truncation before a candidate enters the prompt. */
@@ -161,6 +163,8 @@ export interface PreRecallOverrides {
 export interface SynthesisCandidate {
   id: string;
   text: string;
+  kind: "lesson" | "fact" | "situation-claim";
+  factKind: "curated_fact" | "routing_memory" | "procedure" | null;
   /** cosine × weight — ranks candidates. */
   score: number;
   /** Raw cosine — gates the fallback. Null when relevance is unmeasurable. */
@@ -186,6 +190,7 @@ export function createPreRecall(
 
   const runner = preRecallConfig.runner;
   const model = preRecallConfig.model ?? defaultModelForRunner(runner);
+  const synthesisEnabled = preRecallConfig.synthesisEnabled ?? false;
   // Same env knob, new meaning: this is the synthesis budget now, and it has a
   // real fallback behind it.
   const timeoutMs = preRecallConfig.timeoutMs;
@@ -240,32 +245,40 @@ export function createPreRecall(
       topCosine = maxCosine(shortlist);
       let notes: string[];
       let usedIds: string[];
-      try {
-        const raw = await runText({
-          prompt: buildSynthesisPrompt(message, shortlist),
-          model,
-          timeoutMs,
-        });
-        const parsed = parseSynthesisResult(raw, shortlist.length);
-        if (!parsed) throw new Error("synthesis output was not parseable JSON");
-        // Notes are model-authored text on a prompt that quotes an untrusted
-        // Slack message. A genuine merge always names its sources, so notes
-        // attributable to no candidate are treated as a failed call rather than
-        // injected as recalled memory.
-        if (parsed.notes.length > 0 && parsed.usedIndexes.length === 0) {
-          throw new Error("synthesis notes cited no candidate");
-        }
-        notes = parsed.notes;
-        usedIds = parsed.usedIndexes.map((index) => shortlist[index - 1]!.id);
-      } catch (err) {
-        // The reason the model call sits AFTER retrieval: an expired budget
-        // still leaves something worth injecting — but only claims that clear
-        // the relevance floor, since nothing filtered this set.
-        fallbackFired = true;
-        failure = err instanceof Error ? err.message : String(err);
+      let verbatim = true;
+      if (!synthesisEnabled) {
         const top = selectFallbackCandidates(shortlist);
         notes = top.map((candidate) => truncate(candidate.text, MAX_NOTE_CHARS));
         usedIds = top.map((candidate) => candidate.id);
+      } else {
+        try {
+          const raw = await runText({
+            prompt: buildSynthesisPrompt(message, shortlist),
+            model,
+            timeoutMs,
+          });
+          const parsed = parseSynthesisResult(raw, shortlist.length);
+          if (!parsed) throw new Error("synthesis output was not parseable JSON");
+          // Notes are model-authored text on a prompt that quotes an untrusted
+          // Slack message. A genuine merge always names its sources, so notes
+          // attributable to no candidate are treated as a failed call rather than
+          // injected as recalled memory.
+          if (parsed.notes.length > 0 && parsed.usedIndexes.length === 0) {
+            throw new Error("synthesis notes cited no candidate");
+          }
+          notes = parsed.notes;
+          usedIds = parsed.usedIndexes.map((index) => shortlist[index - 1]!.id);
+          verbatim = false;
+        } catch (err) {
+          // The reason the model call sits AFTER retrieval: an expired budget
+          // still leaves something worth injecting — but only claims that clear
+          // the relevance floor, since nothing filtered this set.
+          fallbackFired = true;
+          failure = err instanceof Error ? err.message : String(err);
+          const top = selectFallbackCandidates(shortlist);
+          notes = top.map((candidate) => truncate(candidate.text, MAX_NOTE_CHARS));
+          usedIds = top.map((candidate) => candidate.id);
+        }
       }
 
       // Nothing to emit: synthesis rejected every candidate (the curation this
@@ -275,7 +288,7 @@ export function createPreRecall(
 
       claimCount = notes.length;
       await recordClaimUsage(memDeps, usedIds);
-      return formatPreRecallBlock(notes, { verbatim: fallbackFired });
+      return formatPreRecallBlock(notes, { verbatim });
     } catch (err) {
       failure = err instanceof Error ? err.message : String(err);
       _log.warn("pre-recall", `fail err=${failure}`);
@@ -285,6 +298,7 @@ export function createPreRecall(
         "pre-recall",
         `repo=${options?.repo ?? "-"} queries=${queries.length} candidates=${candidateCount} ` +
           `topcos=${fixed(topCosine)} top=${fixed(topScore)} claims=${claimCount} ` +
+          `mode=${synthesisEnabled ? "synthesis" : "deterministic"} ` +
           `fallback=${fallbackFired} ms=${Date.now() - startedAt}` +
           (failure ? ` err=${failure}` : ""),
       );
@@ -334,6 +348,7 @@ async function recallCandidates(
         // would drop the repo-less lessons that make up most of the corpus.
         repo: options?.repo ?? undefined,
         repoIncludeGlobal: true,
+        procedureQuota: PROCEDURE_CANDIDATE_QUOTA,
         recordUsage: false,
       },
       deps,
@@ -344,6 +359,8 @@ async function recallCandidates(
       candidates.push({
         id: claim.id,
         text: claim.text,
+        kind: claim.kind,
+        factKind: claim.factKind,
         score: claim.score,
         cosine: claim.cosine,
       });

@@ -8,7 +8,10 @@ import {
   clearRegistryForTests,
   loadRunbookRegistryFromDir,
 } from "./registry.ts";
-import { selectRunbook } from "./selector.ts";
+import {
+  selectRunbook,
+  selectRunbookWithProcedureRecall,
+} from "./selector.ts";
 
 const FIXTURE_DIR = path.join(import.meta.dir, "__fixtures__");
 
@@ -89,6 +92,50 @@ describe("runbook selector", () => {
       result.procedureFallback.query.toLowerCase(),
     );
     expect(result.procedureFallback.warning).toContain("procedure memory");
+  });
+
+  it("executes procedure recall on a runbook miss", async () => {
+    const queries: string[] = [];
+    const result = await selectRunbookWithProcedureRecall(
+      "clean merged worktrees",
+      {},
+      async (query) => {
+        queries.push(query);
+        return [{
+          id: "procedure-cleanup",
+          text: "Verify the PR merged before removing its worktree.",
+          score: 0.91,
+          cosine: 0.94,
+          repo: "junior",
+          tags: ["procedure", "worktree"],
+        }];
+      },
+    );
+
+    expect(result.selected).toBe(false);
+    if (result.selected) return;
+    expect(queries).toEqual(["clean merged worktrees"]);
+    expect(result.procedureFallback.claims).toEqual([
+      expect.objectContaining({ id: "procedure-cleanup" }),
+    ]);
+  });
+
+  it("does not recall procedures when a reviewed runbook matches", async () => {
+    let recallCalls = 0;
+    const result = await selectRunbookWithProcedureRecall(
+      "move all AI roadmaps from one account to another",
+      {
+        sourceEmail: "alice@example.com",
+        targetEmail: "bob@example.com",
+      },
+      async () => {
+        recallCalls += 1;
+        return [];
+      },
+    );
+
+    expect(result.selected).toBe(true);
+    expect(recallCalls).toBe(0);
   });
 
   it("selected result includes evidence with correct digest, risk, and redacted inputs", () => {

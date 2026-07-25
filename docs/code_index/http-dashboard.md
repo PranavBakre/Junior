@@ -68,6 +68,13 @@ Cost is O(n²·d) in the KNN, seconds on a multi-thousand-claim corpus, so the
 serialized body is memoised against a count+id fingerprint of the active claim set.
 `X-Projection-Cache: hit|miss` reports which path served the request.
 
+The browser renders that projection with Three.js: claims are shader-driven
+`THREE.Points`, ambient/focused KNN relationships are separate dynamic
+`THREE.LineSegments`, and orbit state drives a real perspective camera. Filtering
+changes GPU size/opacity attributes but never recomputes the server projection.
+The canvas fills the Memory view; the DOM controls and claim rail are interaction
+overlays on that single graph scene.
+
 ### Boot wiring
 
 `index.ts` dynamic-imports `./http/server.ts` inside a try/catch — a port conflict on dashboard must not crash the bot.
