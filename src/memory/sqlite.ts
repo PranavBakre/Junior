@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { compareDedupWinner, dedupScopeKey, resolveDedupThreshold } from "./dedup.ts";
 import type { MemoryStore } from "./store.ts";
 import type {
   ArchiveStaleClaimsOptions,
@@ -10,6 +11,9 @@ import type {
   ClaimRecallOptions,
   ClaimRecallResult,
   ClaimVectorExport,
+  ClaimWriteResult,
+  CollapseDuplicateClaimsOptions,
+  CollapseDuplicateClaimsResult,
   EpisodeInput,
   MemoryHealth,
   MemoryHealthKind,
@@ -20,6 +24,38 @@ import type {
   SearchableMemoryKind,
   UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
+
+/**
+ * Weight added to the survivor each time a near-duplicate write merges into it.
+ * Small and additive: rediscovery should nudge a claim up the recall ranking,
+ * not let a chatty writer inflate one claim past everything else.
+ */
+const CLAIM_MERGE_WEIGHT_BUMP = 0.1;
+
+/**
+ * Hard ceiling the merge bump may raise a survivor's weight to.
+ *
+ * The bump above is additive and a merge writes no row for the twin, so the SAME
+ * input text merges again on every call: without a ceiling a Stop hook or an
+ * agent that re-asserts one lesson each session adds +0.1 per session forever.
+ * `recallClaims` scores `cosine * weight`, so an unbounded weight lets a
+ * cosine-0.2 claim outrank a cosine-0.9 one — that is a live recall-ranking
+ * defect today. At 2.0 a rediscovered claim can outrank a fresh one of at most
+ * double its cosine, and no further; repeated merges converge.
+ *
+ * NOTE what does NOT save you here: nothing in this codebase ever decrements a
+ * claim's `weight` — there is no downweight-on-unhelpful and no time decay — and
+ * `archiveStaleClaims` (the only thing that could retire an over-weighted claim)
+ * has no production caller at all. An over-weighted claim is permanent, so the
+ * ceiling is the ONLY bound. Do not relax it on the assumption that decay will
+ * clean up afterwards. See the backlog note in
+ * docs/features/claim-dedup-write-guard.md.
+ *
+ * The cap only ever holds a bump DOWN; it never pulls an explicitly-set higher
+ * weight back to the ceiling. `helpful_count` is deliberately NOT capped — it
+ * feeds no ranking, and the honest count of rediscoveries is the useful signal.
+ */
+const CLAIM_MERGE_WEIGHT_CEILING = 2.0;
 
 type ClaimRow = {
   id: string;
@@ -57,14 +93,38 @@ type SourceRecordRow = {
   created_at: number;
 };
 
+export interface SqliteMemoryStoreOptions {
+  /**
+   * Cosine at/above which a claim write MERGES into an existing claim instead of
+   * inserting a twin. Defaults to `MEMORY_DEDUP_THRESHOLD` / 0.92.
+   */
+  dedupThreshold?: number;
+}
+
 export class SqliteMemoryStore implements MemoryStore {
   private db: Database;
+  private dedupThreshold: number;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: SqliteMemoryStoreOptions = {}) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA synchronous = NORMAL");
+    // Absorb write contention instead of throwing. `data/memory.db` has more than
+    // one writer: the in-process consolidation sweep and any `bun run
+    // src/memory/cli.ts add-lesson` a workflow shells out. With the default
+    // busy_timeout of 0 the second writer fails immediately; with a timeout it
+    // waits for the first one's write lock. Paired with the IMMEDIATE
+    // transactions below — a busy handler cannot rescue a DEFERRED read-then-write
+    // txn, whose failure mode is the non-retryable SQLITE_BUSY_SNAPSHOT.
+    //
+    // Per CONNECTION, not per database: any other process that opens this file
+    // with its own handle (`migrate-v3.ts`, the routing-log migration) still gets
+    // SQLite's default of 0. Those are operator-run with the bot stopped, so they
+    // do not contend — but a new handle that runs alongside the bot needs its own
+    // busy_timeout.
+    this.db.run("PRAGMA busy_timeout = 5000");
+    this.dedupThreshold = options.dedupThreshold ?? resolveDedupThreshold();
     this.migrate();
   }
 
@@ -160,51 +220,204 @@ export class SqliteMemoryStore implements MemoryStore {
 
   // --- memory v3: claims (semantic, embedded) -------------------------------
 
-  async upsertClaim(claim: ClaimInput): Promise<void> {
+  /**
+   * THE claim write chokepoint — see docs/features/claim-dedup-write-guard.md.
+   *
+   * Three things happen here that used to be a caller's problem (or nobody's):
+   * 1. NEAR-DUPLICATE GUARD. The claim is compared against active claims in its
+   *    own dedup scope; on a hit it MERGES into the survivor instead of adding a
+   *    twin row. Consolidation used to be the only writer that deduped, so
+   *    `memory_add` and the CLI walked straight past it. An UPDATE that merges
+   *    folds its own (now unasserted) row into the survivor and archives it.
+   * 2. EMBEDDING REQUIRED. The store never embeds (callers embed at the
+   *    boundary), so a vector-less claim is both unguardable and invisible to
+   *    cosine recall. Reject it rather than store an unrecallable row.
+   * 3. VALUE METADATA IS PATCHED, NOT OVERWRITTEN. Optional value fields are
+   *    bound as NULL when the caller omits them and COALESCE'd against the
+   *    stored row, so re-saving a claim by id no longer resets its accumulated
+   *    weight and counters to the defaults.
+   *
+   * `skipDedup` waives 1 and 2 for verbatim restore writes (migrate-v3, backups).
+   */
+  async upsertClaim(claim: ClaimInput): Promise<ClaimWriteResult> {
     const tags = unique((claim.tags ?? []).map(normalizeName));
-    const dim = claim.dim ?? (claim.embedding ? claim.embedding.length : null);
-    const txn = this.db.transaction(() => {
+    const embedding = claim.embedding ?? null;
+    const dim = claim.dim ?? (embedding ? embedding.length : null);
+    const skipDedup = claim.skipDedup === true;
+
+    if (!skipDedup && !embedding) {
+      throw new Error(
+        `upsertClaim: claim "${claim.id}" has no embedding. Embed the text at the ` +
+          "caller, or set skipDedup to write a historical row verbatim.",
+      );
+    }
+
+    const blob = embedding ? serializeEmbedding(embedding) : null;
+    const helpfulCount = claim.helpfulCount ?? null;
+    const unhelpfulCount = claim.unhelpfulCount ?? null;
+    const weight = claim.weight ?? null;
+    const lastUsedAt = claim.lastUsedAt ?? null;
+    const now = Date.now();
+
+    // Scan and write in ONE transaction: a concurrent writer must not be able to
+    // insert a near-duplicate between the check and the write. IMMEDIATE, not the
+    // default DEFERRED: this transaction READS (the lookup below, then the full
+    // corpus scan) before its first write, so under WAL a deferred txn takes a
+    // read snapshot and then fails with SQLITE_BUSY_SNAPSHOT if another writer
+    // commits inside that window — an error a busy handler cannot retry away.
+    // Taking the write lock up front turns that into ordinary lock contention,
+    // which `PRAGMA busy_timeout` absorbs.
+    const txn = this.db.transaction((): ClaimWriteResult => {
+      const existing = this.db
+        .query<
+          {
+            text: string;
+            active: number | null;
+            helpful_count: number | null;
+            unhelpful_count: number | null;
+          },
+          [string]
+        >("SELECT text, active, helpful_count, unhelpful_count FROM claim WHERE id = ?")
+        .get(claim.id);
+
+      // Re-scan whenever this TEXT is new to the corpus under this id: a fresh
+      // insert, an update whose text changed (a new claim wearing an old id), or
+      // a re-add of an archived row — without the last case, re-adding a claim
+      // the backfill sweep archived would trivially resurrect it.
+      const textIsNew =
+        !existing || existing.text !== claim.text || existing.active === 0;
+      if (!skipDedup && embedding && textIsNew) {
+        const survivor = this.findNearDuplicate(claim, embedding);
+        if (survivor) {
+          // Merge, don't drop. The same claim independently derived twice is
+          // evidence that it matters, so the survivor gains value signal
+          // (`weight`, `helpful_count`, a fresh `last_used_at`) rather than the
+          // rediscovery being a silent no-op. That signal is what the decay
+          // contract would read — `archiveStaleClaims` is "stale AND low-value" —
+          // once anything actually calls it; today nothing does.
+          //
+          // When the merging write was an UPDATE of a still-ACTIVE row, that row
+          // is ALSO folded in — collapseDuplicateClaims semantics: its counters
+          // move to the survivor, then `active = 0`. Its text is no longer
+          // asserted by anyone (the caller just replaced it), and leaving it
+          // active would strand dead text in recall permanently: no later write
+          // can repair it, because every subsequent edit of that id re-merges
+          // exactly the same way and never rewrites the row.
+          //
+          // An ALREADY-ARCHIVED row is not folded. The sweep that archived it
+          // moved its counters at the time, so re-folding on every re-add would
+          // double-count; the plain bump below is the whole effect there.
+          const absorbed = existing && existing.active !== 0 ? existing : null;
+          this.db
+            .query(
+              `UPDATE claim
+               SET helpful_count = COALESCE(helpful_count, 0) + ?,
+                   unhelpful_count = COALESCE(unhelpful_count, 0) + ?,
+                   weight = MAX(COALESCE(weight, 1.0), MIN(COALESCE(weight, 1.0) + ?, ?)),
+                   last_used_at = ?
+               WHERE id = ?`,
+            )
+            .run(
+              1 + (absorbed?.helpful_count ?? 0),
+              absorbed?.unhelpful_count ?? 0,
+              CLAIM_MERGE_WEIGHT_BUMP,
+              CLAIM_MERGE_WEIGHT_CEILING,
+              now,
+              survivor.id,
+            );
+          if (absorbed) {
+            this.db.query("UPDATE claim SET active = 0 WHERE id = ?").run(claim.id);
+          }
+          return { id: survivor.id, action: "merged", mergedInto: survivor.id };
+        }
+      }
+
       this.upsertNode(claim.id, "claim", claim.createdAt);
+      // The value/vector columns are COALESCE'd from the RAW bound parameter
+      // rather than from `excluded`: `excluded` reflects the VALUES row after its
+      // own COALESCE defaults have been applied, which would turn "caller omitted
+      // it" back into 0 / 1.0 / NULL and re-introduce the erasure this fixes.
       this.db
         .query(
           `INSERT INTO claim (
             id, kind, text, embedding, embed_model, dim, repo, tags, source_episode,
             helpful_count, unhelpful_count, weight, created_at, last_used_at, active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 1.0), ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             kind = excluded.kind,
             text = excluded.text,
-            embedding = excluded.embedding,
-            embed_model = excluded.embed_model,
-            dim = excluded.dim,
+            embedding = COALESCE(?, claim.embedding),
+            embed_model = COALESCE(?, claim.embed_model),
+            dim = COALESCE(?, claim.dim),
             repo = excluded.repo,
             tags = excluded.tags,
             source_episode = excluded.source_episode,
-            helpful_count = excluded.helpful_count,
-            unhelpful_count = excluded.unhelpful_count,
-            weight = excluded.weight,
-            last_used_at = excluded.last_used_at,
+            helpful_count = COALESCE(?, claim.helpful_count),
+            unhelpful_count = COALESCE(?, claim.unhelpful_count),
+            weight = COALESCE(?, claim.weight),
+            last_used_at = COALESCE(?, claim.last_used_at),
             active = excluded.active`,
         )
         .run(
           claim.id,
           claim.kind,
           claim.text,
-          claim.embedding ? serializeEmbedding(claim.embedding) : null,
+          blob,
           claim.embedModel ?? null,
           dim,
           claim.repo ?? null,
           tags.length ? JSON.stringify(tags) : null,
           claim.sourceEpisode ?? null,
-          claim.helpfulCount ?? 0,
-          claim.unhelpfulCount ?? 0,
-          claim.weight ?? 1.0,
+          helpfulCount,
+          unhelpfulCount,
+          weight,
           claim.createdAt,
-          claim.lastUsedAt ?? null,
+          lastUsedAt,
           claim.active === false ? 0 : 1,
+          // ON CONFLICT patch binds — same values again, un-defaulted.
+          blob,
+          claim.embedModel ?? null,
+          dim,
+          helpfulCount,
+          unhelpfulCount,
+          weight,
+          lastUsedAt,
         );
+      return { id: claim.id, action: existing ? "updated" : "inserted" };
     });
-    txn();
+    return txn.immediate();
+  }
+
+  /**
+   * Highest-ranked active claim within `claim`'s dedup scope whose cosine meets
+   * the threshold, or null. Scope is same `kind` AND same `repo` (NULL-safe) —
+   * never global↔repo-specific, which would leak one repo's convention into
+   * every other repo's recall or narrow knowledge that applies everywhere.
+   */
+  private findNearDuplicate(
+    claim: ClaimInput,
+    vector: Float32Array,
+  ): { id: string; weight: number; createdAt: number } | null {
+    const rows = this.db
+      .query<
+        { id: string; embedding: Uint8Array | null; weight: number | null; created_at: number },
+        [ClaimKind, string | null, string]
+      >(
+        `SELECT id, embedding, weight, created_at FROM claim
+         WHERE active = 1 AND kind = ? AND repo IS ? AND id <> ? AND embedding IS NOT NULL`,
+      )
+      .all(claim.kind, claim.repo ?? null, claim.id);
+
+    const hits: Array<{ id: string; weight: number; createdAt: number }> = [];
+    for (const row of rows) {
+      const vec = deserializeEmbedding(row.embedding);
+      if (!vec) continue;
+      if (cosineSim(vector, vec) < this.dedupThreshold) continue;
+      hits.push({ id: row.id, weight: row.weight ?? 1, createdAt: row.created_at });
+    }
+    if (hits.length === 0) return null;
+    hits.sort(compareDedupWinner);
+    return hits[0];
   }
 
   /**
@@ -495,9 +708,86 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   /**
+   * Fold a cluster of near-duplicates into one survivor (the offline backfill
+   * sweep's write primitive): sum the duplicates' counters into the survivor,
+   * inherit their newest `last_used_at`, then ARCHIVE them (`active = 0`, never
+   * delete — the collapsed rows stay as provenance).
+   *
+   * Deliberately does NOT refresh `last_used_at` to "now" the way the hot-path
+   * merge does. A backfill is not a rediscovery; stamping the whole corpus fresh
+   * would make everything look recently used and gut the fade signal. Taking the
+   * cluster MAX preserves the most recent genuine use without inventing one.
+   */
+  async collapseDuplicateClaims(
+    options: CollapseDuplicateClaimsOptions,
+  ): Promise<CollapseDuplicateClaimsResult> {
+    const duplicateIds = unique(options.duplicateIds).filter((id) => id !== options.survivorId);
+    if (duplicateIds.length === 0) return { archivedIds: [] };
+
+    // IMMEDIATE for the same reason as `upsertClaim`: this transaction reads the
+    // survivor and the cluster before it writes, and a DEFERRED read-then-write
+    // txn under WAL dies with the non-retryable SQLITE_BUSY_SNAPSHOT if another
+    // writer commits inside the read window. Every other transaction in this file
+    // opens with a write, where DEFERRED already takes the write lock on its
+    // first statement.
+    const txn = this.db.transaction((): string[] => {
+      const survivor = this.db
+        .query<{ last_used_at: number | null }, [string]>(
+          "SELECT last_used_at FROM claim WHERE id = ?",
+        )
+        .get(options.survivorId);
+      if (!survivor) {
+        throw new Error(`collapseDuplicateClaims: survivor "${options.survivorId}" not found`);
+      }
+
+      const placeholders = duplicateIds.map(() => "?").join(", ");
+      const rows = this.db
+        .query<
+          { id: string; helpful_count: number | null; unhelpful_count: number | null; last_used_at: number | null },
+          string[]
+        >(
+          `SELECT id, helpful_count, unhelpful_count, last_used_at FROM claim
+           WHERE active = 1 AND id IN (${placeholders})`,
+        )
+        .all(...duplicateIds);
+      if (rows.length === 0) return [];
+
+      let helpful = 0;
+      let unhelpful = 0;
+      let newestUse = survivor.last_used_at;
+      for (const row of rows) {
+        helpful += row.helpful_count ?? 0;
+        unhelpful += row.unhelpful_count ?? 0;
+        if (row.last_used_at != null && (newestUse == null || row.last_used_at > newestUse)) {
+          newestUse = row.last_used_at;
+        }
+      }
+
+      this.db
+        .query(
+          `UPDATE claim
+           SET helpful_count = COALESCE(helpful_count, 0) + ?,
+               unhelpful_count = COALESCE(unhelpful_count, 0) + ?,
+               last_used_at = ?
+           WHERE id = ?`,
+        )
+        .run(helpful, unhelpful, newestUse, options.survivorId);
+
+      const archive = this.db.query("UPDATE claim SET active = 0 WHERE id = ?");
+      const archivedIds = rows.map((row) => row.id);
+      for (const id of archivedIds) archive.run(id);
+      return archivedIds;
+    });
+
+    return { archivedIds: txn.immediate() };
+  }
+
+  /**
    * Read-only decay summary — per claim kind plus the episode log: corpus size,
    * how many have never been used, the oldest `last_used_at`, and the current
-   * fade-candidate count under the supplied (or default) cutoff/ceiling. Never
+   * fade-candidate count under the supplied (or default) cutoff/ceiling, plus
+   * the near-duplicate rate — the standing metric for the write guard, without
+   * which the next dedup regression is as invisible as the last one. Never
    * writes; safe for dashboards.
    */
   async memoryHealth(options: MemoryHealthOptions = {}): Promise<MemoryHealth> {
@@ -505,6 +795,11 @@ export class SqliteMemoryStore implements MemoryStore {
     const olderThanMs = options.olderThanMs ?? 90 * 24 * 60 * 60 * 1000;
     const maxWeight = options.maxWeight ?? 0.5;
     const cutoff = now - olderThanMs;
+    const dedupThreshold = options.dedupThreshold ?? this.dedupThreshold;
+    const nearDuplicateStats =
+      options.includeNearDuplicates === false
+        ? null
+        : this.countNearDuplicatesByKind(dedupThreshold);
 
     const kinds: MemoryHealthKind[] = [];
 
@@ -533,6 +828,11 @@ export class SqliteMemoryStore implements MemoryStore {
         .get(kind, maxWeight, cutoff, cutoff);
       const total = summary?.total ?? 0;
       const neverUsed = summary?.never_used ?? 0;
+      const nearDuplicates = nearDuplicateStats?.twinned.get(kind) ?? 0;
+      // Denominator is the EMBEDDED active claims of this kind, not `total`. Only
+      // vector-carrying rows can be counted as twins, so measuring them against a
+      // corpus that still holds vector-less legacy rows understates the rate.
+      const embedded = nearDuplicateStats?.embedded.get(kind) ?? 0;
       kinds.push({
         kind,
         total,
@@ -540,6 +840,12 @@ export class SqliteMemoryStore implements MemoryStore {
         pctNeverUsed: total > 0 ? neverUsed / total : 0,
         oldestLastUsedAt: summary?.oldest ?? null,
         fadeCandidates: fade?.n ?? 0,
+        nearDuplicates: nearDuplicateStats ? nearDuplicates : null,
+        nearDuplicateRate: nearDuplicateStats
+          ? embedded > 0
+            ? nearDuplicates / embedded
+            : 0
+          : null,
       });
     }
 
@@ -560,9 +866,73 @@ export class SqliteMemoryStore implements MemoryStore {
       pctNeverUsed: episodeTotal > 0 ? episodeNeverUsed / episodeTotal : 0,
       oldestLastUsedAt: episodeSummary?.oldest ?? null,
       fadeCandidates: 0, // episodes are never value-archived.
+      nearDuplicates: null, // episodes are not embedded; dedup does not apply.
+      nearDuplicateRate: null,
     });
 
-    return { generatedAt: now, olderThanMs, maxWeight, kinds };
+    return { generatedAt: now, olderThanMs, maxWeight, dedupThreshold, kinds };
+  }
+
+  /**
+   * Per-kind count of active claims that have at least one twin at/above the
+   * threshold INSIDE their own dedup scope (same kind, same repo), alongside the
+   * per-kind count of claims that were eligible to be counted at all (i.e. carry
+   * a vector) — the rate's denominator, so it is not diluted by vector-less
+   * legacy rows that no cosine can ever match.
+   *
+   * All-pairs within each scope — O(n²) cosine, seconds at a few thousand claims.
+   * That is the price of the standing metric; `includeNearDuplicates: false`
+   * opts a latency-sensitive caller out. Scoping is not an optimization: the
+   * sweep ARCHIVES duplicates rather than deleting them, so a corpus-wide count
+   * would keep reporting the rows it just collapsed.
+   *
+   * WARNING to whoever wires `memoryHealth` into the HTTP dashboard or any other
+   * request path: this loop is SYNCHRONOUS and blocks the event loop for its full
+   * duration (measured 1464ms at 2600 claims, growing quadratically). It has no
+   * production caller today. Either pass `includeNearDuplicates: false` on the
+   * request path and compute the rate on a schedule, or move this off the hot
+   * path before exposing it.
+   */
+  private countNearDuplicatesByKind(threshold: number): {
+    twinned: Map<string, number>;
+    embedded: Map<string, number>;
+  } {
+    const rows = this.db
+      .query<{ id: string; kind: string; repo: string | null; embedding: Uint8Array | null }, []>(
+        "SELECT id, kind, repo, embedding FROM claim WHERE active = 1 AND embedding IS NOT NULL",
+      )
+      .all();
+
+    const scopes = new Map<string, Array<{ kind: string; vec: Float32Array }>>();
+    const embedded = new Map<string, number>();
+    for (const row of rows) {
+      const vec = deserializeEmbedding(row.embedding);
+      if (!vec) continue;
+      embedded.set(row.kind, (embedded.get(row.kind) ?? 0) + 1);
+      const key = dedupScopeKey(row.kind, row.repo);
+      const bucket = scopes.get(key);
+      if (bucket) bucket.push({ kind: row.kind, vec });
+      else scopes.set(key, [{ kind: row.kind, vec }]);
+    }
+
+    const counts = new Map<string, number>();
+    for (const members of scopes.values()) {
+      const twinned = new Array<boolean>(members.length).fill(false);
+      for (let i = 0; i < members.length; i += 1) {
+        for (let j = i + 1; j < members.length; j += 1) {
+          // Both ends of a qualifying pair count as near-duplicates.
+          if (twinned[i] && twinned[j]) continue;
+          if (cosineSim(members[i].vec, members[j].vec) < threshold) continue;
+          twinned[i] = true;
+          twinned[j] = true;
+        }
+      }
+      for (let i = 0; i < members.length; i += 1) {
+        if (!twinned[i]) continue;
+        counts.set(members[i].kind, (counts.get(members[i].kind) ?? 0) + 1);
+      }
+    }
+    return { twinned: counts, embedded };
   }
 
   private upsertNode(id: string, kind: string, createdAt: number): void {

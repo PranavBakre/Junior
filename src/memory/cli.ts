@@ -2,8 +2,10 @@ import { createMemoryStore } from "./factory.ts";
 import type {
   ClaimKind,
   ClaimRecallResult,
+  ClaimWriteResult,
   MemoryFactInput,
 } from "./types.ts";
+import { formatDedupSweep, runDedupSweep } from "./dedup-sweep.ts";
 import {
   createSlackPeopleResolver,
   runConsolidationSweep,
@@ -54,15 +56,30 @@ function defaultEmbedProviderKind(): "local" | "hashing" {
  * read by v3 recall or consolidation. Uses the same id as the legacy row (the
  * migration convention; memory_node.kind ends 'claim'). Best-effort: a lesson
  * is still captured in the legacy table even if embedding is unavailable.
+ *
+ * Returns the store's write result (null when the mirror was skipped) so the
+ * caller can report whether the claim was stored or merged into a near-duplicate
+ * that was already there.
  */
 async function mirrorClaim(
   store: ReturnType<typeof createMemoryStore>,
   embedder: EmbeddingProvider,
   claim: { id: string; kind: "lesson" | "fact"; text: string; tags?: string[]; weight?: number; createdAt: number },
-): Promise<boolean> {
+): Promise<ClaimWriteResult | null> {
+  // Embed and store are reported separately: one catch around both blamed the
+  // embedder for every store-side throw (a failed guard, a locked DB), which
+  // sends the reader looking at the wrong component.
+  let embedding: Float32Array;
   try {
-    const [embedding] = await embedder.embed([claim.text], "document");
-    await store.upsertClaim({
+    [embedding] = await embedder.embed([claim.text], "document");
+  } catch (err) {
+    console.error(
+      `[add] claim mirror skipped (embed failed): ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+  try {
+    return await store.upsertClaim({
       id: claim.id,
       kind: claim.kind,
       text: claim.text,
@@ -70,19 +87,27 @@ async function mirrorClaim(
       embedModel: embedder.model,
       dim: embedder.dim,
       tags: claim.tags,
-      weight: claim.weight ?? 1.0,
+      // Only forward an EXPLICIT --importance. Passing a 1.0 default here would
+      // reset the accumulated weight of a claim that already exists under this id.
+      weight: claim.weight,
       createdAt: claim.createdAt,
       active: true,
     });
-    return true;
   } catch (err) {
     console.error(
-      `[add] claim mirror skipped (embed failed): ${err instanceof Error ? err.message : String(err)}`,
+      `[add] claim mirror skipped (store write failed): ${err instanceof Error ? err.message : String(err)}`,
     );
-    return false;
+    return null;
   }
 }
 
+/** Human-readable tail for an add-* command: what the claim mirror actually did. */
+function claimSuffix(result: ClaimWriteResult | null): string {
+  if (!result) return "";
+  return result.action === "merged"
+    ? ` [claim merged into ${result.id}]`
+    : ` [claim ${result.action}]`;
+}
 
 export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Promise<string> {
   const { command, options } = parseArgs(argv);
@@ -154,7 +179,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       });
       // Mirror into the semantic claim store so v3 memory_recall can find it.
       const lessonEmbedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
-      const lessonClaimed = await mirrorClaim(store, lessonEmbedder, {
+      const lessonClaim = await mirrorClaim(store, lessonEmbedder, {
         id,
         kind: "lesson",
         text: `${title}\n${body}`,
@@ -163,8 +188,18 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         createdAt: lessonCreatedAt,
       });
       return json
-        ? `${JSON.stringify({ upserted: id, kind: "lesson", claim: lessonClaimed }, null, 2)}\n`
-        : `Lesson upserted: ${id}${lessonClaimed ? " [claim]" : ""}\n`;
+        ? `${JSON.stringify(
+            {
+              upserted: id,
+              kind: "lesson",
+              claim: lessonClaim != null,
+              claimId: lessonClaim?.id ?? null,
+              claimAction: lessonClaim?.action ?? null,
+            },
+            null,
+            2,
+          )}\n`
+        : `Lesson upserted: ${id}${claimSuffix(lessonClaim)}\n`;
     }
 
     if (command === "add-fact") {
@@ -195,7 +230,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       });
       // Mirror into the semantic claim store so v3 memory_recall can find it.
       const factEmbedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
-      const factClaimed = await mirrorClaim(store, factEmbedder, {
+      const factClaim = await mirrorClaim(store, factEmbedder, {
         id,
         kind: "fact",
         text: factTitle ? `${factTitle}\n${body}` : body,
@@ -204,8 +239,18 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         createdAt: factCreatedAt,
       });
       return json
-        ? `${JSON.stringify({ upserted: id, kind, claim: factClaimed }, null, 2)}\n`
-        : `Fact upserted: ${id} (${kind})${factClaimed ? " [claim]" : ""}\n`;
+        ? `${JSON.stringify(
+            {
+              upserted: id,
+              kind,
+              claim: factClaim != null,
+              claimId: factClaim?.id ?? null,
+              claimAction: factClaim?.action ?? null,
+            },
+            null,
+            2,
+          )}\n`
+        : `Fact upserted: ${id} (${kind})${claimSuffix(factClaim)}\n`;
     }
 
     if (command === "add-claim") {
@@ -218,22 +263,54 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         throw new Error(`--kind must be one of: lesson, fact, situation-claim. Got: ${kind}`);
       }
       if (!text) throw new Error("--text <text> is required");
-      const embedding = floatListOption(options, "embedding");
-      await store.upsertClaim({
+      const skipDedup = booleanOption(options, "skip-dedup") === true;
+      const explicitEmbedding = floatListOption(options, "embedding");
+      let embedding: Float32Array | null = explicitEmbedding
+        ? new Float32Array(explicitEmbedding)
+        : null;
+      let embedModel = stringOption(options, "embed-model");
+      // The store never embeds and rejects an unguardable, cosine-invisible row.
+      // Embed here so `add-claim` stays usable without --embedding; --skip-dedup
+      // is the explicit escape hatch for a verbatim restore write.
+      if (!embedding && !skipDedup) {
+        const claimEmbedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
+        [embedding] = await claimEmbedder.embed([text], "document");
+        embedModel = embedModel ?? claimEmbedder.model;
+      }
+      const written = await store.upsertClaim({
         id,
         kind,
         text,
-        embedding: embedding ? new Float32Array(embedding) : null,
-        embedModel: stringOption(options, "embed-model"),
+        embedding,
+        embedModel,
         repo: stringOption(options, "repo"),
         tags: listOption(options, "tags"),
         sourceEpisode: stringOption(options, "source-episode"),
         weight: numberOption(options, "weight"),
         createdAt: numberOption(options, "created-at") ?? Date.now(),
+        skipDedup,
       });
       return json
-        ? `${JSON.stringify({ upserted: id, kind: "claim", claimKind: kind }, null, 2)}\n`
-        : `Claim upserted: ${id} (${kind})\n`;
+        ? `${JSON.stringify(
+            { upserted: written.id, kind: "claim", claimKind: kind, action: written.action },
+            null,
+            2,
+          )}\n`
+        : written.action === "merged"
+          ? `Claim merged into ${written.id} (${kind}) — near-duplicate of an existing claim\n`
+          : `Claim ${written.action}: ${written.id} (${kind})\n`;
+    }
+
+    if (command === "dedup-sweep") {
+      // Offline backfill for the near-duplicates that predate the write guard.
+      // DRY RUN unless --apply, matching migrate-v3: a merged-away claim is
+      // recoverable only from provenance, so the operator sees the plan first.
+      const report = await runDedupSweep({
+        store,
+        threshold: numberOption(options, "threshold"),
+        apply: booleanOption(options, "apply"),
+      });
+      return json ? `${JSON.stringify(report, null, 2)}\n` : formatDedupSweep(report);
     }
 
     if (command === "recall-claims") {
@@ -404,7 +481,8 @@ function usage(): string {
     "  bun run src/memory/cli.ts consolidate-v3 [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--kinds slack_message,curated_fact,...] [--runner claude|opencode|codex] [--model <model>] [--effort low|medium|high] [--timeout-ms n] [--json]",
     "  bun run src/memory/cli.ts add-lesson --id <id> --title <title> --body <body> [--applies-when <text>] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
-    "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--json]",
+    "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--skip-dedup] [--json]",
+    "  bun run src/memory/cli.ts dedup-sweep [--threshold 0.92] [--apply] [--json]   (DRY RUN without --apply)",
     "  bun run src/memory/cli.ts recall-claims [--query <text> | --query-vector 0.1,0.2,...] [--repo <name>] [--kind <lesson|fact|situation-claim|curated_fact|routing_memory|procedure>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
   ].join("\n") + "\n";
 }

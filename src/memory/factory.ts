@@ -1,6 +1,9 @@
-import { SqliteMemoryStore } from "./sqlite.ts";
+import { SqliteMemoryStore, type SqliteMemoryStoreOptions } from "./sqlite.ts";
 import type { MemoryStore } from "./store.ts";
 
-export function createMemoryStore(dbPath = "data/memory.db"): MemoryStore {
-  return new SqliteMemoryStore(dbPath);
+export function createMemoryStore(
+  dbPath = "data/memory.db",
+  options: SqliteMemoryStoreOptions = {},
+): MemoryStore {
+  return new SqliteMemoryStore(dbPath, options);
 }

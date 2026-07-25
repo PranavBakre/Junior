@@ -5,6 +5,7 @@ import {
   type DriverMode,
   type SessionVerbosity,
 } from "./session/types.ts";
+import { DEFAULT_DEDUP_THRESHOLD, resolveDedupThreshold } from "./memory/dedup.ts";
 import type { EmbeddingProviderKind } from "./memory/embedding/factory.ts";
 import type { WhatsAppConfig } from "./whatsapp/types.ts";
 
@@ -156,6 +157,14 @@ export interface Config {
      * populates it and read sites default to "local".
      */
     embedProvider?: EmbeddingProviderKind;
+    /**
+     * Cosine at/above which a claim write MERGES into an existing claim instead
+     * of storing a near-duplicate twin. Set via `MEMORY_DEDUP_THRESHOLD`;
+     * defaults to 0.92 so retuning the gate is a config move, not a code move.
+     * Optional so existing Config test fixtures stay valid; `loadConfig` always
+     * populates it and the store falls back to the same default.
+     */
+    dedupThreshold?: number;
     /**
      * Pre-recall hook: before each runner turn, a cheap LLM extracts recall
      * queries from the incoming message and injects matching claims into the
@@ -352,6 +361,9 @@ export function loadConfig(): Config {
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
       embedProvider: parseEmbedProvider(optional("MEMORY_EMBED_PROVIDER", "local")),
+      dedupThreshold: resolveDedupThreshold(
+        optional("MEMORY_DEDUP_THRESHOLD", String(DEFAULT_DEDUP_THRESHOLD)),
+      ),
       preRecall: {
         // Default OFF: pre-recall spawns a subprocess on every Slack turn.
         // Operators must opt in after verifying timeout/kill behaviour.
