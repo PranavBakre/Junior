@@ -632,6 +632,20 @@ export class SqliteMemoryStore implements MemoryStore {
     txn();
   }
 
+  /**
+   * Deferred usage bump for callers that retrieve with `recordUsage: false` and
+   * only later know which claims actually reached an agent's prompt (§7.1).
+   */
+  async markClaimsUsed(ids: string[], now: number): Promise<void> {
+    const uniqueIds = unique(ids);
+    if (uniqueIds.length === 0) return;
+    const bump = this.db.query("UPDATE claim SET last_used_at = ? WHERE id = ?");
+    const txn = this.db.transaction(() => {
+      for (const id of uniqueIds) bump.run(now, id);
+    });
+    txn();
+  }
+
   // --- memory v3: consolidation source-record bookkeeping -------------------
 
   /**

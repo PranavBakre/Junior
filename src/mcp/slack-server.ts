@@ -1745,6 +1745,12 @@ export interface RecallMemoryArgs {
   kinds?: ClaimKind[];
   entityRefs?: string[];
   limit?: number;
+  /**
+   * Bump `last_used_at` on the returned claims (default true). Callers that
+   * retrieve CANDIDATES and decide usefulness later — pre-recall synthesis —
+   * pass false and record usage themselves via `markClaimsUsed`.
+   */
+  recordUsage?: boolean;
 }
 
 export interface RecallMemoryResult {
@@ -1756,6 +1762,13 @@ export interface RecallMemoryResult {
     kind: ClaimKind;
     text: string;
     score: number;
+    /**
+     * Raw cosine, unweighted — null with no queryVector or no embedding.
+     * Kept beside `score` because the two answer different questions: cosine is
+     * relevance, `score` is cosine × weight and so mixes in value. A caller
+     * thresholding on relevance must threshold on this one.
+     */
+    cosine: number | null;
     repo: string | null;
     tags: string[];
   }>;
@@ -1808,6 +1821,7 @@ export async function recallMemory(
       queryVector,
       filters,
       limit,
+      recordUsage: args.recordUsage,
     });
     for (const r of results) {
       if (seen.has(r.id)) continue;
@@ -1824,6 +1838,7 @@ export async function recallMemory(
       kind: c.kind,
       text: c.text,
       score: c.score,
+      cosine: c.cosine,
       repo: c.repo,
       tags: c.tags,
     })),

@@ -290,6 +290,14 @@ sessionManager.onReaction = (event, emoji) => {
   responder.addReaction(event.channel, event.ts, emoji);
 };
 
+sessionManager.onTurnReaction = (action, channel, messageTs, emoji) => {
+  if (action === "add") {
+    responder.addReaction(channel, messageTs, emoji);
+  } else {
+    responder.removeReaction(channel, messageTs, emoji);
+  }
+};
+
 sessionManager.onError = (session, error) => {
   const agentName = session.activeAgentName ?? "lead";
   log.error("error", `thread=${session.threadId} agent=${agentName} ${error ?? "Unknown error"}`);

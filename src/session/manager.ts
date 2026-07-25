@@ -84,6 +84,21 @@ import { composeProductDispatchPrompt } from "../pipelines/product/context.ts";
 import { createDefaultRun } from "../pipelines/default/controller.ts";
 import { pumpOutbox } from "../pipelines/pump.ts";
 
+/**
+ * Turn-progress marker. Distinct from the "eyes" acknowledgement the event
+ * layer adds on receipt: this one is cleared when the turn ends, so it means
+ * "still working", not "seen".
+ */
+const TURN_PROGRESS_EMOJI = "hourglass_flowing_sand";
+
+/**
+ * A real Slack message timestamp (`1700000000.123456`). Internal dispatches
+ * synthesize `event.ts` as an identity key — `pipeline:<run>:<assignment>:<ts>`
+ * (pipelines/dispatch.ts) and `<ts>:button:<actionId>` (slack/action-buttons.ts)
+ * — and reacting to those is an API call that can only fail.
+ */
+const SLACK_MESSAGE_TS = /^\d+\.\d+$/;
+
 export class SessionManager {
   private store: SessionStore;
   private config: Config;
@@ -96,6 +111,8 @@ export class SessionManager {
   private drivers: DriverMap;
   private memoryIngestor?: MemoryIngestor;
   private preRecall: PreRecallFn | null;
+  /** Ref-count per marked message; see markTurnProgress. */
+  private turnProgressRefs = new Map<string, number>();
 
   slackApp?: App;
   botUserId?: string;
@@ -123,6 +140,17 @@ export class SessionManager {
   onError?: (session: ThreadSession, error: string | null) => void;
   onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
   onReaction?: (event: SlackMessageEvent, emoji: string) => void;
+  /**
+   * Add/remove the turn-progress marker on the message that started a turn.
+   * Separate from `onReaction` because that one only ever adds, and this
+   * signal is worthless unless it can be taken back off.
+   */
+  onTurnReaction?: (
+    action: "add" | "remove",
+    channel: string,
+    messageTs: string,
+    emoji: string,
+  ) => void;
   onClearThreadStatus?: (threadTs: string) => void;
 
   constructor(
@@ -1468,6 +1496,19 @@ export class SessionManager {
       }
     };
     let runnerStarted = false;
+    // Between the message landing and the runner's first output the thread
+    // shows nothing — prompt composition, worktree setup and pre-recall all run
+    // first. Mark whichever message started this turn. Dispatched agent turns
+    // (`@junior reproducer …`) carry their own ts and are usually the longest,
+    // so they get the marker too; overlap with a top-level turn on the same
+    // message is what markTurnProgress ref-counts. Drains and continuations
+    // thread no ts through, so only a top-level turn can recover one from the
+    // session row.
+    const progressMessageTs =
+      latestTs ?? (isTopLevel ? session.activeTopLevelMessageTs ?? null : null);
+    if (progressMessageTs) {
+      this.markTurnProgress(session.channel, progressMessageTs, "add");
+    }
     try {
       assertRunOwnership();
       let agentSession = isTopLevel
@@ -1934,6 +1975,7 @@ export class SessionManager {
         // can't inject into this session's prompt.
         const preRecallBlock = await this.preRecall(rawMessage, {
           repo: session.targetRepo,
+          agent: agentName,
         });
         assertRunOwnership();
         if (preRecallBlock) {
@@ -2387,6 +2429,14 @@ export class SessionManager {
         this.buildRunSession(session, agentName, identityForAgent(agentName)),
         session.lastError?.message ?? "runner setup failed",
       );
+    } finally {
+      // One clear for every terminal path — response posted, spawn failure,
+      // timeout/hard kill, cancellation, and the suppressed-response case
+      // (NO_SLACK_MESSAGE, silent lead turn) that posts nothing at all and is
+      // therefore the easiest to leave marked forever.
+      if (progressMessageTs) {
+        this.markTurnProgress(session.channel, progressMessageTs, "remove");
+      }
     }
   }
 
@@ -3701,6 +3751,41 @@ export class SessionManager {
 
   private handleKey(threadId: string, agentName: string): string {
     return `${threadId}:${agentName}`;
+  }
+
+  /**
+   * Mark/unmark a Slack message as having a turn in flight. Ref-counted because
+   * overlapping turns can own the same message — a cold-start restart or a
+   * guard continuation starts its turn before the replaced one finishes tearing
+   * down, and a naive clear would strip the live turn's marker.
+   */
+  private markTurnProgress(
+    channel: string,
+    messageTs: string,
+    action: "add" | "remove",
+  ): void {
+    if (!this.onTurnReaction) return;
+    // Guarded centrally rather than at each caller: the dispatch layers use
+    // `event.ts` legitimately as a dedupe/identity key, and only this layer
+    // claims it is something Slack can react to. A caller-side fix would have
+    // to be repeated for every future dispatch path.
+    if (!SLACK_MESSAGE_TS.test(messageTs)) return;
+    const key = `${channel}:${messageTs}`;
+    const refs = this.turnProgressRefs.get(key) ?? 0;
+    if (action === "add") {
+      this.turnProgressRefs.set(key, refs + 1);
+      if (refs === 0) {
+        this.onTurnReaction("add", channel, messageTs, TURN_PROGRESS_EMOJI);
+      }
+      return;
+    }
+    if (refs === 0) return;
+    if (refs > 1) {
+      this.turnProgressRefs.set(key, refs - 1);
+      return;
+    }
+    this.turnProgressRefs.delete(key);
+    this.onTurnReaction("remove", channel, messageTs, TURN_PROGRESS_EMOJI);
   }
 }
 

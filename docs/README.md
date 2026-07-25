@@ -54,6 +54,7 @@ surfaces have dedicated indexes:
 - [HTTP dashboard](code_index/http-dashboard.md)
 - [MCP server](code_index/mcp-server.md)
 - [Pipelines](code_index/pipelines.md)
+- [Pre-recall](code_index/pre-recall.md)
 - [Project setup and boot](code_index/project-setup.md)
 - [Runner providers](code_index/runner-providers.md)
 - [Support router](code_index/support-router.md)
@@ -68,12 +69,10 @@ Active proposals (designed, not implemented):
 - [Task routes](features/task-routes.md): a per-task path through a codebase —
   entry point, order, and tooling dead ends — with write-time fingerprinting,
   ripgrep-only verification, auto-repair, and usage-weighted decay.
-- [Pre-recall synthesis](features/pre-recall-synthesis.md): move the LLM call
-  after recall, add success telemetry, and signal turn start with a reaction.
-
-(The claim dedup write guard graduated out of this list — it is shipped and
-listed under [current runtime surfaces](#current-runtime-surfaces). Its backfill
-sweep is dry-run by default and has not been applied to the live corpus.)
+(The claim dedup write guard and pre-recall synthesis both graduated out of this
+list — they are shipped and listed under
+[current runtime surfaces](#current-runtime-surfaces). The dedup backfill sweep
+is dry-run by default and has not been applied to the live corpus.)
 
 Feature files with an explicit `Historical`, `Proposal`, `Future`, or
 `Superseded` status are retained as design history. In particular, the older

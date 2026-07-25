@@ -73,6 +73,8 @@ export class SlackResponder {
    *    alongside the final response.
    */
   private pendingStatusPosts = new Map<string, Promise<unknown>>();
+  /** Per-message reaction write chains; see enqueueReaction. */
+  private reactionChains = new Map<string, Promise<void>>();
 
   constructor(app: App) {
     this.app = app;
@@ -356,22 +358,82 @@ export class SlackResponder {
     messageTs: string,
     emoji: string,
   ): Promise<void> {
-    try {
-      await this.app.client.reactions.add({
-        channel,
-        timestamp: messageTs,
-        name: emoji,
-      });
-      log.info(
-        "responder",
-        `reaction.add channel=${channel} ts=${messageTs} emoji=${emoji}`,
-      );
-    } catch (err) {
-      log.error(
-        "responder",
-        `reaction.add.fail channel=${channel} ts=${messageTs} emoji=${emoji} err=${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    return this.enqueueReaction(channel, messageTs, async () => {
+      try {
+        await this.app.client.reactions.add({
+          channel,
+          timestamp: messageTs,
+          name: emoji,
+        });
+        log.info(
+          "responder",
+          `reaction.add channel=${channel} ts=${messageTs} emoji=${emoji}`,
+        );
+      } catch (err) {
+        log.error(
+          "responder",
+          `reaction.add.fail channel=${channel} ts=${messageTs} emoji=${emoji} err=${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    });
+  }
+
+  /**
+   * Clear a reaction the bot added. Callers that mark work in progress must be
+   * able to unmark it on every terminal path, or the thread accumulates
+   * permanent "working" markers that are worse than no signal at all.
+   */
+  async removeReaction(
+    channel: string,
+    messageTs: string,
+    emoji: string,
+  ): Promise<void> {
+    return this.enqueueReaction(channel, messageTs, async () => {
+      try {
+        await this.app.client.reactions.remove({
+          channel,
+          timestamp: messageTs,
+          name: emoji,
+        });
+        log.info(
+          "responder",
+          `reaction.remove channel=${channel} ts=${messageTs} emoji=${emoji}`,
+        );
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        // `no_reaction` / `message_not_found` mean there is nothing left to
+        // clear — the clear-on-every-path rule makes that a normal outcome.
+        if (reason.includes("no_reaction") || reason.includes("message_not_found")) {
+          return;
+        }
+        log.error(
+          "responder",
+          `reaction.remove.fail channel=${channel} ts=${messageTs} emoji=${emoji} err=${reason}`,
+        );
+      }
+    });
+  }
+
+  /**
+   * Serialize reaction writes per message. Callers fire these without awaiting
+   * and the web client runs them concurrently, so on a fast-exiting turn a
+   * remove can reach Slack before its own add — the remove returns
+   * `no_reaction` (deliberately swallowed) and the add then lands and sticks
+   * forever, with nothing in the logs. The chain never rejects: the operations
+   * report their own failures.
+   */
+  private enqueueReaction(
+    channel: string,
+    messageTs: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const key = `${channel}:${messageTs}`;
+    const previous = this.reactionChains.get(key) ?? Promise.resolve();
+    const next = previous.then(operation).catch(() => undefined);
+    this.reactionChains.set(key, next);
+    return next.then(() => {
+      if (this.reactionChains.get(key) === next) this.reactionChains.delete(key);
+    });
   }
 
   private statusKey(threadTs: string, agentName: string): string {
