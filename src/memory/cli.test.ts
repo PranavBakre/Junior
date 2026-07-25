@@ -159,6 +159,8 @@ describe("memory CLI", () => {
     const dbPath = join(tmpDir, "memory.db");
     const store = new SqliteMemoryStore(dbPath);
     try {
+      // No --embedding: the CLI embeds via the provider before calling the store,
+      // because the store rejects an unguardable, cosine-invisible row.
       await runMemoryCli([
         "add-claim", "--db", dbPath,
         "--id", "claim-cli", "--kind", "fact",
@@ -167,7 +169,7 @@ describe("memory CLI", () => {
       ]);
 
       // No query vector → recallClaims ranks by weight and returns the claim;
-      // cosine is null because nothing was embedded.
+      // cosine is null because the RECALL supplied no query vector.
       const output = await runMemoryCli(["recall-claims", "--db", dbPath, "--json"]);
       const parsed = JSON.parse(output) as { results: Array<{ id: string; cosine: number | null }> };
       expect(parsed.results.map((r) => r.id)).toContain("claim-cli");
@@ -189,6 +191,111 @@ describe("memory CLI", () => {
       const output = await runMemoryCli(["recall-claims", "--db", dbPath, "--query-vector", "1,0,0,0", "--json"]);
       const parsed = JSON.parse(output) as { results: Array<{ id: string }> };
       expect(parsed.results.map((r) => r.id)).toEqual(["claim-aligned", "claim-ortho"]);
+    } finally {
+      store.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // --- claim dedup write guard on the CLI writers ---------------------------
+
+  it("add-lesson merges a reworded lesson into the claim it already stored", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    try {
+      await runMemoryCli([
+        "add-lesson", "--db", dbPath, "--json",
+        "--id", "lesson-dedup-a",
+        "--title", "Always branch from main",
+        "--body", "Feature branches must be created from main, not dev.",
+      ]);
+      // A near-identical lesson under a DIFFERENT id — this used to add a twin
+      // claim, because only consolidation ever ran the cosine gate.
+      const out = await runMemoryCli([
+        "add-lesson", "--db", dbPath, "--json",
+        "--id", "lesson-dedup-b",
+        "--title", "Always branch from main",
+        "--body", "Feature branches must be created from main, and not from dev.",
+      ]);
+      const parsed = JSON.parse(out) as { claimAction: string; claimId: string };
+      expect(parsed.claimAction).toBe("merged");
+      expect(parsed.claimId).toBe("lesson-dedup-a");
+
+      const store = new SqliteMemoryStore(dbPath);
+      try {
+        // The legacy lesson row is still written under its own id — only the
+        // semantic claim collapsed.
+        const lessons = (store as unknown as { db: import("bun:sqlite").Database }).db
+          .query("SELECT id FROM lesson ORDER BY id")
+          .all() as Array<{ id: string }>;
+        expect(lessons.map((r) => r.id)).toEqual(["lesson-dedup-a", "lesson-dedup-b"]);
+        expect(await store.exportClaimVectors()).toHaveLength(1);
+      } finally {
+        store.close();
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("add-claim merges a near-duplicate, and --skip-dedup writes it verbatim", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    const store = new SqliteMemoryStore(dbPath);
+    try {
+      await runMemoryCli([
+        "add-claim", "--db", dbPath, "--json",
+        "--id", "c-guard-a", "--kind", "fact",
+        "--text", "aligned", "--embedding", "1,0,0,0",
+      ]);
+      const merged = await runMemoryCli([
+        "add-claim", "--db", dbPath, "--json",
+        "--id", "c-guard-b", "--kind", "fact",
+        "--text", "aligned too", "--embedding", "0.95,0.05,0,0",
+      ]);
+      expect(JSON.parse(merged)).toMatchObject({ upserted: "c-guard-a", action: "merged" });
+
+      // --skip-dedup is the restore hatch: the same near-duplicate goes in as-is.
+      const verbatim = await runMemoryCli([
+        "add-claim", "--db", dbPath, "--json", "--skip-dedup",
+        "--id", "c-guard-c", "--kind", "fact",
+        "--text", "aligned again", "--embedding", "0.97,0.03,0,0",
+      ]);
+      expect(JSON.parse(verbatim)).toMatchObject({ upserted: "c-guard-c", action: "inserted" });
+      expect(await store.exportClaimVectors()).toHaveLength(2);
+    } finally {
+      store.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dedup-sweep dry-runs by default and archives only with --apply", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    const store = new SqliteMemoryStore(dbPath);
+    try {
+      // Seed the pre-guard corpus state: two near-identical claims, both active.
+      for (const [id, vec, weight] of [
+        ["sweep-keep", "1,0,0,0", "5"],
+        ["sweep-dup", "0.95,0.05,0,0", "1"],
+      ] as const) {
+        await runMemoryCli([
+          "add-claim", "--db", dbPath, "--json", "--skip-dedup",
+          "--id", id, "--kind", "lesson", "--text", `text ${id}`,
+          "--embedding", vec, "--weight", weight,
+        ]);
+      }
+
+      const dry = JSON.parse(await runMemoryCli(["dedup-sweep", "--db", dbPath, "--json"]));
+      expect(dry).toMatchObject({ applied: false, duplicatesFound: 1, duplicatesArchived: 0 });
+      expect(await store.exportClaimVectors()).toHaveLength(2);
+
+      const applied = JSON.parse(
+        await runMemoryCli(["dedup-sweep", "--db", dbPath, "--apply", "--json"]),
+      );
+      expect(applied).toMatchObject({ applied: true, duplicatesArchived: 1 });
+      const survivors = await store.exportClaimVectors();
+      expect(survivors.map((c) => c.id)).toEqual(["sweep-keep"]);
     } finally {
       store.close();
       rmSync(tmpDir, { recursive: true, force: true });

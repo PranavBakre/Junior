@@ -163,7 +163,11 @@ server startup.
   `query` locally to cosine-rank the atomic claim store; returns the profiles plus
   the top-k claims. Recall is cosine-only — there is no FTS channel.
 - `memory_add` accepts `text`, `kind`, `repo`, and `tags`, embeds the text locally
-  (document mode), and stores one atomic claim with its embedding co-located.
+  (document mode), and stores one atomic claim with its embedding co-located. The
+  store's write guard collapses semantic near-duplicates, so the result carries an
+  `action` — `inserted`, `updated`, or `merged` (with `mergedInto`) — letting the
+  caller tell "stored" from "already knew that". See
+  [claim-dedup-write-guard.md](claim-dedup-write-guard.md).
 - `memory_consolidate` takes no inputs. It drains all unconsolidated source records
   (session-scoped per thread, then a final unthreaded sweep), asks the runner LLM
   for derivations, and persists episodes/profiles/claims through the v3 gates.
@@ -171,7 +175,7 @@ server startup.
 Workflow utility runs use an explicit utility cwd, which skips Junior's project
 MCP wiring by design. Those runs access the store through the v3 CLI
 (`src/memory/cli.ts`): `consolidate-v3`, `recall-claims`, `add-claim`, `add-lesson`,
-and `add-fact`.
+`add-fact`, and `dedup-sweep`.
 
 ## What it replaced
 

@@ -62,7 +62,9 @@ const app = createSlackApp(config);
 const store = createSessionStore(config);
 log.info("boot", `Session store: ${config.session.store}`);
 const actionStore = new SlackActionStore(resolve(config.session.sqlitePath));
-const memoryStore = createMemoryStore(config.memory.sqlitePath);
+const memoryStore = createMemoryStore(config.memory.sqlitePath, {
+  dedupThreshold: config.memory.dedupThreshold,
+});
 const memoryIngestor = new MemoryIngestor(memoryStore);
 let pipelineAudit: SlackAuditCallback | undefined;
 const sessionManager = new SessionManager(store, config);
@@ -286,6 +288,14 @@ sessionManager.onClearThreadStatus = (threadTs) => {
 
 sessionManager.onReaction = (event, emoji) => {
   responder.addReaction(event.channel, event.ts, emoji);
+};
+
+sessionManager.onTurnReaction = (action, channel, messageTs, emoji) => {
+  if (action === "add") {
+    responder.addReaction(channel, messageTs, emoji);
+  } else {
+    responder.removeReaction(channel, messageTs, emoji);
+  }
 };
 
 sessionManager.onError = (session, error) => {

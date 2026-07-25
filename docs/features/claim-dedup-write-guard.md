@@ -1,8 +1,16 @@
 # Claim dedup: move the guard into the write path
 
-> **Status: Proposal.** The defect is measured against the live corpus
-> (`data/memory.db`, 2621 embedded claims) and the current code; the fix is not
-> implemented. Measurements taken at commit `905621a`.
+> **Status: Shipped.** The guard lives in `SqliteMemoryStore.upsertClaim`, the
+> value-metadata erasure is fixed, `MEMORY_DEDUP_THRESHOLD` is configurable, the
+> backfill sweep ships as `workflows/memory-dedup-sweep.workflow.md` +
+> `dedup-sweep` CLI, and `memoryHealth()` reports the near-duplicate rate.
+> **The 432-duplicate backfill has NOT been applied to the live corpus** — the
+> sweep is dry-run by default and applying it is an operator action (see
+> [Backfill](#backfill)). The problem measurements below are historical, taken
+> against `data/memory.db` at commit `905621a`.
+>
+> Implementation notes are collected in [What shipped](#what-shipped), including
+> the places the code deliberately diverges from this document.
 
 ## Problem
 
@@ -12,7 +20,8 @@ Semantic dedup exists, is tested, and is bypassed by most of the writers.
 `DEFAULT_DEDUP_THRESHOLD = 0.92` cosine of an existing claim or of another draft
 in the same batch (`src/memory/consolidation/consolidate.ts:24,149-150`). That
 works. But the check lives in *that caller*, not in the store, and there are four
-callers of `upsertClaim`:
+callers of `upsertClaim`. As of this document's Shipped status every row below is
+deduped by the store itself; the table records the state that motivated the fix:
 
 | Caller | Deduped? |
 |---|---|
@@ -68,7 +77,8 @@ rung-1 budget. A faster index would return the redundant results faster.
 claims near an existing stored claim"* — passes. A green test on the one guarded
 path is exactly what makes the three unguarded paths read as covered. Worth a
 comment on that test when the guard moves, so the next reader does not draw the
-same inference.
+same inference. *(Shipped: that comment is on the test now, pointing at the
+`claim write guard` block in `sqlite.test.ts`.)*
 
 ## Shape of the fix
 
@@ -118,6 +128,15 @@ a new claim wearing an old id, and it can land inside the threshold of a
 different existing claim. Re-run the neighbour scan on any update where the text
 changed, excluding the row's own id from the candidate set.
 
+**And when that re-scan merges, the updated row must not be left behind.** The
+caller has just replaced that row's text, so nobody asserts the old text any
+more — but the row is still `active = 1` and still competing in recall, and no
+later write can repair it, because every subsequent edit of that id re-merges the
+same way and never rewrites it. Fold it into the survivor instead, with the same
+semantics as the backfill sweep: counters into the survivor, then `active = 0`.
+Reached through the ordinary "correct a lesson" workflow, so this is the common
+case, not an edge one.
+
 #### Bypass for restore paths
 
 `migrate-v3.ts` and any future backup restore must write historical rows
@@ -145,14 +164,83 @@ non-reproducible.
 The scan and the merge run in **one transaction**, so a concurrent writer cannot
 insert a near-duplicate between the check and the write.
 
+That transaction must be `IMMEDIATE`. Before the guard, `upsertClaim` opened with
+an INSERT; now it reads (the id lookup, then the full corpus scan — ~10ms at
+2600 claims) before its first write. Under WAL a `DEFERRED` transaction takes its
+read snapshot at that first SELECT, and if another connection commits inside the
+window the eventual write fails with `SQLITE_BUSY_SNAPSHOT` — an error a busy
+handler is specifically *not* allowed to retry, so a busy timeout alone does not
+rescue it. `data/memory.db` genuinely has more than one writer: the in-process
+consolidation sweep, plus any `bun run src/memory/cli.ts add-lesson` a workflow
+shells out ([dynamic workflows](dynamic-workflows.md)). Measured, default
+`busy_timeout = 0`:
+
+```
+deferred:  FAILED -> database is locked   (SQLITE_BUSY_SNAPSHOT)
+immediate: concurrent writer blocked      ; own write succeeded
+```
+
+Taking the write lock up front turns the failure into ordinary contention, which
+`PRAGMA busy_timeout` then absorbs — so both changes are needed, not either.
+
+Two caveats worth writing down:
+
+- **The busy timeout is a property of `SqliteMemoryStore`'s connection, not of the
+  database file.** Anything that opens `data/memory.db` with its own handle —
+  `migrate-v3.ts`, the routing-log migration — still runs at SQLite's default of
+  0. Both are operator-run with the bot stopped, so they do not contend today; a
+  future handle that runs *alongside* the bot has to set its own.
+- **`IMMEDIATE` means the corpus scan now happens while holding the write lock**,
+  so writes serialize on it: O(n) in corpus size, ~10ms at 2600 claims. At the
+  ~109 claims/day this document measures that is ~150ms of exclusive lock per
+  write within a year, which is no longer negligible. Revisit when the scan
+  exceeds **~100ms** — the fix is to narrow the candidate set (rung 2 of
+  [§6.2's](memory-system-v3.md) ladder), not to loosen the transaction.
+
 ### Merge, don't drop
 
 Consolidation currently *skips* a near-duplicate draft. Silently discarding it
 loses a real signal: the same claim being independently derived twice is evidence
 it matters. On a near-duplicate hit, bump the surviving claim instead —
-`helpful_count` and `weight`, and refresh `last_used_at`. That feeds the existing
-decay contract (`archiveStaleClaims` is "stale **and** low-value"), so repeated
-rediscovery makes a claim harder to fade rather than a no-op.
+`helpful_count` and `weight`, and refresh `last_used_at`. That is the value
+signal the decay contract is written against (`archiveStaleClaims` is "stale
+**and** low-value"), so rediscovery accumulates evidence instead of being a
+no-op. Note what that sentence does *not* say: see
+[the decay wiring gap](#the-decay-half-is-not-wired-up) — nothing calls
+`archiveStaleClaims` today, so this feeds a contract with no reader yet.
+
+**The weight bump needs a ceiling.** A merge writes no row for the twin, so the
+same input text merges again on every call — the bump is not idempotent by
+construction. `recallClaims` scores `cosine * weight`, so a Stop hook or an agent
+re-asserting one lesson each session would add +0.1 per session with no bound:
+after ~40 sessions that claim outranks a cosine-0.9 match at cosine 0.2. That is
+a live recall-ranking defect on its own; it does not need the decay argument to
+justify a fix, and it must not be justified by one, because **nothing ever
+lowers a weight again** (below). Clamp the merged weight
+(`CLAIM_MERGE_WEIGHT_CEILING = 2.0` — a rediscovered claim may outrank a fresh
+one of at most double its cosine, and no further) so repeated merges converge.
+The clamp only holds a bump down; it never pulls an explicitly set higher weight
+back. `helpful_count` stays uncapped: it feeds no ranking, and the honest count
+of rediscoveries is the signal worth keeping.
+
+#### The decay half is not wired up
+
+Do not read the ceiling as "a safety net until decay cleans it up". Verified
+against the current tree:
+
+- **`weight` has no decrement path anywhere.** It is written in exactly three
+  places — the merge bump, an explicit caller-supplied `weight`, and the insert
+  default. There is no downweight-on-unhelpful and no time decay.
+- **A default-weight claim is not even a fade candidate.** Inserts default to
+  `weight = 1.0`; the ceiling `memoryHealth` previews fade candidates at is
+  `maxWeight = 0.5`. Nothing written at the default is eligible, merged or not.
+- **`archiveStaleClaims` has no caller.** It appears only in `src/memory/sqlite.ts`,
+  the `MemoryStore` interface, and one test. No workflow, CLI, or scheduler
+  invokes it.
+
+So an over-weighted claim is permanent, and the ceiling is the only bound that
+exists. Wiring decay up is real work and deliberately **not** part of this
+branch — it is in the [cut list](#cut-list-true-v2).
 
 The response should say which happened — `{ id, action: "inserted" | "merged",
 mergedInto? }` — so a caller (and the Stop hook) can tell the difference between
@@ -204,6 +292,84 @@ Add the near-duplicate rate to `memoryHealth()` so it is a standing metric
 instead of a one-off measurement — without it, the next regression is as
 invisible as this one was.
 
+## What shipped
+
+Code index: [memory-system-v3.md](../code_index/memory-system-v3.md).
+
+| Piece | Where |
+|---|---|
+| The guard, the merge, the value-metadata fix | `SqliteMemoryStore.upsertClaim` + `findNearDuplicate` (`src/memory/sqlite.ts`) |
+| Fold-and-archive on a merging update | `upsertClaim`'s merge branch (`collapseDuplicateClaims` semantics, inline) |
+| Merge-bump ceiling | `CLAIM_MERGE_WEIGHT_BUMP` + `CLAIM_MERGE_WEIGHT_CEILING` (`src/memory/sqlite.ts`) |
+| Write-lock safety | `txn.immediate()` on the two read-then-write transactions + `PRAGMA busy_timeout = 5000` |
+| Scoped consolidation pre-check | `dedupScopeKey` buckets in `consolidation/consolidate.ts` |
+| Shared threshold / winner ordering / scope key | `src/memory/dedup.ts` |
+| Backfill sweep | `src/memory/dedup-sweep.ts`, `dedup-sweep` CLI, `workflows/memory-dedup-sweep.workflow.md` |
+| Merge primitive for the sweep | `MemoryStore.collapseDuplicateClaims` |
+| Near-duplicate rate | `memoryHealth()` → `MemoryHealthKind.nearDuplicates` / `.nearDuplicateRate` |
+| Threshold config | `MEMORY_DEDUP_THRESHOLD` → `config.memory.dedupThreshold` → store option |
+
+### Deliberate divergences from this document
+
+1. **`action` has three values, not two.** The document specified
+   `"inserted" | "merged"`. The code also returns `"updated"`, because this
+   document's own §"Existing-id writes need patch semantics" establishes the
+   existing-id write as a distinct case — reporting it as `"inserted"` would be a
+   lie a caller could act on. `id` is always the row that HOLDS the knowledge
+   (the survivor on a merge): on a merging INSERT the caller's id was never
+   written, and on a merging UPDATE the caller's row is folded into the survivor
+   and archived, so it never names a row that lost its knowledge.
+2. **COALESCE preservation covers more than the three value columns.**
+   `last_used_at` is included (erasing it resets the fade clock — the same decay
+   signal the counters feed) and so are `embedding`/`embed_model`/`dim` (erasing
+   the vector makes the row both unguardable and unrecallable, which is the
+   defect this document opens with). `repo`, `tags`, `source_episode`, and
+   `active` keep caller-declared `excluded.` semantics — they are scope
+   declarations, not accumulated value.
+3. **The re-scan trigger includes archived rows.** The document says re-scan "on
+   any update where the text changed". The code also re-scans when the existing
+   row is `active = 0`, because without it, re-adding a claim the backfill sweep
+   archived would resurrect it one write at a time and quietly undo the sweep.
+
+4. **An archived row is never re-folded.** A merging UPDATE folds the caller's
+   row into the survivor only while that row is still `active = 1`. Re-adding a
+   claim the sweep already archived takes the plain bump alone, because the sweep
+   banked its counters when it collapsed it — re-folding on every re-add would
+   double-count the same value signal indefinitely, which is the exact failure
+   the weight ceiling above exists to prevent.
+5. **The folded row keeps its own text.** It is archived, not rewritten, so the
+   provenance still records what that id actually asserted. The caller's new text
+   lives on in the survivor, which already held it.
+
+Two smaller implementation choices worth naming:
+
+- **The sweep's scheduled run is report-only.** The document says "dry-run by
+  default like `migrate-v3.ts`"; the workflow therefore never passes `apply`.
+  Committing a collapse is `bun run src/memory/cli.ts dedup-sweep --apply`, run
+  by an operator with the bot stopped. A cron job that archives claims
+  unattended would be a destructive default.
+- **The near-duplicate rate is opt-out, not opt-in.** It is an all-pairs cosine
+  scan (O(n²) per dedup scope, seconds at a few thousand claims — measured 1464ms
+  at 2600 claims, and *synchronous*), so
+  `memoryHealth({ includeNearDuplicates: false })` returns `null` counts for a
+  latency-sensitive caller. It is on by default because a metric nobody asks for
+  is not a standing metric. It has no production caller today; wiring it into the
+  HTTP dashboard without opting out would block the event loop for the full scan,
+  and there is a warning on `countNearDuplicatesByKind` saying so.
+- **The rate's denominator is the EMBEDDED claims of a kind, not `total`.** Only
+  a vector-carrying row can be counted as a twin, so measuring it against a corpus
+  that still holds vector-less legacy rows understates the rate.
+
+`consolidateSession` keeps its own in-batch check: the store cannot see drafts
+that have not been written yet, so near-identical drafts inside one batch are
+still collapsed there. Its pre-check against existing claims is now an
+optimization (skip a pointless write round-trip), not the gate. Both halves of
+that check are bucketed by `dedupScopeKey`, matching the store: unscoped, a
+`repo: "gx-backend"` draft sitting near a *global* claim was **dropped** and
+counted as `claimsDeduped` without ever reaching the store — and a drop is
+strictly worse than the merge the store would have refused to make, since
+cross-scope near-duplicates are supposed to be reported, not merged.
+
 ## Dependencies
 
 - [Memory v3](memory-system-v3.md) — the claim store, `upsertClaim`, the decay
@@ -220,3 +386,11 @@ invisible as this one was.
   genuine twins from distinct claims.
 - Cross-kind dedup (a `lesson` merging into a `fact`). Same-kind only until
   there is evidence the corpus needs it.
+- **Wiring up decay.** `archiveStaleClaims` exists, is tested, and is called by
+  nothing; `weight` has no decrement path at all
+  ([above](#the-decay-half-is-not-wired-up)). Retiring stale claims and
+  downweighting unhelpful ones are both real features with their own design
+  questions (who schedules it, what a downweight signal even is), not a line to
+  slip into a dedup branch. Naming it here so the next reader knows the gap is
+  known rather than overlooked — until it lands, `CLAIM_MERGE_WEIGHT_CEILING` is
+  load-bearing on its own.

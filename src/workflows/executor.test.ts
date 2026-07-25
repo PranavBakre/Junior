@@ -148,6 +148,62 @@ describe("WorkflowExecutor", () => {
     }
   });
 
+  it("runs the dedup sweep natively for memory-dedup-sweep, and never mutates memory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-dedup-workflow-test-"));
+    const definition = workflowDefinition(dir);
+    definition.name = "memory-dedup-sweep";
+    definition.triggers = [{ type: "command", command: "memory-dedup-sweep" }];
+    definition.outputs = [{ type: "docs", path: join(dir, "memory-dedup-sweep") }];
+    definition.permissions.tools = ["docs.write", "memory.read", "memory.evaluate"];
+    definition.sourcePath = "workflows/memory-dedup-sweep.workflow.md";
+    // No runner: clustering is deterministic, so an agent pass would only
+    // paraphrase a report it cannot improve.
+    definition.runner = undefined;
+    const store = new InMemoryWorkflowStore();
+    const spawn = mock(() => {
+      throw new Error("runner should not be spawned for the dedup sweep");
+    });
+    const memoryStore = new SqliteMemoryStore(join(dir, "memory.db"));
+    // Two near-identical claims seeded past the guard — the pre-guard corpus state.
+    for (const [id, vector] of [
+      ["wf-keep", new Float32Array([1, 0, 0, 0])],
+      ["wf-dup", new Float32Array([0.95, 0.05, 0, 0])],
+    ] as const) {
+      await memoryStore.upsertClaim({
+        id,
+        kind: "lesson",
+        text: `claim ${id}`,
+        embedding: vector,
+        createdAt: Date.now(),
+        skipDedup: true,
+      });
+    }
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store,
+      spawn: spawn as never,
+      memoryStore,
+      now: () => new Date("2026-05-24T10:00:00.000Z"),
+    });
+
+    try {
+      const result = await executor.run({ definition, reason: "manual" });
+
+      expect(spawn).not.toHaveBeenCalled();
+      expect(result.summary).toContain("DRY RUN");
+      expect(result.summary).toContain("duplicates found: 1");
+      // Scheduled runs REPORT only. Committing a collapse is an explicit
+      // operator action, because a merged-away claim is recoverable only from
+      // provenance.
+      expect(result.summary).toContain("duplicates archived: 0");
+      expect(await memoryStore.exportClaimVectors()).toHaveLength(2);
+      expect(readFileSync(result.run.artifactPath, "utf8")).toContain("Claim dedup sweep");
+    } finally {
+      memoryStore.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not spawn a second inspection runner for memory-consolidation (sweep-only)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-memory-sweeponly-test-"));
     const definition = workflowDefinition(dir);

@@ -222,6 +222,11 @@ describe("SqliteTaskRouteStore", () => {
       id: "claim_x",
       kind: "lesson",
       text: "a claim",
+      // The claim write guard rejects a vector-less insert unless skipDedup is
+      // set. Embed rather than bypass: this test is about the memory store
+      // still working alongside the route tables, and the normal write path is
+      // what "working" means here.
+      embedding: new Float32Array([1, 0, 0, 0]),
       createdAt: 1,
     });
     const routes = new SqliteTaskRouteStore(dbPath);
