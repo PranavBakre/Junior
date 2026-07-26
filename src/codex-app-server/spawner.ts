@@ -49,6 +49,7 @@ export function spawnCodexAppServer(
   const codexHome = prepareCodexHome({
     isolatedHomePath: config.codex.isolatedHomePath ?? resolve(process.cwd(), "data/codex-home"),
     model,
+    reasoningEffort: config.codex.reasoningEffort ?? "medium",
     approvalPolicy: config.codex.askForApproval,
     sandbox: config.codex.sandbox,
     mcp,

@@ -36,8 +36,8 @@ export const DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4-pro";
 // notation, which is not part of the model id and makes the CLI reject the run.
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-5";
 export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
-/** Codex reasoning effort when unset — low is the bake-off pick (fast + disciplined). */
-export const DEFAULT_CODEX_EFFORT = "low";
+/** Codex reasoning effort when unset. */
+export const DEFAULT_CODEX_EFFORT = "medium";
 
 /**
  * The injectable subprocess boundary: given the (schema-augmented) prompt, run a

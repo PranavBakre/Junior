@@ -21,6 +21,7 @@ const ENV_KEYS = [
   "OPENCODE_MONGODB_MCP_ENABLED",
   "CODEX_MODE",
   "CODEX_MODEL",
+  "CODEX_REASONING_EFFORT",
   "CODEX_TIMEOUT_MS",
   "CODEX_SANDBOX",
   "CODEX_ASK_FOR_APPROVAL",
@@ -107,6 +108,7 @@ describe("loadConfig runner providers", () => {
     expect(config.codex).toEqual({
       mode: "app-server",
       model: null,
+      reasoningEffort: "medium",
       timeoutMs: 300000,
       sandbox: "workspace-write",
       askForApproval: "never",
@@ -300,6 +302,7 @@ describe("loadConfig runner providers", () => {
     process.env.RUNNER_PROVIDER = "codex-app-server";
     process.env.CODEX_MODE = "app-server";
     process.env.CODEX_MODEL = "gpt-5.6-sol";
+    process.env.CODEX_REASONING_EFFORT = "medium";
     process.env.CODEX_TIMEOUT_MS = "2345";
     process.env.CODEX_SANDBOX = "read-only";
     process.env.CODEX_ASK_FOR_APPROVAL = "on-request";
@@ -319,6 +322,7 @@ describe("loadConfig runner providers", () => {
     expect(config.codex).toEqual({
       mode: "app-server",
       model: "gpt-5.6-sol",
+      reasoningEffort: "medium",
       timeoutMs: 2345,
       sandbox: "read-only",
       askForApproval: "on-request",

@@ -88,6 +88,7 @@ describe("buildCodexConfigToml", () => {
     expect(
       buildCodexConfigToml({
         model: "gpt-5.6-sol",
+        reasoningEffort: "medium",
         approvalPolicy: "never",
         sandbox: "danger-full-access",
         mcp: {
@@ -99,14 +100,15 @@ describe("buildCodexConfigToml", () => {
         trustedProjectPath: "/repo",
       }),
     ).toContain('[projects."/repo"]\ntrust_level = "trusted"');
-    expect(
-      buildCodexConfigToml({
-        model: "gpt-5.6-sol",
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-        mcp: null,
-      }),
-    ).toContain('sandbox_mode = "danger-full-access"');
+    const config = buildCodexConfigToml({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "medium",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      mcp: null,
+    });
+    expect(config).toContain('model_reasoning_effort = "medium"');
+    expect(config).toContain('sandbox_mode = "danger-full-access"');
   });
 });
 

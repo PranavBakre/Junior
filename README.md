@@ -172,6 +172,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `OPENCODE_MONGODB_MCP_ENABLED` | `true` | Include MongoDB MCP when configured |
 | `CODEX_MODE` | `app-server` | Codex transport: `app-server` or the isolated `cli` fallback |
 | `CODEX_MODEL` | *(unset)* | Override default Codex app-server model |
+| `CODEX_REASONING_EFFORT` | `medium` | Codex model reasoning effort |
 | `CODEX_TIMEOUT_MS` | `300000` | Per-turn Codex timeout before SIGINT |
 | `CODEX_SANDBOX` | `workspace-write` | Codex app-server sandbox. Set `danger-full-access` for YOLO-style full filesystem/network access. |
 | `CODEX_ASK_FOR_APPROVAL` | `never` | Codex app-server approval policy |

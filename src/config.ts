@@ -115,6 +115,8 @@ export interface Config {
   codex: {
     mode: "app-server" | "cli";
     model: string | null;
+    /** Codex model reasoning effort. Defaults to "medium". */
+    reasoningEffort?: string;
     timeoutMs: number;
     sandbox: "read-only" | "workspace-write" | "danger-full-access";
     askForApproval: "untrusted" | "on-request" | "never";
@@ -319,6 +321,7 @@ export function loadConfig(): Config {
     codex: {
       mode: parseCodexMode(optional("CODEX_MODE", "app-server")),
       model: process.env.CODEX_MODEL ?? null,
+      reasoningEffort: optional("CODEX_REASONING_EFFORT", "medium"),
       timeoutMs: Number(optional("CODEX_TIMEOUT_MS", "300000")),
       sandbox: parseCodexSandbox(optional("CODEX_SANDBOX", "workspace-write")),
       askForApproval: parseCodexApproval(optional("CODEX_ASK_FOR_APPROVAL", "never")),
