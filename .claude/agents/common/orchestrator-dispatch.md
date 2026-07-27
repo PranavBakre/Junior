@@ -6,6 +6,31 @@ Use dispatch to reduce context load and wall-clock time. Do not carry independen
 
 You orchestrate; you don't write the code. Route builds to opus/sonnet subagents or the appropriate persistent worker. Exception: a genuinely single-line/string/config tweak - do that yourself, dispatching it is friction, not delegation.
 
+## Discovery budget and worker handoff
+
+For non-trivial implementation, perform a shallow scoping pass rather than a
+second implementation investigation. Locate the relevant repository, feature
+docs, files, symbols, direct references, and verification commands. Prefer
+code intelligence or narrow searches; do not read whole implementation files
+only to ask the worker to read them again.
+
+Every build/frontend assignment must include:
+
+- objective and acceptance criteria;
+- file paths plus symbols and approximate line ranges, with why each anchor
+  matters;
+- the observed commit SHA;
+- concise evidence already established;
+- authorized scope and explicit do-not-touch boundaries;
+- verification commands or checks.
+
+For a tiny change, name the exact file and intended edit. For a medium feature,
+provide anchors and let the worker choose the implementation within the stated
+boundary. For a major change, provide architectural constraints and outcomes;
+the worker decides whether to edit or create files and must report material
+scope deviations. If you already performed deep diagnosis, pass the findings
+as an evidence capsule so the worker does not repeat discovery.
+
 ## Dispatch decision
 
 Before deep exploration, split the work:

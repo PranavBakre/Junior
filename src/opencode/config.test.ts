@@ -16,12 +16,12 @@ describe("OpenCode config generation", () => {
     ).toEqual({
       $schema: "https://opencode.ai/config.json",
       model: "openai/gpt-5.1",
-      permission: "allow",
+      permission: { "*": "allow", task: "deny" },
       agent: {
         build: {
           description: "Junior Slack runner",
           mode: "primary",
-          permission: { "*": "allow" },
+          permission: { "*": "allow", task: "deny" },
           prompt: "CUSTOM JUNIOR SYSTEM PROMPT",
         },
       },
@@ -75,7 +75,7 @@ describe("OpenCode config generation", () => {
     expect(config.agent["nr-research"]).toEqual({
       description: "New Relic research",
       mode: "subagent",
-      permission: { "*": "allow" },
+      permission: { "*": "allow", task: "deny" },
       prompt: "Research prompt",
     });
   });
@@ -128,8 +128,11 @@ describe("OpenCode config generation", () => {
       permission: "allow",
     });
 
-    expect(config.permission).toBe("allow");
-    expect(config.agent.build.permission).toEqual({ "*": "allow" });
+    expect(config.permission).toEqual({ "*": "allow", task: "deny" });
+    expect(config.agent.build.permission).toEqual({
+      "*": "allow",
+      task: "deny",
+    });
   });
 
   it("rejects blank agent names", () => {

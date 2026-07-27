@@ -47,4 +47,8 @@ top cosine / top score / claims / fallback / ms.
 `SessionManager.runRunnerWithAgent` awaits `this.preRecall(rawMessage, { repo, agent })`
 immediately before the runner spawns (`src/session/manager.ts`). The turn-progress
 reaction that covers that wait is separate — see
-[session-management](session-management.md).
+[session-management](session-management.md). Compiled typed worker assignments
+skip automatic pre-recall because Junior's handoff carries the selected
+evidence. Junior/lead assignments recall only on their initial dispatch
+(`retryCount === 0`); bounded settlement continuations reuse the
+assignment/provider context.

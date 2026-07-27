@@ -102,6 +102,22 @@ describe("prompt lint", () => {
     });
   });
 
+  describe("Junior owns worker fan-out", () => {
+    it.each(["build", "frontend"])(
+      "%s does not expose the provider-native Agent tool",
+      async (name) => {
+        const content = await Bun.file(
+          path.join(agentsDir, `${name}.md`),
+        ).text();
+        const tools = content.match(/^tools:\s*(.+)$/m)?.[1] ?? "";
+        expect(tools.split(",").map((tool) => tool.trim())).not.toContain(
+          "Agent",
+        );
+        expect(content).toContain("Junior owns fan-out");
+      },
+    );
+  });
+
   describe("all public agents have Done means section", () => {
     it.each(ALL_PUBLIC_AGENTS)("%s.md contains '## Done means'", async (name) => {
       const content = await readAgent(name);

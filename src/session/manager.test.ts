@@ -3627,6 +3627,115 @@ describe("SessionManager", () => {
 });
 
 describe("typed pipeline settlement", () => {
+  it("uses compiled assignment context without worker Slack history or recall", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-context-budget",
+      targetAgent: "build",
+      objective: "implement from scoped anchors",
+      idempotencyKey: "asg-context-budget-key",
+    }));
+    const handles: MockHandle[] = [];
+    const prompts: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, (_session, prompt) => {
+      prompts.push(prompt);
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
+    let threadHistoryReads = 0;
+    manager.slackApp = {
+      client: {
+        users: {
+          info: async ({ user }: { user: string }) => ({
+            user: { profile: { display_name: user } },
+          }),
+        },
+        conversations: {
+          info: async () => ({ channel: { name: "test" } }),
+          replies: async () => {
+            threadHistoryReads++;
+            return {
+              messages: [
+                { ts: "1", user: "U-A", text: "stale discovery discussion" },
+              ],
+            };
+          },
+        },
+      },
+    } as unknown as App;
+    let recallCalls = 0;
+    (manager as unknown as {
+      preRecall: (
+        message: string,
+        context: { repo: string | null; agent: string },
+      ) => Promise<string | null>;
+    }).preRecall = async () => {
+      recallCalls++;
+      return "<pre-recall>scoped lesson</pre-recall>";
+    };
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "pipeline-internal",
+      text: "<pipeline-assignment>scoped anchors</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:context-budget",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-context-budget",
+        dispatchKey: "context-budget",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+
+    expect(prompts[0]).toContain("<pipeline-assignment>");
+    expect(prompts[0]).not.toContain("<pre-recall>");
+    expect(prompts[0]).not.toContain("<thread-context>");
+    expect(threadHistoryReads).toBe(0);
+    expect(recallCalls).toBe(0);
+
+    handles[0]!._complete("", "context-budget-session", [], {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+    });
+    await waitFor(() => handles.length === 2);
+
+    expect(prompts[1]).not.toContain("<thread-context>");
+    expect(prompts[1]).not.toContain("<pre-recall>");
+    expect(threadHistoryReads).toBe(0);
+    expect(recallCalls).toBe(0);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-context-budget",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "context budget verified",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "context-budget-verified",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "context-budget-verified",
+    });
+    handles[1]!._complete("done", "context-budget-session");
+  });
+
   it("repairs an unavailable Claude session without consuming pipeline retries", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
@@ -3905,13 +4014,26 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
-    attachExistingPipelineWorktree(manager);
-    let releaseRecall!: () => void;
-    const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
-    let recallCalls = 0;
-    (manager as unknown as { preRecall: (message: string, context: { repo: string | null }) => Promise<string | null> }).preRecall = async () => {
-      recallCalls++;
-      if (recallCalls === 2) await recallGate;
+    const worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    let releaseSetup!: () => void;
+    const setupGate = new Promise<void>((resolve) => { releaseSetup = resolve; });
+    let worktreeChecks = 0;
+    manager.worktreeManager = {
+      getWorktreePath: () => worktreePath,
+      worktreeExists: mock(async () => {
+        worktreeChecks++;
+        if (worktreeChecks === 2) await setupGate;
+        return true;
+      }),
+      createWorktree: mock(async () => worktreePath),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+    (manager as unknown as {
+      preRecall: (
+        message: string,
+        context: { repo: string | null },
+      ) => Promise<string | null>;
+    }).preRecall = async () => {
       return null;
     };
 
@@ -3932,11 +4054,11 @@ describe("typed pipeline settlement", () => {
       reason: "max_turns",
       retryable: true,
     });
-    await waitFor(() => recallCalls === 2);
+    await waitFor(() => worktreeChecks === 2);
     await manager.handleMessage(
       makeEvent({ command: "reset", text: "build", ts: "reset-worker" }),
     );
-    releaseRecall();
+    releaseSetup();
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect((await sessionStore.get("thread-1"))?.agentSessions.build).toBeUndefined();
@@ -3962,13 +4084,26 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
-    attachExistingPipelineWorktree(manager);
-    let releaseRecall!: () => void;
-    const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
-    let recallCalls = 0;
-    (manager as unknown as { preRecall: (message: string, context: { repo: string | null }) => Promise<string | null> }).preRecall = async () => {
-      recallCalls++;
-      if (recallCalls === 2) await recallGate;
+    const worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    let releaseSetup!: () => void;
+    const setupGate = new Promise<void>((resolve) => { releaseSetup = resolve; });
+    let worktreeChecks = 0;
+    manager.worktreeManager = {
+      getWorktreePath: () => worktreePath,
+      worktreeExists: mock(async () => {
+        worktreeChecks++;
+        if (worktreeChecks === 2) await setupGate;
+        return true;
+      }),
+      createWorktree: mock(async () => worktreePath),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+    (manager as unknown as {
+      preRecall: (
+        message: string,
+        context: { repo: string | null },
+      ) => Promise<string | null>;
+    }).preRecall = async () => {
       return null;
     };
 
@@ -3989,11 +4124,11 @@ describe("typed pipeline settlement", () => {
       reason: "max_turns",
       retryable: true,
     });
-    await waitFor(() => recallCalls === 2);
+    await waitFor(() => worktreeChecks === 2);
     await manager.handleMessage(
       makeEvent({ command: "reset", text: "all", ts: "reset-lead" }),
     );
-    releaseRecall();
+    releaseSetup();
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(await sessionStore.get("thread-1")).toBeUndefined();

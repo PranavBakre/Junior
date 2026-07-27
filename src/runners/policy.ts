@@ -195,8 +195,12 @@ export function compileOpenCodePermission(options: {
     };
   }
 
-  // normal, utility, or unset — preserve operator-configured fallback.
-  return fallback;
+  // Normal, utility, or unset preserve the operator fallback except for
+  // provider-native fan-out. Junior's durable assignment graph owns all
+  // delegation so every OpenCode runtime denies Task.
+  return typeof fallback === "string"
+    ? { "*": fallback, task: "deny" }
+    : { ...fallback, task: "deny" };
 }
 
 /** Compile Claude run policy from session + config. */

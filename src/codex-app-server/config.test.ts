@@ -109,6 +109,7 @@ describe("buildCodexConfigToml", () => {
     });
     expect(config).toContain('model_reasoning_effort = "medium"');
     expect(config).toContain('sandbox_mode = "danger-full-access"');
+    expect(config).toContain("[features]\nmulti_agent = false");
   });
 });
 

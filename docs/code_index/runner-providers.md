@@ -23,7 +23,7 @@ and MCP wiring.
 | `spawnOpenCode(...)` | `spawner.ts` | Runs `opencode run --format json`, generates `OPENCODE_CONFIG_CONTENT`, parses events. |
 | `buildOpenCodeArgs(...)` | `args.ts` | Builds fresh/resume CLI args using `--session`, `--dir`, `--agent build`, and attachments; keeps the prompt before `--file` flags so OpenCode does not parse prompt text as file paths. |
 | `buildOpenCodeConfig(...)` | `config.ts` | Generates model, permissions, primary `agent.build`, MCP entries, and subagent entries. |
-| `loadOpenCodeSupportSubagents()` | `support-agents.ts` | Exposes standalone stateless support prompts as generated OpenCode subagents. |
+| `loadOpenCodeSupportSubagents()` | `support-agents.ts` | Loads standalone support prompts for manual/non-Junior consumers; Slack runtime does not register them. |
 | `buildOpenCodeAgentPrompt(...)` | `prompt.ts` | Wraps Junior core + active-agent prompt in the OpenCode provider baseline. |
 | `resolveOpenCodeModel(...)` | `model.ts` | Resolves session/config model to a valid `provider/model` OpenCode ref; runner-specific aliases (`gpt-5.6-sol`, `opus`, ...) fall back to the config default or null (omit `--model`). |
 | `createOpenCodeStreamParser()` / `createOpenCodeEventMapper()` | `parser.ts` | Converts OpenCode JSON events into normalized runner events; captures native `{"type":"error"}` events on `mapper.error`. |
@@ -35,11 +35,8 @@ and MCP wiring.
 - Slack MCP is included for every normal OpenCode run, including the initial
   lead run from Junior root. It is omitted only for explicit `session.cwd`
   utility runs.
-- Generated subagents include only stateless support fetchers:
-  `nr-research`, `sentry-fetch`, `vercel-status`. They are omitted for utility
-  `session.cwd` runs and use a constrained read/search/MCP permission surface.
-- Persistent workers (`reproducer`, `review`) are not generated as
-  OpenCode Task subagents; they are Slack-dispatched persistent sessions.
+- Slack runtime denies OpenCode `task` and registers no provider-native
+  subagents. Junior creates every worker through its durable assignment graph.
 - `opencode-sdk` is the separate OpenCode server/SDK provider. It uses the
   native session abort/attach path and is tested independently from the CLI
   adapter.
