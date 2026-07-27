@@ -32,7 +32,7 @@ describe("loadAgentDefinition", () => {
       "Backend engineer. Use for building features, fixing bugs, refactoring code.",
     );
     expect(def!.tools).toBe(
-      "Read, Edit, Write, Bash, Grep, Glob, Agent, mcp__slack-bot__memory_recall",
+      "Read, Edit, Write, Bash, Grep, Glob, mcp__slack-bot__memory_recall",
     );
     expect(def!.model).toBeNull();
     expect(def!.common).toEqual([
@@ -50,7 +50,6 @@ describe("loadAgentDefinition", () => {
         "Bash",
         "Grep",
         "Glob",
-        "Agent",
         "mcp__slack-bot__memory_recall",
       ],
     });

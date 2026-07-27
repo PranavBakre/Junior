@@ -27,6 +27,10 @@ policy, and verification metadata.
 - `pm`, `architect`, `build`, and `frontend`: catalog roles for planning and
   implementation handoffs. They are not interchangeable persistent Slack
   identities.
+- Junior owns provider-native implementation fan-out. `build` and `frontend`
+  do not receive the `Agent` tool; their assignment starts from Junior's
+  file/symbol/SHA evidence capsule and returns scope gaps through the durable
+  run contract.
 - Private overlay roles are dispatchable only after their identity metadata is
   loaded from `agents-org`.
 

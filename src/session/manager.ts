@@ -1788,8 +1788,18 @@ export class SessionManager {
         ? await this.agentRouter.resolveAgent(runSession)
         : null;
       assertRunOwnership();
-      const contextProfile: AgentContextProfile =
+      const declaredContextProfile: AgentContextProfile =
         agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
+      // A typed worker assignment already carries the durable objective,
+      // acceptance criteria, evidence/artifact refs, and exact causal handoff.
+      // Replaying the Slack conversation beside that contract duplicates
+      // Junior's dispatch context and makes workers reinterpret stale
+      // discussion. Junior/lead and direct worker turns keep their declared
+      // thread-history profile.
+      const usesCompiledWorkerContext = Boolean(pipelineInvocation && !isTopLevel);
+      const contextProfile: AgentContextProfile = usesCompiledWorkerContext
+        ? { ...declaredContextProfile, threadHistory: false }
+        : declaredContextProfile;
 
       // Apply agent-declared model override to the session so the spawner
       // picks it up (session.model ?? config.defaultModel).
@@ -1868,7 +1878,10 @@ export class SessionManager {
             cwd: invocationCwd,
           });
           const isFirstTurn = !resumes;
-          const needsThreadCatchup = !!session.needsThreadCatchup;
+          // Catch-up belongs to the next conversational Junior turn, not to a
+          // typed worker assignment whose prompt is already self-contained.
+          const needsThreadCatchup =
+            !!session.needsThreadCatchup && !usesCompiledWorkerContext;
           if (isFirstTurn || needsThreadCatchup) {
             const preambleProfile: AgentContextProfile = needsThreadCatchup
               ? {
@@ -1974,7 +1987,14 @@ export class SessionManager {
         }
       }
 
-      if (this.preRecall) {
+      let preRecallInjected = false;
+      // Centralize worker-assignment recall in Junior's compiled handoff.
+      // Direct/manual turns keep recall, while orchestrator settlement
+      // continuations reuse the same assignment and provider-native context.
+      const shouldPreRecall =
+        !usesCompiledWorkerContext &&
+        (!pipelineInvocation || pipelineInvocation.retryCount === 0);
+      if (this.preRecall && shouldPreRecall) {
         // Scope recall to the session's repo so another repo's conventions
         // can't inject into this session's prompt.
         const preRecallBlock = await this.preRecall(rawMessage, {
@@ -1984,11 +2004,16 @@ export class SessionManager {
         assertRunOwnership();
         if (preRecallBlock) {
           prompt = `${preRecallBlock}\n\n${prompt}`;
+          preRecallInjected = true;
         }
       }
 
-      // We don't log the prompt to avoid spamming the logs. unless we are debugging it
-      // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
+      // Log structure and size, never prompt contents. This makes provider and
+      // pipeline token regressions diagnosable without leaking Slack/code text.
+      _log.info(
+        "prompt-context",
+        `thread=${session.threadId} agent=${agentName} provider=${provider} chars=${prompt.length} pipeline=${Boolean(pipelineInvocation)} threadHistory=${prompt.includes("<thread-context>")} preRecall=${preRecallInjected} workspace=${prompt.includes("<workspace>")}`,
+      );
 
       let rawHandle: SpawnHandle;
       if (provider === "claude") {
