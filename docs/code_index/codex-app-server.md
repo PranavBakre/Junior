@@ -29,6 +29,10 @@ tool/edit/persistence operating contract and is a provider-quality regression.
 The client completes the documented `initialize` → `initialized` handshake
 before starting or resuming a thread.
 
+Generated Codex config sets `[agents].enabled = false`; provider-native
+subagents would bypass Junior's durable assignment, context, and settlement
+contracts.
+
 Codex continuity is provider-native and optional. Durable session, workflow,
 pipeline, and artifact state remains authoritative when a process or provider
 connection is restarted.

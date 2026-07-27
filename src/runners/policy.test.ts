@@ -174,7 +174,7 @@ describe("compileOpenCodePermission", () => {
     });
   });
 
-  it("uses fallback for normal builders", () => {
+  it("preserves the fallback but denies provider-native Task for normal builders", () => {
     expect(
       compileOpenCodePermission({
         subject: {
@@ -183,7 +183,19 @@ describe("compileOpenCodePermission", () => {
         },
         fallback: "allow",
       }),
-    ).toBe("allow");
+    ).toEqual({ "*": "allow", task: "deny" });
+  });
+
+  it("denies provider-native Task for orchestrators", () => {
+    expect(
+      compileOpenCodePermission({
+        subject: {
+          activeAgentName: "default",
+          agentPermissions: { intent: "normal", mcp: [], tools: [] },
+        },
+        fallback: { "*": "allow", edit: "ask" },
+      }),
+    ).toEqual({ "*": "allow", edit: "ask", task: "deny" });
   });
 
   it("hard-denies everything for no-tools", () => {
@@ -243,7 +255,7 @@ describe("provider permission compilation matrix", () => {
       expect(row.claudePermissionMode).toBe("bypassPermissions");
       // Uses configured codex sandbox (workspace-write default).
       expect(row.codexSandbox).toBe("workspace-write");
-      expect(row.openCode).toBe("allow");
+      expect(row.openCode).toEqual({ "*": "allow", task: "deny" });
     }
   });
 

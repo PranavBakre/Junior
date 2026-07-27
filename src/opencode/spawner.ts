@@ -7,7 +7,6 @@ import {
   buildOpenCodeConfigContent,
   type OpenCodeMcpConfig,
   type OpenCodePermissionConfig,
-  type OpenCodeSubagentConfig,
 } from "./config.ts";
 import {
   createOpenCodeEventMapper,
@@ -15,7 +14,6 @@ import {
   type OpenCodeEvent,
 } from "./parser.ts";
 import { buildOpenCodeAgentPrompt, OPENCODE_PROVIDER_AGENT } from "./prompt.ts";
-import { loadOpenCodeSupportSubagents } from "./support-agents.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
 
 export interface OpenCodeEnvContext {
@@ -41,7 +39,6 @@ export interface OpenCodeSpawnerConfig {
   continuityEnabled?: boolean;
   permission?: OpenCodePermissionConfig;
   mcp?: OpenCodeMcpConfig | null;
-  subagents?: OpenCodeSubagentConfig[];
   env?: OpenCodeEnvExtension;
 }
 
@@ -79,9 +76,9 @@ export function spawnOpenCode(
     // Slack MCP even when cwd is Junior's project root so intake can call
     // register_worktree before any worktree exists.
     mcp: session.cwd ? null : config.mcp,
-    subagents: session.cwd
-      ? []
-      : (config.subagents ?? loadOpenCodeSupportSubagents()),
+    // Junior's durable assignment graph owns fan-out. Do not register
+    // provider-native subagents in Slack-controlled runtime config.
+    subagents: [],
   });
   const env = extendOpenCodeEnv(
     {

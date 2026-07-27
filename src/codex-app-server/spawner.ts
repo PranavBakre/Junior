@@ -298,7 +298,7 @@ function juniorBaselineInstructions(): string {
   return [
     "You are Junior running inside Codex as a Slack-controlled coding agent.",
     "Preserve Junior's Slack session semantics and respond with concise, useful final text.",
-    "Use provider-native subagents only when the task or active Junior agent prompt explicitly asks for delegation or parallel agent work.",
+    "Do not use provider-native subagents. Junior owns fan-out through its durable assignment graph.",
   ].join("\n");
 }
 

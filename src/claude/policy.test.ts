@@ -60,6 +60,7 @@ describe("mapClaudeRunPolicy", () => {
       "Write",
       "NotebookEdit",
       "Bash",
+      "Agent",
     ]);
     expect(policy.allowedTools).toEqual([]);
     expect(policy.addDirs).toEqual([]);
@@ -79,7 +80,7 @@ describe("mapClaudeRunPolicy", () => {
     // round-trip (default mode) --allowedTools skips the permission prompt,
     // which would bypass the human gate this intent exists for.
     expect(policy.allowedTools).toEqual(["Read"]);
-    expect(policy.disallowedTools).toEqual([]);
+    expect(policy.disallowedTools).toEqual(["Agent"]);
     expect(policy.addDirs).toEqual(["/repo"]);
   });
 
@@ -117,7 +118,23 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.disallowedTools).toContain("Bash(*DB_STRING*)");
     expect(policy.disallowedTools).toContain("Bash(*.env*)");
     expect(policy.disallowedTools).toContain("Read(**/.env)");
+    expect(policy.disallowedTools).toContain("Agent");
     expect(policy.addDirs).toEqual(["/repo"]);
+  });
+
+  test("denies provider-native fan-out for orchestrators too", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "default";
+    session.agentPermissions = {
+      intent: "normal",
+      mcp: ["slack-bot"],
+      tools: ["Read", "Agent", "mcp__slack-bot__agent_dispatch"],
+    };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("bypassPermissions");
+    expect(policy.disallowedTools).toContain("Agent");
   });
 
   test("null/unset intent behaves like normal for non-restricted roles", () => {

@@ -31,6 +31,9 @@ policy, and verification metadata.
   do not receive the `Agent` tool; their assignment starts from Junior's
   file/symbol/SHA evidence capsule and returns scope gaps through the durable
   run contract.
+- Runtime policy enforces this across providers: Claude disallows `Agent`,
+  OpenCode denies `task` and registers no subagents, and generated Codex config
+  disables multi-agent tools.
 - Private overlay roles are dispatchable only after their identity metadata is
   loaded from `agents-org`.
 

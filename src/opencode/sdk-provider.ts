@@ -21,7 +21,6 @@ import { compileOpenCodePermission } from "../runners/policy.ts";
 import { OPENCODE_PROVIDER_AGENT, buildOpenCodeAgentPrompt } from "./prompt.ts";
 import { buildOpenCodeConfigContent } from "./config.ts";
 import { resolveOpenCodeModel } from "./model.ts";
-import { loadOpenCodeSupportSubagents } from "./support-agents.ts";
 import { log as _log } from "../logger.ts";
 
 // ---------------------------------------------------------------------------
@@ -153,7 +152,8 @@ export function spawnOpenCodeSdk(
       fallback: config.opencode.permission,
     }),
     mcp: session.cwd ? null : undefined,
-    subagents: session.cwd ? [] : loadOpenCodeSupportSubagents(),
+    // Junior's durable assignment graph owns fan-out.
+    subagents: [],
   });
 
   let sdkSessionId: string | null = null;
