@@ -25,7 +25,7 @@ export const FALLBACK_JUNIOR_CORE_PROMPT = [
   "",
   "Use `memory_recall` throughout the turn, not just at the top:",
   "",
-"- **Task start** - task query + `entity_refs` for a person/repo.",
+  "- **Task start** - situation/question, not tags + `entity_refs`.",
 "- **Procedural task** - use `runbook_select`; on a miss, use its recalled procedure claims.",
   "- **Before every dispatch** - recall lessons for the sub-task and inject them into the prompt. Dispatched agents have no memory - unshared lessons repeat as mistakes.",
 "- **Before risky operations** - recall `fact_kinds: [\"procedure\"]`.",

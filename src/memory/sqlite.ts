@@ -21,6 +21,7 @@ import type {
   MemoryFactInput,
   MemoryLessonInput,
   MemorySourceRecord,
+  RecallLogInput,
   SearchableMemoryKind,
   UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
@@ -63,6 +64,7 @@ type ClaimRow = {
   /** Selected only by recallClaims; other claim queries do not need it. */
   fact_kind?: string | null;
   text: string;
+  retrieval_text?: string | null;
   embedding: Uint8Array | null;
   embed_model: string | null;
   dim: number | null;
@@ -244,6 +246,7 @@ export class SqliteMemoryStore implements MemoryStore {
     const embedding = claim.embedding ?? null;
     const dim = claim.dim ?? (embedding ? embedding.length : null);
     const skipDedup = claim.skipDedup === true;
+    const explicitRetrievalText = claim.retrievalText?.trim() || null;
 
     if (!skipDedup && !embedding) {
       throw new Error(
@@ -272,12 +275,15 @@ export class SqliteMemoryStore implements MemoryStore {
         .query<
           {
             text: string;
+            retrieval_text: string | null;
             active: number | null;
             helpful_count: number | null;
             unhelpful_count: number | null;
           },
           [string]
-        >("SELECT text, active, helpful_count, unhelpful_count FROM claim WHERE id = ?")
+        >(
+          "SELECT text, retrieval_text, active, helpful_count, unhelpful_count FROM claim WHERE id = ?",
+        )
         .get(claim.id);
 
       // Re-scan whenever this TEXT is new to the corpus under this id: a fresh
@@ -286,6 +292,21 @@ export class SqliteMemoryStore implements MemoryStore {
       // the backfill sweep archived would trivially resurrect it.
       const textIsNew =
         !existing || existing.text !== claim.text || existing.active === 0;
+      // An idempotent re-save that omits retrievalText must not erase a curated
+      // projection or replace its paired vector with an embedding of plain text.
+      // A genuinely new/revised/reactivated claim defaults to its new text.
+      const preserveProjection =
+        existing != null &&
+        !textIsNew &&
+        explicitRetrievalText == null &&
+        existing.retrieval_text != null &&
+        existing.retrieval_text !== existing.text;
+      const retrievalText = preserveProjection
+        ? (existing.retrieval_text ?? claim.text)
+        : (explicitRetrievalText ?? claim.text);
+      const writeBlob = preserveProjection ? null : blob;
+      const writeEmbedModel = preserveProjection ? null : (claim.embedModel ?? null);
+      const writeDim = preserveProjection ? null : dim;
       if (!skipDedup && embedding && textIsNew) {
         const survivor = this.findNearDuplicate(claim, embedding);
         if (survivor) {
@@ -340,12 +361,13 @@ export class SqliteMemoryStore implements MemoryStore {
       this.db
         .query(
           `INSERT INTO claim (
-            id, kind, text, embedding, embed_model, dim, repo, tags, source_episode,
+            id, kind, text, retrieval_text, embedding, embed_model, dim, repo, tags, source_episode,
             helpful_count, unhelpful_count, weight, created_at, last_used_at, active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 1.0), ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 1.0), ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             kind = excluded.kind,
             text = excluded.text,
+            retrieval_text = excluded.retrieval_text,
             embedding = COALESCE(?, claim.embedding),
             embed_model = COALESCE(?, claim.embed_model),
             dim = COALESCE(?, claim.dim),
@@ -362,9 +384,10 @@ export class SqliteMemoryStore implements MemoryStore {
           claim.id,
           claim.kind,
           claim.text,
-          blob,
-          claim.embedModel ?? null,
-          dim,
+          retrievalText,
+          writeBlob,
+          writeEmbedModel,
+          writeDim,
           claim.repo ?? null,
           tags.length ? JSON.stringify(tags) : null,
           claim.sourceEpisode ?? null,
@@ -375,9 +398,9 @@ export class SqliteMemoryStore implements MemoryStore {
           lastUsedAt,
           claim.active === false ? 0 : 1,
           // ON CONFLICT patch binds — same values again, un-defaulted.
-          blob,
-          claim.embedModel ?? null,
-          dim,
+          writeBlob,
+          writeEmbedModel,
+          writeDim,
           helpfulCount,
           unhelpfulCount,
           weight,
@@ -386,6 +409,26 @@ export class SqliteMemoryStore implements MemoryStore {
       return { id: claim.id, action: existing ? "updated" : "inserted" };
     });
     return txn.immediate();
+  }
+
+  async appendRecallLog(entry: RecallLogInput): Promise<void> {
+    this.db
+      .query(
+        `INSERT INTO recall_log (
+          query, tags_json, entities_json, kinds_json, caller_intent,
+          returned_ids_json, result_count, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        entry.query,
+        entry.tags?.length ? JSON.stringify(entry.tags) : null,
+        entry.entityRefs?.length ? JSON.stringify(entry.entityRefs) : null,
+        entry.kinds?.length ? JSON.stringify(entry.kinds) : null,
+        entry.callerIntent ?? null,
+        JSON.stringify(entry.returnedIds),
+        entry.returnedIds.length,
+        entry.createdAt ?? Date.now(),
+      );
   }
 
   /**
@@ -475,41 +518,24 @@ export class SqliteMemoryStore implements MemoryStore {
       )
       .all(...params);
 
-    // 2. Cosine in TS, weighted by `weight`. With no queryVector, the cosine is
-    //    null and rows rank by `weight` alone.
+    // 2. Cosine in TS. Semantic recall is relevance-first: historical `weight`
+    //    is returned as metadata but cannot override a better vector match.
+    //    With no queryVector, rows still rank by `weight` alone.
     const scored = rows.map((row) => {
       const tags = row.tags ? (JSON.parse(row.tags) as string[]) : [];
       const weight = row.weight ?? 1;
       const vec = deserializeEmbedding(row.embedding);
       const cosine = queryVector && vec ? cosineSim(queryVector, vec) : null;
-      const base = queryVector ? (cosine ?? 0) : 1;
-      return { row, tags, weight, cosine, score: base * weight };
+      const score = queryVector ? (cosine ?? 0) : weight;
+      return { row, tags, weight, cosine, score };
     });
 
-    // Relevance and value answer different questions. Ranking the whole corpus
-    // by `cosine × weight` can hide the best semantic match before any caller
-    // gets a chance to curate it. Reserve one third of the result set for the
-    // strongest raw-cosine matches, then fill the remaining slots by weighted
-    // score. The selected set is still presented in value order.
-    let selected = scored;
-    if (queryVector && scored.length > limit) {
-      const relevanceQuota = Math.max(1, Math.ceil(limit / 3));
-      const byCosine = [...scored].sort(
-        (a, b) => (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity),
-      );
-      const chosen = byCosine.slice(0, relevanceQuota);
-      const chosenIds = new Set(chosen.map((entry) => entry.row.id));
-      const byValue = [...scored].sort((a, b) => b.score - a.score);
-      for (const entry of byValue) {
-        if (chosen.length >= limit) break;
-        if (chosenIds.has(entry.row.id)) continue;
-        chosen.push(entry);
-        chosenIds.add(entry.row.id);
-      }
-      selected = chosen;
-    }
-    selected.sort((a, b) => b.score - a.score);
-    const results = selected.slice(0, limit).map((entry) => ({
+    scored.sort((a, b) =>
+      b.score - a.score ||
+      b.weight - a.weight ||
+      a.row.id.localeCompare(b.row.id)
+    );
+    const results = scored.slice(0, limit).map((entry) => ({
       id: entry.row.id,
       kind: entry.row.kind as ClaimKind,
       factKind:
@@ -1053,7 +1079,8 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run(`CREATE TABLE IF NOT EXISTS consolidation_decision (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, source_ids_json TEXT NOT NULL, extractor TEXT NOT NULL, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS recall_log (id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT, tags_json TEXT, entities_json TEXT, kinds_json TEXT, caller_intent TEXT, returned_ids_json TEXT NOT NULL, result_count INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
     // memory v3: semantic claim store (text + embedding co-located) — mirrors the lesson/memory_node relationship.
-    this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'situation-claim')), text TEXT NOT NULL, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'situation-claim')), text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
+    this.ensureColumn("claim", "retrieval_text", "TEXT");
     // memory v3: raw episodic log (affect sidecar over memory_source_record).
     this.db.run(`CREATE TABLE IF NOT EXISTS episode (id TEXT PRIMARY KEY, actor TEXT, subjects_json TEXT, what TEXT, emotion TEXT, intensity REAL, valence REAL, trigger TEXT, response TEXT, salience REAL, consolidated_into_json TEXT, created_at INTEGER NOT NULL, last_used_at INTEGER, FOREIGN KEY (id) REFERENCES memory_source_record(id))`);
     this.ensureColumn("episode", "last_used_at", "INTEGER");

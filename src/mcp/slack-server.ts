@@ -1289,10 +1289,14 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
         "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
         "lesson/fact/situation-claim store by cosine (filtered by `repo`/`tags`/`kinds`). " +
-        "Fact subtypes such as procedures can be requested with `fact_kinds`. Returns the " +
-        "keyed profiles plus top-k claims including `factKind`, text, score, repo, and tags.",
+        "Fact subtypes such as procedures can be requested with `fact_kinds`. " +
+        "Use a complete natural-language situation/question for `query`; use repo/tags as " +
+        "filters, not as query keywords. Returns keyed profiles plus relevant claims above " +
+        "the cosine floor, including `factKind`, text, score, repo, and tags.",
       inputSchema: {
-        query: z.string().describe("Natural-language query, embedded for semantic claim retrieval"),
+        query: z.string().describe(
+          "Complete natural-language situation and desired action, preferably a question; never a tag/keyword bundle",
+        ),
         repo: z.string().optional().describe("Scope claims to a repo (e.g. 'gx-backend')"),
         tags: z
           .array(z.string())
@@ -1805,6 +1809,10 @@ export interface RecallMemoryArgs {
   procedureQuota?: number;
   entityRefs?: string[];
   limit?: number;
+  /** Drop semantic matches below this raw cosine (default 0.55). */
+  minCosine?: number;
+  /** Optional label stored with the recall observation for offline evaluation. */
+  callerIntent?: string;
   /**
    * Bump `last_used_at` on the returned claims (default true). Callers that
    * retrieve CANDIDATES and decide usefulness later — pre-recall synthesis —
@@ -1816,7 +1824,7 @@ export interface RecallMemoryArgs {
 export interface RecallMemoryResult {
   /** Keyed profiles, returned verbatim (Junior-internal — never surfaced in a thread). */
   profiles: Profile[];
-  /** Top-k semantic claims, ranked by cosine+FTS and weighted. */
+  /** Top-k semantic claims, ranked by raw cosine relevance. */
   claims: Array<{
     id: string;
     kind: ClaimKind;
@@ -1825,15 +1833,15 @@ export interface RecallMemoryResult {
     score: number;
     /**
      * Raw cosine, unweighted — null with no queryVector or no embedding.
-     * Kept beside `score` because the two answer different questions: cosine is
-     * relevance, `score` is cosine × weight and so mixes in value. A caller
-     * thresholding on relevance must threshold on this one.
+     * For vector recall this is also the ranking `score`.
      */
     cosine: number | null;
     repo: string | null;
     tags: string[];
   }>;
 }
+
+export const DEFAULT_MIN_RECALL_COSINE = 0.55;
 
 /**
  * Recall over two channels and merge (§8):
@@ -1889,7 +1897,7 @@ export async function recallMemory(
       queryVector,
       filters,
       limit,
-      recordUsage: args.recordUsage,
+      recordUsage: false,
     });
     for (const r of results) {
       if (seen.has(r.id)) continue;
@@ -1897,12 +1905,23 @@ export async function recallMemory(
       merged.push(r);
     }
   }
-  merged.sort((a, b) => b.score - a.score);
+  merged.sort((a, b) =>
+    (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
+    b.weight - a.weight ||
+    a.id.localeCompare(b.id)
+  );
 
+  const minCosine = Math.min(
+    Math.max(args.minCosine ?? DEFAULT_MIN_RECALL_COSINE, -1),
+    1,
+  );
+  const eligibleMerged = merged.filter(
+    (claim) => (claim.cosine ?? -Infinity) >= minCosine,
+  );
   const procedureQuota = args.factKinds?.length
     ? 0
     : Math.min(Math.max(Math.trunc(args.procedureQuota ?? 0), 0), limit);
-  let selected = merged.slice(0, limit);
+  let selected = eligibleMerged.slice(0, limit);
   if (procedureQuota > 0) {
     const procedureResults = await deps.store.recallClaims({
       queryVector,
@@ -1915,15 +1934,42 @@ export async function recallMemory(
         factKind: "procedure",
       },
       limit: procedureQuota,
-      recordUsage: args.recordUsage,
+      recordUsage: false,
     });
-    const procedures = procedureResults.slice(0, procedureQuota);
+    const procedures = procedureResults
+      .filter((claim) => (claim.cosine ?? -Infinity) >= minCosine)
+      .slice(0, procedureQuota);
     const procedureIds = new Set(procedures.map((claim) => claim.id));
     selected = [
       ...procedures,
-      ...merged.filter((claim) => !procedureIds.has(claim.id)),
+      ...eligibleMerged.filter((claim) => !procedureIds.has(claim.id)),
     ].slice(0, limit);
-    selected.sort((a, b) => b.score - a.score);
+    selected.sort((a, b) =>
+      (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
+      b.weight - a.weight ||
+      a.id.localeCompare(b.id)
+    );
+  }
+
+  if (args.recordUsage !== false && selected.length > 0) {
+    await deps.store.markClaimsUsed(selected.map((claim) => claim.id), Date.now());
+  }
+  try {
+    await deps.store.appendRecallLog({
+      query: args.query,
+      tags: args.tags,
+      entityRefs: args.entityRefs,
+      kinds: [
+        ...(args.kinds ?? []),
+        ...(args.factKinds?.map((kind) => `fact:${kind}`) ?? []),
+      ],
+      callerIntent: args.callerIntent,
+      returnedIds: selected.map((claim) => claim.id),
+    });
+  } catch (error) {
+    console.warn(
+      `[memory_recall] failed to append recall log: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 
   return {

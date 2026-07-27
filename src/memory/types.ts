@@ -82,6 +82,12 @@ export interface ClaimInput {
   kind: ClaimKind;
   /** ONE atomic claim — authoritative. The embedding is derived/rebuildable from it. */
   text: string;
+  /**
+   * Retrieval-facing projection embedded for semantic search. It may add a
+   * concise situation/question cue while `text` remains the authoritative
+   * memory returned to agents. Defaults to `text`.
+   */
+  retrievalText?: string | null;
   /** Pre-computed embedding. Stored as a Float32 LE BLOB. */
   embedding?: Float32Array | null;
   embedModel?: string | null;
@@ -197,6 +203,16 @@ export interface ClaimRecallResult {
   unhelpfulCount: number;
   createdAt: number;
   lastUsedAt: number | null;
+}
+
+export interface RecallLogInput {
+  query: string;
+  tags?: string[];
+  entityRefs?: string[];
+  kinds?: string[];
+  callerIntent?: string | null;
+  returnedIds: string[];
+  createdAt?: number;
 }
 
 /**

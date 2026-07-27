@@ -310,8 +310,8 @@ export function createPreRecall(
 
 /**
  * Derive retrieval queries from the raw message. No model call: the message IS
- * the query, and the only expansion is a cheap repo/agent-scoped variant that
- * biases the vector toward this session's own conventions.
+ * the first query. The expansion states the situation as a complete question;
+ * repo remains a structured filter rather than being injected as search tags.
  */
 export function deriveRecallQueries(
   message: string,
@@ -320,11 +320,12 @@ export function deriveRecallQueries(
   const normalized = message.replace(/\s+/g, " ").trim().slice(0, MAX_QUERY_CHARS);
   if (!normalized) return [];
 
-  const scope = [options?.repo, options?.agent]
-    .map((part) => part?.trim())
-    .filter((part): part is string => Boolean(part))
-    .join(" ");
-  return scope ? [normalized, `${scope}: ${normalized}`] : [normalized];
+  const repo = options?.repo?.trim();
+  const agent = options?.agent?.trim() || "Junior";
+  if (!repo && !options?.agent?.trim()) return [normalized];
+  const question =
+    `How should ${agent} handle this task${repo ? ` in ${repo}` : ""}? ${normalized}`;
+  return [normalized, question.slice(0, MAX_QUERY_CHARS)];
 }
 
 /**
@@ -349,6 +350,9 @@ async function recallCandidates(
         repo: options?.repo ?? undefined,
         repoIncludeGlobal: true,
         procedureQuota: PROCEDURE_CANDIDATE_QUOTA,
+        // Pre-recall has its own measured floor after optional synthesis. Keep
+        // the shared candidate set intact so synthesis can judge combinations.
+        minCosine: -1,
         recordUsage: false,
       },
       deps,

@@ -157,7 +157,8 @@ claim (
   id         TEXT PRIMARY KEY REFERENCES memory_node(id),
   kind       TEXT,            -- lesson | fact | situation-claim
   text       TEXT NOT NULL,   -- ONE atomic claim (authoritative)
-  embedding  BLOB,            -- Float32 LE; derived/rebuildable from text
+  retrieval_text TEXT,        -- rebuildable situation/question projection
+  embedding  BLOB,            -- Float32 LE; derived from retrieval_text || text
   embed_model TEXT, dim INT,  -- invalidate/rebuild on model change
   repo TEXT, tags TEXT,       -- filter columns
   source_episode TEXT,        -- provenance (a field)
@@ -166,7 +167,9 @@ claim (
 )
 ```
 
-`text` is authoritative; the `embedding` is derived and rebuildable.
+`text` is authoritative. `retrieval_text` and the embedding are derived and
+rebuildable; this lets retrieval expose a lesson's `applies_when` cue without an
+LLM rewriting the stored rule.
 
 ### 6.2 Vector storage — stay on SQLite (the ladder)
 
@@ -244,13 +247,13 @@ Recall runs **two channels** and merges:
 
 1. **Keyed fetch.** The interlocutor and workspace are *ground truth*: in a thread with Pranav, in `gx-backend` → read `profiles/people/pranav.md` and `profiles/repos/gx-backend.md` **directly by path**. No LLM phrasing, no cosine.
 2. **Semantic search** over the claim store: embed the query → **filters scope** (`WHERE repo/kind/recency`) → **cosine ranks** within scope. (See [[junior-memory-filters-scope-vectors-rank]].)
-3. **Return** the keyed profiles + the top-k claims. The shortlist reserves
-   relevance coverage by raw cosine, then uses `weight` to order/fill the
-   remaining slots. Never the raw episode stream.
+3. **Return** the keyed profiles + claims above the relevance floor, ordered by
+   raw cosine. `weight` remains value metadata and is only the fallback ranking
+   when no query vector exists. Never the raw episode stream.
 
 **Filters are the `WHERE`, cosine is the `ORDER BY` — and profiles skip both, fetched by key.** Keyed retrieval is the extreme of "filters scope": the context narrows to exactly one row.
 
-> **Shipped (cosine-only — divergence from the original §8 design).** The FTS identifier escape-hatch was *not* built; `memory_fts` is gone and there is no lexical channel. `recallClaims` pre-filters by `repo`/`kind`/`sinceMs` (the SQL `WHERE`). With a query vector it reserves one third of the result set for the strongest raw-cosine matches, fills the rest by `cosine × weight`, then presents the selected set in weighted order; this prevents low-weight exact matches disappearing before downstream curation. The caller embeds at the boundary (`recallClaims` never embeds); with no query vector it ranks by `weight` alone. `recallMemory` runs one recall per requested claim kind or fact subtype, preserves `factKind`, merges/de-dupes, and can reserve procedure slots for automatic pre-recall.
+> **Shipped (cosine-only — divergence from the original §8 design).** The FTS identifier escape-hatch was *not* built; `memory_fts` is gone and there is no lexical channel. `recallClaims` pre-filters by `repo`/`kind`/`sinceMs` (the SQL `WHERE`) and orders vector recall by raw cosine. The caller embeds at the boundary (`recallClaims` never embeds); with no query vector it ranks by `weight` alone. `recallMemory` runs one recall per requested claim kind or fact subtype, preserves `factKind`, merges/de-dupes, applies a 0.55 raw-cosine floor, records the final returned ids in `recall_log`, and can reserve procedure slots for automatic pre-recall. Semantic queries should describe the complete situation and desired action; repo/tags remain structured filters.
 
 ## 9. Governance & affect policy (decided)
 
