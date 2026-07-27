@@ -14,6 +14,7 @@ import type {
   MemoryFactInput,
   MemoryLessonInput,
   MemorySourceRecord,
+  RecallLogInput,
   UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
 
@@ -49,6 +50,8 @@ export interface MemoryStore {
    */
   markSourceRecordsConsolidated(ids: string[], now: number): Promise<void>;
   recallClaims(options: ClaimRecallOptions): Promise<ClaimRecallResult[]>;
+  /** Append one production semantic-recall observation for offline evaluation. */
+  appendRecallLog(entry: RecallLogInput): Promise<void>;
   /** Active claims with embeddings, deserialized to Float32Array (read-only). */
   exportClaimVectors(): Promise<ClaimVectorExport[]>;
   /**

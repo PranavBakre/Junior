@@ -18,6 +18,10 @@ import { createEmbeddingProvider } from "./embedding/factory.ts";
 import type { EmbeddingProvider } from "./embedding/types.ts";
 import { createProfileStore } from "./profiles/factory.ts";
 import type { ProfileStore } from "./profiles/store.ts";
+import {
+  buildFactRetrievalText,
+  buildLessonRetrievalText,
+} from "./retrieval-text.ts";
 
 /**
  * Injectable dependencies for the offline consolidation engine (`consolidate-v3`).
@@ -64,14 +68,25 @@ function defaultEmbedProviderKind(): "local" | "hashing" {
 async function mirrorClaim(
   store: ReturnType<typeof createMemoryStore>,
   embedder: EmbeddingProvider,
-  claim: { id: string; kind: "lesson" | "fact"; text: string; tags?: string[]; weight?: number; createdAt: number },
+  claim: {
+    id: string;
+    kind: "lesson" | "fact";
+    text: string;
+    retrievalText?: string;
+    tags?: string[];
+    weight?: number;
+    createdAt: number;
+  },
 ): Promise<ClaimWriteResult | null> {
   // Embed and store are reported separately: one catch around both blamed the
   // embedder for every store-side throw (a failed guard, a locked DB), which
   // sends the reader looking at the wrong component.
   let embedding: Float32Array;
   try {
-    [embedding] = await embedder.embed([claim.text], "document");
+    [embedding] = await embedder.embed(
+      [claim.retrievalText ?? claim.text],
+      "document",
+    );
   } catch (err) {
     console.error(
       `[add] claim mirror skipped (embed failed): ${err instanceof Error ? err.message : String(err)}`,
@@ -83,6 +98,7 @@ async function mirrorClaim(
       id: claim.id,
       kind: claim.kind,
       text: claim.text,
+      retrievalText: claim.retrievalText,
       embedding,
       embedModel: embedder.model,
       dim: embedder.dim,
@@ -166,11 +182,12 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       const sourceIds = listOption(options, "source-ids");
       const lessonCreatedAt = numberOption(options, "created-at") ?? Date.now();
       const lessonTags = listOption(options, "tags");
+      const appliesWhen = stringOption(options, "applies-when");
       await store.upsertLesson({
         id,
         title,
         body,
-        appliesWhen: stringOption(options, "applies-when"),
+        appliesWhen,
         importance: numberOption(options, "importance"),
         createdAt: lessonCreatedAt,
         sourceIds,
@@ -183,6 +200,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         id,
         kind: "lesson",
         text: `${title}\n${body}`,
+        retrievalText: buildLessonRetrievalText({ title, body, appliesWhen }),
         tags: lessonTags,
         weight: numberOption(options, "importance"),
         createdAt: lessonCreatedAt,
@@ -234,6 +252,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         id,
         kind: "fact",
         text: factTitle ? `${factTitle}\n${body}` : body,
+        retrievalText: buildFactRetrievalText({ title: factTitle, body }),
         tags: factTags,
         weight: numberOption(options, "importance"),
         createdAt: factCreatedAt,

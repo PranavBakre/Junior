@@ -22,6 +22,7 @@ describe("memory CLI", () => {
         "--id", "lesson-claimed",
         "--title", "Always branch from main",
         "--body", "Feature branches must be created from main, not dev.",
+        "--applies-when", "Starting implementation work in a fresh worktree.",
         "--importance", "0.8",
         "--tags", "git,workflow",
       ]);
@@ -42,12 +43,20 @@ describe("memory CLI", () => {
         expect(lessonRow!.title).toBe("Always branch from main");
 
         const claimRow = db
-          .query("SELECT kind, embedding, dim FROM claim WHERE id = 'lesson-claimed'")
-          .get() as { kind: string; embedding: Uint8Array | null; dim: number } | null;
+          .query("SELECT kind, retrieval_text, embedding, dim FROM claim WHERE id = 'lesson-claimed'")
+          .get() as {
+            kind: string;
+            retrieval_text: string | null;
+            embedding: Uint8Array | null;
+            dim: number;
+          } | null;
         expect(claimRow).not.toBeNull();
         expect(claimRow!.kind).toBe("lesson");
         expect(claimRow!.dim).toBe(640);
         expect(claimRow!.embedding).not.toBeNull();
+        expect(claimRow!.retrieval_text).toContain(
+          "Use this lesson when: Starting implementation work in a fresh worktree.",
+        );
       } finally {
         store.close();
       }

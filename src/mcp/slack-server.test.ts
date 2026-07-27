@@ -149,7 +149,11 @@ describe("MCP memory v3 tools", () => {
       );
 
       const result = await recallMemory(
-        { query: "where do I resolve merge conflicts target branch", limit: 5 },
+        {
+          query: "where do I resolve merge conflicts target branch",
+          limit: 5,
+          minCosine: 0,
+        },
         deps,
       );
 
@@ -231,6 +235,7 @@ describe("MCP memory v3 tools", () => {
           query: "how to clean merged worktrees",
           factKinds: ["procedure"],
           limit: 5,
+          minCosine: 0,
         },
         deps,
       );
@@ -288,6 +293,103 @@ describe("MCP memory v3 tools", () => {
         deps,
       );
       expect(result.profiles).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("drops low-relevance filler and logs only the final returned ids", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const relevant = await addMemory(
+        { text: "Deploy production only from a saved immutable site version" },
+        deps,
+      );
+      await addMemory(
+        { text: "MongoDB invoices retain external payment identifiers" },
+        deps,
+      );
+
+      const result = await recallMemory(
+        {
+          query: "Deploy production only from a saved immutable site version",
+          limit: 5,
+        },
+        deps,
+      );
+      expect(result.claims.map((claim) => claim.id)).toEqual([relevant.id]);
+
+      const db = (
+        deps.store as unknown as { db: import("bun:sqlite").Database }
+      ).db;
+      const row = db
+        .query(
+          "SELECT query, returned_ids_json, result_count FROM recall_log ORDER BY id DESC LIMIT 1",
+        )
+        .get() as {
+          query: string;
+          returned_ids_json: string;
+          result_count: number;
+        };
+      expect(row.query).toBe(
+        "Deploy production only from a saved immutable site version",
+      );
+      expect(JSON.parse(row.returned_ids_json)).toEqual([relevant.id]);
+      expect(row.result_count).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not let below-floor procedure quota under-fill relevant results", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      deps.provider = {
+        model: "controlled",
+        dim: 2,
+        embed: async () => [new Float32Array([1, 0])],
+      };
+      for (let index = 0; index < 5; index += 1) {
+        await deps.store.upsertClaim({
+          id: `relevant-${index}`,
+          kind: "lesson",
+          text: `Relevant lesson ${index}`,
+          embedding: new Float32Array([0.9 - index * 0.01, 0.1]),
+          createdAt: index,
+          skipDedup: true,
+        });
+      }
+      for (let index = 0; index < 2; index += 1) {
+        const id = `irrelevant-procedure-${index}`;
+        await deps.store.upsertFact({
+          id,
+          kind: "procedure",
+          body: `Irrelevant procedure ${index}`,
+          createdAt: index,
+        });
+        await deps.store.upsertClaim({
+          id,
+          kind: "fact",
+          text: `Irrelevant procedure ${index}`,
+          embedding: new Float32Array([0.1, 0.9]),
+          createdAt: index,
+          skipDedup: true,
+        });
+      }
+
+      const result = await recallMemory(
+        {
+          query: "relevant task",
+          limit: 5,
+          procedureQuota: 2,
+          minCosine: 0.55,
+        },
+        deps,
+      );
+      expect(result.claims).toHaveLength(5);
+      expect(result.claims.every((claim) => claim.id.startsWith("relevant-"))).toBe(
+        true,
+      );
     } finally {
       cleanup();
     }

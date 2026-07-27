@@ -140,6 +140,79 @@ describe("SqliteMemoryStore", () => {
     expect(decoded[3]).toBeCloseTo(1, 5);
   });
 
+  it("preserves a curated retrieval projection and its vector on an idempotent re-save", async () => {
+    await store.upsertClaim({
+      id: "claim-curated",
+      kind: "lesson",
+      text: "Authoritative rule",
+      retrievalText: "When should this rule apply? Authoritative rule",
+      embedding: new Float32Array([1, 0]),
+      embedModel: "curated-model",
+      createdAt: 1,
+    });
+    await store.upsertClaim({
+      id: "claim-curated",
+      kind: "lesson",
+      text: "Authoritative rule",
+      // memory_add-style idempotent save: no retrievalText, and a plain-text
+      // embedding that must not replace the curated projection's vector.
+      embedding: new Float32Array([0, 1]),
+      embedModel: "plain-model",
+      createdAt: 1,
+    });
+
+    const db = (store as unknown as { db: Database }).db;
+    const row = db
+      .query<
+        { retrieval_text: string; embedding: Uint8Array; embed_model: string },
+        [string]
+      >(
+        "SELECT retrieval_text, embedding, embed_model FROM claim WHERE id = ?",
+      )
+      .get("claim-curated")!;
+    expect(row.retrieval_text).toBe(
+      "When should this rule apply? Authoritative rule",
+    );
+    expect(row.embed_model).toBe("curated-model");
+    const embedding = Buffer.from(row.embedding);
+    expect(embedding.readFloatLE(0)).toBeCloseTo(1, 5);
+    expect(embedding.readFloatLE(4)).toBeCloseTo(0, 5);
+  });
+
+  it("allows an explicit vector refresh for an unchanged plain-text claim", async () => {
+    await store.upsertClaim({
+      id: "claim-refresh",
+      kind: "lesson",
+      text: "Plain authoritative rule",
+      embedding: new Float32Array([1, 0]),
+      embedModel: "old-model",
+      createdAt: 1,
+    });
+    await store.upsertClaim({
+      id: "claim-refresh",
+      kind: "lesson",
+      text: "Plain authoritative rule",
+      embedding: new Float32Array([0, 1]),
+      embedModel: "new-model",
+      createdAt: 1,
+    });
+
+    const db = (store as unknown as { db: Database }).db;
+    const row = db
+      .query<
+        { retrieval_text: string; embedding: Uint8Array; embed_model: string },
+        [string]
+      >(
+        "SELECT retrieval_text, embedding, embed_model FROM claim WHERE id = ?",
+      )
+      .get("claim-refresh")!;
+    expect(row.retrieval_text).toBe("Plain authoritative rule");
+    expect(row.embed_model).toBe("new-model");
+    const embedding = Buffer.from(row.embedding);
+    expect(embedding.readFloatLE(0)).toBeCloseTo(0, 5);
+    expect(embedding.readFloatLE(4)).toBeCloseTo(1, 5);
+  });
+
   it("ranks claims by cosine against a pre-computed query vector", async () => {
     const now = Date.now();
     await store.upsertClaim({
@@ -168,9 +241,9 @@ describe("SqliteMemoryStore", () => {
     expect(results[1].cosine).toBeCloseTo(0, 5);
   });
 
-  it("weights cosine by the claim weight", async () => {
+  it("ranks vector recall by cosine before historical weight", async () => {
     const now = Date.now();
-    // Slightly lower cosine but much higher weight should win. These two sit at
+    // A much higher weight must not beat stronger semantic relevance. These sit at
     // cosine 0.99 of each other, so they are deliberately seeded past the write
     // guard (skipDedup) — this test is about recall RANKING, not about dedup.
     await store.upsertClaim({
@@ -197,7 +270,7 @@ describe("SqliteMemoryStore", () => {
       filters: {},
       limit: 5,
     });
-    expect(results[0].id).toBe("claim-heavy");
+    expect(results[0].id).toBe("claim-light");
   });
 
   it("keeps the strongest semantic match in the shortlist despite a low weight", async () => {

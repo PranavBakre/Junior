@@ -61,10 +61,13 @@ describe("deriveRecallQueries", () => {
     ]);
   });
 
-  test("adds one repo/agent-scoped variant when the session has scope", () => {
+  test("adds one situation-shaped variant while leaving repo as a filter", () => {
     expect(
       deriveRecallQueries("review the PR", { repo: "gx-backend", agent: "review" }),
-    ).toEqual(["review the PR", "gx-backend review: review the PR"]);
+    ).toEqual([
+      "review the PR",
+      "How should review handle this task in gx-backend? review the PR",
+    ]);
   });
 
   test("collapses whitespace and drops empty messages", () => {
