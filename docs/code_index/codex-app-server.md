@@ -29,7 +29,7 @@ tool/edit/persistence operating contract and is a provider-quality regression.
 The client completes the documented `initialize` → `initialized` handshake
 before starting or resuming a thread.
 
-Generated Codex config sets `[agents].enabled = false`; provider-native
+Generated Codex config sets `[features].multi_agent = false`; provider-native
 subagents would bypass Junior's durable assignment, context, and settlement
 contracts.
 

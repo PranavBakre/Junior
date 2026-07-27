@@ -102,8 +102,8 @@ export function buildCodexConfigToml(options: {
   lines.push(`approval_policy = ${tomlString(options.approvalPolicy)}`);
   lines.push(`sandbox_mode = ${tomlString(options.sandbox)}`);
   lines.push("");
-  lines.push("[agents]");
-  lines.push("enabled = false");
+  lines.push("[features]");
+  lines.push("multi_agent = false");
   lines.push("");
 
   for (const [name, server] of Object.entries(options.mcp ?? {})) {
