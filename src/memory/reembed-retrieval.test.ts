@@ -6,8 +6,12 @@ import { join } from "node:path";
 
 import {
   backupDatabase,
+  bindComposerRewrites,
+  composerCheckpointMetadata,
   deterministicRetrievalText,
+  isCompatibleComposerCheckpoint,
   validateRewrites,
+  validComposerCheckpoint,
   type CorpusRow,
 } from "./reembed-retrieval.ts";
 
@@ -83,6 +87,121 @@ describe("retrieval corpus migration", () => {
         { id: "a", sourceHash: "stale", retrievalText: "stale" },
       ])
     ).toThrow("Stale source hash");
+  });
+
+  it("binds source hashes locally instead of trusting model output", () => {
+    expect(
+      bindComposerRewrites(
+        [{ id: "a", sourceHash: "canonical" }],
+        [{ id: "a", retrievalText: "When does A apply? Use A here." }],
+      ),
+    ).toEqual([
+      {
+        id: "a",
+        sourceHash: "canonical",
+        retrievalText: "When does A apply? Use A here.",
+      },
+    ]);
+    expect(() =>
+      bindComposerRewrites(
+        [{ id: "a", sourceHash: "canonical" }],
+        [{ id: "unknown", retrievalText: "Untrusted output" }],
+      )
+    ).toThrow("unknown claim id");
+  });
+
+  it("reuses only source-bound checkpoint rows after corpus changes", () => {
+    const sources = [
+      { id: "current", sourceHash: "hash-current" },
+      { id: "changed", sourceHash: "hash-new" },
+    ];
+    expect(
+      validComposerCheckpoint(sources, [
+        {
+          id: "current",
+          sourceHash: "hash-current",
+          retrievalText: "Keep this rewrite.",
+        },
+        {
+          id: "changed",
+          sourceHash: "hash-old",
+          retrievalText: "Regenerate this rewrite.",
+        },
+        {
+          id: "removed",
+          sourceHash: "hash-removed",
+          retrievalText: "Discard this rewrite.",
+        },
+      ]),
+    ).toEqual([
+      {
+        id: "current",
+        sourceHash: "hash-current",
+        retrievalText: "Keep this rewrite.",
+      },
+    ]);
+  });
+
+  it("allows a bounded long-source exception without permitting expansion", () => {
+    const source = {
+      id: "dense",
+      sourceHash: "hash-dense",
+      retrievalText: "s".repeat(2_300),
+    };
+    expect(() =>
+      validateRewrites(
+        [source],
+        [{
+          id: "dense",
+          sourceHash: "hash-dense",
+          retrievalText: "r".repeat(2_300),
+        }],
+        2_500,
+      )
+    ).not.toThrow();
+    expect(() =>
+      validateRewrites(
+        [source],
+        [{
+          id: "dense",
+          sourceHash: "hash-dense",
+          retrievalText: "r".repeat(2_301),
+        }],
+        2_500,
+      )
+    ).toThrow("exceeds 2300 characters");
+  });
+
+  it("measures the raw stored projection against the hard length limit", () => {
+    expect(() =>
+      validateRewrites(
+        [{ id: "padded", sourceHash: "hash-padded" }],
+        [{
+          id: "padded",
+          sourceHash: "hash-padded",
+          retrievalText: `A${" ".repeat(2_500)}B`,
+        }],
+        2_500,
+      )
+    ).toThrow("exceeds 2500 characters");
+  });
+
+  it("invalidates checkpoints from a different model or cleanup recipe", () => {
+    const expected = composerCheckpointMetadata("composer-2.5");
+    expect(isCompatibleComposerCheckpoint(expected, expected)).toBe(true);
+    expect(
+      isCompatibleComposerCheckpoint(
+        composerCheckpointMetadata("different-model"),
+        expected,
+      ),
+    ).toBe(false);
+    expect(
+      isCompatibleComposerCheckpoint(
+        { ...expected, recipeHash: "old-recipe" },
+        expected,
+      ),
+    ).toBe(false);
+    expect(isCompatibleComposerCheckpoint(null, expected)).toBe(false);
   });
 
   it("dry-runs read-only against a pre-retrieval_text schema", async () => {
