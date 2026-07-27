@@ -74,6 +74,10 @@ describe("spawnCodexAppServer", () => {
         .map((line) => JSON.parse(line));
       const threadStart = requests.find((request) => request.method === "thread/start");
       const turnStart = requests.find((request) => request.method === "turn/start");
+      expect(threadStart.params).not.toHaveProperty("baseInstructions");
+      expect(threadStart.params.developerInstructions).toContain(
+        "You are Junior running inside Codex",
+      );
       expect(threadStart.params.sandbox).toBe("danger-full-access");
       expect(threadStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
       expect(turnStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
@@ -114,6 +118,7 @@ describe("spawnCodexAppServer", () => {
         .map((line) => JSON.parse(line));
       expect(requests.map((request) => request.method)).toEqual([
         "initialize",
+        "initialized",
         "thread/resume",
         "thread/start",
         "turn/start",

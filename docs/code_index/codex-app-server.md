@@ -22,6 +22,13 @@ isolated-home, model, and timeout flags are listed in [`.env.example`](../../.en
 The provider receives the same scoped Junior MCP contract as other normal
 worktree-backed runs, subject to per-agent permissions.
 
+Fresh threads preserve Codex's native `baseInstructions`. Junior's provider
+baseline and composed active-agent prompt are additive
+`developerInstructions`; replacing the native base prompt strips Codex's
+tool/edit/persistence operating contract and is a provider-quality regression.
+The client completes the documented `initialize` → `initialized` handshake
+before starting or resuming a thread.
+
 Codex continuity is provider-native and optional. Durable session, workflow,
 pipeline, and artifact state remains authoritative when a process or provider
 connection is restarted.

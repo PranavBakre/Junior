@@ -33,7 +33,10 @@ The active dev config and any production-like fallback paths (e.g. `/etc/hosts` 
 
 ## Available MCP tools
 
-Pre-loaded — do NOT `ToolSearch` for them:
+These tools may be eager or deferred depending on the active provider. Use a
+named tool directly when it is visible. If a required named MCP tool is not in
+the current tool list, use provider-native tool search once to load it; do not
+search again for tools already visible.
 
 - **Slack bot** (HTTP MCP, runs in junior's process): `slack_send_message`, `slack_send_dm`, `slack_read_thread`, `slack_read_channel`, `slack_search`, `slack_search_users`, `slack_upload_file`, `pipeline_get_state`, `pipeline_report_outcome`, `pipeline_start_run`, `agent_dispatch`. Primary write paths for posting to Slack remain `slack_send_message` / `slack_send_dm`; they are audit communication, not execution transport. `agent_dispatch(mode="delegate"|"handoff")` creates the durable assignment transition. Pass `username` + `icon_emoji` per `AGENT_IDENTITIES` so attribution is correct.
 - **MongoDB (read-only)**: `mcp__mongodb__find`, `mcp__mongodb__aggregate`, `mcp__mongodb__count`, `mcp__mongodb__collection-schema`, `mcp__mongodb__list-collections`, `mcp__mongodb__list-databases`. All database reads must use these MCP tools. NEVER inspect `.env` files for database credentials, run `mongosh`/`mongo`, connect through an application driver or scratch script, or use a raw MongoDB URI—even for a read. If MCP cannot perform the query, stop and report the limitation; do not bypass it. NEVER mutate.
