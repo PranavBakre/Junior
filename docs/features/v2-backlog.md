@@ -80,3 +80,13 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 - Does `claude -p` accept image files via stdin or only via file path in the working directory?
 - Multiple files in one message — pass all or just the first?
 - Should media be saved in the worktree (so Claude can reference them) or in a temp dir?
+
+## Scoped MCP via Delegate Agents
+
+**Status:** Scoping written — see [scoped-mcp-delegate-agent.md](./scoped-mcp-delegate-agent.md).
+
+**Problem:** figma (PR #102) and the in-flight notion work inject remote OAuth MCP servers unconditionally into the Claude runner and widen `--setting-sources` to `user` for *every* run. This leaks figma/notion into the default agent (bypassing the `wantsMcp` permission gate every other server respects) and loads the operator's entire `~/.claude` config into every agent session.
+
+**Fix (deferred):** Gate figma/notion behind `wantsMcp` like every other server; make `needsUserSettings` session-aware so only a dedicated delegate agent (e.g. `designer`) widens setting-sources; add that agent with `permissions.mcp: figma`/`notion` for Junior to route to via `!designer`; add OpenCode parity. Verify first whether the widening is needed at all (keychain MCP OAuth may load independent of `--setting-sources` — if so, delete the widening machinery instead).
+
+**Priority:** Medium — figma/notion currently work but with broader MCP + settings exposure than intended.
