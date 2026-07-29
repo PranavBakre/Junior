@@ -171,6 +171,59 @@ describe("durable agent_dispatch", () => {
     expect(await store.listAssignments(started.run.id)).toHaveLength(1);
   });
 
+  it("dispatches the repo-less onboarding agent without repository refs", async () => {
+    const store = new InMemoryPipelineStore();
+    const sessions = new InMemorySessionStore();
+    const started = await createDefaultRun(
+      { store },
+      {
+        channelId: CHANNEL,
+        threadId: THREAD,
+        objective: "check whether a user needs onboarding",
+        messageTs: "1700000000.106",
+        targetAgent: "default",
+      },
+    );
+    const session = createSession(THREAD, CHANNEL);
+    session.activePipelineInvocation = {
+      runId: started.run.id,
+      assignmentId: started.assignment.id,
+      dispatchKey: "repo-less-onboarding",
+      outcomeCountAtDispatch: 0,
+      retryCount: 0,
+    };
+    await sessions.set(THREAD, session);
+
+    const result = body(await pipelineDispatchAgent({
+      store,
+      sessionStore: sessions,
+      runtimeMode: "active",
+      githubTrackingEnabled: false,
+    }, {
+      agent: "default",
+      channel: CHANNEL,
+      threadId: THREAD,
+      runId: started.run.id,
+      assignmentId: started.assignment.id,
+      dispatchKey: "repo-less-onboarding",
+      signed: true,
+    }, {
+      target_agent: "onboard-member",
+      objective: "Read current membership state and prepare the gated plan",
+      mode: "delegate",
+      reason: "The onboarding agent has read-only MongoDB access",
+      idempotency_key: "dispatch-onboarding",
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(await store.getAssignment(result.targetAssignmentId as string))
+      .toMatchObject({
+        targetAgent: "onboard-member",
+        mutationScope: ["pipeline-artifact"],
+      });
+    expect((await store.getRun(started.run.id))?.repoRefs).toEqual([]);
+  });
+
   it("binds a missing repository and resumes a needs-human run atomically", async () => {
     const store = new InMemoryPipelineStore();
     const sessions = new InMemorySessionStore();

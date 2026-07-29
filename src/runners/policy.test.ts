@@ -159,6 +159,22 @@ describe("compileOpenCodePermission", () => {
     expect(permission["mcp__*"]).toBe("deny");
   });
 
+  it("allows only read operations on MongoDB for the onboarding agent", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "onboard-member",
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, string>;
+
+    expect(permission["mcp__mongodb__find"]).toBe("allow");
+    expect(permission["mcp__mongodb__list-collections"]).toBe("allow");
+    expect(permission["mcp__mongodb__collection-schema"]).toBe("allow");
+    expect(permission["mcp__mongodb__update-one"]).not.toBe("allow");
+    expect(permission["mcp__*"]).toBe("deny");
+    expect(permission.bash).toBe("deny");
+  });
+
   it("asks on mutating tools for human-gated roles", () => {
     const permission = compileOpenCodePermission({
       subject: {
@@ -229,7 +245,7 @@ describe("provider permission compilation matrix", () => {
     // Review / reproducer: hard read-only where enforceable. Both use Claude
     // default mode so the trusted pipeline-control MCP allowlist can settle
     // assignments; repository mutations remain explicitly denied.
-    for (const name of ["review", "reproducer"] as const) {
+    for (const name of ["review", "reproducer", "onboard-member"] as const) {
       const row = byName.get(name)!;
       expect(row.intent).toBe("read-only");
       expect(row.claudePermissionMode).toBe("default");

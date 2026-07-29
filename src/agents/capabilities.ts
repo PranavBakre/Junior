@@ -111,6 +111,19 @@ export function canEditProductCode(
   ) && canMutateWorkspace(agent);
 }
 
+/**
+ * Whether an agent must run inside a Junior-managed repository worktree.
+ * Unknown agents fail closed. Orchestrators, planners, and repo-less utility
+ * agents operate only against their explicitly granted control-plane tools.
+ */
+export function requiresManagedWorktree(
+  agent: string | AgentManifest | null | undefined,
+): boolean {
+  const manifest = manifestOf(agent);
+  if (!manifest) return true;
+  return !["orchestrator", "planner", "utility"].includes(manifest.role);
+}
+
 export function mutationPolicyOf(
   agent: string | AgentManifest | null | undefined,
 ): MutationPolicy | null {

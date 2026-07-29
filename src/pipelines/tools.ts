@@ -10,11 +10,9 @@ import {
   canWritePipelineArtifacts,
   checkCapability,
   isReadOnlyRole,
+  requiresManagedWorktree,
 } from "../agents/capabilities.ts";
-import {
-  canonicalAgentName,
-  resolveAgentManifest,
-} from "../agents/registry.ts";
+import { canonicalAgentName } from "../agents/registry.ts";
 import { canDispatch } from "../support/agents.ts";
 import {
   slackMcpAgentForSession,
@@ -776,9 +774,7 @@ export async function pipelineDispatchAgent(
       );
     }
   }
-  const targetRole = resolveAgentManifest(target)?.role;
-  const targetRequiresWorktree =
-    targetRole !== "orchestrator" && targetRole !== "planner";
+  const targetRequiresWorktree = requiresManagedWorktree(target);
   if (targetRequiresWorktree && effectiveRepoRefs.length === 0) {
     return textResult(
       {

@@ -71,6 +71,9 @@ export function resolveRunPermissionIntent(
  * Mutating Slack/memory/dispatch tools are NOT included.
  */
 export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
+  "mcp__mongodb__find": "allow",
+  "mcp__mongodb__list-collections": "allow",
+  "mcp__mongodb__collection-schema": "allow",
   "mcp__slack-bot__slack_read_thread": "allow",
   "mcp__slack-bot__slack_read_channel": "allow",
   "mcp__slack-bot__slack_search": "allow",
@@ -297,6 +300,7 @@ export const CATALOG_ROLE_NAMES = [
   "frontend",
   "review",
   "reproducer",
+  "onboard-member",
 ] as const;
 
 /**

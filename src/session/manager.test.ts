@@ -763,6 +763,103 @@ describe("SessionManager", () => {
     expect(runSession.worktreePaths).toEqual(paths);
   });
 
+  it("keeps the onboarding agent repo-less outside a pipeline", async () => {
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: () => "/tmp/should-not-be-created",
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "check membership state" }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(mockSpawnFn.mock.calls[0]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+    });
+  });
+
+  it("does not provision or inherit worktrees for the repo-less onboarding agent", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-onboard-member",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/junior", "GrowthX-Club/frontend"],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-onboard-member",
+        runId: "run-onboard-member",
+        targetAgent: "onboard-member",
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: () => "/tmp/should-not-be-created",
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-onboard-member";
+    existing.activePipelineKind = "product";
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "check the member state using read-only MongoDB",
+        pipelineInvocation: {
+          runId: "run-onboard-member",
+          assignmentId: "assignment-onboard-member",
+          dispatchKey: "dispatch-onboard-member",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    const runSession = mockSpawnFn.mock.calls[0]![0];
+    expect(runSession.targetRepo).toBeNull();
+    expect(runSession.worktreePath).toBeNull();
+    expect(runSession.worktreePaths).toEqual({});
+    expect(runSession.cwd).toBeNull();
+    // Repo-less routing is invocation-local: do not erase worktrees that a
+    // later build/review assignment on the same pipeline still needs.
+    expect(await store.get("thread-1")).toMatchObject({
+      targetRepo: "junior",
+      worktreePath: "/tmp/stale-worktree",
+      worktreePaths: { junior: "/tmp/stale-worktree" },
+      cwd: "/tmp/stale-cwd",
+    });
+  });
+
   it("coalesces concurrent fan-out setup for the same pipeline worktree", async () => {
     const pipelineStore = new InMemoryPipelineStore();
     await pipelineStore.createRun(

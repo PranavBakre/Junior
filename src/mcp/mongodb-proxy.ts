@@ -2,13 +2,15 @@ import { resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type CallToolResult,
+} from "@modelcontextprotocol/sdk/types.js";
 import { log } from "../logger.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
-import { registerTool } from "./register-tool.ts";
 
 const MONGODB_PROXY_IDLE_TTL_MS = Number(process.env.MONGODB_MCP_PROXY_IDLE_TTL_MS ?? "600000");
 const MONGODB_PROXY_REQUEST_TIMEOUT_MS = Number(process.env.MONGODB_MCP_PROXY_REQUEST_TIMEOUT_MS ?? "120000");
@@ -26,6 +28,9 @@ interface MongoBackend {
   transport: StdioClientTransport;
 }
 
+type MongoBackendClient = Pick<Client, "callTool" | "listTools">;
+type MongoBackendProvider = () => Promise<{ client: MongoBackendClient }>;
+
 let backend: Promise<MongoBackend> | null = null;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -34,8 +39,7 @@ export async function handleMongoMcpRequest(
   res: ServerResponse,
 ): Promise<void> {
   const runContext = parseSlackMcpRunContext(req.url);
-  const mcpServer = new McpServer({ name: "mongodb", version: "0.1.0" });
-  registerMongoProxyTools(mcpServer, runContext);
+  const mcpServer = createMongoProxyServer(runContext);
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -43,6 +47,57 @@ export async function handleMongoMcpRequest(
 
   await mcpServer.connect(transport);
   await transport.handleRequest(req, res);
+}
+
+/**
+ * Mirror the backend's current tool contracts instead of replacing them with a
+ * generic record schema. Strict MCP clients reject legitimate Mongo arguments
+ * (including nested `filter` objects) when tools/list declares no properties.
+ * The allowlist remains local so upstream additions can never expand access.
+ */
+export function createMongoProxyServer(
+  runContext: SlackMcpRunContext | null,
+  backendProvider: MongoBackendProvider = getMongoBackend,
+): Server {
+  const server = new Server(
+    { name: "mongodb", version: "0.1.0" },
+    { capabilities: { tools: {} } },
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const { client } = await backendProvider();
+    armIdleTimer();
+    const { tools } = await client.listTools();
+    return {
+      tools: tools.filter((tool) => isAllowedMongoTool(tool.name)),
+    };
+  });
+
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    if (!isAllowedMongoTool(name)) {
+      return mongoProxyError(`tool "${name}" is not available through the read-only proxy.`);
+    }
+    if (!runContext) {
+      return mongoProxyError("MongoDB MCP run context missing; refused to proxy request.");
+    }
+
+    try {
+      const { client } = await backendProvider();
+      armIdleTimer();
+      return await client.callTool(
+        { name, arguments: args },
+        undefined,
+        { timeout: MONGODB_PROXY_REQUEST_TIMEOUT_MS },
+      ) as CallToolResult;
+    } catch (err) {
+      return mongoProxyError(
+        `MongoDB MCP proxy error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  });
+
+  return server;
 }
 
 export async function closeMongoMcpBackend(): Promise<void> {
@@ -56,50 +111,18 @@ export async function closeMongoMcpBackend(): Promise<void> {
   await transport?.close().catch(() => undefined);
 }
 
-function registerMongoProxyTools(
-  server: McpServer,
-  runContext: SlackMcpRunContext | null,
-): void {
-  for (const name of MONGODB_TOOL_NAMES) {
-    registerTool(
-      server,
-      name,
-      {
-        description: `Proxy to Junior's shared read-only MongoDB MCP backend (${name}).`,
-        inputSchema: z.record(z.string(), z.unknown()),
-      },
-      async (args) => {
-        if (!runContext) {
-          return {
-            isError: true,
-            content: [{
-              type: "text" as const,
-              text: "Error: MongoDB MCP run context missing; refused to proxy request.",
-            }],
-          };
-        }
+function isAllowedMongoTool(name: string): name is typeof MONGODB_TOOL_NAMES[number] {
+  return (MONGODB_TOOL_NAMES as readonly string[]).includes(name);
+}
 
-        try {
-          const { client } = await getMongoBackend();
-          armIdleTimer();
-          const result = await client.callTool(
-            { name, arguments: args },
-            undefined,
-            { timeout: MONGODB_PROXY_REQUEST_TIMEOUT_MS },
-          );
-          return result as CallToolResult;
-        } catch (err) {
-          return {
-            isError: true,
-            content: [{
-              type: "text" as const,
-              text: `MongoDB MCP proxy error: ${err instanceof Error ? err.message : String(err)}`,
-            }],
-          };
-        }
-      },
-    );
-  }
+function mongoProxyError(message: string): CallToolResult {
+  return {
+    isError: true,
+    content: [{
+      type: "text",
+      text: `Error: ${message}`,
+    }],
+  };
 }
 
 function getMongoBackend(): Promise<MongoBackend> {

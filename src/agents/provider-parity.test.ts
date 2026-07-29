@@ -84,6 +84,7 @@ describe("provider parity — catalog permissions", () => {
         "default",
         "frontend",
         "lead",
+        "onboard-member",
         "pm",
         "reproducer",
         "review",
@@ -180,6 +181,7 @@ describe("provider parity — handoff graph vs canDispatch", () => {
       "frontend",
       "review",
       "reproducer",
+      "onboard-member",
     ];
     for (const orch of ["default", "lead", "junior"] as const) {
       for (const worker of workers) {

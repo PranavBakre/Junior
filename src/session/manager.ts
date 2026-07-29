@@ -15,6 +15,7 @@ import type {
 } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
 import { resolveAgentManifest } from "../agents/registry.ts";
+import { requiresManagedWorktree } from "../agents/capabilities.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import type { PipelineStore } from "../pipelines/store/interface.ts";
 import {
@@ -1551,7 +1552,29 @@ export class SessionManager {
           )
         : undefined;
 
-      if (activePipelineRun && pipelineInvocation) {
+      const pipelineRole = resolveAgentManifest(agentName)?.role;
+      if (pipelineRole === "utility") {
+        _log.info(
+          "manager",
+          `workspace.skip thread=${session.threadId} run=${activePipelineRun?.id ?? "-"} assignment=${pipelineInvocation?.assignmentId ?? "-"} agent=${agentName} reason=repo-less-agent`,
+        );
+        // Repo-less agents must not inherit the thread's prior repository
+        // affinity. Keep this invocation-only so another assignment in the
+        // same pipeline can still use the durable managed worktrees.
+        session = {
+          ...session,
+          cwd: null,
+          targetRepo: null,
+          worktreePath: null,
+          worktreePaths: {},
+        };
+      }
+
+      if (
+        activePipelineRun &&
+        pipelineInvocation &&
+        pipelineRole !== "utility"
+      ) {
         // Durable repo refs, not a developer checkout or stale session cwd,
         // define the pipeline workspace. Provision every referenced repo so
         // fan-out agents can collaborate through the injected path map. Plain
@@ -3852,11 +3875,7 @@ export class SessionManager {
 }
 
 function pipelineAgentRequiresWorktree(agentName: string): boolean {
-  const role = resolveAgentManifest(agentName)?.role;
-  // Unknown roles fail closed. Trusted orchestrators and planners can perform
-  // repo-less discovery/control-plane work; every execution/review role needs
-  // a target repository and a Junior-managed worktree.
-  return role !== "orchestrator" && role !== "planner";
+  return requiresManagedWorktree(agentName);
 }
 
 const defaultSpawnRunnerForRuntime: SpawnRunnerFn =

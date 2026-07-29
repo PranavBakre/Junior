@@ -31,6 +31,9 @@ export function allowedMcpServers(session: ThreadSession): Set<McpServerName> {
   ) {
     allowed.add("slack-bot");
   }
+  if (hasCapability(agent, "mongodb-read")) {
+    allowed.add("mongodb");
+  }
   return allowed;
 }
 
