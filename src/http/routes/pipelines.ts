@@ -151,7 +151,9 @@ function latestDispatches(
       continue;
     }
     const current = result.get(record.assignmentId);
-    if (!current || record.createdAt > current.createdAt) {
+    // listOutbox is creation-ordered. On millisecond ties, the later record in
+    // that durable order is the latest dispatch state.
+    if (!current || record.createdAt >= current.createdAt) {
       result.set(record.assignmentId, record);
     }
   }

@@ -93,12 +93,15 @@ describe("handlePipelines", () => {
 
     expect(body.pipeline.id).toBe(run.id);
     expect(body.pipeline.assignments).toHaveLength(2);
-    expect(body.pipeline.assignments[0]!.dispatch?.status).toBe("delivered");
-    expect(body.pipeline.assignments[0]!.outcomes).toEqual([
-      expect.objectContaining({
-        reason: "The implementation handoff is ready.",
-      }),
-    ]);
+    expect(body.pipeline.assignments[0]).toMatchObject({
+      id: "root",
+      dispatch: { status: "pending" },
+      outcomes: [
+        expect.objectContaining({
+          reason: "The implementation handoff is ready.",
+        }),
+      ],
+    });
     expect(body.pipeline.assignments[1]).toMatchObject({
       id: "child",
       parentAssignmentId: "root",
