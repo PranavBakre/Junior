@@ -38,6 +38,26 @@ export function hasCapability(
   return manifest.capabilities.includes(capability);
 }
 
+export interface CapabilitySubject {
+  activeAgentName?: string | null;
+  agentType?: string | null;
+  assignmentCapabilities?: readonly AgentCapability[];
+}
+
+/**
+ * Runtime capability check. Durable assignment capabilities are additive only
+ * after SessionManager validates them against a trusted skill definition.
+ */
+export function subjectHasCapability(
+  subject: CapabilitySubject,
+  capability: AgentCapability,
+): boolean {
+  return (
+    subject.assignmentCapabilities?.includes(capability) === true ||
+    hasCapability(subject.activeAgentName ?? subject.agentType, capability)
+  );
+}
+
 /**
  * Human-gated capabilities are never granted by the catalog.
  * Always returns false — callers must route through a human gate.

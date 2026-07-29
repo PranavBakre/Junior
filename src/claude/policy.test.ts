@@ -279,7 +279,9 @@ describe("mapClaudeRunPolicy", () => {
       "Read",
       "mcp__slack-bot__pipeline_get_state",
       "mcp__slack-bot__pipeline_report_outcome",
+      "mcp__slack-bot__pipeline_write_artifact",
       "mcp__slack-bot__agent_dispatch",
+      "mcp__slack-bot__skill_dispatch",
     ]);
     expect(policy.disallowedTools).toContain("Write");
     expect(policy.disallowedTools).toContain("Bash(rm *)");

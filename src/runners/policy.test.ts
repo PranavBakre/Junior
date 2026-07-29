@@ -35,6 +35,23 @@ const codexConfig = {
 };
 
 describe("compileOpenCodePermission", () => {
+  it("compiles a stateless skill's assignment capabilities without catalog identity", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "skill:sentry-fetch",
+        assignmentCapabilities: ["pipeline-artifact-write"],
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, string>;
+
+    expect(permission["mcp__slack-bot__pipeline_get_state"]).toBe("allow");
+    expect(permission["mcp__slack-bot__pipeline_write_artifact"]).toBe("allow");
+    expect(permission["mcp__slack-bot__pipeline_report_outcome"]).toBe("allow");
+    expect(permission["mcp__slack-bot__agent_dispatch"]).not.toBe("allow");
+    expect(permission.edit).toBe("deny");
+    expect(permission.write).toBe("deny");
+  });
+
   it("allows only non-mutating inspection for reviewers without a worktree", () => {
     const permission = compileOpenCodePermission({
       subject: {

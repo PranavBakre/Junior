@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import type { ThreadSession } from "../session/types.ts";
 import { buildMongoMcpUrl, buildSlackMcpUrl } from "../mcp/context.ts";
-import { hasCapability } from "../agents/capabilities.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 
 export type McpServerName = "slack-bot" | "playwright" | "mixpanel" | "mongodb" | "figma" | "notion";
 
@@ -22,16 +22,15 @@ export function allowedMcpServers(session: ThreadSession): Set<McpServerName> {
       name === "notion"
     ),
   );
-  const agent = session.activeAgentName ?? session.agentType;
   if (
-    hasCapability(agent, "github-review-comment") ||
-    hasCapability(agent, "pipeline-artifact-write") ||
-    hasCapability(agent, "dispatch") ||
-    hasCapability(agent, "pipeline-run-start")
+    subjectHasCapability(session, "github-review-comment") ||
+    subjectHasCapability(session, "pipeline-artifact-write") ||
+    subjectHasCapability(session, "dispatch") ||
+    subjectHasCapability(session, "pipeline-run-start")
   ) {
     allowed.add("slack-bot");
   }
-  if (hasCapability(agent, "mongodb-read")) {
+  if (subjectHasCapability(session, "mongodb-read")) {
     allowed.add("mongodb");
   }
   return allowed;

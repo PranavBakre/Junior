@@ -33,7 +33,7 @@ import {
   type CodexRunPolicy,
 } from "../codex-app-server/policy.ts";
 import type { OpenCodePermissionConfig } from "../opencode/config.ts";
-import { hasCapability } from "../agents/capabilities.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 import {
   GITHUB_POST_REVIEW_TOOL,
   GITHUB_READ_REVIEW_STATE_TOOL,
@@ -51,6 +51,7 @@ export interface PermissionSubject {
   worktreePath?: string | null;
   worktreePaths?: Record<string, string>;
   verificationPackageManager?: ThreadSession["verificationPackageManager"];
+  assignmentCapabilities?: ThreadSession["assignmentCapabilities"];
 }
 
 /**
@@ -105,22 +106,24 @@ export function compileOpenCodePermission(options: {
 }): OpenCodePermissionConfig {
   const intent = resolveRunPermissionIntent(options.subject);
   const fallback = options.fallback ?? "allow";
-  const agentName =
-    options.subject.activeAgentName ?? options.subject.agentType;
   const capabilityPermissions: Record<string, string> = {
-    ...(hasCapability(agentName, "github-review-comment")
+    ...(subjectHasCapability(options.subject, "github-review-comment")
       ? { [GITHUB_POST_REVIEW_TOOL]: "allow" }
       : {}),
-    ...(hasCapability(agentName, "pipeline-artifact-write")
+    ...(subjectHasCapability(options.subject, "pipeline-artifact-write")
       ? {
           "mcp__slack-bot__pipeline_get_state": "allow",
           "mcp__slack-bot__pipeline_report_outcome": "allow",
+          "mcp__slack-bot__pipeline_write_artifact": "allow",
         }
       : {}),
-    ...(hasCapability(agentName, "dispatch")
-      ? { "mcp__slack-bot__agent_dispatch": "allow" }
+    ...(subjectHasCapability(options.subject, "dispatch")
+      ? {
+          "mcp__slack-bot__agent_dispatch": "allow",
+          "mcp__slack-bot__skill_dispatch": "allow",
+        }
       : {}),
-    ...(hasCapability(agentName, "pipeline-run-start")
+    ...(subjectHasCapability(options.subject, "pipeline-run-start")
       ? { "mcp__slack-bot__pipeline_start_run": "allow" }
       : {}),
   };
@@ -128,7 +131,7 @@ export function compileOpenCodePermission(options: {
     options.subject.worktreePath,
     ...Object.values(options.subject.worktreePaths ?? {}),
   ].filter((root): root is string => Boolean(root));
-  const mayInspect = hasCapability(agentName, "worktree-verify");
+  const mayInspect = subjectHasCapability(options.subject, "worktree-verify");
   const hasRegisteredWorktreeCwd =
     Boolean(options.cwd) &&
     worktreeRoots.includes(options.cwd!);

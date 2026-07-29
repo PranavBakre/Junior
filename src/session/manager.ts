@@ -88,6 +88,10 @@ import { productContextForAssignment } from "../pipelines/product/controller.ts"
 import { composeProductDispatchPrompt } from "../pipelines/product/context.ts";
 import { createDefaultRun } from "../pipelines/default/controller.ts";
 import { pumpOutbox } from "../pipelines/pump.ts";
+import {
+  resolveTrustedSkill,
+  skillRunnerAgentName,
+} from "../skills/registry.ts";
 
 /**
  * Turn-progress marker. Distinct from the "eyes" acknowledgement the event
@@ -1539,6 +1543,39 @@ export class SessionManager {
               pipelineInvocation.assignmentId,
             )
           : undefined;
+      const activeSkill = activePipelineAssignment?.skillRef
+        ? resolveTrustedSkill(activePipelineAssignment.skillRef)
+        : null;
+      if (activePipelineAssignment?.skillRef && !activeSkill) {
+        throw new Error(
+          `Pipeline assignment ${activePipelineAssignment.id} references unknown skill "${activePipelineAssignment.skillRef}"`,
+        );
+      }
+      if (activeSkill) {
+        const expectedTarget = skillRunnerAgentName(activeSkill.name);
+        if (
+          activePipelineAssignment?.targetAgent !== expectedTarget ||
+          agentName !== expectedTarget
+        ) {
+          throw new Error(
+            `Skill assignment ${activePipelineAssignment?.id} target mismatch: expected ${expectedTarget}`,
+          );
+        }
+        const expectedCapabilities = [...activeSkill.capabilities].sort();
+        const assignedCapabilities = [
+          ...(activePipelineAssignment?.capabilityRefs ?? []),
+        ].sort();
+        if (
+          expectedCapabilities.length !== assignedCapabilities.length ||
+          expectedCapabilities.some(
+            (capability, index) => capability !== assignedCapabilities[index],
+          )
+        ) {
+          throw new Error(
+            `Skill assignment ${activePipelineAssignment?.id} capability envelope does not match trusted registry`,
+          );
+        }
+      }
       assertRunOwnership();
 
       // An explicit PR URL is the strongest repo-affinity signal for review.
@@ -1552,7 +1589,9 @@ export class SessionManager {
           )
         : undefined;
 
-      const pipelineRole = resolveAgentManifest(agentName)?.role;
+      const pipelineRole = activeSkill
+        ? "utility"
+        : resolveAgentManifest(agentName)?.role;
       if (pipelineRole === "utility") {
         _log.info(
           "manager",
@@ -1762,7 +1801,31 @@ export class SessionManager {
 
       // Build after worktree routing/creation so provider policy and cwd see
       // the newly registered isolated checkout on this same turn.
-      let runSession = this.buildRunSession(session, agentName, agentIdentity);
+      const applyAssignmentEnvelope = (
+        candidate: ThreadSession,
+      ): ThreadSession => {
+        if (!activeSkill) {
+          candidate.activeSkill = null;
+          candidate.assignmentCapabilities = [];
+          return candidate;
+        }
+        candidate.activeSkill = {
+          name: activeSkill.name,
+          path: activeSkill.path,
+          execution: activeSkill.execution,
+        };
+        candidate.assignmentCapabilities = [...activeSkill.capabilities];
+        // Skill assignments are intentionally stateless. A provider session
+        // may be reused only for settlement retries within this invocation;
+        // never resume context from an earlier invocation.
+        candidate.sessionId = null;
+        candidate.sessionCwd = null;
+        candidate.systemPrompt = null;
+        return candidate;
+      };
+      let runSession = applyAssignmentEnvelope(
+        this.buildRunSession(session, agentName, agentIdentity),
+      );
       let provider = sessionProvider(runSession, this.config);
       const invocationCwd = resolveRunnerCwd(runSession, targetRepoCwd);
       if (
@@ -1784,7 +1847,9 @@ export class SessionManager {
         agentSession = isTopLevel
           ? null
           : this.getOrCreateAgentSession(session, agentName);
-        runSession = this.buildRunSession(session, agentName, agentIdentity);
+        runSession = applyAssignmentEnvelope(
+          this.buildRunSession(session, agentName, agentIdentity),
+        );
         provider = sessionProvider(runSession, this.config);
         if (invalidation.invalidated) {
           _log.warn(
@@ -1811,8 +1876,16 @@ export class SessionManager {
         ? await this.agentRouter.resolveAgent(runSession)
         : null;
       assertRunOwnership();
-      const declaredContextProfile: AgentContextProfile =
-        agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
+      const declaredContextProfile: AgentContextProfile = activeSkill
+        ? {
+            identity: false,
+            slack: false,
+            workspace: false,
+            threadHistory: false,
+            threadHistoryLimit: 1,
+            agentState: false,
+          }
+        : agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
       // A typed worker assignment already carries the durable objective,
       // acceptance criteria, evidence/artifact refs, and exact causal handoff.
       // Replaying the Slack conversation beside that contract duplicates
@@ -1847,7 +1920,15 @@ export class SessionManager {
           fresh.modelClaude = agentDefinition.modelClaude ?? null;
         });
       }
-      runSession.agentPermissions = agentDefinition?.permissions;
+      runSession.agentPermissions =
+        agentDefinition?.permissions ??
+        (activeSkill
+          ? {
+              intent: activeSkill.permissions.intent,
+              mcp: [...activeSkill.permissions.mcp],
+              tools: [...activeSkill.permissions.tools],
+            }
+          : undefined);
 
       // Build the prompt. When the provider will not resume a prior model
       // session, inject the preamble blocks the agent asked for. On resumed
@@ -1984,7 +2065,7 @@ export class SessionManager {
 
       // Compose agent system prompt. The explicit default agent receives the
       // same selected-common prompt path as named worker agents.
-      if (this.agentRouter) {
+      if (this.agentRouter && !activeSkill) {
         const composed =
           (await this.agentRouter.composeSystemPrompt(runSession)) ?? null;
         runSession.systemPrompt = this.withAgentIdentityPrompt(
@@ -2271,7 +2352,9 @@ export class SessionManager {
             `Idle interrupt ${session.idleInterruptCount} of ${maxIdleInterrupts}.`,
             "Continue from the last completed step.",
           ].join("\n");
-          const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
+          const retryRunSession = applyAssignmentEnvelope(
+            this.buildRunSession(session, agentName, agentIdentity),
+          );
           await this.attachReviewVerificationPolicy(retryRunSession, agentName);
           attemptedResumeId = retryRunSession.sessionId;
 
@@ -2404,6 +2487,7 @@ export class SessionManager {
           agentName,
           attemptHandle,
           invocationCwd,
+          activeSkill?.execution === "stateless",
         );
       }
     } catch (err) {
@@ -2937,6 +3021,7 @@ export class SessionManager {
     agentName: string,
     ownHandle?: SpawnHandle,
     invocationCwd?: string,
+    statelessSkillInvocation = false,
   ): Promise<void> {
     const isTopLevel = agentName === "lead" || agentName === "default";
     const agentIdentity = identityForAgent(agentName);
@@ -2976,7 +3061,7 @@ export class SessionManager {
         "session",
         `short-followup.suppress thread=${session.threadId} agent=${agentName} generation=${runGeneration}`,
       );
-    } else {
+    } else if (!statelessSkillInvocation) {
       await this.captureRunnerMemory(snapshot.threadId, agentName, result);
       if (!stillOwnsRun()) return;
     }
@@ -3065,7 +3150,7 @@ export class SessionManager {
       pipelineGuardRetryReset = true;
     }
 
-    if (!runWasSuperseded && result.response) {
+    if (!runWasSuperseded && result.response && !statelessSkillInvocation) {
       internalDispatchDirectives = this.allowedInternalDirectivesForResponse(
         agentName,
         result.response,
@@ -3203,6 +3288,10 @@ export class SessionManager {
             agentSession.sessionId = result.sessionId;
             agentSession.sessionCwd = invocationCwd ?? agentSession.sessionCwd ?? null;
             agentSession.provider = result.provider;
+          }
+          if (statelessSkillInvocation) {
+            agentSession.sessionId = null;
+            agentSession.sessionCwd = null;
           }
           if (result.error) {
             s.lastError = {

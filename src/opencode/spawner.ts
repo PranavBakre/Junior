@@ -15,6 +15,11 @@ import {
 } from "./parser.ts";
 import { buildOpenCodeAgentPrompt, OPENCODE_PROVIDER_AGENT } from "./prompt.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
+import {
+  prepareSkillRuntime,
+  skillInvocationPrompt,
+} from "../skills/runtime.ts";
 
 export interface OpenCodeEnvContext {
   session: ThreadSession;
@@ -60,6 +65,16 @@ export function spawnOpenCode(
   const juniorAgentName = juniorAgentNameForSession(session);
   const agentName = config.agentName ?? OPENCODE_PROVIDER_AGENT;
   const model = resolveOpenCodeModel(session.model, config.defaultModel);
+  const activeSkill = session.activeSkill
+    ? resolveTrustedSkill(session.activeSkill.name)
+    : null;
+  if (
+    session.activeSkill &&
+    (!activeSkill || activeSkill.path !== session.activeSkill.path)
+  ) {
+    throw new Error("active skill does not match Junior's trusted registry");
+  }
+  const skillRuntime = activeSkill ? prepareSkillRuntime(activeSkill) : null;
   const agentPrompt = buildOpenCodeAgentPrompt({
     juniorAgentName,
     juniorPrompt: config.agentPrompt ?? session.systemPrompt,
@@ -84,6 +99,9 @@ export function spawnOpenCode(
     {
       ...runtime.env,
       OPENCODE_CONFIG_CONTENT: configContent,
+      ...(skillRuntime
+        ? { OPENCODE_CONFIG_DIR: skillRuntime.openCodeConfigDir }
+        : {}),
     },
     config.env,
     { session, cwd: runtime.cwd, agentName, juniorAgentName },
@@ -96,7 +114,9 @@ export function spawnOpenCode(
   const args = buildOpenCodeArgs({
     cwd: runtime.cwd,
     agentName,
-    prompt,
+    prompt: activeSkill
+      ? skillInvocationPrompt("opencode", activeSkill, prompt)
+      : prompt,
     sessionId: config.continuityEnabled ? session.sessionId : null,
     model,
     files: imagePaths,

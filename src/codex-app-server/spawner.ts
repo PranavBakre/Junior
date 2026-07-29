@@ -10,6 +10,8 @@ import {
 import { createCodexAppServerEventMapper } from "./parser.ts";
 import { mapCodexRunPolicy } from "./policy.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
+import { skillInvocationPrompt } from "../skills/runtime.ts";
 
 interface JsonRpcResponse {
   id: number;
@@ -46,6 +48,15 @@ export function spawnCodexAppServer(
     cwd: runtime.cwd,
   });
   const mcp = buildCodexMcpConfig(config, session, policy.mcpAllowed);
+  const activeSkill = session.activeSkill
+    ? resolveTrustedSkill(session.activeSkill.name)
+    : null;
+  if (
+    session.activeSkill &&
+    (!activeSkill || activeSkill.path !== session.activeSkill.path)
+  ) {
+    throw new Error("active skill does not match Junior's trusted registry");
+  }
   const codexHome = prepareCodexHome({
     isolatedHomePath: config.codex.isolatedHomePath ?? resolve(process.cwd(), "data/codex-home"),
     model,
@@ -207,7 +218,15 @@ export function spawnCodexAppServer(
 
       const turn = record(await send("turn/start", {
         threadId: activeThreadId,
-        input: inputItems(prompt, imagePaths),
+        input: inputItems(
+          activeSkill
+            ? skillInvocationPrompt("codex", activeSkill, prompt)
+            : prompt,
+          imagePaths,
+          activeSkill
+            ? { name: activeSkill.name, path: activeSkill.path }
+            : null,
+        ),
         approvalPolicy: policy.approvalPolicy,
         sandboxPolicy: policy.sandboxPolicy,
       }));
@@ -310,9 +329,16 @@ function developerInstructions(session: ThreadSession): string {
   ].join("\n\n");
 }
 
-function inputItems(prompt: string, imagePaths: string[]): Array<Record<string, unknown>> {
+function inputItems(
+  prompt: string,
+  imagePaths: string[],
+  skill: { name: string; path: string } | null = null,
+): Array<Record<string, unknown>> {
   return [
     { type: "text", text: prompt, text_elements: [] },
+    ...(skill
+      ? [{ type: "skill", name: skill.name, path: skill.path }]
+      : []),
     ...imagePaths.map((path) => ({ type: "localImage", path })),
   ];
 }
