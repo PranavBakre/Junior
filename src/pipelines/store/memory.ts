@@ -149,6 +149,8 @@ export class InMemoryPipelineStore implements PipelineStore {
         sourceAgent: assignmentInput.sourceAgent,
         sourceSlackUserId: assignmentInput.sourceSlackUserId,
         targetAgent: assignmentInput.targetAgent,
+        skillRef: assignmentInput.skillRef ?? null,
+        capabilityRefs: [...(assignmentInput.capabilityRefs ?? [])],
         status: assignmentInput.status ?? "pending",
         objective: assignmentInput.objective,
         contextRefs: [...assignmentInput.contextRefs],
@@ -233,6 +235,8 @@ export class InMemoryPipelineStore implements PipelineStore {
       sourceAgent: input.sourceAgent,
       sourceSlackUserId: input.sourceSlackUserId,
       targetAgent: input.targetAgent,
+      skillRef: input.skillRef ?? null,
+      capabilityRefs: [...(input.capabilityRefs ?? [])],
       status: input.status ?? "pending",
       objective: input.objective,
       contextRefs: [...input.contextRefs],
@@ -1441,6 +1445,7 @@ function cloneRun(run: PipelineRun): PipelineRun {
 function cloneAssignment(a: Assignment): Assignment {
   return {
     ...a,
+    capabilityRefs: [...a.capabilityRefs],
     contextRefs: [...a.contextRefs],
     artifactRefs: [...a.artifactRefs],
     acceptanceCriteria: [...a.acceptanceCriteria],

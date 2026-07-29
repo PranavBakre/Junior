@@ -61,6 +61,7 @@ import type { PipelineToolRuntime } from "../pipelines/tools.ts";
 import {
   pipelineGetState,
   pipelineDispatchAgent,
+  pipelineDispatchSkill,
   pipelineRegisterPr,
   pipelineReportOutcome,
   pipelineRunCheck,
@@ -903,6 +904,52 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           },
         ],
       };
+    },
+  );
+
+  registerTool(
+    server,
+    "skill_dispatch",
+    {
+      description:
+        "Run one trusted Junior skill as an isolated durable child assignment. The skill body is loaded natively by the selected provider and its MCP capabilities come from Junior's trusted registry.",
+      inputSchema: {
+        skill_name: z.string().min(1).describe(
+          "Trusted skill name, e.g. nr-research, sentry-fetch, vercel-status",
+        ),
+        objective: z.string().min(1).describe("Bounded objective for the skill"),
+        reason: z.string().min(1).describe("Why this skill is needed"),
+        idempotency_key: z.string().min(1).describe(
+          "Stable semantic key reused on retries",
+        ),
+        artifact_refs: z.array(z.string()).optional(),
+        acceptance_criteria: z.array(z.string()).optional(),
+      },
+    },
+    async ({
+      skill_name,
+      objective,
+      reason,
+      idempotency_key,
+      artifact_refs,
+      acceptance_criteria,
+    }) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "Error: pipeline runtime not available",
+          }],
+        };
+      }
+      return pipelineDispatchSkill(pipelineRuntime, runContext, {
+        skill_name,
+        objective,
+        reason,
+        idempotency_key,
+        artifact_refs,
+        acceptance_criteria,
+      });
     },
   );
 

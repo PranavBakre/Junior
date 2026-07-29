@@ -5,6 +5,7 @@ import { createDefaultRun } from "./default/controller.ts";
 import { InMemoryPipelineStore } from "./store/memory.ts";
 import {
   pipelineDispatchAgent,
+  pipelineDispatchSkill,
   pipelineReportOutcome,
   type PipelineToolRuntime,
   type ToolTextResult,
@@ -537,5 +538,122 @@ describe("durable agent_dispatch", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("delegate is phase-neutral");
+  });
+});
+
+describe("durable skill_dispatch", () => {
+  it("creates a stateless child with the trusted capability envelope and replays idempotently", async () => {
+    const store = new InMemoryPipelineStore();
+    const sessions = new InMemorySessionStore();
+    const session = createSession(THREAD, CHANNEL);
+    session.activeAgentName = "default";
+    await sessions.set(THREAD, session);
+    const started = await createDefaultRun(
+      { store },
+      {
+        channelId: CHANNEL,
+        threadId: THREAD,
+        objective: "investigate telemetry",
+        messageTs: "1700000000.201",
+        targetAgent: "default",
+        repoRefs: [],
+      },
+    );
+    await sessions.mutateThread(THREAD, (current) => {
+      current.activeRunId = started.run.id;
+      current.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "skill-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+    const runtime: PipelineToolRuntime = {
+      store,
+      sessionStore: sessions,
+      runtimeMode: "active",
+      githubTrackingEnabled: false,
+    };
+    const context = {
+      agent: "default",
+      channel: CHANNEL,
+      threadId: THREAD,
+      runId: started.run.id,
+      assignmentId: started.assignment.id,
+      dispatchKey: "skill-dispatch",
+      signed: true,
+    } as const;
+
+    const first = body(await pipelineDispatchSkill(runtime, context, {
+      skill_name: "sentry-fetch",
+      objective: "Inspect exceptions from the last hour",
+      reason: "runtime evidence is required",
+      idempotency_key: "sentry-last-hour",
+    }));
+    expect(first.ok).toBe(true);
+    const child = await store.getAssignment(first.targetAssignmentId as string);
+    expect(child).toMatchObject({
+      targetAgent: "skill:sentry-fetch",
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+      mutationScope: ["pipeline-artifact"],
+    });
+
+    const replay = body(await pipelineDispatchSkill(runtime, context, {
+      skill_name: "sentry-fetch",
+      objective: "Inspect exceptions from the last hour",
+      reason: "runtime evidence is required",
+      idempotency_key: "sentry-last-hour",
+    }));
+    expect((replay.receipt as { status: string }).status).toBe("duplicate");
+    expect(replay.targetAssignmentId).toBe(child?.id);
+  });
+
+  it("rejects unknown skills without creating a child", async () => {
+    const store = new InMemoryPipelineStore();
+    const sessions = new InMemorySessionStore();
+    const session = createSession(THREAD, CHANNEL);
+    session.activeAgentName = "default";
+    await sessions.set(THREAD, session);
+    const started = await createDefaultRun(
+      { store },
+      {
+        channelId: CHANNEL,
+        threadId: THREAD,
+        objective: "investigate telemetry",
+        messageTs: "1700000000.202",
+        targetAgent: "default",
+        repoRefs: [],
+      },
+    );
+    await sessions.mutateThread(THREAD, (current) => {
+      current.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "unknown-skill",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+    const result = body(await pipelineDispatchSkill({
+      store,
+      sessionStore: sessions,
+      runtimeMode: "active",
+      githubTrackingEnabled: false,
+    }, {
+      agent: "default",
+      channel: CHANNEL,
+      threadId: THREAD,
+      signed: true,
+    }, {
+      skill_name: "not-registered",
+      objective: "do something",
+      reason: "test",
+      idempotency_key: "unknown",
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(await store.listAssignments(started.run.id)).toHaveLength(1);
   });
 });

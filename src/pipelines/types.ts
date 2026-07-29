@@ -263,6 +263,13 @@ export type Assignment = {
   sourceAgent: string | "human" | "system";
   sourceSlackUserId: string | null;
   targetAgent: string;
+  /** Trusted skill registry name. Null for ordinary agent assignments. */
+  skillRef: string | null;
+  /**
+   * Immutable capability envelope compiled by Junior at dispatch. Skill
+   * frontmatter is never authoritative for tools or MCP access.
+   */
+  capabilityRefs: import("../agents/manifest.ts").AgentCapability[];
   status: AssignmentStatus;
   objective: string;
   contextRefs: string[];
@@ -284,8 +291,16 @@ export type Assignment = {
 /** Input shape when creating an assignment (store fills timestamps / defaults). */
 export type AssignmentCreate = Omit<
   Assignment,
-  "status" | "leaseOwner" | "leaseExpiresAt" | "createdAt" | "updatedAt"
+  | "skillRef"
+  | "capabilityRefs"
+  | "status"
+  | "leaseOwner"
+  | "leaseExpiresAt"
+  | "createdAt"
+  | "updatedAt"
 > & {
+  skillRef?: string | null;
+  capabilityRefs?: import("../agents/manifest.ts").AgentCapability[];
   status?: AssignmentStatus;
   leaseOwner?: string | null;
   leaseExpiresAt?: number | null;

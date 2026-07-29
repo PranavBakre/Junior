@@ -37,6 +37,8 @@ describe("projectRunSummary", () => {
         sourceAgent: "system",
         sourceSlackUserId: null,
         targetAgent: "review",
+        skillRef: null,
+        capabilityRefs: [],
         status: "leased",
         objective: "review",
         contextRefs: [],

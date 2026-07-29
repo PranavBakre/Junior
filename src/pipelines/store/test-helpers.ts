@@ -99,6 +99,8 @@ export function makeAssignmentCreate(
     sourceAgent: "system",
     sourceSlackUserId: null,
     targetAgent: "build",
+    skillRef: null,
+    capabilityRefs: [],
     objective: "build it",
     contextRefs: [],
     artifactRefs: [],

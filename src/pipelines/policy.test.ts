@@ -36,6 +36,8 @@ function assignment(overrides: Partial<Assignment> = {}): Assignment {
     sourceAgent: "system",
     sourceSlackUserId: null,
     targetAgent: "build",
+    skillRef: null,
+    capabilityRefs: [],
     status: "leased",
     objective: "implement feature",
     contextRefs: [],

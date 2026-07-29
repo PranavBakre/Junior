@@ -464,6 +464,8 @@ function materializeNextAssignment(
     sourceAgent,
     sourceSlackUserId: create.sourceSlackUserId ?? null,
     targetAgent: create.targetAgent,
+    skillRef: create.skillRef ?? null,
+    capabilityRefs: [...(create.capabilityRefs ?? [])],
     objective: create.objective,
     contextRefs: create.contextRefs ?? [],
     artifactRefs: create.artifactRefs ?? [],
@@ -479,6 +481,8 @@ function materializeNextAssignment(
   };
   return {
     ...base,
+    skillRef: base.skillRef ?? null,
+    capabilityRefs: [...(base.capabilityRefs ?? [])],
     status: "pending",
     leaseOwner: null,
     leaseExpiresAt: null,

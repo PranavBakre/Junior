@@ -43,6 +43,10 @@ import {
 import { createBugRun, reduceBugOutcome } from "./bug/controller.ts";
 import type { BugMode } from "./bug/definition.ts";
 import { resolvePipelineRepos } from "../worktree/pipeline-routing.ts";
+import {
+  resolveTrustedSkill,
+  skillRunnerAgentName,
+} from "../skills/registry.ts";
 
 export type PipelineToolRuntime = {
   store: PipelineStore;
@@ -955,6 +959,146 @@ export async function pipelineDispatchAgent(
   );
 }
 
+/** Dispatch a trusted SKILL.md as an isolated, durable child assignment. */
+export async function pipelineDispatchSkill(
+  runtime: PipelineToolRuntime,
+  runContext: SlackMcpRunContext | null,
+  args: {
+    skill_name: string;
+    objective: string;
+    reason: string;
+    idempotency_key: string;
+    artifact_refs?: string[];
+    acceptance_criteria?: string[];
+  },
+): Promise<ToolTextResult> {
+  const disabled = requireActive(runtime);
+  if (disabled) return disabled;
+  if (!runContext?.signed || !runtime.sessionStore) {
+    return textResult(
+      { ok: false, reason: "signed pipeline session context required" },
+      true,
+    );
+  }
+
+  const skill = resolveTrustedSkill(args.skill_name);
+  if (!skill) {
+    return textResult(
+      { ok: false, reason: `unknown or unauthorized skill "${args.skill_name}"` },
+      true,
+    );
+  }
+
+  const session = await runtime.sessionStore.get(runContext.threadId);
+  if (!session || session.channel !== runContext.channel) {
+    return textResult({ ok: false, reason: "thread session not found" }, true);
+  }
+  const caller = canonicalAgentName(runContext.agent) ?? runContext.agent;
+  const dispatchCapability = checkCapability(caller, "dispatch");
+  if (!dispatchCapability.ok) {
+    return textResult({ ok: false, reason: dispatchCapability.reason }, true);
+  }
+
+  const invocation = caller === "default" || caller === "lead"
+    ? session.activePipelineInvocation
+    : session.agentSessions?.[caller]?.activePipelineInvocation;
+  if (!invocation) {
+    return textResult({ ok: false, reason: "active assignment context missing" }, true);
+  }
+  if (
+    runContext.runId !== invocation.runId ||
+    runContext.assignmentId !== invocation.assignmentId ||
+    runContext.dispatchKey !== invocation.dispatchKey
+  ) {
+    return textResult({ ok: false, reason: "stale signed assignment context" }, true);
+  }
+
+  const [run, source] = await Promise.all([
+    runtime.store.getRun(invocation.runId),
+    runtime.store.getAssignment(invocation.assignmentId),
+  ]);
+  if (!run || !source || source.runId !== run.id || run.status === "terminal") {
+    return textResult(
+      { ok: false, reason: "active assignment state is missing or terminal" },
+      true,
+    );
+  }
+  const sourceAgent = canonicalAgentName(source.targetAgent) ?? source.targetAgent;
+  if (sourceAgent !== caller) {
+    return textResult(
+      { ok: false, reason: "authenticated agent does not own the active assignment" },
+      true,
+    );
+  }
+
+  const stableKey = `${run.id}:${source.id}:skill:${args.idempotency_key}`;
+  const targetAgent = skillRunnerAgentName(skill.name);
+  const existing = (await runtime.store.listAssignments(run.id)).find(
+    (assignment) => assignment.idempotencyKey === `${stableKey}:next`,
+  );
+  if (existing) {
+    return textResult({
+      ok: true,
+      skill: skill.name,
+      execution: skill.execution,
+      capabilityRefs: skill.capabilities,
+      targetAssignmentId: existing.id,
+      receipt: {
+        status: "duplicate",
+        runVersion: run.stateVersion,
+        assignmentId: existing.id,
+        reason: "skill dispatch idempotency key already committed",
+      } satisfies TransitionReceipt,
+    });
+  }
+  const receipt = await requestHandoff(
+    {
+      store: runtime.store,
+      githubTrackingEnabled: runtime.githubTrackingEnabled,
+    },
+    {
+      assignmentId: source.id,
+      expectedRunVersion: run.stateVersion,
+      targetAgent,
+      skillRef: skill.name,
+      capabilityRefs: [...skill.capabilities],
+      objective: args.objective,
+      reason: args.reason,
+      progressFingerprint: `skill:${skill.name}:${args.idempotency_key}`,
+      artifactRefs: args.artifact_refs ?? [],
+      acceptanceCriteria:
+        args.acceptance_criteria ?? run.acceptanceCriteria,
+      mutationScope: skill.capabilities.includes("pipeline-artifact-write")
+        ? ["pipeline-artifact"]
+        : [],
+      contextRefs: [`skill:${skill.name}`, "execution:stateless"],
+      attempt: source.attempt,
+      attemptId: source.attemptId,
+      candidateRevisionDigest: source.candidateRevisionDigest,
+      deadlineAt: source.deadlineAt ?? run.deadlineAt,
+      idempotencyKey: stableKey,
+      nextIdempotencyKey: `${stableKey}:next`,
+      action: "delegate",
+      auth: authFromContext(runContext),
+    },
+  );
+
+  if (receipt.status === "accepted" || receipt.status === "duplicate") {
+    await runtime.onOutcomeCommitted?.(receipt);
+  }
+  return textResult(
+    {
+      ok: receipt.status !== "rejected",
+      skill: skill.name,
+      execution: skill.execution,
+      capabilityRefs: skill.capabilities,
+      targetAssignmentId: receipt.assignmentId,
+      receipt,
+    },
+    receipt.status === "rejected",
+  );
+}
+
 export async function pipelineWriteArtifact(
   runtime: PipelineToolRuntime,
   runContext: SlackMcpRunContext | null,
@@ -970,16 +1114,6 @@ export async function pipelineWriteArtifact(
   if (!runContext) {
     return textResult({ ok: false, reason: "MCP run context missing" }, true);
   }
-  if (!canWritePipelineArtifacts(runContext.agent)) {
-    return textResult(
-      {
-        ok: false,
-        reason: `agent "${runContext.agent}" lacks pipeline-artifact-write capability`,
-      },
-      true,
-    );
-  }
-
   const run = args.run_id
     ? await runtime.store.getRun(args.run_id)
     : await runtime.store.getRunByThread(runContext.threadId);
@@ -1013,6 +1147,22 @@ export async function pipelineWriteArtifact(
   if (authFailure) {
     return textResult({ ok: false, reason: authFailure }, true);
   }
+  if (
+    !canWritePipelineArtifacts(runContext.agent) &&
+    !assignmentHasTrustedSkillCapability(
+      assignment,
+      "pipeline-artifact-write",
+    )
+  ) {
+    return textResult(
+      {
+        ok: false,
+        reason:
+          `agent "${runContext.agent}" and assignment "${assignment.id}" lack pipeline-artifact-write capability`,
+      },
+      true,
+    );
+  }
 
   const result = await writePipelineArtifact({
     runId: run.id,
@@ -1031,6 +1181,27 @@ export async function pipelineWriteArtifact(
     path: result.path,
     artifactRef: result.artifactRef,
   });
+}
+
+function assignmentHasTrustedSkillCapability(
+  assignment: Assignment,
+  capability: import("../agents/manifest.ts").AgentCapability,
+): boolean {
+  if (!assignment.skillRef) return false;
+  const skill = resolveTrustedSkill(assignment.skillRef);
+  if (
+    !skill ||
+    assignment.targetAgent !== skillRunnerAgentName(skill.name)
+  ) {
+    return false;
+  }
+  const expected = [...skill.capabilities].sort();
+  const received = [...assignment.capabilityRefs].sort();
+  return (
+    expected.length === received.length &&
+    expected.every((value, index) => value === received[index]) &&
+    received.includes(capability)
+  );
 }
 
 export async function pipelineRegisterPr(
