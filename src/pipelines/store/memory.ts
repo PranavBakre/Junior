@@ -87,6 +87,19 @@ export class InMemoryPipelineStore implements PipelineStore {
     this.runsByThread.set(run.threadId, run.id);
   }
 
+  async listRuns(filter?: {
+    status?: PipelineRun["status"];
+    kind?: PipelineRun["kind"];
+  }): Promise<PipelineRun[]> {
+    return [...this.runs.values()]
+      .filter((run) =>
+        (!filter?.status || run.status === filter.status) &&
+        (!filter?.kind || run.kind === filter.kind)
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .map(cloneRun);
+  }
+
   async createRunWithAssignment(input: {
     run: PipelineRun;
     assignment: AssignmentCreate;

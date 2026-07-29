@@ -1658,6 +1658,49 @@ export class SqlitePipelineStore implements PipelineStore {
     return result.changes;
   }
 
+  async listRuns(filter?: {
+    status?: PipelineRun["status"];
+    kind?: PipelineRun["kind"];
+  }): Promise<PipelineRun[]> {
+    if (filter?.status && filter.kind) {
+      return this.db
+        .query<RunRow, [string, string]>(
+          `SELECT * FROM pipeline_runs
+           WHERE status = ? AND kind = ?
+           ORDER BY updated_at DESC`,
+        )
+        .all(filter.status, filter.kind)
+        .map(runFromRow);
+    }
+    if (filter?.status) {
+      return this.db
+        .query<RunRow, [string]>(
+          `SELECT * FROM pipeline_runs
+           WHERE status = ?
+           ORDER BY updated_at DESC`,
+        )
+        .all(filter.status)
+        .map(runFromRow);
+    }
+    if (filter?.kind) {
+      return this.db
+        .query<RunRow, [string]>(
+          `SELECT * FROM pipeline_runs
+           WHERE kind = ?
+           ORDER BY updated_at DESC`,
+        )
+        .all(filter.kind)
+        .map(runFromRow);
+    }
+    return this.db
+      .query<RunRow, []>(
+        `SELECT * FROM pipeline_runs
+         ORDER BY updated_at DESC`,
+      )
+      .all()
+      .map(runFromRow);
+  }
+
   async listTerminalRuns(filter?: {
     updatedBefore?: number;
   }): Promise<PipelineRun[]> {

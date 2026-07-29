@@ -6,6 +6,7 @@ import { fakeClock } from "../../time/clock.ts";
 import { SqlitePipelineStore } from "./sqlite.ts";
 import {
   makeAssignmentCreate,
+  makeBugRun,
   makeDefaultPromotionInput,
   makeDefaultRun,
   makeProductRun,
@@ -84,6 +85,23 @@ describe("SqlitePipelineStore", () => {
     const asg = await store.getAssignment("asg-1");
     expect(asg?.targetAgent).toBe("build");
     expect((await store.getRunByThread("T1"))?.id).toBe("run-1");
+  });
+
+  it("lists every run newest-first with combinable kind and status filters", async () => {
+    await store.createRun(makeProductRun({ updatedAt: 1_000 }));
+    await store.createRun(makeBugRun({ updatedAt: 2_000, status: "waiting" }));
+    await store.createRun(makeDefaultRun({ updatedAt: 3_000 }));
+
+    expect((await store.listRuns()).map((run) => run.kind)).toEqual([
+      "default",
+      "bug",
+      "product",
+    ]);
+    expect(
+      (await store.listRuns({ kind: "bug", status: "waiting" }))
+        .map((run) => run.id),
+    ).toEqual(["bug-run-1"]);
+    expect(await store.listRuns({ kind: "product", status: "waiting" })).toEqual([]);
   });
 
   it("is idempotent on assignment idempotency keys", async () => {

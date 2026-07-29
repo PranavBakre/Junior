@@ -699,6 +699,7 @@ setInterval(() => {
         workflowRegistry,
         workflowStore,
         memoryStore,
+        pipelineStore,
       });
     } catch (err) {
       log.error(
