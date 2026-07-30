@@ -1606,13 +1606,7 @@ export class SessionManager {
         // Repo-less agents must not inherit the thread's prior repository
         // affinity. Keep this invocation-only so another assignment in the
         // same pipeline can still use the durable managed worktrees.
-        session = {
-          ...session,
-          cwd: null,
-          targetRepo: null,
-          worktreePath: null,
-          worktreePaths: {},
-        };
+        session = this.projectInvocationSession(session, pipelineRole);
       }
 
       if (
@@ -1865,10 +1859,14 @@ export class SessionManager {
           agentName,
           staleSessionId,
         );
-        session = invalidation.session;
+        const durableSession = invalidation.session;
         agentSession = isTopLevel
           ? null
-          : this.getOrCreateAgentSession(session, agentName);
+          : this.getOrCreateAgentSession(durableSession, agentName);
+        // Provider-session invalidation reloads the durable thread row. Reapply
+        // invocation-only isolation before resolving policy or agent
+        // definitions so a stale cwd cannot restore repository trust.
+        session = this.projectInvocationSession(durableSession, pipelineRole);
         runSession = applyAssignmentEnvelope(
           this.buildRunSession(session, agentName, agentIdentity),
         );
@@ -2372,15 +2370,7 @@ export class SessionManager {
               fresh.idleInterruptCount = nextIdleInterruptCount;
             },
           );
-          session = pipelineRole === "utility"
-            ? {
-                ...durableSession,
-                cwd: null,
-                targetRepo: null,
-                worktreePath: null,
-                worktreePaths: {},
-              }
-            : durableSession;
+          session = this.projectInvocationSession(durableSession, pipelineRole);
           _log.warn(
             "session",
             `idle-resume attempt=${session.idleInterruptCount}/${maxIdleInterrupts} thread=${session.threadId} agent=${agentName} provider=${provider}`,
@@ -3775,6 +3765,25 @@ export class SessionManager {
   private idleResumeEnabled(provider: RunnerProvider): boolean {
     if (provider === "opencode") return this.config.opencode.continuityEnabled;
     return provider !== "opencode-sdk" && provider !== "codex-app-server";
+  }
+
+  /**
+   * Remove repository affinity from repo-less utility invocations without
+   * mutating the durable thread row. This projection must be applied after
+   * every store reload, including provider-session invalidation and retries.
+   */
+  private projectInvocationSession(
+    session: ThreadSession,
+    pipelineRole: string | undefined,
+  ): ThreadSession {
+    if (pipelineRole !== "utility") return session;
+    return {
+      ...session,
+      cwd: null,
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+    };
   }
 
   private buildRunSession(
