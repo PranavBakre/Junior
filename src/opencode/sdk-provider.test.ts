@@ -158,6 +158,66 @@ describe("spawnOpenCodeSdk", () => {
       fakeSdk.cleanup();
     }
   });
+
+  it("settles and releases a delayed server lease after immediate cancellation", async () => {
+    const fakeSdk = installFakeSdk();
+    process.env.OPENCODE_BIN = fakeSdk.opencodeBin;
+    let releaseCreation!: () => void;
+    const creationGate = new Promise<void>((resolve) => {
+      releaseCreation = resolve;
+    });
+    let closeCalls = 0;
+    let sessionCreates = 0;
+
+    (globalThis as GlobalWithSdkMock).__juniorOpenCodeSdkMock = {
+      createOpencode: async () => {
+        await creationGate;
+        return {
+          client: {
+            session: {
+              create: async () => {
+                sessionCreates += 1;
+                return { id: "ses_cancelled" };
+              },
+              prompt: async () => ({}),
+              abort: async () => ({}),
+            },
+            event: {
+              subscribe: async function* () {
+                await new Promise<never>(() => undefined);
+              },
+            },
+            config: { update: async () => ({}) },
+          },
+          server: {
+            url: "http://localhost:0",
+            close: () => { closeCalls += 1; },
+          },
+        };
+      },
+    };
+
+    try {
+      const session = createSession("thread-cancel", "C01");
+      session.provider = "opencode-sdk";
+      const handle = spawnOpenCodeSdk(session, "work", testConfig);
+      await handle.kill("SIGINT");
+      releaseCreation();
+
+      const result = await Promise.race([
+        handle.result,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("timed out")), 100)
+        ),
+      ]);
+
+      expect(result.error).toBeNull();
+      expect(sessionCreates).toBe(0);
+      expect(closeCalls).toBe(1);
+    } finally {
+      fakeSdk.cleanup();
+    }
+  });
 });
 
 function installFakeSdk(): { opencodeBin: string; cleanup: () => void } {

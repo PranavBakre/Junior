@@ -211,6 +211,17 @@ export function spawnOpenCodeSdk(
       leasedDirectory = cwd;
       leasedServer = server;
       activeServer = server;
+      if (aborted) {
+        resolve({
+          provider,
+          sessionId: null,
+          response: "",
+          events: [],
+          exitCode: 0,
+          error: null,
+        });
+        return;
+      }
 
       // Push generated config. Best-effort — server may already have config.
       try {
@@ -219,6 +230,17 @@ export function spawnOpenCodeSdk(
         });
       } catch {
         // ok
+      }
+      if (aborted) {
+        resolve({
+          provider,
+          sessionId: null,
+          response: "",
+          events: [],
+          exitCode: 0,
+          error: null,
+        });
+        return;
       }
 
       // Create session, or re-attach to existing only when continuity is
@@ -234,6 +256,17 @@ export function spawnOpenCodeSdk(
         currentSessionId = created.id;
       }
       sdkSessionId = currentSessionId;
+      if (aborted) {
+        resolve({
+          provider,
+          sessionId: currentSessionId,
+          response: "",
+          events: [],
+          exitCode: 0,
+          error: null,
+        });
+        return;
+      }
 
       // Subscribe to events before sending prompt
       const events: RunnerEvent[] = [];
@@ -248,9 +281,23 @@ export function spawnOpenCodeSdk(
       };
 
       const eventStream = server.client.event.subscribe({ directory: cwd });
+      let resolveTurn!: () => void;
       const turnDone = new Promise<void>((resolve) => {
+        resolveTurn = resolve;
         finishTurn = resolve;
       });
+      if (aborted) {
+        resolveTurn();
+        resolve({
+          provider,
+          sessionId: currentSessionId,
+          response: "",
+          events: [],
+          exitCode: 0,
+          error: null,
+        });
+        return;
+      }
       const eventConsumer = (async () => {
         try {
           for await (const raw of eventStream) {
