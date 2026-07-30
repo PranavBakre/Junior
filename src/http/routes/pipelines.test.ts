@@ -58,11 +58,13 @@ describe("handlePipelines", () => {
     const indexResponse = await handlePipelines(store, new URLSearchParams());
     const indexBody = await indexResponse.json() as {
       pipelines: Array<{ id: string; assignments?: unknown[] }>;
+      openCount: number;
     };
     expect(indexBody.pipelines).toEqual([
       expect.objectContaining({ id: run.id }),
     ]);
     expect(indexBody.pipelines[0]!.assignments).toBeUndefined();
+    expect(indexBody.openCount).toBe(1);
 
     const response = await handlePipelines(
       store,

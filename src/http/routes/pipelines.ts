@@ -29,27 +29,29 @@ export async function handlePipelines(
     ? rawKind as PipelineRun["kind"]
     : undefined;
 
-  const runs = await store.listRuns({ status, kind });
+  const [runs, openCount] = await Promise.all([
+    store.listRuns({ status, kind, limit: 100 }),
+    store.countOpenRuns(),
+  ]);
   const pipelines = runs.map(projectRun);
 
-  return Response.json({ pipelines });
+  return Response.json({ pipelines, openCount });
 }
 
 async function projectPipeline(store: PipelineStore, run: PipelineRun) {
-  const [assignments, events, outbox] = await Promise.all([
+  const [assignments, events, outbox, outcomes] = await Promise.all([
     store.listAssignments(run.id),
     store.listEvents(run.id),
     store.listOutbox(run.id),
+    store.listOutcomesForRun(run.id),
   ]);
   const dispatchByAssignment = latestDispatches(outbox);
-  const outcomesByAssignment = new Map(
-    await Promise.all(
-      assignments.map(async (assignment) => [
-        assignment.id,
-        await store.listOutcomes(assignment.id),
-      ] as const),
-    ),
-  );
+  const outcomesByAssignment = new Map<string, StoredOutcome[]>();
+  for (const outcome of outcomes) {
+    const grouped = outcomesByAssignment.get(outcome.assignmentId) ?? [];
+    grouped.push(outcome);
+    outcomesByAssignment.set(outcome.assignmentId, grouped);
+  }
 
   return {
     ...projectRun(run),

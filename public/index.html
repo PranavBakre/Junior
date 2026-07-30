@@ -1574,6 +1574,7 @@ let idleTtlMs = null;
 let workflows = [];
 let workflowErrors = [];
 let pipelines = [];
+let openPipelineCount = 0;
 const pipelineDetails = new Map();
 const pipelineDetailErrors = new Set();
 let pipelineDetailLoadingId = null;
@@ -1779,8 +1780,11 @@ function renderSidebar() {
   setNavCount("nav-ds", running, "");
   const enabled = workflows.filter((w) => w.enabled).length;
   setNavCount("nav-wf", enabled, "");
-  const openPipelines = pipelines.filter((run) => run.status !== "terminal").length;
-  setNavCount("nav-pipelines", openPipelines, openPipelines > 0 ? "hot" : "");
+  setNavCount(
+    "nav-pipelines",
+    openPipelineCount,
+    openPipelineCount > 0 ? "hot" : "",
+  );
 
   // Static side-foot DOM — only update text nodes (live-toggle keeps one listener).
   $("sf-version").textContent = health ? String(health.version || "—") : "—";
@@ -4094,6 +4098,7 @@ function applyPipelineListResponse(response) {
   if (response.ok) {
     pipelineFetchError = null;
     const nextPipelines = response.data.pipelines || [];
+    openPipelineCount = Number(response.data.openCount) || 0;
     for (const run of nextPipelines) {
       const detail = pipelineDetails.get(run.id);
       if (detail && detail.updatedAt !== run.updatedAt) pipelineDetails.delete(run.id);
