@@ -32,6 +32,14 @@ export interface PipelineStore {
   createRun(run: PipelineRun): Promise<void>;
   getRun(id: string): Promise<PipelineRun | undefined>;
   getRunByThread(threadId: string): Promise<PipelineRun | undefined>;
+  /** Read-only dashboard projection, newest activity first. */
+  listRuns(filter?: {
+    status?: PipelineRun["status"];
+    kind?: PipelineRun["kind"];
+    limit?: number;
+  }): Promise<PipelineRun[]>;
+  /** Global non-terminal count, independent of dashboard filters. */
+  countOpenRuns(): Promise<number>;
 
   /**
    * Atomically create a run + initial assignment (and optional seed events).
@@ -111,6 +119,8 @@ export interface PipelineStore {
   listGates(attemptId: string): Promise<PipelineGate[]>;
 
   listOutcomes(assignmentId: string): Promise<StoredOutcome[]>;
+  /** Batch dashboard projection for every assignment belonging to a run. */
+  listOutcomesForRun(runId: string): Promise<StoredOutcome[]>;
 
   // -------------------------------------------------------------------------
   // GitHub resource tracking (Phase 5 shadow — no wakes)

@@ -7,6 +7,7 @@ const agentsDir = path.resolve(
   import.meta.dir,
   "../../.claude/agents",
 );
+const agentsOrgDir = path.resolve(import.meta.dir, "../../agents-org");
 
 describe("loadAgentDefinition", () => {
   it("loads an existing .md file (build.md)", async () => {
@@ -61,6 +62,18 @@ describe("loadAgentDefinition", () => {
     expect(def).not.toBeNull();
     expect(def!.permissions.mcp).toContain("slack-bot");
     expect(def!.permissions.mcp).toContain("mongodb");
+  });
+
+  it("loads onboard-member as repo-less with MCP-only MongoDB access", async () => {
+    const def = await loadAgentDefinition(
+      path.join(agentsOrgDir, "onboard-member.md"),
+    );
+
+    expect(def).not.toBeNull();
+    expect(def!.permissions.intent).toBe("mcp-only");
+    expect(def!.permissions.mcp).toContain("mongodb");
+    expect(def!.permissions.tools).toContain("mcp__mongodb__find");
+    expect(def!.context.workspace).toBe(false);
   });
 
   it("parses typed permission frontmatter", async () => {

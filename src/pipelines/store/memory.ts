@@ -87,6 +87,25 @@ export class InMemoryPipelineStore implements PipelineStore {
     this.runsByThread.set(run.threadId, run.id);
   }
 
+  async listRuns(filter?: {
+    status?: PipelineRun["status"];
+    kind?: PipelineRun["kind"];
+    limit?: number;
+  }): Promise<PipelineRun[]> {
+    return [...this.runs.values()]
+      .filter((run) =>
+        (!filter?.status || run.status === filter.status) &&
+        (!filter?.kind || run.kind === filter.kind)
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, filter?.limit ?? 100)
+      .map(cloneRun);
+  }
+
+  async countOpenRuns(): Promise<number> {
+    return [...this.runs.values()].filter((run) => run.status !== "terminal").length;
+  }
+
   async createRunWithAssignment(input: {
     run: PipelineRun;
     assignment: AssignmentCreate;
@@ -821,6 +840,17 @@ export class InMemoryPipelineStore implements PipelineStore {
 
   async listOutcomes(assignmentId: string): Promise<StoredOutcome[]> {
     return (this.outcomes.get(assignmentId) ?? []).map((o) => ({ ...o }));
+  }
+
+  async listOutcomesForRun(runId: string): Promise<StoredOutcome[]> {
+    const assignmentIds = new Set(
+      [...this.assignments.values()]
+        .filter((assignment) => assignment.runId === runId)
+        .map((assignment) => assignment.id),
+    );
+    return [...this.outcomes.entries()]
+      .filter(([assignmentId]) => assignmentIds.has(assignmentId))
+      .flatMap(([, outcomes]) => outcomes.map((outcome) => ({ ...outcome })));
   }
 
   // -------------------------------------------------------------------------

@@ -159,6 +159,26 @@ describe("compileOpenCodePermission", () => {
     expect(permission["mcp__*"]).toBe("deny");
   });
 
+  it("allows only read operations on MongoDB for the onboarding agent", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "onboard-member",
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, string>;
+
+    expect(permission["mcp__mongodb__find"]).toBe("allow");
+    expect(permission["mcp__mongodb__list-collections"]).toBe("allow");
+    expect(permission["mcp__mongodb__collection-schema"]).toBe("allow");
+    expect(permission["mcp__mongodb__update-one"]).not.toBe("allow");
+    expect(permission["mcp__slack-bot__pipeline_write_artifact"]).toBe("allow");
+    expect(permission["mcp__*"]).toBe("deny");
+    expect(permission.read).toBe("deny");
+    expect(permission.glob).toBe("deny");
+    expect(permission.grep).toBe("deny");
+    expect(permission.bash).toBe("deny");
+  });
+
   it("asks on mutating tools for human-gated roles", () => {
     const permission = compileOpenCodePermission({
       subject: {
@@ -236,6 +256,19 @@ describe("provider permission compilation matrix", () => {
       expect(row.codexSandbox).toBe("read-only");
       expect(row.openCode).toMatchObject({ edit: "deny", write: "deny" });
     }
+
+    const onboarding = byName.get("onboard-member")!;
+    expect(onboarding.intent).toBe("mcp-only");
+    expect(onboarding.claudePermissionMode).toBe("default");
+    expect(onboarding.codexSandbox).toBe("read-only");
+    expect(onboarding.openCode).toMatchObject({
+      read: "deny",
+      glob: "deny",
+      grep: "deny",
+      bash: "deny",
+      "mcp__*": "deny",
+      "mcp__slack-bot__pipeline_write_artifact": "allow",
+    });
 
     // PM / architect: human-gated. Codex gets a read-only jail — with
     // workspace-write + on-request, ordinary edits never trigger an approval,

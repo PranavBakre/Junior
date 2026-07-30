@@ -1535,7 +1535,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         path: z.string().describe("Relative path under the run artifact directory"),
         content: z.string().describe("File contents"),
         run_id: z.string().optional(),
-        assignment_id: z.string().optional(),
+        assignment_id: z.string(),
       },
     },
     async (args) => {

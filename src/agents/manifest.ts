@@ -23,6 +23,7 @@
 
 /** Matches `AgentPermissionIntent` in loader.ts — kept local to avoid cycles. */
 export type CatalogPermissionIntent =
+  | "mcp-only"
   | "read-only"
   | "normal"
   | "human-gated"
@@ -36,7 +37,8 @@ export type AgentRole =
   | "planner"
   | "builder"
   | "reviewer"
-  | "reproducer";
+  | "reproducer"
+  | "utility";
 
 /**
  * Mutation authority for product code / external systems.
@@ -60,6 +62,7 @@ export type AgentCapability =
   | "github-review-read"
   | "github-review-comment"
   | "browser-read"
+  | "mongodb-read"
   | "pipeline-artifact-write"
   | "pipeline-run-start"
   | "worktree-verify"
@@ -122,6 +125,7 @@ const ORCHESTRATOR_HANDOFF: HandoffPolicy = {
     "frontend",
     "review",
     "reproducer",
+    "onboard-member",
     "human",
   ],
   mayReturnTo: [],
@@ -287,5 +291,23 @@ export const TRUSTED_AGENT_CATALOG: readonly AgentManifest[] = [
       maxParallel: 1,
     },
     trustSource: "junior",
+  },
+  {
+    name: "onboard-member",
+    lifecycle: "persistent",
+    role: "utility",
+    capabilities: [
+      "mongodb-read",
+      "pipeline-artifact-write",
+    ],
+    // Production discovery only. Execution remains independently human-gated.
+    mutationPolicy: "none",
+    permissionIntent: "mcp-only",
+    handoffPolicy: {
+      mayDelegateTo: ["orchestrator", "human"],
+      mayReturnTo: ["orchestrator"],
+      maxParallel: 0,
+    },
+    trustSource: "agents-org",
   },
 ] as const;

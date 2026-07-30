@@ -313,6 +313,18 @@ export class SqlitePipelineStore implements PipelineStore {
       CREATE INDEX IF NOT EXISTS idx_pipeline_runs_thread
       ON pipeline_runs (thread_id)
     `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_runs_updated
+      ON pipeline_runs (updated_at DESC)
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status_updated
+      ON pipeline_runs (status, updated_at DESC)
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_runs_kind_status_updated
+      ON pipeline_runs (kind, status, updated_at DESC)
+    `);
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS pipeline_attempts (
@@ -1658,6 +1670,65 @@ export class SqlitePipelineStore implements PipelineStore {
     return result.changes;
   }
 
+  async listRuns(filter?: {
+    status?: PipelineRun["status"];
+    kind?: PipelineRun["kind"];
+    limit?: number;
+  }): Promise<PipelineRun[]> {
+    const limit = Math.max(1, Math.min(filter?.limit ?? 100, 500));
+    if (filter?.status && filter.kind) {
+      return this.db
+        .query<RunRow, [string, string, number]>(
+          `SELECT * FROM pipeline_runs
+           WHERE status = ? AND kind = ?
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(filter.status, filter.kind, limit)
+        .map(runFromRow);
+    }
+    if (filter?.status) {
+      return this.db
+        .query<RunRow, [string, number]>(
+          `SELECT * FROM pipeline_runs
+           WHERE status = ?
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(filter.status, limit)
+        .map(runFromRow);
+    }
+    if (filter?.kind) {
+      return this.db
+        .query<RunRow, [string, number]>(
+          `SELECT * FROM pipeline_runs
+           WHERE kind = ?
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(filter.kind, limit)
+        .map(runFromRow);
+    }
+    return this.db
+      .query<RunRow, [number]>(
+        `SELECT * FROM pipeline_runs
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(limit)
+      .map(runFromRow);
+  }
+
+  async countOpenRuns(): Promise<number> {
+    return this.db
+      .query<{ count: number }, []>(
+        `SELECT COUNT(*) AS count
+         FROM pipeline_runs
+         WHERE status != 'terminal'`,
+      )
+      .get()!.count;
+  }
+
   async listTerminalRuns(filter?: {
     updatedBefore?: number;
   }): Promise<PipelineRun[]> {
@@ -1938,6 +2009,19 @@ export class SqlitePipelineStore implements PipelineStore {
          ORDER BY created_at ASC`,
       )
       .all(assignmentId)
+      .map(outcomeFromRow);
+  }
+
+  async listOutcomesForRun(runId: string): Promise<StoredOutcome[]> {
+    return this.db
+      .query<OutcomeRow, [string]>(
+        `SELECT o.*
+         FROM pipeline_outcomes o
+         INNER JOIN pipeline_assignments a ON a.id = o.assignment_id
+         WHERE a.run_id = ?
+         ORDER BY o.created_at ASC`,
+      )
+      .all(runId)
       .map(outcomeFromRow);
   }
 

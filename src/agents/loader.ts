@@ -27,6 +27,7 @@ export interface AgentContextProfile {
 }
 
 export type AgentPermissionIntent =
+  | "mcp-only"
   | "read-only"
   | "normal"
   | "human-gated"
@@ -169,6 +170,7 @@ function parsePermissionIntent(value: string | undefined): AgentPermissionIntent
   const normalized = value.trim().toLowerCase();
   if (
     normalized === "read-only" ||
+    normalized === "mcp-only" ||
     normalized === "normal" ||
     normalized === "human-gated" ||
     normalized === "utility" ||

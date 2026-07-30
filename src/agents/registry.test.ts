@@ -6,6 +6,7 @@ import {
   hasCapability,
   hasHumanGatedCapability,
   isReadOnlyRole,
+  requiresManagedWorktree,
 } from "./capabilities.ts";
 import { resolveEffectivePermissionIntent } from "./loader.ts";
 import { TRUSTED_AGENT_CATALOG } from "./manifest.ts";
@@ -33,6 +34,7 @@ describe("trusted agent catalog", () => {
         "default",
         "frontend",
         "lead",
+        "onboard-member",
         "pm",
         "reproducer",
         "review",
@@ -59,11 +61,14 @@ describe("trusted agent catalog", () => {
       "reproducer",
       "default",
       "lead",
+      "onboard-member",
     ]) {
       const manifest = resolveAgentManifest(name);
       expect(manifest).not.toBeNull();
       expect(manifest!.name).toBe(name);
-      expect(manifest!.trustSource).toBe("junior");
+      expect(manifest!.trustSource).toBe(
+        name === "onboard-member" ? "agents-org" : "junior",
+      );
       expect(manifest!.lifecycle).toBe("persistent");
       expect(manifest!.permissionIntent).toBeTruthy();
     }
@@ -120,6 +125,7 @@ describe("handoff graph", () => {
       expect(registryAllowsHandoff(orch, "build")).toBe(true);
       expect(registryAllowsHandoff(orch, "review")).toBe(true);
       expect(registryAllowsHandoff(orch, "pm")).toBe(true);
+      expect(registryAllowsHandoff(orch, "onboard-member")).toBe(true);
       expect(registryAllowsHandoff(orch, "human")).toBe(true);
     }
   });
@@ -185,6 +191,12 @@ describe("capabilities", () => {
     expect(canEditProductCode("pm")).toBe(false);
     expect(canWritePipelineArtifacts("pm")).toBe(true);
     expect(canWritePipelineArtifacts("review")).toBe(true);
+    expect(isReadOnlyRole("onboard-member")).toBe(true);
+    expect(hasCapability("onboard-member", "mongodb-read")).toBe(true);
+    expect(canEditProductCode("onboard-member")).toBe(false);
+    expect(requiresManagedWorktree("onboard-member")).toBe(false);
+    expect(requiresManagedWorktree("build")).toBe(true);
+    expect(requiresManagedWorktree("unknown-agent")).toBe(true);
   });
 
   it("never grants independently human-gated capabilities", () => {

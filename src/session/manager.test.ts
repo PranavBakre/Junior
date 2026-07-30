@@ -541,7 +541,7 @@ describe("SessionManager", () => {
         status: "blocked",
         reason: "Need the user's decision",
         evidenceRefs: [],
-        artifactRefs: [],
+        artifactRefs: ["pipeline-artifact:onboarding-packet.md"],
         blockers: [],
         checks: [],
         progressFingerprint: "wait:user-decision",
@@ -572,7 +572,14 @@ describe("SessionManager", () => {
     expect(child).toBeDefined();
     expect(child?.parentAssignmentId).toBe(invocation?.assignmentId);
     expect(child?.status).toBe("pending");
+    expect(child?.artifactRefs).toContain(
+      "pipeline-artifact:onboarding-packet.md",
+    );
     expect(mockSpawnFn.mock.calls[1][1]).toContain("use option B");
+    expect(mockSpawnFn.mock.calls[1][1]).toContain("Need the user's decision");
+    expect(mockSpawnFn.mock.calls[1][1]).toContain(
+      "pipeline-artifact:onboarding-packet.md",
+    );
     expect(mockSpawnFn.mock.calls[1][1]).toContain(child!.id);
   });
 
@@ -761,6 +768,228 @@ describe("SessionManager", () => {
     expect(runSession.targetRepo).toBe("frontend");
     expect(runSession.worktreePath).toBe(paths.frontend);
     expect(runSession.worktreePaths).toEqual(paths);
+  });
+
+  it("keeps the onboarding agent repo-less outside a pipeline", async () => {
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: () => "/tmp/should-not-be-created",
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "check membership state" }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(mockSpawnFn.mock.calls[0]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+    });
+  });
+
+  it("keeps a stale-cwd onboarding cold start isolated from repo agent definitions", async () => {
+    const resolvedSessions: ThreadSession[] = [];
+    manager.agentRouter = {
+      resolveAgent: mock(async (runSession: ThreadSession) => {
+        resolvedSessions.push(runSession);
+        return null;
+      }),
+      composeSystemPrompt: mock(async () => null),
+    } as unknown as NonNullable<typeof manager.agentRouter>;
+
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    existing.agentSessions["onboard-member"] = {
+      agentName: "onboard-member",
+      provider: "claude",
+      sessionId: "legacy-onboarding-session",
+      sessionCwd: "/tmp/stale-worktree",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "continue the membership check" }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(resolvedSessions).toHaveLength(1);
+    expect(resolvedSessions[0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+      sessionId: null,
+    });
+    expect(mockSpawnFn.mock.calls[0]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+      sessionId: null,
+    });
+    // Invocation isolation must not erase worktree state needed by later
+    // build/review assignments on the durable thread.
+    expect(await store.get("thread-1")).toMatchObject({
+      targetRepo: "junior",
+      worktreePath: "/tmp/stale-worktree",
+      worktreePaths: { junior: "/tmp/stale-worktree" },
+      cwd: "/tmp/stale-cwd",
+    });
+  });
+
+  it("preserves durable worktree affinity when a repo-less utility idle-resumes", async () => {
+    const idleHandle = createIdleOpencodeHandle("ses-onboard", 12345);
+    const retryHandle = createCompletingOpencodeHandle("ses-onboard", 67890);
+    const handles = [idleHandle, retryHandle];
+    mockSpawnFn = mock(() => handles.shift()!);
+    manager = createTestManager(store, cloneConfig({
+      runner: { provider: "opencode" },
+      opencode: {
+        ...testConfig.opencode,
+        continuityEnabled: true,
+      },
+      session: {
+        ...testConfig.session,
+        idleTimeoutMs: 5,
+        maxIdleInterrupts: 1,
+      },
+    }));
+
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/durable-worktree";
+    existing.worktreePaths = { junior: "/tmp/durable-worktree" };
+    existing.cwd = "/tmp/durable-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "check membership state" }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+
+    expect(mockSpawnFn.mock.calls[1]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+    });
+    expect(await store.get("thread-1")).toMatchObject({
+      targetRepo: "junior",
+      worktreePath: "/tmp/durable-worktree",
+      worktreePaths: { junior: "/tmp/durable-worktree" },
+      cwd: "/tmp/durable-cwd",
+      idleInterruptCount: 1,
+    });
+
+    retryHandle._complete("resumed", "ses-onboard");
+  });
+
+  it("fails closed when Codex app-server cannot enforce MCP-only isolation", async () => {
+    manager = createTestManager(store, cloneConfig({
+      runner: { provider: "codex-app-server" },
+    }));
+    const errors = mock((_session: ThreadSession, _error: string | null) => {});
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "check membership state" }),
+      "onboard-member",
+    );
+    await waitFor(() => errors.mock.calls.length === 1);
+
+    expect(mockSpawnFn).not.toHaveBeenCalled();
+    expect(errors.mock.calls[0]![1]).toContain(
+      "cannot enforce MCP-only tool isolation",
+    );
+  });
+
+  it("does not provision or inherit worktrees for the repo-less onboarding agent", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-onboard-member",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/junior", "GrowthX-Club/frontend"],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-onboard-member",
+        runId: "run-onboard-member",
+        targetAgent: "onboard-member",
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: () => "/tmp/should-not-be-created",
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-onboard-member";
+    existing.activePipelineKind = "product";
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "check the member state using read-only MongoDB",
+        pipelineInvocation: {
+          runId: "run-onboard-member",
+          assignmentId: "assignment-onboard-member",
+          dispatchKey: "dispatch-onboard-member",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    const runSession = mockSpawnFn.mock.calls[0]![0];
+    expect(runSession.targetRepo).toBeNull();
+    expect(runSession.worktreePath).toBeNull();
+    expect(runSession.worktreePaths).toEqual({});
+    expect(runSession.cwd).toBeNull();
+    // Repo-less routing is invocation-local: do not erase worktrees that a
+    // later build/review assignment on the same pipeline still needs.
+    expect(await store.get("thread-1")).toMatchObject({
+      targetRepo: "junior",
+      worktreePath: "/tmp/stale-worktree",
+      worktreePaths: { junior: "/tmp/stale-worktree" },
+      cwd: "/tmp/stale-cwd",
+    });
   });
 
   it("coalesces concurrent fan-out setup for the same pipeline worktree", async () => {

@@ -71,6 +71,9 @@ export function resolveRunPermissionIntent(
  * Mutating Slack/memory/dispatch tools are NOT included.
  */
 export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
+  "mcp__mongodb__find": "allow",
+  "mcp__mongodb__list-collections": "allow",
+  "mcp__mongodb__collection-schema": "allow",
   "mcp__slack-bot__slack_read_thread": "allow",
   "mcp__slack-bot__slack_read_channel": "allow",
   "mcp__slack-bot__slack_search": "allow",
@@ -112,6 +115,14 @@ export function compileOpenCodePermission(options: {
       ? {
           "mcp__slack-bot__pipeline_get_state": "allow",
           "mcp__slack-bot__pipeline_report_outcome": "allow",
+          "mcp__slack-bot__pipeline_write_artifact": "allow",
+        }
+      : {}),
+    ...(hasCapability(agentName, "mongodb-read")
+      ? {
+          "mcp__mongodb__find": "allow",
+          "mcp__mongodb__list-collections": "allow",
+          "mcp__mongodb__collection-schema": "allow",
         }
       : {}),
     ...(hasCapability(agentName, "dispatch")
@@ -144,6 +155,30 @@ export function compileOpenCodePermission(options: {
     };
   }
 
+  if (intent === "mcp-only") {
+    const declaredMcpPermissions = Object.fromEntries(
+      (options.subject.agentPermissions?.tools ?? [])
+        .filter((tool) => tool.startsWith("mcp__"))
+        .map((tool) => [tool, "allow"]),
+    );
+    return {
+      read: "deny",
+      glob: "deny",
+      grep: "deny",
+      list: "deny",
+      edit: "deny",
+      write: "deny",
+      bash: "deny",
+      task: "deny",
+      "*": "deny",
+      // OpenCode resolves permission patterns last-match-wins. The wildcard
+      // denial must precede the exact trusted MCP grants.
+      "mcp__*": "deny",
+      ...declaredMcpPermissions,
+      ...capabilityPermissions,
+    };
+  }
+
   if (intent === "read-only") {
     return {
       read: "allow",
@@ -169,9 +204,9 @@ export function compileOpenCodePermission(options: {
         : "deny",
       task: "deny",
       // Explicit read-safe MCP surface only — never blanket mcp__*.
+      "mcp__*": "deny",
       ...READ_SAFE_MCP_PERMISSIONS,
       ...capabilityPermissions,
-      "mcp__*": "deny",
     };
   }
 
@@ -297,6 +332,7 @@ export const CATALOG_ROLE_NAMES = [
   "frontend",
   "review",
   "reproducer",
+  "onboard-member",
 ] as const;
 
 /**

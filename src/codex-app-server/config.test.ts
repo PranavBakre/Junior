@@ -81,6 +81,22 @@ describe("buildCodexMcpConfig", () => {
       },
     });
   });
+
+  it("injects the read-only MongoDB proxy from a trusted agent capability", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "onboard-member";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toMatchObject({
+      mongodb: {
+        transport: "http",
+        url: expect.stringContaining(
+          "http://localhost:3456/mcp/mongodb?agent=onboard-member&channel=c&thread=t",
+        ),
+      },
+      "slack-bot": expect.any(Object),
+    });
+  });
 });
 
 describe("buildCodexConfigToml", () => {
