@@ -117,6 +117,13 @@ export function compileOpenCodePermission(options: {
           "mcp__slack-bot__pipeline_write_artifact": "allow",
         }
       : {}),
+    ...(subjectHasCapability(options.subject, "mongodb-read")
+      ? {
+          "mcp__mongodb__find": "allow",
+          "mcp__mongodb__list-collections": "allow",
+          "mcp__mongodb__collection-schema": "allow",
+        }
+      : {}),
     ...(subjectHasCapability(options.subject, "dispatch")
       ? {
           "mcp__slack-bot__agent_dispatch": "allow",
@@ -150,6 +157,30 @@ export function compileOpenCodePermission(options: {
       task: "deny",
       "mcp__*": "deny",
       "*": "deny",
+    };
+  }
+
+  if (intent === "mcp-only") {
+    const declaredMcpPermissions = Object.fromEntries(
+      (options.subject.agentPermissions?.tools ?? [])
+        .filter((tool) => tool.startsWith("mcp__"))
+        .map((tool) => [tool, "allow"]),
+    );
+    return {
+      read: "deny",
+      glob: "deny",
+      grep: "deny",
+      list: "deny",
+      edit: "deny",
+      write: "deny",
+      bash: "deny",
+      task: "deny",
+      "*": "deny",
+      // OpenCode resolves permission patterns last-match-wins. The wildcard
+      // denial must precede the exact trusted MCP grants.
+      "mcp__*": "deny",
+      ...declaredMcpPermissions,
+      ...capabilityPermissions,
     };
   }
 

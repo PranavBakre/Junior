@@ -107,6 +107,8 @@ describe("SqlitePipelineStore", () => {
         .map((run) => run.id),
     ).toEqual(["bug-run-1"]);
     expect(await store.listRuns({ kind: "product", status: "waiting" })).toEqual([]);
+    expect(await store.listRuns({ limit: 2 })).toHaveLength(2);
+    expect(await store.countOpenRuns()).toBe(3);
   });
 
   it("is idempotent on assignment idempotency keys", async () => {

@@ -128,6 +128,22 @@ export function mapClaudeRunPolicy(options: {
   const mayInspect = subjectHasCapability(session, "worktree-verify");
   const hasRegisteredWorktreeCwd = worktreeRoots.includes(cwd);
 
+  if (intent === "mcp-only") {
+    return {
+      permissionMode: "default",
+      allowedTools: [...new Set([...declaredTools, ...capabilityTools])]
+        .filter((tool) => tool.startsWith("mcp__")),
+      disallowedTools: [
+        "Read",
+        "Glob",
+        "Grep",
+        ...NO_TOOLS_DISALLOWED,
+        ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+      ],
+      addDirs: [],
+    };
+  }
+
   if (intent === "read-only") {
     if (mayInspect) {
       // Review runs in `default`, not `plan`, so this allowlist is the primary

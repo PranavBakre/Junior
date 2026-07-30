@@ -161,6 +161,7 @@ export function isReadOnlyRole(
   if (!manifest) return false;
   return (
     manifest.mutationPolicy === "none" ||
+    manifest.permissionIntent === "mcp-only" ||
     manifest.permissionIntent === "read-only" ||
     manifest.permissionIntent === "no-tools"
   );
