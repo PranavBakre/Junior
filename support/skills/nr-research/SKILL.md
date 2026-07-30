@@ -5,8 +5,9 @@ description: Investigate New Relic telemetry for a Junior pipeline assignment an
 
 # New Relic research
 
-Use the installed `newrelic` CLI only for read operations. Investigate the
-assignment's requested time window and scope. Do not post directly to Slack.
+Use `newrelic_nrql_query` for bounded read-only NRQL. Direct shell or CLI
+access is not permitted. Investigate the assignment's requested time window
+and scope. Do not post directly to Slack.
 
 Write `research.md` with `pipeline_write_artifact`, using the authoritative
 `run_id` and `assignment_id` from `<pipeline-assignment>`. Include:

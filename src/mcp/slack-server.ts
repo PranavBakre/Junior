@@ -101,6 +101,13 @@ import {
   runEvaluationSuite as runEvaluationSuiteImpl,
   type EvaluationFixture as EvaluationFixtureType,
 } from "../runbooks/evaluation.ts";
+import {
+  newRelicNrqlCommand,
+  runReadOnlyCommand,
+  sentryListCommand,
+  vercelReadCommand,
+  type ReadOnlyCommand,
+} from "../observability/read-only-cli.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -175,6 +182,161 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
     resolveRepoPath: (repo) => worktreeManager?.getRepo(repo)?.path ?? null,
     resolveDefaultBase: (repo) => worktreeManager?.getRepo(repo)?.defaultBase,
   });
+
+  const runObservabilityRead = async (
+    expectedAgent: string,
+    command: ReadOnlyCommand,
+  ) => {
+    if (runContext?.agent !== expectedAgent) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            ok: false,
+            reason: `${expectedAgent} assignment context is required`,
+          }),
+        }],
+        isError: true,
+      };
+    }
+    try {
+      const result = await runReadOnlyCommand(command);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ ok: result.exitCode === 0, ...result }),
+        }],
+        isError: result.exitCode !== 0,
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        }],
+        isError: true,
+      };
+    }
+  };
+
+  registerTool(
+    server,
+    "newrelic_nrql_query",
+    {
+      description:
+        "Run one bounded read-only New Relic NRQL SELECT/FROM query. Available only to the trusted nr-research skill.",
+      inputSchema: {
+        query: z.string().min(1).max(10_000),
+        account_id: z.number().int().positive().optional(),
+      },
+    },
+    ({ query, account_id }) =>
+      runObservabilityRead(
+        "skill:nr-research",
+        newRelicNrqlCommand({ query, accountId: account_id }),
+      ),
+  );
+
+  registerTool(
+    server,
+    "sentry_list",
+    {
+      description:
+        "List bounded Sentry issues or events without mutation. Available only to the trusted sentry-fetch skill.",
+      inputSchema: {
+        resource: z.enum(["issues", "events"]),
+        organization: z.string().min(1).max(200),
+        project: z.string().min(1).max(200).optional(),
+        query: z.string().min(1).max(1_000).optional(),
+        status: z.enum(["resolved", "muted", "unresolved"]).optional(),
+        max_rows: z.number().int().min(1).max(500).optional(),
+      },
+    },
+    (args) =>
+      runObservabilityRead(
+        "skill:sentry-fetch",
+        sentryListCommand({
+          resource: args.resource,
+          organization: args.organization,
+          project: args.project,
+          query: args.query,
+          status: args.status,
+          maxRows: args.max_rows,
+        }),
+      ),
+  );
+
+  registerTool(
+    server,
+    "vercel_read",
+    {
+      description:
+        "List deployments, inspect one deployment, or fetch bounded non-following logs. Available only to the trusted vercel-status skill.",
+      inputSchema: {
+        operation: z.enum(["list", "inspect", "logs"]),
+        project: z.string().min(1).max(200).optional(),
+        deployment: z.string().min(1).max(500).optional(),
+        environment: z.enum(["production", "preview", "development"]).optional(),
+        status: z.string().min(1).max(100).optional(),
+        level: z.enum(["error", "warning", "info", "fatal"]).optional(),
+        since: z.string().min(1).max(100).optional(),
+        until: z.string().min(1).max(100).optional(),
+        query: z.string().min(1).max(1_000).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+        scope: z.string().min(1).max(200).optional(),
+        include_build_logs: z.boolean().optional(),
+      },
+    },
+    (args) => {
+      if (args.operation === "inspect" && !args.deployment) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              ok: false,
+              reason: "deployment is required for inspect",
+            }),
+          }],
+          isError: true,
+        };
+      }
+      const command = args.operation === "inspect"
+        ? vercelReadCommand({
+            operation: "inspect",
+            deployment: args.deployment!,
+            includeBuildLogs: args.include_build_logs,
+            scope: args.scope,
+          })
+        : args.operation === "list"
+          ? vercelReadCommand({
+              operation: "list",
+              project: args.project,
+              environment: args.environment,
+              status: args.status,
+              limit: args.limit === undefined ? undefined : Math.min(args.limit, 100),
+              scope: args.scope,
+            })
+          : vercelReadCommand({
+              operation: "logs",
+              deployment: args.deployment,
+              project: args.project,
+              environment: args.environment === "development"
+                ? undefined
+                : args.environment,
+              level: args.level,
+              since: args.since,
+              until: args.until,
+              query: args.query,
+              limit: args.limit,
+              scope: args.scope,
+            });
+      return runObservabilityRead("skill:vercel-status", command);
+    },
+  );
+
   registerTool(
     server,
     "github_read_pr_review_state",

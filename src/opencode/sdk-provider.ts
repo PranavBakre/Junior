@@ -106,19 +106,38 @@ async function loadSdk(): Promise<NonNullable<typeof _sdkModule>> {
 interface SdkServerState {
   client: OpencodeClient;
   close(): void;
+  refs: number;
+  closed: boolean;
 }
 
 const servers = new Map<string, SdkServerState>();
 
 async function getOrCreateServer(directory: string): Promise<SdkServerState> {
   const existing = servers.get(directory);
-  if (existing) return existing;
+  if (existing && !existing.closed) {
+    existing.refs += 1;
+    return existing;
+  }
   const sdk = await loadSdk();
   const { client, server } = await sdk.createOpencode({ directory });
-  const state = { client, close: server.close };
+  const state = {
+    client,
+    close: server.close,
+    refs: 1,
+    closed: false,
+  };
   servers.set(directory, state);
   _log.info("opencode-sdk", `server started url=${server.url} dir=${directory}`);
   return state;
+}
+
+function releaseServer(directory: string, server: SdkServerState): void {
+  if (server.closed) return;
+  server.refs = Math.max(0, server.refs - 1);
+  if (server.refs > 0) return;
+  server.closed = true;
+  if (servers.get(directory) === server) servers.delete(directory);
+  try { server.close(); } catch { /* ok */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -184,9 +203,13 @@ export function spawnOpenCodeSdk(
   const eventListeners: Array<(event: RunnerEvent) => void> = [];
 
   const spawnResult = new Promise<SpawnResult>(async (resolve, reject) => {
+    let leasedDirectory: string | null = null;
+    let leasedServer: SdkServerState | null = null;
     try {
       const cwd = skillRuntime?.openCodeSdkDir ?? runtime.cwd ?? process.cwd();
       const server = await getOrCreateServer(cwd);
+      leasedDirectory = cwd;
+      leasedServer = server;
       activeServer = server;
 
       // Push generated config. Best-effort — server may already have config.
@@ -320,6 +343,10 @@ export function spawnOpenCodeSdk(
         return;
       }
       reject(err);
+    } finally {
+      if (leasedDirectory && leasedServer) {
+        releaseServer(leasedDirectory, leasedServer);
+      }
     }
   });
 
@@ -329,7 +356,7 @@ export function spawnOpenCodeSdk(
     onEvent: (cb: (event: RunnerEvent) => void) => {
       eventListeners.push(cb);
     },
-    kill: async (signal) => {
+    kill: async (_signal) => {
       aborted = true;
       const server = activeServer;
       if (sdkSessionId && server) {
@@ -340,12 +367,6 @@ export function spawnOpenCodeSdk(
         }
       }
       finishTurn?.();
-      if (signal === "SIGKILL" && server) {
-        try { server.close(); } catch { /* ok */ }
-        for (const [directory, candidate] of servers) {
-          if (candidate === server) servers.delete(directory);
-        }
-      }
     },
     pid: null,
   };

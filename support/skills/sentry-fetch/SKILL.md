@@ -5,8 +5,9 @@ description: Investigate Sentry issues for a Junior pipeline assignment and reco
 
 # Sentry evidence
 
-Use the installed `sentry-cli` only for read operations. Investigate the
-assignment's requested time window and scope. Do not post directly to Slack.
+Use `sentry_list` for bounded read-only issue/event retrieval. Direct shell or
+CLI access is not permitted. Investigate the assignment's requested time
+window and scope. Do not post directly to Slack.
 
 Write `sentry.md` with `pipeline_write_artifact`, using the authoritative
 `run_id` and `assignment_id` from `<pipeline-assignment>`. Include:

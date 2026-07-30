@@ -45,6 +45,7 @@ describe("spawnOpenCodeSdk", () => {
   it("resolves on the active session step-finish without waiting for the server event stream to close", async () => {
     const fakeSdk = installFakeSdk();
     process.env.OPENCODE_BIN = fakeSdk.opencodeBin;
+    let closeCalls = 0;
 
     (globalThis as GlobalWithSdkMock).__juniorOpenCodeSdkMock = {
       createOpencode: async () => ({
@@ -65,7 +66,7 @@ describe("spawnOpenCodeSdk", () => {
           },
           config: { update: async () => ({}) },
         },
-        server: { url: "http://localhost:0", close: () => undefined },
+        server: { url: "http://localhost:0", close: () => { closeCalls += 1; } },
       }),
     };
 
@@ -81,6 +82,7 @@ describe("spawnOpenCodeSdk", () => {
       expect(result.sessionId).toBe("ses_active");
       expect(result.response).toBe("right");
       expect(result.events.map((event) => event.type)).toEqual(["init", "message", "done"]);
+      expect(closeCalls).toBe(1);
     } finally {
       fakeSdk.cleanup();
     }

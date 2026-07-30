@@ -137,6 +137,11 @@ export function compileOpenCodePermission(options: {
   const declaredBashPatterns = (options.subject.agentPermissions?.tools ?? [])
     .map((tool) => /^Bash\((.+)\)$/.exec(tool)?.[1])
     .filter((pattern): pattern is string => Boolean(pattern));
+  const declaredMcpPermissions = Object.fromEntries(
+    (options.subject.agentPermissions?.tools ?? [])
+      .filter((tool) => tool.startsWith("mcp__"))
+      .map((tool) => [tool, "allow"]),
+  );
   const worktreeRoots = [
     options.subject.worktreePath,
     ...Object.values(options.subject.worktreePaths ?? {}),
@@ -214,6 +219,7 @@ export function compileOpenCodePermission(options: {
       // Explicit read-safe MCP surface only — never blanket mcp__*.
       "mcp__*": "deny",
       ...READ_SAFE_MCP_PERMISSIONS,
+      ...declaredMcpPermissions,
       ...capabilityPermissions,
     };
   }

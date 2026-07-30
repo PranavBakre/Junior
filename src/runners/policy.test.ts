@@ -57,7 +57,7 @@ describe("compileOpenCodePermission", () => {
     );
   });
 
-  it("allows only the trusted observability CLI for a stateless skill", () => {
+  it("allows only the trusted observability MCP tool for a stateless skill", () => {
     const permission = compileOpenCodePermission({
       subject: {
         activeAgentName: "skill:sentry-fetch",
@@ -65,15 +65,13 @@ describe("compileOpenCodePermission", () => {
         agentPermissions: {
           intent: "read-only",
           mcp: ["slack-bot"],
-          tools: ["Bash(sentry-cli *)"],
+          tools: ["mcp__slack-bot__sentry_list"],
         },
       },
     }) as Record<string, unknown>;
 
-    expect(permission.bash).toEqual({
-      "*": "deny",
-      "sentry-cli *": "allow",
-    });
+    expect(permission.bash).toBe("deny");
+    expect(permission["mcp__slack-bot__sentry_list"]).toBe("allow");
     expect(permission.read).toBe("allow");
     expect(permission.write).toBe("deny");
   });
