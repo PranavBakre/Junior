@@ -391,7 +391,10 @@ function authorizeAssignmentAction(
   run: PipelineRun,
   assignment: Assignment,
   agent: string,
-  opts: { requireWriteCapable?: boolean } = {},
+  opts: {
+    requireWriteCapable?: boolean;
+    requireOwnAssignmentForReadOnly?: boolean;
+  } = {},
 ): string | null {
   if (assignment.runId !== run.id) {
     return "assignment does not belong to run";
@@ -411,6 +414,14 @@ function authorizeAssignmentAction(
 
   if (!ownsAssignment && !isOrch) {
     return `agent "${agent}" is not authorized for assignment target "${assignment.targetAgent}"`;
+  }
+
+  if (
+    opts.requireOwnAssignmentForReadOnly &&
+    isReadOnlyRole(caller) &&
+    !ownsAssignment
+  ) {
+    return `read-only agent "${agent}" cannot write artifacts for another assignment`;
   }
 
   if (opts.requireWriteCapable) {
@@ -1004,11 +1015,20 @@ export async function pipelineWriteArtifact(
   if (!assignment) {
     return textResult({ ok: false, reason: "assignment not found" }, true);
   }
+  if (runContext.assignmentId !== assignment.id) {
+    return textResult(
+      {
+        ok: false,
+        reason: "assignment does not match authenticated assignment context",
+      },
+      true,
+    );
+  }
   const authFailure = authorizeAssignmentAction(
     run,
     assignment,
     runContext.agent,
-    { requireWriteCapable: true },
+    { requireOwnAssignmentForReadOnly: true },
   );
   if (authFailure) {
     return textResult({ ok: false, reason: authFailure }, true);
