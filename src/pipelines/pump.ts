@@ -117,10 +117,15 @@ async function handleOutboxItem(
   item: PipelineOutboxRecord,
 ): Promise<"delivered" | "failed" | "skipped"> {
   const store = deps.store;
+  const scheduledWaitWake =
+    item.eventType === "assignment.wait" &&
+    typeof item.payload.wakeAt === "number" &&
+    typeof item.payload.deadlineAt === "number";
   if (
     item.eventType === "assignment.dispatch" ||
     item.eventType === "assignment.continue" ||
-    item.eventType === "assignment.resume"
+    item.eventType === "assignment.resume" ||
+    scheduledWaitWake
   ) {
     const assignmentId =
       item.assignmentId ??
@@ -210,12 +215,17 @@ async function handleOutboxItem(
         assignment,
         // Resume wakes can carry a human follow-up, a dev-server URL, or a
         // generic recovery instruction. All retain the exact assignment.
-        prompt: item.eventType === "assignment.resume"
-          ? await buildResumePrompt(store, assignment, item.payload)
+        prompt: item.eventType === "assignment.resume" || scheduledWaitWake
+          ? await buildResumePrompt(
+              store,
+              assignment,
+              item.payload,
+              (deps.clock ?? systemClock).now(),
+            )
           : undefined,
         sourceMessageTs,
         conversationalText:
-          item.eventType === "assignment.resume" &&
+          (item.eventType === "assignment.resume" || scheduledWaitWake) &&
             typeof item.payload.prompt === "string"
             ? item.payload.prompt
             : item.eventType === "assignment.dispatch"
@@ -316,6 +326,7 @@ async function buildResumePrompt(
   store: PipelineStore,
   assignment: Assignment,
   payload: Record<string, unknown>,
+  now: number,
 ): Promise<string> {
   if (typeof payload.prompt === "string") {
     // A newly-created human child assignment uses the message as its
@@ -327,6 +338,21 @@ async function buildResumePrompt(
   }
   if (typeof payload.readyUrl === "string") {
     return `${assignment.objective}\n\n[devserver.ready] ${payload.readyUrl}`;
+  }
+  if (
+    typeof payload.wakeAt === "number" &&
+    typeof payload.deadlineAt === "number"
+  ) {
+    const finalDeadlinePassed = now >= payload.deadlineAt;
+    return [
+      assignment.objective,
+      "",
+      "[pipeline.scheduled-wake]",
+      `The scheduled check is due. The monitor's final deadline is ${new Date(payload.deadlineAt).toISOString()}.`,
+      finalDeadlinePassed
+        ? "The final deadline has passed. Perform the final check and complete the monitor; escalate only for a genuine blocker."
+        : "Check the condition now. If monitoring should continue, report wait again with the next wakeAt (no later than deadlineAt) and the same final deadlineAt. Complete when the monitoring window ends; escalate only for a genuine blocker.",
+    ].join("\n");
   }
 
   const completedChildAssignmentId =

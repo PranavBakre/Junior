@@ -9,6 +9,123 @@ import {
 } from "./store/test-helpers.ts";
 
 describe("pipeline wait deadline", () => {
+  it("resumes a scheduled monitor at wakeAt before its final deadline", async () => {
+    const clock = fakeClock(1_000);
+    const store = new InMemoryPipelineStore(clock);
+    await store.createRun(makeDefaultRun());
+    await store.createAssignment(makeAssignmentCreate({
+      id: "monitor-asg",
+      runId: "default-run-1",
+      targetAgent: "default",
+      objective: "Check for new GrowthX members",
+      idempotencyKey: "monitor-asg-key",
+    }));
+    const waited = await store.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "monitor-asg",
+        expectedRunVersion: 0,
+        action: "wait",
+        status: "blocked",
+        reason: "Check again in five minutes",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "new-member-monitor:tick-1",
+        wait: {
+          conditionName: "new-member-channel-poll",
+          wakeAt: 301_000,
+          deadlineAt: 3_601_000,
+        },
+      },
+      actorType: "agent",
+      actorId: "default",
+      idempotencyKey: "new-member-monitor:tick-1",
+    });
+    expect(waited.status).toBe("waiting");
+
+    clock.advance(300_001);
+    const prompts: string[] = [];
+    const audit = mock(async () => undefined);
+    const report = await pumpOutbox({
+      store,
+      clock,
+      dispatcher: {
+        handleAgentMessage: async (event) => {
+          prompts.push(event.text);
+        },
+      },
+      audit,
+    });
+
+    expect(report.delivered).toBe(1);
+    expect(await store.getRun("default-run-1")).toMatchObject({
+      phase: "working",
+      status: "waiting",
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("[pipeline.scheduled-wake]");
+    expect(prompts[0]).toContain("same final deadlineAt");
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("resumes a scheduled monitor for a final check instead of escalating", async () => {
+    const clock = fakeClock(1_000);
+    const store = new InMemoryPipelineStore(clock);
+    await store.createRun(makeDefaultRun());
+    await store.createAssignment(makeAssignmentCreate({
+      id: "final-monitor-asg",
+      runId: "default-run-1",
+      targetAgent: "default",
+      objective: "Check for new GrowthX members",
+      idempotencyKey: "final-monitor-asg-key",
+    }));
+    await store.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "final-monitor-asg",
+        expectedRunVersion: 0,
+        action: "wait",
+        status: "blocked",
+        reason: "Run the final check at the monitoring deadline",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "new-member-monitor:final",
+        wait: {
+          conditionName: "new-member-channel-poll",
+          wakeAt: 301_000,
+          deadlineAt: 301_000,
+        },
+      },
+      actorType: "agent",
+      actorId: "default",
+      idempotencyKey: "new-member-monitor:final",
+    });
+
+    clock.advance(300_001);
+    const prompts: string[] = [];
+    const audit = mock(async () => undefined);
+    const report = await pumpOutbox({
+      store,
+      clock,
+      dispatcher: {
+        handleAgentMessage: async (event) => {
+          prompts.push(event.text);
+        },
+      },
+      audit,
+    });
+
+    expect(report.delivered).toBe(1);
+    expect(prompts[0]).toContain("final deadline has passed");
+    expect(await store.getRun("default-run-1")).toMatchObject({
+      phase: "working",
+      status: "waiting",
+    });
+    expect(audit).not.toHaveBeenCalled();
+  });
+
   it("durably escalates and audits when a wait expires", async () => {
     const clock = fakeClock(1_000);
     const store = new InMemoryPipelineStore(clock);

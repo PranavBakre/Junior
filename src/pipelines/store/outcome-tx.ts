@@ -348,11 +348,15 @@ export function decideOutcomeTransaction(
       payload: {
         assignmentId: assignment.id,
         conditionName: effectiveOutcome.wait?.conditionName,
+        wakeAt: effectiveOutcome.wait?.wakeAt,
         deadlineAt: effectiveOutcome.wait?.deadlineAt,
       },
       status: "pending",
       attempts: 0,
-      availableAt: effectiveOutcome.wait?.deadlineAt ?? now,
+      availableAt:
+        effectiveOutcome.wait?.wakeAt ??
+        effectiveOutcome.wait?.deadlineAt ??
+        now,
       leaseOwner: null,
       leaseExpiresAt: null,
       idempotencyKey:

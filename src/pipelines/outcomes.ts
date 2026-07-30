@@ -150,6 +150,9 @@ export function parseAgentOutcome(raw: unknown): AgentOutcome {
     const w = o.wait as Record<string, unknown>;
     outcome.wait = {
       conditionName: requiredString(w.conditionName, "wait.conditionName"),
+      ...(w.wakeAt == null
+        ? {}
+        : { wakeAt: requiredNumber(w.wakeAt, "wait.wakeAt") }),
       deadlineAt: requiredNumber(w.deadlineAt, "wait.deadlineAt"),
     };
   }

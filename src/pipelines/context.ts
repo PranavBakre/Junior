@@ -52,7 +52,7 @@ export function buildAssignmentContext(input: AssignmentContextInput): string {
     "dispatch: agent_dispatch(mode=delegate|handoff) is the only agent-to-agent execution path",
     "delegate_semantics: child completion durably resumes this assignment",
     "handoff_semantics: this assignment completes and the successor owns continuation",
-    "wait_semantics: only registered external wake sources; never wait for another agent",
+    "wait_semantics: external conditions use deadlineAt; scheduled monitoring also sets wakeAt before the final deadlineAt; never wait for another agent",
     "retry_semantics: reuse the same idempotency key; refresh state once on CAS conflict",
     ...extras,
     "</pipeline-assignment>",

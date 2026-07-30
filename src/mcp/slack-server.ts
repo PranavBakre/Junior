@@ -1705,7 +1705,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
       inputSchema: {
         outcome: z
           .record(z.string(), z.unknown())
-          .describe("AgentOutcome object with assignmentId, expectedRunVersion, action, status, reason, evidenceRefs, artifactRefs, blockers, checks, progressFingerprint, plus wait when action=wait"),
+          .describe("AgentOutcome object with assignmentId, expectedRunVersion, action, status, reason, evidenceRefs, artifactRefs, blockers, checks, progressFingerprint, plus wait when action=wait. For scheduled monitoring, wait includes wakeAt (next check) and deadlineAt (final stop); external-condition waits omit wakeAt."),
         to_phase: z.string().optional().describe("Optional phase advance"),
         idempotency_key: z.string().optional().describe("Duplicate-safe idempotency key"),
       },

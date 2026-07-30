@@ -355,6 +355,11 @@ export type AgentOutcome = {
    */
   wait?: {
     conditionName: string;
+    /**
+     * Optional scheduled self-wake before the final deadline. Use this for
+     * polling/monitoring turns; omit it for external-condition waits.
+     */
+    wakeAt?: number;
     deadlineAt: number;
   };
   nextAssignment?: Omit<

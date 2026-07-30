@@ -170,6 +170,41 @@ describe("validateOutcome", () => {
     expect(ok).toEqual({ ok: true, receiptStatus: "waiting" });
   });
 
+  it("requires a scheduled wake between now and the final deadline", () => {
+    const run = productRun();
+    const activeAssignment = assignment();
+    const base = outcome({
+      action: "wait",
+      status: "blocked",
+      wait: {
+        conditionName: "new-member-channel-poll",
+        wakeAt: 2_000,
+        deadlineAt: 5_000,
+      },
+    });
+
+    expect(validateOutcome({
+      run,
+      assignment: activeAssignment,
+      outcome: base,
+      recentFingerprints: [],
+      now: 1_000,
+    }).ok).toBe(true);
+    expect(validateOutcome({
+      run,
+      assignment: activeAssignment,
+      outcome: {
+        ...base,
+        wait: { ...base.wait!, wakeAt: 6_000 },
+      },
+      recentFingerprints: [],
+      now: 1_000,
+    })).toMatchObject({
+      ok: false,
+      reason: "wait.wakeAt must not be after wait.deadlineAt",
+    });
+  });
+
   it("detects fingerprint repeats without new evidence", () => {
     const result = validateOutcome({
       run: productRun(),
