@@ -22,6 +22,12 @@ import { OPENCODE_PROVIDER_AGENT, buildOpenCodeAgentPrompt } from "./prompt.ts";
 import { buildOpenCodeConfigContent } from "./config.ts";
 import { resolveOpenCodeModel } from "./model.ts";
 import { log as _log } from "../logger.ts";
+import { buildOpenCodeMcpConfig } from "../runners/mcp-config.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
+import {
+  prepareSkillRuntime,
+  skillInvocationPrompt,
+} from "../skills/runtime.ts";
 
 // ---------------------------------------------------------------------------
 // Types mirroring @opencode-ai/sdk (resolved dynamically at runtime)
@@ -102,15 +108,17 @@ interface SdkServerState {
   close(): void;
 }
 
-let _server: SdkServerState | null = null;
+const servers = new Map<string, SdkServerState>();
 
 async function getOrCreateServer(directory: string): Promise<SdkServerState> {
-  if (_server) return _server;
+  const existing = servers.get(directory);
+  if (existing) return existing;
   const sdk = await loadSdk();
   const { client, server } = await sdk.createOpencode({ directory });
-  _server = { client, close: server.close };
+  const state = { client, close: server.close };
+  servers.set(directory, state);
   _log.info("opencode-sdk", `server started url=${server.url} dir=${directory}`);
-  return _server;
+  return state;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +136,19 @@ export function spawnOpenCodeSdk(
 ): SpawnHandle {
   const provider = "opencode-sdk" as const;
   const runtime = buildRunnerRuntime({ session, targetRepoCwd, botToken, agentIdentity });
+  const activeSkill = session.activeSkill
+    ? resolveTrustedSkill(session.activeSkill.name)
+    : null;
+  if (
+    session.activeSkill &&
+    (!activeSkill || activeSkill.path !== session.activeSkill.path)
+  ) {
+    throw new Error("active skill does not match Junior's trusted registry");
+  }
+  const skillRuntime = activeSkill ? prepareSkillRuntime(activeSkill) : null;
+  const effectivePrompt = activeSkill
+    ? skillInvocationPrompt("opencode", activeSkill, prompt)
+    : prompt;
 
   const agentName = session.activeAgentName ?? OPENCODE_PROVIDER_AGENT;
   // The CLI spawner uses `juniorAgentName` to distinguish from the OpenCode
@@ -151,20 +172,22 @@ export function spawnOpenCodeSdk(
       cwd: runtime.cwd,
       fallback: config.opencode.permission,
     }),
-    mcp: session.cwd ? null : undefined,
+    mcp: session.cwd ? null : buildOpenCodeMcpConfig(config, session),
     // Junior's durable assignment graph owns fan-out.
     subagents: [],
   });
 
   let sdkSessionId: string | null = null;
+  let activeServer: SdkServerState | null = null;
   let aborted = false;
   let finishTurn: (() => void) | null = null;
   const eventListeners: Array<(event: RunnerEvent) => void> = [];
 
   const spawnResult = new Promise<SpawnResult>(async (resolve, reject) => {
     try {
-      const cwd = runtime.cwd ?? process.cwd();
+      const cwd = skillRuntime?.openCodeSdkDir ?? runtime.cwd ?? process.cwd();
       const server = await getOrCreateServer(cwd);
+      activeServer = server;
 
       // Push generated config. Best-effort — server may already have config.
       try {
@@ -268,7 +291,7 @@ export function spawnOpenCodeSdk(
           sessionID: currentSessionId,
           message: {
             role: "user",
-            parts: [{ type: "text", text: prompt }],
+            parts: [{ type: "text", text: effectivePrompt }],
           },
         });
       } catch (err) {
@@ -308,17 +331,20 @@ export function spawnOpenCodeSdk(
     },
     kill: async (signal) => {
       aborted = true;
-      if (sdkSessionId && _server) {
+      const server = activeServer;
+      if (sdkSessionId && server) {
         try {
-          await _server.client.session.abort({ sessionID: sdkSessionId });
+          await server.client.session.abort({ sessionID: sdkSessionId });
         } catch {
           // ok
         }
       }
       finishTurn?.();
-      if (signal === "SIGKILL" && _server) {
-        try { _server.close(); } catch { /* ok */ }
-        _server = null;
+      if (signal === "SIGKILL" && server) {
+        try { server.close(); } catch { /* ok */ }
+        for (const [directory, candidate] of servers) {
+          if (candidate === server) servers.delete(directory);
+        }
       }
     },
     pid: null,

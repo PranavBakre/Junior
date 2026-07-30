@@ -127,6 +127,9 @@ export function compileOpenCodePermission(options: {
       ? { "mcp__slack-bot__pipeline_start_run": "allow" }
       : {}),
   };
+  const declaredBashPatterns = (options.subject.agentPermissions?.tools ?? [])
+    .map((tool) => /^Bash\((.+)\)$/.exec(tool)?.[1])
+    .filter((pattern): pattern is string => Boolean(pattern));
   const worktreeRoots = [
     options.subject.worktreePath,
     ...Object.values(options.subject.worktreePaths ?? {}),
@@ -158,16 +161,19 @@ export function compileOpenCodePermission(options: {
       list: "allow",
       edit: "deny",
       write: "deny",
-      bash: mayInspect
+      bash: mayInspect || declaredBashPatterns.length > 0
         ? Object.fromEntries([
             ["*", "deny"],
-            ...(hasRegisteredWorktreeCwd && options.subject.verificationPackageManager
-              ? worktreeVerificationCommandPatterns(
-                  options.subject.verificationPackageManager,
-                )
-              : hasRegisteredWorktreeCwd
-                ? worktreeInspectionCommandPatterns()
-                : reviewInspectionCommandPatterns()
+            ...declaredBashPatterns.map((pattern) => [pattern, "allow"]),
+            ...(mayInspect
+              ? hasRegisteredWorktreeCwd && options.subject.verificationPackageManager
+                ? worktreeVerificationCommandPatterns(
+                    options.subject.verificationPackageManager,
+                  )
+                : hasRegisteredWorktreeCwd
+                  ? worktreeInspectionCommandPatterns()
+                  : reviewInspectionCommandPatterns()
+              : []
             ).map(
               (pattern) => [pattern, "allow"],
             ),
@@ -175,9 +181,9 @@ export function compileOpenCodePermission(options: {
         : "deny",
       task: "deny",
       // Explicit read-safe MCP surface only — never blanket mcp__*.
+      "mcp__*": "deny",
       ...READ_SAFE_MCP_PERMISSIONS,
       ...capabilityPermissions,
-      "mcp__*": "deny",
     };
   }
 

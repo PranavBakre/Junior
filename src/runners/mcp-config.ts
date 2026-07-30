@@ -1,4 +1,6 @@
 import { resolve } from "node:path";
+import type { Config } from "../config.ts";
+import type { OpenCodeMcpConfig } from "../opencode/config.ts";
 import type { ThreadSession } from "../session/types.ts";
 import { buildMongoMcpUrl, buildSlackMcpUrl } from "../mcp/context.ts";
 import { subjectHasCapability } from "../agents/capabilities.ts";
@@ -65,6 +67,58 @@ export function needsUserSettings(): boolean {
   // Figma and Notion MCP are unconditionally included and require OAuth tokens
   // stored at the user level (~/.claude/). Always widen setting sources.
   return true;
+}
+
+export function buildOpenCodeMcpConfig(
+  config: Config,
+  session: ThreadSession,
+): OpenCodeMcpConfig | null {
+  if (!config.opencode.mcpEnabled) return null;
+
+  const mcp: OpenCodeMcpConfig = {};
+  if (config.opencode.slackMcpEnabled && wantsMcp(session, "slack-bot")) {
+    mcp["slack-bot"] = {
+      type: "remote",
+      url: slackMcpUrl(session),
+      enabled: true,
+    };
+  }
+  if (config.opencode.playwrightMcpEnabled && wantsMcp(session, "playwright")) {
+    const command = playwrightMcpCommand();
+    mcp.playwright = {
+      type: "local",
+      command: [command.command, ...command.args],
+      enabled: true,
+    };
+  }
+  if (
+    config.opencode.mixpanelMcpEnabled &&
+    wantsMcp(session, "mixpanel") &&
+    isFeatureMetricsSession(session)
+  ) {
+    const command = mixpanelMcpCommand();
+    mcp.mixpanel = {
+      type: "local",
+      command: [command.command, ...command.args],
+      enabled: true,
+    };
+  }
+  if (config.opencode.mongodbMcpEnabled && wantsMcp(session, "mongodb")) {
+    mcp.mongodb = {
+      type: "remote",
+      url: mongoMcpUrl(session),
+      enabled: true,
+    };
+  }
+
+  return Object.keys(mcp).length > 0 ? mcp : null;
+}
+
+function isFeatureMetricsSession(session: ThreadSession): boolean {
+  return (
+    session.agentType === "feature-metrics" ||
+    session.activeAgentName === "feature-metrics"
+  );
 }
 
 function wrappedStdioMcpCommand(command: string[]): StdioMcpCommand {

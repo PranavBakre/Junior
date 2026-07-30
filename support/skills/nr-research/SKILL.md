@@ -5,7 +5,7 @@ description: Investigate New Relic telemetry for a Junior pipeline assignment an
 
 # New Relic research
 
-Use only the read-only New Relic tools available to this run. Investigate the
+Use the installed `newrelic` CLI only for read operations. Investigate the
 assignment's requested time window and scope. Do not post directly to Slack.
 
 Write `research.md` with `pipeline_write_artifact`, using the authoritative

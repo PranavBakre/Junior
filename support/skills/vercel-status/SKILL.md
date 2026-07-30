@@ -5,7 +5,7 @@ description: Inspect Vercel deployment state for a Junior pipeline assignment an
 
 # Vercel deployment status
 
-Use only the read-only Vercel tools available to this run. Inspect the
+Use the installed `vercel` CLI only for read operations. Inspect the
 assignment's requested projects and environments. Do not post directly to
 Slack.
 

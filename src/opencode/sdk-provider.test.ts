@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createSession } from "../session/types.ts";
 import { spawnOpenCodeSdk } from "./sdk-provider.ts";
 import type { Config } from "../config.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
 
 interface MockSdkController {
   createOpencode(options?: { directory?: string }): Promise<{
@@ -80,6 +81,77 @@ describe("spawnOpenCodeSdk", () => {
       expect(result.sessionId).toBe("ses_active");
       expect(result.response).toBe("right");
       expect(result.events.map((event) => event.type)).toEqual(["init", "message", "done"]);
+    } finally {
+      fakeSdk.cleanup();
+    }
+  });
+
+  it("loads and invokes an assignment-scoped native skill", async () => {
+    const fakeSdk = installFakeSdk();
+    process.env.OPENCODE_BIN = fakeSdk.opencodeBin;
+    let serverDirectory = "";
+    let promptedText = "";
+    let updatedConfig: Record<string, unknown> = {};
+
+    (globalThis as GlobalWithSdkMock).__juniorOpenCodeSdkMock = {
+      createOpencode: async (options) => {
+        serverDirectory = options?.directory ?? "";
+        return {
+          client: {
+            session: {
+              create: async () => ({ id: "ses_skill" }),
+              prompt: async (args) => {
+                promptedText = args.message.parts[0]?.text ?? "";
+                return {};
+              },
+              abort: async () => ({}),
+            },
+            event: {
+              subscribe: async function* () {
+                yield {
+                  data: JSON.stringify({
+                    type: "step-finish",
+                    sessionID: "ses_skill",
+                  }),
+                };
+              },
+            },
+            config: {
+              update: async ({ config }) => {
+                updatedConfig = config;
+                return {};
+              },
+            },
+          },
+          server: { url: "http://localhost:0", close: () => undefined },
+        };
+      },
+    };
+
+    try {
+      const session = createSession("thread-skill", "C01");
+      session.provider = "opencode-sdk";
+      const skill = resolveTrustedSkill("sentry-fetch")!;
+      session.activeSkill = {
+        name: skill.name,
+        path: skill.path,
+        execution: skill.execution,
+      };
+      session.assignmentCapabilities = [...skill.capabilities];
+      session.agentPermissions = skill.permissions;
+
+      const result = await spawnOpenCodeSdk(
+        session,
+        "inspect the last hour",
+        testConfig,
+      ).result;
+
+      expect(result.sessionId).toBe("ses_skill");
+      expect(serverDirectory).toContain("runtime-skills/sentry-fetch");
+      expect(promptedText).toContain('Load the "sentry-fetch" skill');
+      expect(updatedConfig.mcp).toMatchObject({
+        "slack-bot": { enabled: true },
+      });
     } finally {
       fakeSdk.cleanup();
     }

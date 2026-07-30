@@ -1031,7 +1031,8 @@ export async function pipelineDispatchSkill(
     );
   }
 
-  const stableKey = `${run.id}:${source.id}:skill:${args.idempotency_key}`;
+  const stableKey =
+    `${run.id}:${source.id}:skill:${skill.name}:${args.idempotency_key}`;
   const targetAgent = skillRunnerAgentName(skill.name);
   const existing = (await runtime.store.listAssignments(run.id)).find(
     (assignment) => assignment.idempotencyKey === `${stableKey}:next`,

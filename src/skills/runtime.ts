@@ -12,6 +12,7 @@ export interface SkillRuntimePaths {
   root: string;
   claudeAddDir: string;
   openCodeConfigDir: string;
+  openCodeSdkDir: string;
 }
 
 /**
@@ -30,14 +31,17 @@ export function prepareSkillRuntime(
   const claudeLink = resolve(root, ".claude/skills", skill.name);
   const openCodeConfigDir = resolve(root, "opencode");
   const openCodeLink = resolve(openCodeConfigDir, "skills", skill.name);
+  const openCodeSdkLink = resolve(root, ".opencode/skills", skill.name);
 
   ensureSymlink(claudeLink, packageDir);
   ensureSymlink(openCodeLink, packageDir);
+  ensureSymlink(openCodeSdkLink, packageDir);
 
   return {
     root,
     claudeAddDir: root,
     openCodeConfigDir,
+    openCodeSdkDir: root,
   };
 }
 
@@ -67,5 +71,22 @@ function ensureSymlink(linkPath: string, targetPath: string): void {
     }
     throw new Error(`skill runtime path already exists with unexpected target: ${linkPath}`);
   }
-  symlinkSync(targetPath, linkPath, "dir");
+  try {
+    symlinkSync(targetPath, linkPath, "dir");
+  } catch (error) {
+    // Two stateless assignments may materialize the same trusted skill at
+    // once. The losing creator accepts the winner only when it is the exact
+    // expected symlink.
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "EEXIST" &&
+      existsSync(linkPath) &&
+      lstatSync(linkPath).isSymbolicLink() &&
+      resolve(dirname(linkPath), readlinkSync(linkPath)) === targetPath
+    ) {
+      return;
+    }
+    throw error;
+  }
 }

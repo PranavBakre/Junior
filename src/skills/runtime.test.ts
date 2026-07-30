@@ -29,11 +29,16 @@ describe("trusted skill runtime", () => {
       runtime.openCodeConfigDir,
       "skills/vercel-status",
     );
+    const openCodeSdkSkill = resolve(
+      runtime.openCodeSdkDir,
+      ".opencode/skills/vercel-status",
+    );
 
     expect(existsSync(claudeSkill)).toBe(true);
     expect(existsSync(openCodeSkill)).toBe(true);
     expect(realpathSync(claudeSkill)).toBe(canonicalDir);
     expect(realpathSync(openCodeSkill)).toBe(canonicalDir);
+    expect(realpathSync(openCodeSdkSkill)).toBe(canonicalDir);
     expect(existsSync(resolve(runtime.claudeAddDir, ".claude/skills/sentry-fetch")))
       .toBe(false);
   });

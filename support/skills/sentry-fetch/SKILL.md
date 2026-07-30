@@ -5,7 +5,7 @@ description: Investigate Sentry issues for a Junior pipeline assignment and reco
 
 # Sentry evidence
 
-Use only the read-only Sentry tools available to this run. Investigate the
+Use the installed `sentry-cli` only for read operations. Investigate the
 assignment's requested time window and scope. Do not post directly to Slack.
 
 Write `sentry.md` with `pipeline_write_artifact`, using the authoritative

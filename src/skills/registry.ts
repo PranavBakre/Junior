@@ -28,7 +28,7 @@ const SUPPORT_SKILLS: readonly TrustedSkillDefinition[] = [
     permissions: {
       intent: "read-only",
       mcp: ["slack-bot"],
-      tools: [],
+      tools: ["Bash(newrelic *)"],
     },
   },
   {
@@ -40,7 +40,7 @@ const SUPPORT_SKILLS: readonly TrustedSkillDefinition[] = [
     permissions: {
       intent: "read-only",
       mcp: ["slack-bot"],
-      tools: [],
+      tools: ["Bash(sentry-cli *)"],
     },
   },
   {
@@ -52,7 +52,7 @@ const SUPPORT_SKILLS: readonly TrustedSkillDefinition[] = [
     permissions: {
       intent: "read-only",
       mcp: ["slack-bot"],
-      tools: [],
+      tools: ["Bash(vercel *)"],
     },
   },
 ] as const;

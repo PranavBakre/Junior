@@ -50,6 +50,32 @@ describe("compileOpenCodePermission", () => {
     expect(permission["mcp__slack-bot__agent_dispatch"]).not.toBe("allow");
     expect(permission.edit).toBe("deny");
     expect(permission.write).toBe("deny");
+    expect(Object.keys(permission).indexOf("mcp__*")).toBeLessThan(
+      Object.keys(permission).indexOf(
+        "mcp__slack-bot__pipeline_write_artifact",
+      ),
+    );
+  });
+
+  it("allows only the trusted observability CLI for a stateless skill", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "skill:sentry-fetch",
+        assignmentCapabilities: ["pipeline-artifact-write"],
+        agentPermissions: {
+          intent: "read-only",
+          mcp: ["slack-bot"],
+          tools: ["Bash(sentry-cli *)"],
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(permission.bash).toEqual({
+      "*": "deny",
+      "sentry-cli *": "allow",
+    });
+    expect(permission.read).toBe("allow");
+    expect(permission.write).toBe("deny");
   });
 
   it("allows only non-mutating inspection for reviewers without a worktree", () => {
