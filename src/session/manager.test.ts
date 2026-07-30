@@ -801,6 +801,64 @@ describe("SessionManager", () => {
     });
   });
 
+  it("keeps a stale-cwd onboarding cold start isolated from repo agent definitions", async () => {
+    const resolvedSessions: ThreadSession[] = [];
+    manager.agentRouter = {
+      resolveAgent: mock(async (runSession: ThreadSession) => {
+        resolvedSessions.push(runSession);
+        return null;
+      }),
+      composeSystemPrompt: mock(async () => null),
+    } as unknown as NonNullable<typeof manager.agentRouter>;
+
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    existing.agentSessions["onboard-member"] = {
+      agentName: "onboard-member",
+      provider: "claude",
+      sessionId: "legacy-onboarding-session",
+      sessionCwd: "/tmp/stale-worktree",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "continue the membership check" }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(resolvedSessions).toHaveLength(1);
+    expect(resolvedSessions[0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+      sessionId: null,
+    });
+    expect(mockSpawnFn.mock.calls[0]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+      sessionId: null,
+    });
+    // Invocation isolation must not erase worktree state needed by later
+    // build/review assignments on the durable thread.
+    expect(await store.get("thread-1")).toMatchObject({
+      targetRepo: "junior",
+      worktreePath: "/tmp/stale-worktree",
+      worktreePaths: { junior: "/tmp/stale-worktree" },
+      cwd: "/tmp/stale-cwd",
+    });
+  });
+
   it("preserves durable worktree affinity when a repo-less utility idle-resumes", async () => {
     const idleHandle = createIdleOpencodeHandle("ses-onboard", 12345);
     const retryHandle = createCompletingOpencodeHandle("ses-onboard", 67890);
