@@ -22,6 +22,12 @@ import { OPENCODE_PROVIDER_AGENT, buildOpenCodeAgentPrompt } from "./prompt.ts";
 import { buildOpenCodeConfigContent } from "./config.ts";
 import { resolveOpenCodeModel } from "./model.ts";
 import { log as _log } from "../logger.ts";
+import { buildOpenCodeMcpConfig } from "../runners/mcp-config.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
+import {
+  prepareSkillRuntime,
+  skillInvocationPrompt,
+} from "../skills/runtime.ts";
 
 // ---------------------------------------------------------------------------
 // Types mirroring @opencode-ai/sdk (resolved dynamically at runtime)
@@ -100,17 +106,38 @@ async function loadSdk(): Promise<NonNullable<typeof _sdkModule>> {
 interface SdkServerState {
   client: OpencodeClient;
   close(): void;
+  refs: number;
+  closed: boolean;
 }
 
-let _server: SdkServerState | null = null;
+const servers = new Map<string, SdkServerState>();
 
 async function getOrCreateServer(directory: string): Promise<SdkServerState> {
-  if (_server) return _server;
+  const existing = servers.get(directory);
+  if (existing && !existing.closed) {
+    existing.refs += 1;
+    return existing;
+  }
   const sdk = await loadSdk();
   const { client, server } = await sdk.createOpencode({ directory });
-  _server = { client, close: server.close };
+  const state = {
+    client,
+    close: server.close,
+    refs: 1,
+    closed: false,
+  };
+  servers.set(directory, state);
   _log.info("opencode-sdk", `server started url=${server.url} dir=${directory}`);
-  return _server;
+  return state;
+}
+
+function releaseServer(directory: string, server: SdkServerState): void {
+  if (server.closed) return;
+  server.refs = Math.max(0, server.refs - 1);
+  if (server.refs > 0) return;
+  server.closed = true;
+  if (servers.get(directory) === server) servers.delete(directory);
+  try { server.close(); } catch { /* ok */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +155,19 @@ export function spawnOpenCodeSdk(
 ): SpawnHandle {
   const provider = "opencode-sdk" as const;
   const runtime = buildRunnerRuntime({ session, targetRepoCwd, botToken, agentIdentity });
+  const activeSkill = session.activeSkill
+    ? resolveTrustedSkill(session.activeSkill.name)
+    : null;
+  if (
+    session.activeSkill &&
+    (!activeSkill || activeSkill.path !== session.activeSkill.path)
+  ) {
+    throw new Error("active skill does not match Junior's trusted registry");
+  }
+  const skillRuntime = activeSkill ? prepareSkillRuntime(activeSkill) : null;
+  const effectivePrompt = activeSkill
+    ? skillInvocationPrompt("opencode", activeSkill, prompt)
+    : prompt;
 
   const agentName = session.activeAgentName ?? OPENCODE_PROVIDER_AGENT;
   // The CLI spawner uses `juniorAgentName` to distinguish from the OpenCode
@@ -151,20 +191,37 @@ export function spawnOpenCodeSdk(
       cwd: runtime.cwd,
       fallback: config.opencode.permission,
     }),
-    mcp: session.cwd ? null : undefined,
+    mcp: session.cwd ? null : buildOpenCodeMcpConfig(config, session),
     // Junior's durable assignment graph owns fan-out.
     subagents: [],
   });
 
   let sdkSessionId: string | null = null;
+  let activeServer: SdkServerState | null = null;
   let aborted = false;
   let finishTurn: (() => void) | null = null;
   const eventListeners: Array<(event: RunnerEvent) => void> = [];
 
   const spawnResult = new Promise<SpawnResult>(async (resolve, reject) => {
+    let leasedDirectory: string | null = null;
+    let leasedServer: SdkServerState | null = null;
     try {
-      const cwd = runtime.cwd ?? process.cwd();
+      const cwd = skillRuntime?.openCodeSdkDir ?? runtime.cwd ?? process.cwd();
       const server = await getOrCreateServer(cwd);
+      leasedDirectory = cwd;
+      leasedServer = server;
+      activeServer = server;
+      if (aborted) {
+        resolve({
+          provider,
+          sessionId: null,
+          response: "",
+          events: [],
+          exitCode: 0,
+          error: null,
+        });
+        return;
+      }
 
       // Push generated config. Best-effort — server may already have config.
       try {
@@ -173,6 +230,17 @@ export function spawnOpenCodeSdk(
         });
       } catch {
         // ok
+      }
+      if (aborted) {
+        resolve({
+          provider,
+          sessionId: null,
+          response: "",
+          events: [],
+          exitCode: 0,
+          error: null,
+        });
+        return;
       }
 
       // Create session, or re-attach to existing only when continuity is
@@ -188,6 +256,17 @@ export function spawnOpenCodeSdk(
         currentSessionId = created.id;
       }
       sdkSessionId = currentSessionId;
+      if (aborted) {
+        resolve({
+          provider,
+          sessionId: currentSessionId,
+          response: "",
+          events: [],
+          exitCode: 0,
+          error: null,
+        });
+        return;
+      }
 
       // Subscribe to events before sending prompt
       const events: RunnerEvent[] = [];
@@ -202,9 +281,23 @@ export function spawnOpenCodeSdk(
       };
 
       const eventStream = server.client.event.subscribe({ directory: cwd });
+      let resolveTurn!: () => void;
       const turnDone = new Promise<void>((resolve) => {
+        resolveTurn = resolve;
         finishTurn = resolve;
       });
+      if (aborted) {
+        resolveTurn();
+        resolve({
+          provider,
+          sessionId: currentSessionId,
+          response: "",
+          events: [],
+          exitCode: 0,
+          error: null,
+        });
+        return;
+      }
       const eventConsumer = (async () => {
         try {
           for await (const raw of eventStream) {
@@ -268,7 +361,7 @@ export function spawnOpenCodeSdk(
           sessionID: currentSessionId,
           message: {
             role: "user",
-            parts: [{ type: "text", text: prompt }],
+            parts: [{ type: "text", text: effectivePrompt }],
           },
         });
       } catch (err) {
@@ -297,6 +390,10 @@ export function spawnOpenCodeSdk(
         return;
       }
       reject(err);
+    } finally {
+      if (leasedDirectory && leasedServer) {
+        releaseServer(leasedDirectory, leasedServer);
+      }
     }
   });
 
@@ -306,20 +403,17 @@ export function spawnOpenCodeSdk(
     onEvent: (cb: (event: RunnerEvent) => void) => {
       eventListeners.push(cb);
     },
-    kill: async (signal) => {
+    kill: async (_signal) => {
       aborted = true;
-      if (sdkSessionId && _server) {
+      const server = activeServer;
+      if (sdkSessionId && server) {
         try {
-          await _server.client.session.abort({ sessionID: sdkSessionId });
+          await server.client.session.abort({ sessionID: sdkSessionId });
         } catch {
           // ok
         }
       }
       finishTurn?.();
-      if (signal === "SIGKILL" && _server) {
-        try { _server.close(); } catch { /* ok */ }
-        _server = null;
-      }
     },
     pid: null,
   };

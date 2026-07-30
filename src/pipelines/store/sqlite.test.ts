@@ -78,12 +78,17 @@ describe("SqlitePipelineStore", () => {
 
   it("round-trips runs and assignments", async () => {
     await store.createRun(makeProductRun());
-    await store.createAssignment(makeAssignmentCreate());
+    await store.createAssignment(makeAssignmentCreate({
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+    }));
     const run = await store.getRun("run-1");
     expect(run?.kind).toBe("product");
     expect(run?.threadId).toBe("T1");
     const asg = await store.getAssignment("asg-1");
     expect(asg?.targetAgent).toBe("build");
+    expect(asg?.skillRef).toBe("sentry-fetch");
+    expect(asg?.capabilityRefs).toEqual(["pipeline-artifact-write"]);
     expect((await store.getRunByThread("T1"))?.id).toBe("run-1");
   });
 

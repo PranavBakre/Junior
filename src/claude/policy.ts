@@ -4,7 +4,7 @@ import {
   type AgentPermissions,
 } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
-import { hasCapability } from "../agents/capabilities.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 import {
   reviewInspectionCommandPatterns,
   worktreeInspectionCommandPatterns,
@@ -100,22 +100,24 @@ export function mapClaudeRunPolicy(options: {
     session.activeAgentName ?? session.agentType,
   );
   const declaredTools = permissions?.tools ?? [];
-  const agentName = session.activeAgentName ?? session.agentType;
   const capabilityTools = [
-    ...(hasCapability(agentName, "github-review-comment")
+    ...(subjectHasCapability(session, "github-review-comment")
       ? [GITHUB_POST_REVIEW_TOOL]
       : []),
-    ...(hasCapability(agentName, "pipeline-artifact-write")
+    ...(subjectHasCapability(session, "pipeline-artifact-write")
       ? [
           "mcp__slack-bot__pipeline_get_state",
           "mcp__slack-bot__pipeline_report_outcome",
           "mcp__slack-bot__pipeline_write_artifact",
         ]
       : []),
-    ...(hasCapability(agentName, "dispatch")
-      ? ["mcp__slack-bot__agent_dispatch"]
+    ...(subjectHasCapability(session, "dispatch")
+      ? [
+          "mcp__slack-bot__agent_dispatch",
+          "mcp__slack-bot__skill_dispatch",
+        ]
       : []),
-    ...(hasCapability(agentName, "pipeline-run-start")
+    ...(subjectHasCapability(session, "pipeline-run-start")
       ? ["mcp__slack-bot__pipeline_start_run"]
       : []),
   ];
@@ -123,7 +125,7 @@ export function mapClaudeRunPolicy(options: {
     session.worktreePath,
     ...Object.values(session.worktreePaths ?? {}),
   ].filter((root): root is string => Boolean(root));
-  const mayInspect = hasCapability(agentName, "worktree-verify");
+  const mayInspect = subjectHasCapability(session, "worktree-verify");
   const hasRegisteredWorktreeCwd = worktreeRoots.includes(cwd);
 
   if (intent === "mcp-only") {

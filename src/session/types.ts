@@ -26,6 +26,12 @@ export interface PipelineInvocationRef {
   pendingUserResponse?: string | null;
 }
 
+export interface ActiveSkillInvocation {
+  name: string;
+  path: string;
+  execution: "stateless";
+}
+
 export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";
 export type RunnerProvider =
   | "claude"
@@ -127,6 +133,10 @@ export interface ThreadSession {
   agentType: string | null;
   systemPrompt: string | null;
   agentPermissions?: import("../agents/loader.ts").AgentPermissions;
+  /** Ephemeral, assignment-scoped skill selected by Junior's trusted registry. */
+  activeSkill?: ActiveSkillInvocation | null;
+  /** Trusted assignment capabilities used by provider policy/MCP compilers. */
+  assignmentCapabilities?: import("../agents/manifest.ts").AgentCapability[];
   activeAgentName?: string;
   slackIdentity?: AgentIdentity;
   status: SessionStatus;

@@ -27,6 +27,7 @@ export function buildClaudeArgs(
   config: Config["claude"],
   cwd: string,
   mcpConfigPath?: string,
+  skillAddDir?: string,
 ): string[] {
   const policy = mapClaudeRunPolicy({ config, session, cwd });
   const intent = resolveEffectivePermissionIntent(
@@ -97,6 +98,9 @@ export function buildClaudeArgs(
   }
   // addDirs only carries extra roots beyond cwd (cwd is already accessible).
   const extraDirs = policy.addDirs.filter((dir) => dir !== cwd);
+  if (skillAddDir && !extraDirs.includes(skillAddDir)) {
+    extraDirs.push(skillAddDir);
+  }
   if (extraDirs.length > 0) {
     args.push("--add-dir", ...extraDirs);
   }

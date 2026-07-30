@@ -109,6 +109,21 @@ describe("buildClaudeArgs", () => {
     expect(args).not.toContain("--resume");
   });
 
+  it("adds only the assignment-scoped native skill discovery root", () => {
+    const args = buildClaudeArgs(
+      makeSession(),
+      "inspect telemetry",
+      makeConfig(),
+      CWD,
+      undefined,
+      "/tmp/skill-runtime",
+    );
+    const addDir = args.indexOf("--add-dir");
+    expect(addDir).toBeGreaterThanOrEqual(0);
+    expect(args.slice(addDir + 1)).toContain("/tmp/skill-runtime");
+    expect(args.join(" ")).not.toContain("# Sentry evidence");
+  });
+
   it("includes --append-system-prompt when systemPrompt is set", () => {
     const session = makeSession({ systemPrompt: "You are a build agent." });
     const args = buildClaudeArgs(session, "build it", makeConfig(), CWD);

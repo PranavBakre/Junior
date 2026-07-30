@@ -3856,6 +3856,111 @@ describe("SessionManager", () => {
 });
 
 describe("typed pipeline settlement", () => {
+  it("runs trusted skills statelessly without a worktree, inherited prompt, or direct Slack response", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-sentry-skill",
+      targetAgent: "skill:sentry-fetch",
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+      objective: "inspect the last hour",
+      idempotencyKey: "asg-sentry-skill-key",
+    }));
+    const seeded = createSession("thread-1", "C123");
+    seeded.systemPrompt = "large parent prompt that must not be inherited";
+    seeded.agentSessions["skill:sentry-fetch"] = {
+      agentName: "skill:sentry-fetch",
+      provider: "claude",
+      sessionId: "stale-skill-session",
+      sessionCwd: "/tmp/stale-worktree",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const handles: MockHandle[] = [];
+    const spawnedSessions: ThreadSession[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawnedSessions.push(structuredClone(runSession));
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    const responses = mock((_session: ThreadSession, _response: string) => undefined);
+    manager.onResponse = responses;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "pipeline-internal",
+      text: "<pipeline-assignment>inspect the last hour</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:sentry-skill",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-sentry-skill",
+        dispatchKey: "sentry-skill",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "skill:sentry-fetch");
+    await waitFor(() => handles.length === 1);
+
+    expect(spawnedSessions[0]).toMatchObject({
+      sessionId: null,
+      sessionCwd: null,
+      systemPrompt: null,
+      cwd: null,
+      worktreePath: null,
+      activeSkill: {
+        name: "sentry-fetch",
+        execution: "stateless",
+      },
+      assignmentCapabilities: ["pipeline-artifact-write"],
+    });
+    expect(spawnedSessions[0]?.agentPermissions).toMatchObject({
+      intent: "read-only",
+      mcp: ["slack-bot"],
+    });
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-sentry-skill",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "evidence recorded",
+        evidenceRefs: [],
+        artifactRefs: ["sentry.md"],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "sentry-evidence-recorded",
+      },
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "sentry-evidence-recorded",
+    });
+    handles[0]!._complete(
+      "DONE: one issue found - see sentry.md",
+      "ephemeral-skill-session",
+    );
+
+    await waitFor(async () =>
+      (await sessionStore.get("thread-1"))
+        ?.agentSessions["skill:sentry-fetch"]?.status === "done"
+    );
+    const settled = await sessionStore.get("thread-1");
+    expect(settled?.agentSessions["skill:sentry-fetch"]?.sessionId).toBeNull();
+    expect(settled?.agentSessions["skill:sentry-fetch"]?.sessionCwd).toBeNull();
+    expect(responses).not.toHaveBeenCalled();
+  });
+
   it("uses compiled assignment context without worker Slack history or recall", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));

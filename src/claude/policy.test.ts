@@ -49,6 +49,22 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.addDirs).toEqual([]);
   });
 
+  test("stateless skills receive an exact observability MCP tool without Bash", () => {
+    const session = sessionWith({
+      intent: "read-only",
+      mcp: ["slack-bot"],
+      tools: ["mcp__slack-bot__sentry_list"],
+    });
+    session.activeAgentName = "skill:sentry-fetch";
+    session.assignmentCapabilities = ["pipeline-artifact-write"];
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("mcp__slack-bot__sentry_list");
+    expect(policy.allowedTools.some((tool) => tool.startsWith("Bash"))).toBe(false);
+  });
+
   test("no-tools is the hardest lockdown", () => {
     const session = sessionWith({ intent: "no-tools", mcp: [], tools: ["Read"] });
 
@@ -281,6 +297,7 @@ describe("mapClaudeRunPolicy", () => {
       "mcp__slack-bot__pipeline_report_outcome",
       "mcp__slack-bot__pipeline_write_artifact",
       "mcp__slack-bot__agent_dispatch",
+      "mcp__slack-bot__skill_dispatch",
     ]);
     expect(policy.disallowedTools).toContain("Write");
     expect(policy.disallowedTools).toContain("Bash(rm *)");

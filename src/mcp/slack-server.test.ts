@@ -48,6 +48,15 @@ describe("MCP Slack tool catalogue", () => {
           repo_refs: { type: "array" },
         },
       });
+      const skillDispatch = tools.find((tool) => tool.name === "skill_dispatch");
+      expect(skillDispatch?.inputSchema).toMatchObject({
+        required: expect.arrayContaining([
+          "skill_name",
+          "objective",
+          "reason",
+          "idempotency_key",
+        ]),
+      });
     } finally {
       await client.close();
       await server.close();

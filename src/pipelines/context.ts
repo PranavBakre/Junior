@@ -33,6 +33,8 @@ export function buildAssignmentContext(input: AssignmentContextInput): string {
     `assignment_id: ${assignment.id}`,
     `source_agent: ${assignment.sourceAgent}`,
     `target_agent: ${assignment.targetAgent}`,
+    `skill_ref: ${assignment.skillRef ?? ""}`,
+    `capability_refs: ${JSON.stringify(assignment.capabilityRefs)}`,
     `attempt: ${assignment.attempt}`,
     `attempt_id: ${assignment.attemptId ?? ""}`,
     `candidate_revision_digest: ${assignment.candidateRevisionDigest ?? ""}`,

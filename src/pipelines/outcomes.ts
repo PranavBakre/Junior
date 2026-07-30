@@ -13,6 +13,10 @@ import {
   resolveHandoffTarget,
   type OrchestratorContext,
 } from "../agents/registry.ts";
+import {
+  resolveTrustedSkill,
+  skillRunnerAgentName,
+} from "../skills/registry.ts";
 import { log } from "../logger.ts";
 import type { PipelineStore } from "./store/interface.ts";
 import type {
@@ -251,7 +255,8 @@ export async function reportOutcome(
       outcome.targetAgent ?? outcome.nextAssignment?.targetAgent ?? "";
     const source = assignment.targetAgent;
     const ctx = auth.orchestratorContext ?? orchestratorContextFor(run);
-    if (!canDispatch(source, target, ctx)) {
+    const trustedSkillDispatch = isTrustedSkillDispatch(outcome);
+    if (!trustedSkillDispatch && !canDispatch(source, target, ctx)) {
       const reason = `unauthorized handoff edge: ${source} → ${target}`;
       logRejectedOutcome(run.id, assignment.id, reason);
       return {
@@ -370,6 +375,21 @@ export async function reportOutcome(
   return receipt;
 }
 
+function isTrustedSkillDispatch(outcome: AgentOutcome): boolean {
+  const next = outcome.nextAssignment;
+  if (!next?.skillRef) return false;
+  const skill = resolveTrustedSkill(next.skillRef);
+  if (!skill || next.targetAgent !== skillRunnerAgentName(skill.name)) {
+    return false;
+  }
+  const expected = [...skill.capabilities].sort();
+  const received = [...(next.capabilityRefs ?? [])].sort();
+  return (
+    expected.length === received.length &&
+    expected.every((capability, index) => capability === received[index])
+  );
+}
+
 function logRejectedOutcome(
   runId: string | null,
   assignmentId: string,
@@ -390,6 +410,8 @@ export async function requestHandoff(
     assignmentId: string;
     expectedRunVersion: number;
     targetAgent: string;
+    skillRef?: string | null;
+    capabilityRefs?: import("../agents/manifest.ts").AgentCapability[];
     objective: string;
     reason: string;
     progressFingerprint: string;
@@ -427,6 +449,8 @@ export async function requestHandoff(
       parentAssignmentId: args.assignmentId,
       sourceSlackUserId: null,
       targetAgent: args.targetAgent,
+      skillRef: args.skillRef ?? null,
+      capabilityRefs: [...(args.capabilityRefs ?? [])],
       objective: args.objective,
       contextRefs: args.contextRefs ?? [],
       artifactRefs: args.artifactRefs ?? [],

@@ -27,6 +27,19 @@ function baseOutcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
 }
 
 describe("InMemoryPipelineStore", () => {
+  it("round-trips a trusted skill capability envelope", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(2_000));
+    await store.createRun(makeProductRun());
+    await store.createAssignment(makeAssignmentCreate({
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+    }));
+    expect(await store.getAssignment("asg-1")).toMatchObject({
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+    });
+  });
+
   it("promotes a default run in place with source outcome, child, and dispatch", async () => {
     const store = new InMemoryPipelineStore(fakeClock(2_000));
     await store.createRun(makeDefaultRun());

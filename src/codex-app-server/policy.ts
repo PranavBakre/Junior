@@ -4,7 +4,7 @@ import {
   type AgentPermissions,
 } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
-import { hasCapability } from "../agents/capabilities.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 
 export type CodexApprovalPolicy = "untrusted" | "on-request" | "never";
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
@@ -41,7 +41,6 @@ export function mapCodexRunPolicy(options: {
     permissions,
     session.activeAgentName ?? session.agentType,
   );
-  const agentName = session.activeAgentName ?? session.agentType;
   const worktreeRoots = [
     session.worktreePath,
     ...Object.values(session.worktreePaths ?? {}),
@@ -59,7 +58,7 @@ export function mapCodexRunPolicy(options: {
   if (intent === "read-only" || intent === "no-tools") {
     if (
       intent === "read-only" &&
-      hasCapability(agentName, "worktree-verify") &&
+      subjectHasCapability(session, "worktree-verify") &&
       worktreeRoots.includes(cwd) &&
       Boolean(session.verificationPackageManager)
     ) {

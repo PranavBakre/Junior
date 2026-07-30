@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { createSession } from "../session/types.ts";
 import { resolveCodexModel, spawnCodexAppServer } from "./spawner.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
 
 const originalCodexBin = process.env.CODEX_BIN;
 
@@ -81,6 +82,46 @@ describe("spawnCodexAppServer", () => {
       expect(threadStart.params.sandbox).toBe("danger-full-access");
       expect(threadStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
       expect(turnStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
+    } finally {
+      fakeCodex.cleanup();
+    }
+  });
+
+  it("invokes an assignment skill as a structured turn item without changing developer instructions", async () => {
+    const fakeCodex = installFakeCodex(recordingFakeCodexScript());
+    process.env.CODEX_BIN = fakeCodex.command;
+
+    try {
+      const session = createSession("thread-skill", "C01");
+      session.provider = "codex-app-server";
+      const skill = resolveTrustedSkill("sentry-fetch")!;
+      session.activeSkill = {
+        name: skill.name,
+        path: skill.path,
+        execution: "stateless",
+      };
+      const config = {
+        ...testConfig,
+        codex: {
+          ...testConfig.codex,
+          isolatedHomePath: join(fakeCodex.root, "codex-home"),
+        },
+      };
+
+      await spawnCodexAppServer(session, "inspect the last hour", config).result;
+      const requests = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const threadStart = requests.find((request) => request.method === "thread/start");
+      const turnStart = requests.find((request) => request.method === "turn/start");
+      expect(threadStart.params.developerInstructions).not.toContain("# Sentry evidence");
+      expect(turnStart.params.input).toContainEqual({
+        type: "skill",
+        name: "sentry-fetch",
+        path: skill.path,
+      });
+      expect(turnStart.params.input[0].text).toContain("$sentry-fetch");
     } finally {
       fakeCodex.cleanup();
     }

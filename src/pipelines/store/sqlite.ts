@@ -82,6 +82,8 @@ type AssignmentRow = {
   source_agent: string;
   source_slack_user_id: string | null;
   target_agent: string;
+  skill_ref: string | null;
+  capability_refs_json: string;
   status: string;
   objective: string;
   context_refs_json: string;
@@ -388,6 +390,8 @@ export class SqlitePipelineStore implements PipelineStore {
         parent_assignment_id TEXT,
         source_agent TEXT NOT NULL,
         target_agent TEXT NOT NULL,
+        skill_ref TEXT,
+        capability_refs_json TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL,
         objective TEXT NOT NULL,
         context_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -417,6 +421,14 @@ export class SqlitePipelineStore implements PipelineStore {
       .all();
     if (!assignmentColumns.some((column) => column.name === "source_slack_user_id")) {
       this.db.run(`ALTER TABLE pipeline_assignments ADD COLUMN source_slack_user_id TEXT`);
+    }
+    if (!assignmentColumns.some((column) => column.name === "skill_ref")) {
+      this.db.run(`ALTER TABLE pipeline_assignments ADD COLUMN skill_ref TEXT`);
+    }
+    if (!assignmentColumns.some((column) => column.name === "capability_refs_json")) {
+      this.db.run(
+        `ALTER TABLE pipeline_assignments ADD COLUMN capability_refs_json TEXT NOT NULL DEFAULT '[]'`,
+      );
     }
 
     this.db.run(`
@@ -935,6 +947,8 @@ export class SqlitePipelineStore implements PipelineStore {
         sourceAgent: assignmentInput.sourceAgent,
         sourceSlackUserId: assignmentInput.sourceSlackUserId,
         targetAgent: assignmentInput.targetAgent,
+        skillRef: assignmentInput.skillRef ?? null,
+        capabilityRefs: [...(assignmentInput.capabilityRefs ?? [])],
         status: assignmentInput.status ?? "pending",
         objective: assignmentInput.objective,
         contextRefs: [...assignmentInput.contextRefs],
@@ -1032,6 +1046,8 @@ export class SqlitePipelineStore implements PipelineStore {
       sourceAgent: input.sourceAgent,
       sourceSlackUserId: input.sourceSlackUserId,
       targetAgent: input.targetAgent,
+      skillRef: input.skillRef ?? null,
+      capabilityRefs: [...(input.capabilityRefs ?? [])],
       status: input.status ?? "pending",
       objective: input.objective,
       contextRefs: [...input.contextRefs],
@@ -1068,6 +1084,8 @@ export class SqlitePipelineStore implements PipelineStore {
         ? assignmentFromRow(existing)
         : {
             ...input.assignment,
+            skillRef: input.assignment.skillRef ?? null,
+            capabilityRefs: [...(input.assignment.capabilityRefs ?? [])],
             status: input.assignment.status ?? ("pending" as const),
             leaseOwner: input.assignment.leaseOwner ?? null,
             leaseExpiresAt: input.assignment.leaseExpiresAt ?? null,
@@ -2843,12 +2861,12 @@ export class SqlitePipelineStore implements PipelineStore {
       .query(
         `INSERT INTO pipeline_assignments (
           id, run_id, parent_assignment_id, source_agent, source_slack_user_id,
-          target_agent,
+          target_agent, skill_ref, capability_refs_json,
           status, objective, context_refs_json, artifact_refs_json,
           acceptance_json, mutation_scope_json, dependencies_json,
           attempt_number, attempt_id, candidate_revision_digest, deadline_at,
           lease_owner, lease_expires_at, idempotency_key, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(idempotency_key) DO NOTHING`,
       )
       .run(
@@ -2858,6 +2876,8 @@ export class SqlitePipelineStore implements PipelineStore {
         assignment.sourceAgent,
         assignment.sourceSlackUserId,
         assignment.targetAgent,
+        assignment.skillRef,
+        JSON.stringify(assignment.capabilityRefs),
         assignment.status,
         assignment.objective,
         JSON.stringify(assignment.contextRefs),
@@ -2997,6 +3017,10 @@ function assignmentFromRow(row: AssignmentRow): Assignment {
     sourceAgent: row.source_agent,
     sourceSlackUserId: row.source_slack_user_id ?? null,
     targetAgent: row.target_agent,
+    skillRef: row.skill_ref ?? null,
+    capabilityRefs: parseJsonArray(
+      row.capability_refs_json,
+    ) as Assignment["capabilityRefs"],
     status: row.status as Assignment["status"],
     objective: row.objective,
     contextRefs: parseJsonArray(row.context_refs_json),

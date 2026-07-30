@@ -4,14 +4,9 @@ import { spawnClaude } from "../claude/spawner.ts";
 import { spawnOpenCode } from "../opencode/spawner.ts";
 import { spawnOpenCodeSdk } from "../opencode/sdk-provider.ts";
 import { spawnCodexAppServer } from "../codex-app-server/spawner.ts";
-import type { OpenCodeMcpConfig } from "../opencode/config.ts";
 import type { SpawnHandle } from "./types.ts";
 import {
-  mixpanelMcpCommand,
-  mongoMcpUrl,
-  playwrightMcpCommand,
-  slackMcpUrl,
-  wantsMcp,
+  buildOpenCodeMcpConfig,
 } from "./mcp-config.ts";
 import { compileOpenCodePermission } from "./policy.ts";
 import { resolveRunnerCwd } from "./runtime.ts";
@@ -112,50 +107,4 @@ export function spawnRunner(
   );
 }
 
-export function buildOpenCodeMcpConfig(
-  config: Config,
-  session: ThreadSession,
-): OpenCodeMcpConfig | null {
-  if (!config.opencode.mcpEnabled) return null;
-
-  const mcp: OpenCodeMcpConfig = {};
-  if (config.opencode.slackMcpEnabled && wantsMcp(session, "slack-bot")) {
-    mcp["slack-bot"] = {
-      type: "remote",
-      url: slackMcpUrl(session),
-      enabled: true,
-    };
-  }
-  if (config.opencode.playwrightMcpEnabled && wantsMcp(session, "playwright")) {
-    const command = playwrightMcpCommand();
-    mcp.playwright = {
-      type: "local",
-      command: [command.command, ...command.args],
-      enabled: true,
-    };
-  }
-  if (config.opencode.mixpanelMcpEnabled && wantsMcp(session, "mixpanel") && isFeatureMetricsSession(session)) {
-    const command = mixpanelMcpCommand();
-    mcp.mixpanel = {
-      type: "local",
-      command: [command.command, ...command.args],
-      enabled: true,
-    };
-  }
-  if (config.opencode.mongodbMcpEnabled && wantsMcp(session, "mongodb")) {
-    mcp.mongodb = {
-      type: "remote",
-      url: mongoMcpUrl(session),
-      enabled: true,
-    };
-  }
-
-  return Object.keys(mcp).length > 0 ? mcp : null;
-}
-
-function isFeatureMetricsSession(session: ThreadSession): boolean {
-  return (
-    session.agentType === "feature-metrics" ||
-    session.activeAgentName === "feature-metrics"
-  );
-}
+export { buildOpenCodeMcpConfig } from "./mcp-config.ts";

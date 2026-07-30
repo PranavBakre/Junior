@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSession } from "../session/types.ts";
 import { spawnOpenCode } from "./spawner.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
 
 describe("spawnOpenCode", () => {
   it("does not resume native sessions unless continuity is enabled", async () => {
@@ -208,6 +209,40 @@ describe("spawnOpenCode", () => {
     expect(parsed.agent["sentry-fetch"]).toBeUndefined();
     expect(parsed.agent["vercel-status"]).toBeUndefined();
     expect(parsed.agent.reproducer).toBeUndefined();
+  });
+
+  it("exposes and invokes only the selected native skill", async () => {
+    const session = createSession("thread-skill", "C01");
+    session.provider = "opencode";
+    const skill = resolveTrustedSkill("nr-research")!;
+    session.activeSkill = {
+      name: skill.name,
+      path: skill.path,
+      execution: "stateless",
+    };
+    const capture = createArgCaptureCommand();
+    let configDir: string | undefined;
+
+    try {
+      const handle = spawnOpenCode(session, "inspect the last hour", {
+        command: capture.command,
+        env: (_env) => {
+          configDir = _env.OPENCODE_CONFIG_DIR;
+          return {
+            JUNIOR_TEST_CAPTURE_ARGS: capture.outputPath,
+          };
+        },
+      });
+      await handle.result;
+
+      expect(configDir).toContain("runtime-skills/nr-research/opencode");
+      expect(capture.readArgs().join(" ")).toContain(
+        'Load the "nr-research" skill',
+      );
+      expect(capture.readArgs().join(" ")).not.toContain("# New Relic research");
+    } finally {
+      capture.cleanup();
+    }
   });
 
   it("captures sessionId from init event before SIGINT — simulates idle-interrupt recovery", async () => {

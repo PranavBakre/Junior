@@ -49,7 +49,7 @@ While a runner is active, it can post to and read from Slack autonomously throug
 
 - Slack read/post/search/upload tools
 - `register_worktree` — let an agent claim a worktree path mid-turn
-- agent dispatch and definition search
+- durable agent/skill dispatch and definition search
 - memory recall/add/consolidation
 - pipeline start/state/assignment/outcome/check tools when pipeline mode is active
 - optional MongoDB and WhatsApp read tools
