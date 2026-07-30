@@ -47,6 +47,15 @@ export function mapCodexRunPolicy(options: {
     ...Object.values(session.worktreePaths ?? {}),
   ].filter((root): root is string => Boolean(root));
 
+  if (intent === "mcp-only") {
+    return {
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      sandboxPolicy: { type: "readOnly" },
+      mcpAllowed: !session.cwd,
+    };
+  }
+
   if (intent === "read-only" || intent === "no-tools") {
     if (
       intent === "read-only" &&

@@ -64,13 +64,13 @@ describe("loadAgentDefinition", () => {
     expect(def!.permissions.mcp).toContain("mongodb");
   });
 
-  it("loads onboard-member as repo-less with read-only MongoDB access", async () => {
+  it("loads onboard-member as repo-less with MCP-only MongoDB access", async () => {
     const def = await loadAgentDefinition(
       path.join(agentsOrgDir, "onboard-member.md"),
     );
 
     expect(def).not.toBeNull();
-    expect(def!.permissions.intent).toBe("read-only");
+    expect(def!.permissions.intent).toBe("mcp-only");
     expect(def!.permissions.mcp).toContain("mongodb");
     expect(def!.permissions.tools).toContain("mcp__mongodb__find");
     expect(def!.context.workspace).toBe(false);

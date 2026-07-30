@@ -109,6 +109,7 @@ export function mapClaudeRunPolicy(options: {
       ? [
           "mcp__slack-bot__pipeline_get_state",
           "mcp__slack-bot__pipeline_report_outcome",
+          "mcp__slack-bot__pipeline_write_artifact",
         ]
       : []),
     ...(hasCapability(agentName, "dispatch")
@@ -124,6 +125,22 @@ export function mapClaudeRunPolicy(options: {
   ].filter((root): root is string => Boolean(root));
   const mayInspect = hasCapability(agentName, "worktree-verify");
   const hasRegisteredWorktreeCwd = worktreeRoots.includes(cwd);
+
+  if (intent === "mcp-only") {
+    return {
+      permissionMode: "default",
+      allowedTools: [...new Set([...declaredTools, ...capabilityTools])]
+        .filter((tool) => tool.startsWith("mcp__")),
+      disallowedTools: [
+        "Read",
+        "Glob",
+        "Grep",
+        ...NO_TOOLS_DISALLOWED,
+        ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+      ],
+      addDirs: [],
+    };
+  }
 
   if (intent === "read-only") {
     if (mayInspect) {

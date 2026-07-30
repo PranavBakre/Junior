@@ -23,6 +23,7 @@
 
 /** Matches `AgentPermissionIntent` in loader.ts — kept local to avoid cycles. */
 export type CatalogPermissionIntent =
+  | "mcp-only"
   | "read-only"
   | "normal"
   | "human-gated"
@@ -301,7 +302,7 @@ export const TRUSTED_AGENT_CATALOG: readonly AgentManifest[] = [
     ],
     // Production discovery only. Execution remains independently human-gated.
     mutationPolicy: "none",
-    permissionIntent: "read-only",
+    permissionIntent: "mcp-only",
     handoffPolicy: {
       mayDelegateTo: ["orchestrator", "human"],
       mayReturnTo: ["orchestrator"],

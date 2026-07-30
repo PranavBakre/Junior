@@ -1,4 +1,6 @@
 import type { App } from "@slack/bolt";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Config, RepoConfig } from "../config.ts";
 import type { RunnerEvent, RunnerProvider, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
 import type {
@@ -65,7 +67,11 @@ import {
   isDuplicateSlackToolResponse,
   prepareSlackResponse,
 } from "../slack/formatting.ts";
-import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
+import {
+  DEFAULT_CONTEXT_PROFILE,
+  resolveEffectivePermissionIntent,
+  type AgentContextProfile,
+} from "../agents/loader.ts";
 import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import { inferReviewRepo } from "../worktree/review-routing.ts";
@@ -1756,7 +1762,7 @@ export class SessionManager {
       // cwd fallback: only used when no worktree exists. With the always-worktree
       // policy above, this only fires for read-only/discussion threads with no
       // targetRepo — never inside the shared origin repo.
-      const targetRepoCwd: string | undefined = session.worktreePath
+      let targetRepoCwd: string | undefined = session.worktreePath
         ? undefined
         : targetRepo?.path;
 
@@ -1764,6 +1770,22 @@ export class SessionManager {
       // the newly registered isolated checkout on this same turn.
       let runSession = this.buildRunSession(session, agentName, agentIdentity);
       let provider = sessionProvider(runSession, this.config);
+      const permissionIntent = resolveEffectivePermissionIntent(
+        runSession.agentPermissions,
+        runSession.activeAgentName ?? runSession.agentType,
+      );
+      if (permissionIntent === "mcp-only") {
+        if (provider === "codex-app-server") {
+          throw new Error(
+            `Provider ${provider} cannot enforce MCP-only tool isolation for ${agentName}; use claude, opencode, or opencode-sdk`,
+          );
+        }
+        targetRepoCwd = resolve(
+          import.meta.dirname ?? ".",
+          `../../data/runtime-agents/${agentName}`,
+        );
+        mkdirSync(targetRepoCwd, { recursive: true });
+      }
       const invocationCwd = resolveRunnerCwd(runSession, targetRepoCwd);
       if (
         runSession.sessionId &&
@@ -2259,12 +2281,29 @@ export class SessionManager {
           (isTopLevel ? session.sessionId : agentSession?.sessionId) &&
           session.idleInterruptCount < maxIdleInterrupts
         ) {
-          session.idleInterruptCount++;
+          const nextIdleInterruptCount = session.idleInterruptCount + 1;
+          const durableSession = await this.mutateSession(
+            session.threadId,
+            (fresh) => {
+              if (this.handles.get(handleKey) !== attemptHandle) {
+                throw new RunOwnershipChangedError();
+              }
+              fresh.idleInterruptCount = nextIdleInterruptCount;
+            },
+          );
+          session = pipelineRole === "utility"
+            ? {
+                ...durableSession,
+                cwd: null,
+                targetRepo: null,
+                worktreePath: null,
+                worktreePaths: {},
+              }
+            : durableSession;
           _log.warn(
             "session",
             `idle-resume attempt=${session.idleInterruptCount}/${maxIdleInterrupts} thread=${session.threadId} agent=${agentName} provider=${provider}`,
           );
-          await this.store.set(session.threadId, session);
 
           const continuePrompt = [
             `The previous turn was interrupted after ${this.config.session.idleTimeoutMs / 1000}s with no runner events.`,
@@ -3485,7 +3524,32 @@ export class SessionManager {
           .sort((a, b) => b.updatedAt - a.updatedAt)[0];
         if (!assignment) {
           const parent = [...assignments].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+          const parentOutcomes = parent
+            ? await this.pipelineStore.listOutcomes(parent.id)
+            : [];
+          const latestParentOutcome = parentOutcomes.at(-1);
           const assignmentId = crypto.randomUUID();
+          const humanObjective = event.text.trim() ||
+            "Continue from the latest human input";
+          const recoveryContext = parent
+            ? [
+                humanObjective,
+                "",
+                "<durable-human-gate-context>",
+                `parent_assignment_id: ${parent.id}`,
+                `parent_objective: ${parent.objective}`,
+                `context_refs: ${JSON.stringify(parent.contextRefs)}`,
+                `artifact_refs: ${JSON.stringify([
+                  ...parent.artifactRefs,
+                  ...(latestParentOutcome?.artifactRefs ?? []),
+                ])}`,
+                `latest_outcome_reason: ${latestParentOutcome?.reason ?? ""}`,
+                `latest_outcome_checks: ${JSON.stringify(
+                  latestParentOutcome?.checks ?? [],
+                )}`,
+                "</durable-human-gate-context>",
+              ].join("\n")
+            : humanObjective;
           assignment = await this.pipelineStore.createAssignmentWithOutbox({
             assignment: {
               id: assignmentId,
@@ -3494,9 +3558,18 @@ export class SessionManager {
               sourceAgent: "human",
               sourceSlackUserId: event.isSelfBot ? null : event.user,
               targetAgent: durableTarget,
-              objective: event.text.trim() || "Continue from the latest human input",
-              contextRefs: ["control-branch:human-input", `source-message:${event.ts}`],
-              artifactRefs: [],
+              objective: recoveryContext,
+              contextRefs: [
+                ...(parent?.contextRefs ?? []),
+                "control-branch:human-input",
+                `source-message:${event.ts}`,
+              ],
+              artifactRefs: [
+                ...new Set([
+                  ...(parent?.artifactRefs ?? []),
+                  ...(latestParentOutcome?.artifactRefs ?? []),
+                ]),
+              ],
               acceptanceCriteria: active.acceptanceCriteria,
               mutationScope:
                 durableTarget === "build" || durableTarget === "frontend"
