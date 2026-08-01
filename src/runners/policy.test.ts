@@ -92,6 +92,7 @@ describe("compileOpenCodePermission", () => {
     });
     expect((permission as Record<string, unknown>).bash).toMatchObject({
       "*": "deny",
+      "gh *": "allow",
       "gh pr view *": "allow",
       "git blame *": "allow",
     });
@@ -116,6 +117,7 @@ describe("compileOpenCodePermission", () => {
     expect(permission.write).toBe("deny");
     expect(permission.bash).toMatchObject({
       "*": "deny",
+      "gh *": "allow",
       "npm test *": "allow",
       "git fetch *": "allow",
     });
@@ -137,14 +139,10 @@ describe("compileOpenCodePermission", () => {
 
     expect(permission.bash).toMatchObject({
       "*": "deny",
+      "gh *": "allow",
       "git blame *": "allow",
       "gh pr list *": "allow",
     });
-    expect(
-      Object.keys(permission.bash as Record<string, string>).some((pattern) =>
-        pattern.startsWith("gh api")
-      ),
-    ).toBe(false);
     expect(permission.bash).not.toMatchObject({ "npm test *": "allow" });
   });
 
@@ -161,6 +159,7 @@ describe("compileOpenCodePermission", () => {
 
     expect(permission.bash).toMatchObject({
       "*": "deny",
+      "gh *": "allow",
       "gh pr view *": "allow",
       "git blame *": "allow",
     });

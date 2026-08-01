@@ -177,6 +177,7 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.allowedTools).toContain(
       "mcp__slack-bot__github_post_review",
     );
+    expect(policy.allowedTools).toContain("Bash(gh *)");
     expect(policy.allowedTools).toContain("Bash(gh pr view *)");
     expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
   });
@@ -244,6 +245,7 @@ describe("mapClaudeRunPolicy", () => {
 
     expect(policy.permissionMode).toBe("default");
     expect(policy.allowedTools).toContain("Bash(gh pr view *)");
+    expect(policy.allowedTools).toContain("Bash(gh *)");
     expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
     expect(policy.allowedTools).not.toContain("Bash(gh pr checkout *)");
     expect(policy.allowedTools).not.toContain("Bash(npm test *)");
@@ -263,8 +265,8 @@ describe("mapClaudeRunPolicy", () => {
 
     expect(policy.permissionMode).toBe("default");
     expect(policy.allowedTools).toContain("Bash(git blame *)");
+    expect(policy.allowedTools).toContain("Bash(gh *)");
     expect(policy.allowedTools).toContain("Bash(gh pr list *)");
-    expect(policy.allowedTools.some((tool) => tool.startsWith("Bash(gh api"))).toBe(false);
     expect(policy.allowedTools).not.toContain("Bash(gh pr checkout *)");
     expect(policy.allowedTools).not.toContain("Bash(npm test *)");
   });

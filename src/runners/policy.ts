@@ -147,6 +147,10 @@ export function compileOpenCodePermission(options: {
     ...Object.values(options.subject.worktreePaths ?? {}),
   ].filter((root): root is string => Boolean(root));
   const mayInspect = subjectHasCapability(options.subject, "worktree-verify");
+  const mayUseGitHubCli = subjectHasCapability(
+    options.subject,
+    "github-review-comment",
+  );
   const hasRegisteredWorktreeCwd =
     Boolean(options.cwd) &&
     worktreeRoots.includes(options.cwd!);
@@ -213,6 +217,7 @@ export function compileOpenCodePermission(options: {
             ).map(
               (pattern) => [pattern, "allow"],
             ),
+            ...(mayUseGitHubCli ? [["gh *", "allow"]] : []),
           ])
         : "deny",
       task: "deny",

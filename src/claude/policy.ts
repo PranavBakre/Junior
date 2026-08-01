@@ -102,6 +102,9 @@ export function mapClaudeRunPolicy(options: {
   const declaredTools = permissions?.tools ?? [];
   const capabilityTools = [
     ...(subjectHasCapability(session, "github-review-comment")
+      ? ["Bash(gh *)"]
+      : []),
+    ...(subjectHasCapability(session, "github-review-comment")
       ? [GITHUB_POST_REVIEW_TOOL]
       : []),
     ...(subjectHasCapability(session, "pipeline-artifact-write")

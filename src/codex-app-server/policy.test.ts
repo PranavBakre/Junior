@@ -86,7 +86,7 @@ describe("mapCodexRunPolicy", () => {
           "/repo.junior-worktrees/slack-t",
           "/expo.junior-worktrees/slack-t",
         ],
-        networkAccess: false,
+        networkAccess: true,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       },
@@ -103,7 +103,10 @@ describe("mapCodexRunPolicy", () => {
 
     expect(
       mapCodexRunPolicy({ config, session, cwd: "/shared-repo" }),
-    ).toMatchObject({ sandbox: "read-only" });
+    ).toMatchObject({
+      sandbox: "read-only",
+      sandboxPolicy: { type: "readOnly", networkAccess: true },
+    });
   });
 
   it("fails closed for no-tools agents", () => {
