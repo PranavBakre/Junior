@@ -1497,7 +1497,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         "'gx-backend:repo'), their markdown profiles are fetched VERBATIM by key — no embedding, " +
         "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
         "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
-        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`tags`/`kinds`). " +
+        "lesson/fact/preference/decision/situation-claim store by cosine (filtered by `repo`/`tags`/`kinds`). " +
         "Fact subtypes such as procedures can be requested with `fact_kinds`. " +
         "Use a complete natural-language situation/question for `query`; use repo/tags as " +
         "filters, not as query keywords. Returns keyed profiles plus relevant claims above " +
@@ -1512,7 +1512,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           .optional()
           .describe("Restrict claims to any matching tag (OR match)"),
         kinds: z
-          .array(z.enum(["lesson", "fact", "situation-claim"]))
+          .array(z.enum(["lesson", "fact", "preference", "decision", "situation-claim"]))
           .optional()
           .describe("Restrict claims to these kinds (default: all)"),
         fact_kinds: z
@@ -1555,7 +1555,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
     {
       description:
         "Add a single atomic claim to Junior's v3 semantic memory and embed it in one step. " +
-        "The text is embedded locally (document mode) and stored as a lesson/fact/situation-claim row " +
+        "The text is embedded locally (document mode) and stored as a typed semantic claim " +
         "with its embedding co-located, so it is immediately retrievable by `memory_recall`. Write ONE " +
         "atomic claim per call (the unit of semantic recall), not a paragraph. Near-duplicates are " +
         "merged into the existing claim rather than stored twice. Returns the claim id plus " +
@@ -1563,7 +1563,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
       inputSchema: {
         text: z.string().describe("One atomic claim — the authoritative text that gets embedded"),
         kind: z
-          .enum(["lesson", "fact", "situation-claim"])
+          .enum(["lesson", "fact", "preference", "decision", "situation-claim"])
           .optional()
           .describe("Claim kind (default 'lesson')"),
         repo: z.string().optional().describe("Associate the claim with a repo (filter column)"),

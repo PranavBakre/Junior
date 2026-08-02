@@ -8,6 +8,13 @@ export {
 } from "./consolidate.ts";
 export { buildConsolidationPrompt } from "./prompt.ts";
 export {
+  runPersonaConsolidationSweep,
+  DEFAULT_PERSONA_HISTORY_LIMIT,
+  DEFAULT_PERSONA_MIN_RECORDS,
+  type PersonaConsolidationReport,
+  type RunPersonaConsolidationSweepArgs,
+} from "./persona.ts";
+export {
   createSlackPeopleResolver,
   referencedSlackUserIds,
   type PeopleResolver,

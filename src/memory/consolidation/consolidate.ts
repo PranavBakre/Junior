@@ -289,7 +289,7 @@ async function buildContext(
   return { profiles, claims, people };
 }
 
-const ENTITY_REF_RE = /\b([a-z0-9][a-z0-9_-]*):(person|repo|situation)\b/gi;
+const ENTITY_REF_RE = /\b([a-z0-9][a-z0-9_-]*):(person|repo|project|situation)\b/gi;
 
 /**
  * Best-effort extraction of `<slug>:<kind>` entity refs the records touch:

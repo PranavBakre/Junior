@@ -62,7 +62,18 @@ export interface MemoryFactInput {
 
 // --- memory v3: claims (semantic, embedded) + episodes (raw affect log) ---
 
-export type ClaimKind = "lesson" | "fact" | "situation-claim";
+/**
+ * Semantic derivations are typed by what the memory means, not merely by where
+ * it came from. Keeping preferences and decisions distinct lets
+ * recall ask for the right durable context instead of treating every memory as
+ * a generic fact.
+ */
+export type ClaimKind =
+  | "lesson"
+  | "fact"
+  | "preference"
+  | "decision"
+  | "situation-claim";
 
 /**
  * Options for the consolidation engine's read of raw source records that have
@@ -74,6 +85,15 @@ export interface UnconsolidatedSourceRecordOptions {
   /** Only return records for this thread. */
   threadId?: string;
   /** Cap the number of records returned (the oldest N). */
+  limit?: number;
+}
+
+/** Read-only source-record lookup used by cumulative derivation builders. */
+export interface SourceRecordQueryOptions {
+  kind?: MemorySourceKind;
+  actorId?: string;
+  actorKind?: MemorySourceRecord["actorKind"];
+  /** Newest N matching records are returned in chronological order. */
   limit?: number;
 }
 

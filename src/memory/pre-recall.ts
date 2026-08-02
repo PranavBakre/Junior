@@ -163,7 +163,7 @@ export interface PreRecallOverrides {
 export interface SynthesisCandidate {
   id: string;
   text: string;
-  kind: "lesson" | "fact" | "situation-claim";
+  kind: "lesson" | "fact" | "preference" | "decision" | "situation-claim";
   factKind: "curated_fact" | "routing_memory" | "procedure" | null;
   /** cosine × weight — ranks candidates. */
   score: number;

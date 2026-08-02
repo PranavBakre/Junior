@@ -68,6 +68,42 @@ describe("SqliteMemoryStore", () => {
     }
   });
 
+  it("widens an existing claim kind CHECK without losing rows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-claim-kind-retrofit-"));
+    const dbPath = join(dir, "old.db");
+    const raw = new Database(dbPath);
+    raw.run(`CREATE TABLE claim (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'situation-claim')),
+      text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT,
+      dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT,
+      helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0,
+      weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER,
+      active INTEGER DEFAULT 1
+    )`);
+    raw.run("INSERT INTO claim (id, kind, text, created_at) VALUES ('old', 'fact', 'kept', 1)");
+    raw.close();
+
+    const migrated = new SqliteMemoryStore(dbPath);
+    try {
+      const db = (migrated as unknown as { db: Database }).db;
+      const sql = (db.query("SELECT sql FROM sqlite_master WHERE name='claim'").get() as { sql: string }).sql;
+      expect(sql).toContain("'preference'");
+      expect(sql).toContain("'decision'");
+      expect((db.query("SELECT text FROM claim WHERE id='old'").get() as { text: string }).text).toBe("kept");
+      await migrated.upsertClaim({
+        id: "pref",
+        kind: "preference",
+        text: "Prefer concise answers.",
+        embedding: new Float32Array([1, 0]),
+        createdAt: 2,
+      });
+    } finally {
+      migrated.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does NOT create the condemned legacy tables (memory v3 cutover)", () => {
     const db = (store as unknown as { db: Database }).db;
     const exists = (name: string): boolean =>

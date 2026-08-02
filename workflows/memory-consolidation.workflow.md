@@ -39,12 +39,16 @@ must execute the sweep yourself:
    Do not pass `--thread` or `--limit` — the scheduled sweep must cover the entire
    unconsolidated backlog. Leave batching flags (`--max-batch-chars`, `--body-cap`,
    `--kinds`) at their defaults unless the operator asked otherwise.
-3. The command drains unconsolidated `memory_source_record`s (high-value kinds
+3. Before draining thread evidence, the command builds/updates personas for
+   active human users from a rolling cross-thread message window. This is the
+   cumulative path that lets recurring preferences and communication patterns
+   emerge; it uses stable Slack IDs and refuses sensitive inference. It then
+   drains unconsolidated `memory_source_record`s (high-value kinds
    only: `slack_message`, `curated_fact`, `manual_correction`), groups them by
    thread, bin-packs the groups into batches, and spawns the consolidation runner
    (`claude -p`, structured output) per batch to derive:
    - **episodes** — what happened, with provenance back to the source records;
-   - **entity profiles** — keyed markdown for a person / repo / situation, merged
+   - **entity profiles** — keyed markdown for a person / repo / project / situation, merged
      (never duplicated) on `entity_ref`;
    - **claims** — atomic lessons / facts, embedded locally and proximity-deduped
      against the existing corpus before write.
@@ -53,6 +57,13 @@ must execute the sweep yourself:
    them, but only treat the workflow as failed if the CLI itself exits non-zero.
 5. Return the sweep summary as the workflow result: records processed, episodes,
    profiles, and claims written/deduped per scope, plus any per-batch failures.
+
+For an explicit historical backfill across every human Slack actor, run
+`bun run src/memory/cli.ts consolidate-v3 --persona-all`. Do not put
+`--persona-all` on the daily schedule; the rolling active-user path is the
+incremental mode.
+If individual persona calls fail, retry only those actors with
+`--persona-actors U123,U456`; do not repeat the entire historical backfill.
 
 Rules:
 

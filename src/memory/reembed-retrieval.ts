@@ -15,7 +15,7 @@ export interface RetrievalRewrite {
 
 export interface CorpusRow {
   id: string;
-  kind: "lesson" | "fact" | "situation-claim";
+  kind: "lesson" | "fact" | "preference" | "decision" | "situation-claim";
   text: string;
   retrieval_text: string | null;
   lesson_title: string | null;

@@ -13,6 +13,10 @@ import type { MemorySourceRecord } from "../types.ts";
 import { consolidateSession } from "./consolidate.ts";
 import type { PeopleResolver } from "./identity.ts";
 import { cappedBodyLength } from "./prompt.ts";
+import {
+  runPersonaConsolidationSweep,
+  type PersonaConsolidationReport,
+} from "./persona.ts";
 import type { ConsolidationInvoke, ConsolidationReport } from "./types.ts";
 
 /**
@@ -23,6 +27,8 @@ import type { ConsolidationInvoke, ConsolidationReport } from "./types.ts";
 export type ConsolidateV3Entry = {
   threadIds: string[];
   report?: ConsolidationReport;
+  /** Cumulative cross-thread person-profile phase (one synthetic entry per actor). */
+  persona?: PersonaConsolidationReport;
   error?: string;
 };
 
@@ -82,6 +88,10 @@ export interface RunConsolidationSweepArgs {
   resolvePeople?: PeopleResolver;
   /** Clock (epoch ms) forwarded to the engine. Defaults to Date.now() per call. */
   now?: number;
+  /** One-time operator backfill: review every historical human Slack actor. */
+  personaAll?: boolean;
+  /** Targeted operator retry for selected historical Slack actor ids. */
+  personaActorIds?: string[];
 }
 
 /**
@@ -152,7 +162,28 @@ export async function runConsolidationSweep(
   const pending = (await store.listUnconsolidatedSourceRecords({})).filter((r) =>
     allowedKinds.has(r.kind),
   );
-  if (pending.length === 0) return [{ threadIds: [], report: { skipped: true } }];
+  // Personas need a rolling cross-thread view. Run this before the ordinary
+  // batches stamp today's evidence as consumed; the persona pass may also read
+  // older, already-consumed source records through listSourceRecords.
+  const personaReports = await runPersonaConsolidationSweep({
+    store,
+    profileStore,
+    invoke,
+    resolvePeople: args.resolvePeople,
+    pendingRecords: pending,
+    actorIds: args.personaActorIds && args.personaActorIds.length > 0
+      ? args.personaActorIds
+      : args.personaAll
+        ? await store.listSourceActors({ kind: "slack_message", actorKind: "human" })
+        : undefined,
+  });
+  reports.push(...personaReports.map((persona) => ({ threadIds: [], persona })));
+
+  if (pending.length === 0) {
+    return reports.length > 0
+      ? reports
+      : [{ threadIds: [], report: { skipped: true } }];
+  }
 
   // Group by thread, preserving first-seen (oldest-first) order so each thread's
   // records stay contiguous.
@@ -252,7 +283,22 @@ export function summarizeConsolidationSweep(reports: ConsolidateV3Entry[]): stri
   let deduped = 0;
   let failures = 0;
 
-  for (const { threadIds, report, error } of reports) {
+  for (const { threadIds, report, persona, error } of reports) {
+    if (persona) {
+      const who = persona.displayName
+        ? `${persona.displayName} (${persona.actorId})`
+        : persona.actorId;
+      if (persona.error) {
+        lines.push(`- persona ${who}: FAILED — ${persona.error}`);
+        failures += 1;
+      } else if (persona.profileUpdated) {
+        lines.push(`- persona ${who}: ${persona.recordsReviewed} cross-thread records reviewed → profile updated`);
+        profiles += 1;
+      } else {
+        lines.push(`- persona ${who}: ${persona.recordsReviewed} cross-thread records reviewed → unchanged (${persona.skippedReason ?? "no durable change"})`);
+      }
+      continue;
+    }
     const scope = threadIds.length ? threadIds.join(", ") : "(all unthreaded)";
     if (error) {
       lines.push(`- ${scope}: FAILED — ${error}`);

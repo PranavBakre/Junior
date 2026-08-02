@@ -23,6 +23,7 @@ import type {
   MemorySourceRecord,
   RecallLogInput,
   SearchableMemoryKind,
+  SourceRecordQueryOptions,
   UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
 
@@ -157,6 +158,55 @@ export class SqliteMemoryStore implements MemoryStore {
         record.metadata ? JSON.stringify(record.metadata) : null,
         record.createdAt,
       );
+  }
+
+  async listSourceRecords(options: SourceRecordQueryOptions = {}): Promise<MemorySourceRecord[]> {
+    const limit = Math.max(1, Math.min(options.limit ?? 100, 1_000));
+    const rows = this.db
+      .query<SourceRecordRow, [string | null, string | null, string | null, string | null, string | null, string | null, number]>(
+        `SELECT id, kind, channel_id, thread_id, slack_ts, source_url, actor_id,
+                actor_kind, agent_name, repo_name, body, metadata_json, created_at
+         FROM memory_source_record
+         WHERE (? IS NULL OR kind = ?)
+           AND (? IS NULL OR actor_id = ?)
+           AND (? IS NULL OR actor_kind = ?)
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(
+        options.kind ?? null,
+        options.kind ?? null,
+        options.actorId ?? null,
+        options.actorId ?? null,
+        options.actorKind ?? null,
+        options.actorKind ?? null,
+        limit,
+      );
+    return rows.reverse().map(rowToSourceRecord);
+  }
+
+  async listSourceActors(
+    options: Pick<SourceRecordQueryOptions, "kind" | "actorKind"> = {},
+  ): Promise<string[]> {
+    return this.db
+      .query<
+        { actor_id: string },
+        [string | null, string | null, string | null, string | null]
+      >(
+        `SELECT DISTINCT actor_id
+         FROM memory_source_record
+         WHERE actor_id IS NOT NULL
+           AND (? IS NULL OR kind = ?)
+           AND (? IS NULL OR actor_kind = ?)
+         ORDER BY actor_id`,
+      )
+      .all(
+        options.kind ?? null,
+        options.kind ?? null,
+        options.actorKind ?? null,
+        options.actorKind ?? null,
+      )
+      .map((row) => row.actor_id);
   }
 
   async upsertLesson(lesson: MemoryLessonInput): Promise<void> {
@@ -865,7 +915,13 @@ export class SqliteMemoryStore implements MemoryStore {
 
     const kinds: MemoryHealthKind[] = [];
 
-    const claimKinds: ClaimKind[] = ["lesson", "fact", "situation-claim"];
+    const claimKinds: ClaimKind[] = [
+      "lesson",
+      "fact",
+      "preference",
+      "decision",
+      "situation-claim",
+    ];
     for (const kind of claimKinds) {
       const summary = this.db
         .query<
@@ -1065,6 +1121,38 @@ export class SqliteMemoryStore implements MemoryStore {
     })();
   }
 
+  /** Retrofit the claim kind CHECK when the semantic taxonomy grows. */
+  private ensureClaimAllowsAllKinds(): void {
+    const row = this.db
+      .query<{ sql: string }, []>(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='claim'",
+      )
+      .get();
+    if (!row || ["'preference'", "'decision'"].every((kind) => row.sql.includes(kind))) {
+      return;
+    }
+    this.db.transaction(() => {
+      this.db.run(`CREATE TABLE claim_new (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'preference', 'decision', 'situation-claim')),
+        text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT,
+        dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT,
+        helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0,
+        weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER,
+        active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id)
+      )`);
+      this.db.run(`INSERT INTO claim_new (
+        id, kind, text, retrieval_text, embedding, embed_model, dim, repo, tags,
+        source_episode, helpful_count, unhelpful_count, weight, created_at,
+        last_used_at, active
+      ) SELECT id, kind, text, retrieval_text, embedding, embed_model, dim, repo,
+               tags, source_episode, helpful_count, unhelpful_count, weight,
+               created_at, last_used_at, active FROM claim`);
+      this.db.run("DROP TABLE claim");
+      this.db.run("ALTER TABLE claim_new RENAME TO claim");
+    })();
+  }
+
   private migrate(): void {
     this.db.run(`CREATE TABLE IF NOT EXISTS memory_source_record (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('slack_message', 'runner_output', 'routing_decision', 'routing_correction', 'ingestion_correction', 'curated_fact', 'manual_correction')), channel_id TEXT, thread_id TEXT, slack_ts TEXT, source_url TEXT, actor_id TEXT, actor_kind TEXT CHECK (actor_kind IN ('human', 'junior', 'agent', 'bot', 'system')), agent_name TEXT, repo_name TEXT, body TEXT NOT NULL, metadata_json TEXT, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS memory_node (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory', 'entity', 'tag', 'claim')), created_at INTEGER NOT NULL, valid_at INTEGER, invalid_at INTEGER, superseded_by TEXT)`);
@@ -1079,8 +1167,9 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run(`CREATE TABLE IF NOT EXISTS consolidation_decision (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, source_ids_json TEXT NOT NULL, extractor TEXT NOT NULL, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS recall_log (id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT, tags_json TEXT, entities_json TEXT, kinds_json TEXT, caller_intent TEXT, returned_ids_json TEXT NOT NULL, result_count INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
     // memory v3: semantic claim store (text + embedding co-located) — mirrors the lesson/memory_node relationship.
-    this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'situation-claim')), text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'preference', 'decision', 'situation-claim')), text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
     this.ensureColumn("claim", "retrieval_text", "TEXT");
+    this.ensureClaimAllowsAllKinds();
     // memory v3: raw episodic log (affect sidecar over memory_source_record).
     this.db.run(`CREATE TABLE IF NOT EXISTS episode (id TEXT PRIMARY KEY, actor TEXT, subjects_json TEXT, what TEXT, emotion TEXT, intensity REAL, valence REAL, trigger TEXT, response TEXT, salience REAL, consolidated_into_json TEXT, created_at INTEGER NOT NULL, last_used_at INTEGER, FOREIGN KEY (id) REFERENCES memory_source_record(id))`);
     this.ensureColumn("episode", "last_used_at", "INTEGER");

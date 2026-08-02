@@ -134,7 +134,7 @@ data/
 
 ```markdown
 ---
-kind: profile/person          # or profile/repo, profile/situation
+kind: profile/person          # or profile/repo, profile/project, profile/situation
 entity_ref: pranav:person
 role: principal / architect
 comms_style: terse, pushes back hard
@@ -148,6 +148,7 @@ Pranav is the principal… <prose sketch>
 
 - **person**: `role`, `comms_style`, `values[]`, `triggers[]`, `praises[]`, `preferences[]`, `relationship_trajectory`, `sentiment_trend`.
 - **repo**: `conventions[]`, `gotchas[]`, `merge_flow`, `owners[]`, `stack`, `hot_paths[]`. (Repos are first-class memory subjects — the existing-setup parity v2 lacked.)
+- **project**: `goals[]`, `constraints[]`, `decisions[]`, `owners[]`, `status`, `next_steps[]`.
 - **situation**: `pattern`, `signals[]`, `recommended_action`.
 
 **Lesson / fact / claim** (SQLite row — semantic, embedded):
@@ -155,7 +156,7 @@ Pranav is the principal… <prose sketch>
 ```sql
 claim (
   id         TEXT PRIMARY KEY REFERENCES memory_node(id),
-  kind       TEXT,            -- lesson | fact | situation-claim
+  kind       TEXT,            -- lesson | fact | preference | decision | situation-claim
   text       TEXT NOT NULL,   -- ONE atomic claim (authoritative)
   retrieval_text TEXT,        -- rebuildable situation/question projection
   embedding  BLOB,            -- Float32 LE; derived from retrieval_text || text
@@ -288,7 +289,7 @@ Recall runs **two channels** and merges:
 
 **Carried:** source records as raw evidence; provenance as a field; dedup-on-write; helpful/unhelpful feedback weighting (the `helpful_count`/`unhelpful_count`/`weight` columns); "universal rules inject, don't retrieve."
 
-**New in v3:** episodes with affect; the keyed/semantic split as the organizing axis; profiles (person/repo/situation) as keyed markdown derivations beside the embedded claim tail; markdown-as-source-of-truth for keyed memory; the local-first embedding mandate for affective data.
+**New in v3:** episodes with affect; the keyed/semantic split as the organizing axis; profiles (person/repo/project/situation) as keyed markdown derivations beside the embedded claim tail; typed semantic preferences and decisions; markdown-as-source-of-truth for keyed memory; the local-first embedding mandate for affective data.
 
 **Deleted:** event-as-memory promotion, the edge graph + spreading activation, any O(N²) similarity-edge builder, RRF-as-a-recall-play, and (shipped) **the FTS keyword channel, the candidate-rule learning layer, and the `src/memory/eval/` harness** — recall is cosine-only and the eval-replay gate ran during migration, then the harness was removed. The whole-profile embedding was dropped before v1 (profiles are keyed, not embedded).
 
@@ -297,7 +298,7 @@ Recall runs **two channels** and merges:
 Phasing as originally planned, annotated with what shipped:
 
 - **P0 — done:** `recall_log` + eval harness + routing-log prune (v2 Phase 0). *(The eval harness has since been removed — it served its purpose gating the migration.)*
-- **P1 — shipped:** `episode` table; `profiles/` markdown files; `claim` table; the offline consolidation engine (`consolidateSession` + `runConsolidationSweep` + `claude -p` runner) builds person/repo/situation profiles (keyed dedup) and atomic claims (cosine proximity dedup); the legacy event flood is gone.
+- **P1 — shipped:** `episode` table; `profiles/` markdown files; `claim` table; the offline consolidation engine (`consolidateSession` + `runConsolidationSweep` + runner) builds person/repo/project/situation profiles (keyed dedup) and typed atomic claims (cosine proximity dedup); the legacy event flood is gone. Person profiles use a separate rolling cross-thread view for active users, because consuming isolated threads once cannot reveal recurring behavior across sessions.
 - **P2 — partial:** keyed profile fetch by context is shipped (`memory_recall` with `entity_refs`). The helpful/unhelpful feedback *columns* exist (`helpful_count`/`unhelpful_count`/`weight`) but the production feedback loop that writes them is not yet wired.
 - **P3 — shipped (cosine-only):** harrier-270-ONNX provider (last-token pooling, q8); the claim store is embedded; recall is **cosine over the embedded corpus**. The planned FTS ∥ vector merge was **dropped** — there is no lexical channel.
 - **P4 — affect record-and-inform:** episodes capture affect today; surfacing it into Junior's live context is not yet wired.
