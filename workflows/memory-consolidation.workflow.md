@@ -58,10 +58,14 @@ must execute the sweep yourself:
 5. Return the sweep summary as the workflow result: records processed, episodes,
    profiles, and claims written/deduped per scope, plus any per-batch failures.
 
-For an explicit historical backfill across every human Slack actor, run
-`bun run src/memory/cli.ts consolidate-v3 --persona-all`. Do not put
-`--persona-all` on the daily schedule; the rolling active-user path is the
-incremental mode.
+For an explicit historical backfill across people, repositories, and recurring
+situations, run `bun run src/memory/cli.ts consolidate-v3 --profiles-all`. Do not
+put `--profiles-all` on the daily schedule; the rolling active-subject path is
+the incremental mode. The narrower `--persona-all` remains available when only
+Slack people need rebuilding; use `--subjects-all` to rebuild only repositories
+and recurring situations.
+Retry a failed repository label without repeating the subject backfill using
+`--subject-repos gx-backend.worktrees`.
 If individual persona calls fail, retry only those actors with
 `--persona-actors U123,U456`; do not repeat the entire historical backfill.
 

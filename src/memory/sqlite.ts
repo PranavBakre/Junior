@@ -163,13 +163,14 @@ export class SqliteMemoryStore implements MemoryStore {
   async listSourceRecords(options: SourceRecordQueryOptions = {}): Promise<MemorySourceRecord[]> {
     const limit = Math.max(1, Math.min(options.limit ?? 100, 1_000));
     const rows = this.db
-      .query<SourceRecordRow, [string | null, string | null, string | null, string | null, string | null, string | null, number]>(
+      .query<SourceRecordRow, [string | null, string | null, string | null, string | null, string | null, string | null, string | null, string | null, number]>(
         `SELECT id, kind, channel_id, thread_id, slack_ts, source_url, actor_id,
                 actor_kind, agent_name, repo_name, body, metadata_json, created_at
          FROM memory_source_record
          WHERE (? IS NULL OR kind = ?)
            AND (? IS NULL OR actor_id = ?)
            AND (? IS NULL OR actor_kind = ?)
+           AND (? IS NULL OR repo_name = ?)
          ORDER BY created_at DESC
          LIMIT ?`,
       )
@@ -180,6 +181,8 @@ export class SqliteMemoryStore implements MemoryStore {
         options.actorId ?? null,
         options.actorKind ?? null,
         options.actorKind ?? null,
+        options.repoName ?? null,
+        options.repoName ?? null,
         limit,
       );
     return rows.reverse().map(rowToSourceRecord);
@@ -207,6 +210,21 @@ export class SqliteMemoryStore implements MemoryStore {
         options.actorKind ?? null,
       )
       .map((row) => row.actor_id);
+  }
+
+  async listSourceRepos(
+    options: Pick<SourceRecordQueryOptions, "kind"> = {},
+  ): Promise<string[]> {
+    return this.db
+      .query<{ repo_name: string }, [string | null, string | null]>(
+        `SELECT DISTINCT repo_name
+         FROM memory_source_record
+         WHERE repo_name IS NOT NULL
+           AND (? IS NULL OR kind = ?)
+         ORDER BY repo_name`,
+      )
+      .all(options.kind ?? null, options.kind ?? null)
+      .map((row) => row.repo_name);
   }
 
   async upsertLesson(lesson: MemoryLessonInput): Promise<void> {

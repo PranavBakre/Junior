@@ -28,6 +28,8 @@ export interface MemoryStore {
   listSourceActors(
     options?: Pick<SourceRecordQueryOptions, "kind" | "actorKind">,
   ): Promise<string[]>;
+  /** Distinct repository labels present in raw evidence. */
+  listSourceRepos(options?: Pick<SourceRecordQueryOptions, "kind">): Promise<string[]>;
   upsertLesson(lesson: MemoryLessonInput): Promise<void>;
   upsertFact(fact: MemoryFactInput): Promise<void>;
   // memory v3: semantic claim store + raw episode log

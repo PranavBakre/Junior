@@ -166,6 +166,9 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         bodyCap: numberOption(options, "body-cap"),
         kinds: listOption(options, "kinds"),
         personaAll: booleanOption(options, "persona-all") === true,
+        profilesAll: booleanOption(options, "profiles-all") === true,
+        subjectsAll: booleanOption(options, "subjects-all") === true,
+        subjectRepoNames: listOption(options, "subject-repos"),
         personaActorIds: listOption(options, "persona-actors"),
       });
 
@@ -483,7 +486,7 @@ function formatClaimRecall(results: ClaimRecallResult[]): string {
 function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
   if (reports.length === 0) return "No unconsolidated source records.\n";
   return reports
-    .map(({ threadIds, report, persona, error }) => {
+    .map(({ threadIds, report, persona, subject, error }) => {
       if (persona) {
         const who = persona.displayName
           ? `${persona.displayName} (${persona.actorId})`
@@ -493,6 +496,14 @@ function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
           persona.profileUpdated
             ? `profile updated (${persona.entityRef})`
             : `unchanged (${persona.skippedReason ?? "no durable change"})`
+        }`;
+      }
+      if (subject) {
+        if (subject.error) return `${subject.kind} ${subject.subject}: FAILED — ${subject.error}`;
+        return `${subject.kind} ${subject.subject}: ${subject.recordsReviewed} records reviewed → ${
+          subject.profilesUpdated > 0
+            ? `${subject.profilesUpdated} profile(s) updated`
+            : `unchanged (${subject.skippedReason ?? "no durable change"})`
         }`;
       }
       const scope = threadIds.length ? threadIds.join(", ") : "(all unthreaded)";
@@ -512,7 +523,7 @@ function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
 function usage(): string {
   return [
     "Usage:",
-    "  bun run src/memory/cli.ts consolidate-v3 [--persona-all | --persona-actors U123,U456] [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--kinds slack_message,curated_fact,...] [--runner claude|opencode|codex] [--model <model>] [--effort low|medium|high] [--timeout-ms n] [--json]",
+    "  bun run src/memory/cli.ts consolidate-v3 [--profiles-all | --subjects-all | --subject-repos name,... | --persona-all | --persona-actors U123,U456] [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--kinds slack_message,curated_fact,...] [--runner claude|opencode|codex] [--model <model>] [--effort low|medium|high] [--timeout-ms n] [--json]",
     "  bun run src/memory/cli.ts add-lesson --id <id> --title <title> --body <body> [--applies-when <text>] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|preference|decision|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--skip-dedup] [--json]",

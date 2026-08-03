@@ -15,6 +15,14 @@ export {
   type RunPersonaConsolidationSweepArgs,
 } from "./persona.ts";
 export {
+  runSubjectConsolidationSweep,
+  canonicalRepoSlug,
+  DEFAULT_SUBJECT_HISTORY_LIMIT,
+  DEFAULT_SUBJECT_MIN_RECORDS,
+  type RunSubjectConsolidationSweepArgs,
+  type SubjectConsolidationReport,
+} from "./subjects.ts";
+export {
   createSlackPeopleResolver,
   referencedSlackUserIds,
   type PeopleResolver,

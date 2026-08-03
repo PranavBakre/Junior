@@ -38,6 +38,7 @@ import { WorkflowExecutor } from "./workflows/executor.ts";
 import { WorkflowRegistry } from "./workflows/registry.ts";
 import { WorkflowScheduler } from "./workflows/scheduler.ts";
 import { createMemoryStore } from "./memory/factory.ts";
+import { createProfileStore } from "./memory/profiles/factory.ts";
 import { MemoryIngestor } from "./memory/ingestion.ts";
 import { startWhatsApp, type WhatsAppHandle } from "./whatsapp/index.ts";
 import { setWhatsAppHandle } from "./mcp/whatsapp-tools.ts";
@@ -65,6 +66,7 @@ const actionStore = new SlackActionStore(resolve(config.session.sqlitePath));
 const memoryStore = createMemoryStore(config.memory.sqlitePath, {
   dedupThreshold: config.memory.dedupThreshold,
 });
+const profileStore = createProfileStore();
 const memoryIngestor = new MemoryIngestor(memoryStore);
 let pipelineAudit: SlackAuditCallback | undefined;
 const sessionManager = new SessionManager(store, config);
@@ -699,6 +701,7 @@ setInterval(() => {
         workflowRegistry,
         workflowStore,
         memoryStore,
+        profileStore,
         pipelineStore,
       });
     } catch (err) {

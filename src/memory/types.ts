@@ -93,6 +93,7 @@ export interface SourceRecordQueryOptions {
   kind?: MemorySourceKind;
   actorId?: string;
   actorKind?: MemorySourceRecord["actorKind"];
+  repoName?: string;
   /** Newest N matching records are returned in chronological order. */
   limit?: number;
 }

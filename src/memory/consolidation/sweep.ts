@@ -17,6 +17,10 @@ import {
   runPersonaConsolidationSweep,
   type PersonaConsolidationReport,
 } from "./persona.ts";
+import {
+  runSubjectConsolidationSweep,
+  type SubjectConsolidationReport,
+} from "./subjects.ts";
 import type { ConsolidationInvoke, ConsolidationReport } from "./types.ts";
 
 /**
@@ -29,6 +33,8 @@ export type ConsolidateV3Entry = {
   report?: ConsolidationReport;
   /** Cumulative cross-thread person-profile phase (one synthetic entry per actor). */
   persona?: PersonaConsolidationReport;
+  /** Cumulative repo/situation profile phase. */
+  subject?: SubjectConsolidationReport;
   error?: string;
 };
 
@@ -90,6 +96,12 @@ export interface RunConsolidationSweepArgs {
   now?: number;
   /** One-time operator backfill: review every historical human Slack actor. */
   personaAll?: boolean;
+  /** One-time operator backfill: review all people, repositories, and situations. */
+  profilesAll?: boolean;
+  /** Operator backfill for repositories and recurring situations only. */
+  subjectsAll?: boolean;
+  /** Targeted raw repository labels for an operator retry. */
+  subjectRepoNames?: string[];
   /** Targeted operator retry for selected historical Slack actor ids. */
   personaActorIds?: string[];
 }
@@ -173,11 +185,23 @@ export async function runConsolidationSweep(
     pendingRecords: pending,
     actorIds: args.personaActorIds && args.personaActorIds.length > 0
       ? args.personaActorIds
-      : args.personaAll
+      : args.personaAll || args.profilesAll
         ? await store.listSourceActors({ kind: "slack_message", actorKind: "human" })
         : undefined,
   });
   reports.push(...personaReports.map((persona) => ({ threadIds: [], persona })));
+
+  const subjectReports = await runSubjectConsolidationSweep({
+    store,
+    profileStore,
+    invoke,
+    pendingRecords: pending,
+    all: args.profilesAll || args.subjectsAll,
+    repoNames: args.subjectRepoNames,
+  });
+  reports.push(...subjectReports
+    .filter((subject) => args.profilesAll || args.subjectsAll || subject.profilesUpdated > 0 || subject.error)
+    .map((subject) => ({ threadIds: [], subject })));
 
   if (pending.length === 0) {
     return reports.length > 0
@@ -283,7 +307,7 @@ export function summarizeConsolidationSweep(reports: ConsolidateV3Entry[]): stri
   let deduped = 0;
   let failures = 0;
 
-  for (const { threadIds, report, persona, error } of reports) {
+  for (const { threadIds, report, persona, subject, error } of reports) {
     if (persona) {
       const who = persona.displayName
         ? `${persona.displayName} (${persona.actorId})`
@@ -296,6 +320,19 @@ export function summarizeConsolidationSweep(reports: ConsolidateV3Entry[]): stri
         profiles += 1;
       } else {
         lines.push(`- persona ${who}: ${persona.recordsReviewed} cross-thread records reviewed → unchanged (${persona.skippedReason ?? "no durable change"})`);
+      }
+      continue;
+    }
+    if (subject) {
+      const label = `${subject.kind} ${subject.subject}`;
+      if (subject.error) {
+        lines.push(`- ${label}: FAILED — ${subject.error}`);
+        failures += 1;
+      } else if (subject.profilesUpdated > 0) {
+        lines.push(`- ${label}: ${subject.recordsReviewed} cumulative records reviewed → ${subject.profilesUpdated} profile(s) updated`);
+        profiles += subject.profilesUpdated;
+      } else {
+        lines.push(`- ${label}: ${subject.recordsReviewed} cumulative records reviewed → unchanged (${subject.skippedReason ?? "no durable change"})`);
       }
       continue;
     }
