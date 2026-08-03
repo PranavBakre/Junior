@@ -95,6 +95,12 @@ export interface ClaimInput {
   repo?: string | null;
   tags?: string[];
   sourceEpisode?: string | null;
+  /** File or durable document this claim was extracted from. */
+  sourcePath?: string | null;
+  /** Heading of the parent section containing the atomic claim. */
+  sourceHeading?: string | null;
+  /** Parent-section text used to expand an atomic hit with local context. */
+  sourceText?: string | null;
   helpfulCount?: number;
   unhelpfulCount?: number;
   weight?: number;
@@ -173,6 +179,12 @@ export interface ClaimRecallOptions {
    * at the boundary (the caller). When absent, recall falls back to FTS-only.
    */
   queryVector?: Float32Array;
+  /**
+   * Original natural-language query for the lexical retrieval channel. When
+   * supplied with queryVector, recall fuses the independent vector and lexical
+   * ranks. When supplied alone, recall is lexical-only.
+   */
+  queryText?: string;
   filters?: ClaimRecallFilters;
   limit?: number;
   /**
@@ -198,7 +210,12 @@ export interface ClaimRecallResult {
   score: number;
   /** Cosine against queryVector, or null when no queryVector / no embedding. */
   cosine: number | null;
+  /** Exact-token/phrase coverage in [0, 1], or null without queryText. */
+  lexicalScore: number | null;
   sourceEpisode: string | null;
+  sourcePath: string | null;
+  sourceHeading: string | null;
+  sourceText: string | null;
   helpfulCount: number;
   unhelpfulCount: number;
   createdAt: number;
