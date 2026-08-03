@@ -305,6 +305,9 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         repo: stringOption(options, "repo"),
         tags: listOption(options, "tags"),
         sourceEpisode: stringOption(options, "source-episode"),
+        sourcePath: stringOption(options, "source-path"),
+        sourceHeading: stringOption(options, "source-heading"),
+        sourceText: stringOption(options, "source-text"),
         weight: numberOption(options, "weight"),
         createdAt: numberOption(options, "created-at") ?? Date.now(),
         skipDedup,
@@ -364,6 +367,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       }
       const results = await store.recallClaims({
         queryVector,
+        queryText,
         filters: {
           repo: stringOption(options, "repo"),
           kind: factKind ? "fact" : requestedKind as ClaimKind | undefined,
@@ -467,9 +471,15 @@ function formatClaimRecall(results: ClaimRecallResult[]): string {
   return results
     .map((result, index) => {
       const cos = result.cosine != null ? `, cos ${result.cosine.toFixed(3)}` : "";
+      const lex = result.lexicalScore != null
+        ? `, lexical ${result.lexicalScore.toFixed(3)}`
+        : "";
       return [
-        `${index + 1}. ${result.id} (${result.factKind ?? result.kind}, score ${result.score.toFixed(3)}${cos})`,
+        `${index + 1}. ${result.id} (${result.factKind ?? result.kind}, score ${result.score.toFixed(3)}${cos}${lex})`,
         result.text,
+        ...(result.sourcePath
+          ? [`source: ${result.sourcePath}${result.sourceHeading ? ` # ${result.sourceHeading}` : ""}`]
+          : []),
         `repo: ${result.repo ?? "none"} | tags: ${result.tags.join(", ") || "none"} | weight: ${result.weight}`,
       ].join("\n");
     })
@@ -500,7 +510,7 @@ function usage(): string {
     "  bun run src/memory/cli.ts consolidate-v3 [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--kinds slack_message,curated_fact,...] [--runner claude|opencode|codex] [--model <model>] [--effort low|medium|high] [--timeout-ms n] [--json]",
     "  bun run src/memory/cli.ts add-lesson --id <id> --title <title> --body <body> [--applies-when <text>] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
-    "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--skip-dedup] [--json]",
+    "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--source-path <path>] [--source-heading <heading>] [--source-text <section>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--skip-dedup] [--json]",
     "  bun run src/memory/cli.ts dedup-sweep [--threshold 0.92] [--apply] [--json]   (DRY RUN without --apply)",
     "  bun run src/memory/cli.ts recall-claims [--query <text> | --query-vector 0.1,0.2,...] [--repo <name>] [--kind <lesson|fact|situation-claim|curated_fact|routing_memory|procedure>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
   ].join("\n") + "\n";

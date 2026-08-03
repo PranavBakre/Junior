@@ -173,6 +173,36 @@ describe("MCP memory v3 tools", () => {
     }
   });
 
+  it("memory_recall expands an atomic claim to its source section", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const written = await addMemory(
+        {
+          text: "Use the deployment secret store for the release credential",
+          sourcePath: "memory/deployment.md",
+          sourceHeading: "Production publishing",
+          sourceText: "Before publishing, export SITE_RELEASE_KEY from the deployment secret store.",
+        },
+        deps,
+      );
+      const result = await recallMemory(
+        { query: "Where is SITE_RELEASE_KEY configured?", limit: 5 },
+        deps,
+      );
+
+      expect(result.claims).toContainEqual(
+        expect.objectContaining({
+          id: written.id,
+          contextText: expect.stringContaining("export SITE_RELEASE_KEY"),
+          sourcePath: "memory/deployment.md",
+          sourceHeading: "Production publishing",
+        }),
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("memory_recall preserves legacy OR tag filtering", async () => {
     const { deps, cleanup } = makeMemoryDeps();
     try {

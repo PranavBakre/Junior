@@ -1496,12 +1496,13 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         "when you pass `entity_refs` (the people/repos in front of you, e.g. 'pranav:person', " +
         "'gx-backend:repo'), their markdown profiles are fetched VERBATIM by key — no embedding, " +
         "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
-        "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
-        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`tags`/`kinds`). " +
+        "(2) HYBRID claims: `query` is matched against the atomic " +
+        "lesson/fact/situation-claim store by fused embedding and exact-token ranks " +
+        "(filtered by `repo`/`tags`/`kinds`). " +
         "Fact subtypes such as procedures can be requested with `fact_kinds`. " +
         "Use a complete natural-language situation/question for `query`; use repo/tags as " +
         "filters, not as query keywords. Returns keyed profiles plus relevant claims above " +
-        "the cosine floor, including `factKind`, text, score, repo, and tags.",
+        "the cosine or lexical floor, including parent-source context when available.",
       inputSchema: {
         query: z.string().describe(
           "Complete natural-language situation and desired action, preferably a question; never a tag/keyword bundle",
@@ -1568,12 +1569,23 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           .describe("Claim kind (default 'lesson')"),
         repo: z.string().optional().describe("Associate the claim with a repo (filter column)"),
         tags: z.array(z.string()).optional().describe("Optional filter tags"),
+        source_path: z.string().optional().describe("Source file or durable document path"),
+        source_heading: z.string().optional().describe("Heading of the source section"),
+        source_text: z.string().optional().describe("Parent-section text for contextual expansion"),
       },
     },
-    async ({ text, kind, repo, tags }) => {
+    async ({ text, kind, repo, tags, source_path, source_heading, source_text }) => {
       return withMemoryStore(async (memory) => {
         const result = await addMemory(
-          { text, kind, repo, tags },
+          {
+            text,
+            kind,
+            repo,
+            tags,
+            sourcePath: source_path,
+            sourceHeading: source_heading,
+            sourceText: source_text,
+          },
           { store: memory, provider: await getEmbeddingProvider(), profileStore: getProfileStore() },
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -2020,6 +2032,8 @@ export interface RecallMemoryArgs {
   limit?: number;
   /** Drop semantic matches below this raw cosine (default 0.55). */
   minCosine?: number;
+  /** Admit strong exact-token matches below the cosine floor (default 0.75). */
+  minLexicalScore?: number;
   /** Optional label stored with the recall observation for offline evaluation. */
   callerIntent?: string;
   /**
@@ -2033,24 +2047,31 @@ export interface RecallMemoryArgs {
 export interface RecallMemoryResult {
   /** Keyed profiles, returned verbatim (Junior-internal — never surfaced in a thread). */
   profiles: Profile[];
-  /** Top-k semantic claims, ranked by raw cosine relevance. */
+  /** Top-k claims ranked by fused vector + lexical relevance. */
   claims: Array<{
     id: string;
     kind: ClaimKind;
     factKind: MemoryFactInput["kind"] | null;
     text: string;
+    /** Atomic claim expanded to its parent source section when available. */
+    contextText: string;
     score: number;
     /**
-     * Raw cosine, unweighted — null with no queryVector or no embedding.
-     * For vector recall this is also the ranking `score`.
+     * Raw cosine, unweighted — null with no queryVector or no embedding. The
+     * ranking `score` is fused when both retrieval channels are present.
      */
     cosine: number | null;
+    lexicalScore: number | null;
     repo: string | null;
     tags: string[];
+    sourcePath: string | null;
+    sourceHeading: string | null;
   }>;
 }
 
 export const DEFAULT_MIN_RECALL_COSINE = 0.55;
+export const DEFAULT_MIN_RECALL_LEXICAL = 0.75;
+const MAX_SOURCE_CONTEXT_CHARS = 4_000;
 
 /**
  * Recall over two channels and merge (§8):
@@ -2104,6 +2125,7 @@ export async function recallMemory(
     if (scope.factKind) filters.factKind = scope.factKind;
     const results = await deps.store.recallClaims({
       queryVector,
+      queryText: args.query,
       filters,
       limit,
       recordUsage: false,
@@ -2115,6 +2137,7 @@ export async function recallMemory(
     }
   }
   merged.sort((a, b) =>
+    b.score - a.score ||
     (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
     b.weight - a.weight ||
     a.id.localeCompare(b.id)
@@ -2124,8 +2147,14 @@ export async function recallMemory(
     Math.max(args.minCosine ?? DEFAULT_MIN_RECALL_COSINE, -1),
     1,
   );
+  const minLexicalScore = Math.min(
+    Math.max(args.minLexicalScore ?? DEFAULT_MIN_RECALL_LEXICAL, 0),
+    1,
+  );
   const eligibleMerged = merged.filter(
-    (claim) => (claim.cosine ?? -Infinity) >= minCosine,
+    (claim) =>
+      (claim.cosine ?? -Infinity) >= minCosine ||
+      (claim.lexicalScore ?? 0) >= minLexicalScore,
   );
   const procedureQuota = args.factKinds?.length
     ? 0
@@ -2134,6 +2163,7 @@ export async function recallMemory(
   if (procedureQuota > 0) {
     const procedureResults = await deps.store.recallClaims({
       queryVector,
+      queryText: args.query,
       filters: {
         ...(args.repo
           ? { repo: args.repo, repoIncludeGlobal: args.repoIncludeGlobal }
@@ -2146,7 +2176,11 @@ export async function recallMemory(
       recordUsage: false,
     });
     const procedures = procedureResults
-      .filter((claim) => (claim.cosine ?? -Infinity) >= minCosine)
+      .filter(
+        (claim) =>
+          (claim.cosine ?? -Infinity) >= minCosine ||
+          (claim.lexicalScore ?? 0) >= minLexicalScore,
+      )
       .slice(0, procedureQuota);
     const procedureIds = new Set(procedures.map((claim) => claim.id));
     selected = [
@@ -2154,6 +2188,7 @@ export async function recallMemory(
       ...eligibleMerged.filter((claim) => !procedureIds.has(claim.id)),
     ].slice(0, limit);
     selected.sort((a, b) =>
+      b.score - a.score ||
       (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
       b.weight - a.weight ||
       a.id.localeCompare(b.id)
@@ -2188,10 +2223,14 @@ export async function recallMemory(
       kind: c.kind,
       factKind: c.factKind ?? null,
       text: c.text,
+      contextText: (c.sourceText?.trim() || c.text).slice(0, MAX_SOURCE_CONTEXT_CHARS),
       score: c.score,
       cosine: c.cosine,
+      lexicalScore: c.lexicalScore,
       repo: c.repo,
       tags: c.tags,
+      sourcePath: c.sourcePath,
+      sourceHeading: c.sourceHeading,
     })),
   };
 }
@@ -2201,6 +2240,9 @@ export interface AddMemoryArgs {
   kind?: ClaimKind;
   repo?: string;
   tags?: string[];
+  sourcePath?: string;
+  sourceHeading?: string;
+  sourceText?: string;
 }
 
 /**
@@ -2232,6 +2274,9 @@ export async function addMemory(
     dim: deps.provider.dim,
     repo: args.repo ?? null,
     tags: args.tags ?? [],
+    sourcePath: args.sourcePath ?? null,
+    sourceHeading: args.sourceHeading ?? null,
+    sourceText: args.sourceText ?? null,
     createdAt: Date.now(),
   });
 }

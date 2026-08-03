@@ -85,6 +85,7 @@ function candidate(fields: {
   score: number;
   text: string;
   cosine?: number | null;
+  lexicalScore?: number | null;
 }): SynthesisCandidate {
   return {
     id: fields.id,
@@ -93,6 +94,7 @@ function candidate(fields: {
     factKind: null,
     score: fields.score,
     cosine: fields.cosine === undefined ? fields.score : fields.cosine,
+    lexicalScore: fields.lexicalScore ?? null,
   };
 }
 
@@ -330,6 +332,17 @@ describe("FALLBACK_MIN_COSINE", () => {
 });
 
 describe("selectFallbackCandidates", () => {
+  test("admits a strong lexical hit even when cosine is below its floor", () => {
+    const exact = candidate({
+      id: "exact",
+      text: "Configure GX_DEPLOY_TOKEN",
+      score: 0.8,
+      cosine: 0.1,
+      lexicalScore: 1,
+    });
+    expect(selectFallbackCandidates([exact])).toEqual([exact]);
+  });
+
   test("drops candidates below the relevance floor", () => {
     const kept = selectFallbackCandidates([
       candidate({ id: "strong", score: 0.81, text: "a", cosine: 0.81 }),
