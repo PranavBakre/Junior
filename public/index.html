@@ -2257,6 +2257,9 @@ function renderWorkflows() {
   }
   let html = items.map((w) => {
     const state = w.state || {};
+    const schedulerStatus = state.status || (w.enabled ? "active" : "stopped");
+    const displayStatus = w.displayStatus ||
+      ((w.runs || [])[0]?.status === "running" ? "running" : schedulerStatus);
     // runs are newest-first from API; reverse for oldest → newest dots
     const runs = (w.runs || []).slice().reverse();
     const dots = runs.map((r) =>
@@ -2285,7 +2288,8 @@ function renderWorkflows() {
       '<div><div class="name">' + esc(w.name) + "</div>" +
       '<div class="desc">' + esc(w.description || "no description") + "</div>" +
       '<div class="src">' + esc(w.sourcePath || "") + "</div></div>" +
-      '<div class="mrow">' + (w.enabled ? pill("active") : pill("stopped")) +
+      '<div class="mrow">status ' + pill(displayStatus) +
+      "<br/>scheduler <b>" + esc(schedulerStatus) + "</b>" +
       "<br/>next <b>" + esc(fmtNext(state.nextRunAt)) + "</b>" +
       "<br/>last <b>" + (state.lastRunAt ? ago(state.lastRunAt) + " ago" : "never") + "</b>" +
       "<br/>runner <b>" + esc(runner) + "</b>" +
