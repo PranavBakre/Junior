@@ -10,17 +10,31 @@ export async function handleWorkflows(
   const states = await store.listStates();
   const stateByName = new Map(states.map((state) => [state.name, state]));
   const workflows = await Promise.all(
-    definitions.map(async (definition) => ({
-      ...projectDefinition(definition),
-      state: stateByName.get(definition.name) ?? null,
-      runs: (await store.listRuns(definition.name, 5)).map(projectRun),
-    })),
+    definitions.map(async (definition) => {
+      const state = stateByName.get(definition.name) ?? null;
+      const runs = (await store.listRuns(definition.name, 5)).map(projectRun);
+      return {
+        ...projectDefinition(definition),
+        state,
+        runs,
+        displayStatus: workflowDisplayStatus(definition.enabled, state?.status, runs),
+      };
+    }),
   );
 
   return Response.json({
     workflows,
     errors: registry.getErrors(),
   });
+}
+
+export function workflowDisplayStatus(
+  enabled: boolean,
+  schedulerStatus: "active" | "stopped" | "invalid" | undefined,
+  runs: Array<Pick<WorkflowRun, "status">>,
+): WorkflowRun["status"] | "active" | "stopped" | "invalid" {
+  if (runs[0]?.status === "running") return "running";
+  return schedulerStatus ?? (enabled ? "active" : "stopped");
 }
 
 function projectDefinition(definition: WorkflowDefinition) {
