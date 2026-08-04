@@ -180,6 +180,9 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `CODEX_ISOLATED_HOME_PATH` | `data/codex-home` | Junior-owned Codex home with generated config and symlinked auth |
 | `PRE_RECALL_ENABLED` | `false` | Run the optional cheap-model recall query extractor before runner turns |
 | `WHATSAPP_ENABLED` | `false` | Enable the read-only WhatsApp archive and MCP tools |
+| `SLACK_ARCHIVE_ENABLED` | `false` | Capture all live Slack message events into the separate read-only archive |
+| `SLACK_ARCHIVE_DB_PATH` | `data/slack-archive.db` | Slack archive SQLite path |
+| `SLACK_ARCHIVE_APPROVED_CHANNEL_IDS` | *(unset)* | Additional non-public channel IDs approved for archive capture and use |
 | `PIPELINE_RUNTIME_MODE` | `off` | Durable pipeline mode: `off`, `shadow`, or `active` |
 | `BUG_PIPELINE_ENABLED` / `PRODUCT_PIPELINE_ENABLED` | `false` | Enable typed bug/product starts; requires `PIPELINE_RUNTIME_MODE=active` |
 | `GITHUB_RECONCILE_ENABLED` | `false` | Enable outbound PR/resource reconciliation |

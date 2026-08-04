@@ -116,6 +116,12 @@ export interface ClaimInput {
   repo?: string | null;
   tags?: string[];
   sourceEpisode?: string | null;
+  /** File or durable document this claim was extracted from. */
+  sourcePath?: string | null;
+  /** Heading of the parent section containing the atomic claim. */
+  sourceHeading?: string | null;
+  /** Parent-section text used to expand an atomic hit with local context. */
+  sourceText?: string | null;
   helpfulCount?: number;
   unhelpfulCount?: number;
   weight?: number;
@@ -183,7 +189,16 @@ export interface ClaimRecallFilters {
    * preserves subtype-aware retrieval without duplicating their embeddings.
    */
   factKind?: MemoryFactInput["kind"];
+  /**
+   * Internal hot-path scope for durable operational guidance. Includes lessons,
+   * preferences, decisions, and legacy procedure facts; excludes contextual or
+   * untyped facts, curated/routing facts, and situation claims. Applied by the
+   * store before either retrieval channel is ranked.
+   */
+  guidanceOnly?: boolean;
   tags?: string[];
+  /** Match any requested tag by default, or require every tag for trusted scopes. */
+  tagMatch?: "any" | "all";
   /** Absolute epoch-ms lower bound: only claims with created_at >= sinceMs. */
   sinceMs?: number;
 }
@@ -191,9 +206,15 @@ export interface ClaimRecallFilters {
 export interface ClaimRecallOptions {
   /**
    * PRE-COMPUTED query embedding. recallClaims NEVER embeds — embedding happens
-   * at the boundary (the caller). When absent, recall falls back to FTS-only.
+   * at the boundary (the caller). When absent, recall falls back to lexical-only.
    */
   queryVector?: Float32Array;
+  /**
+   * Original natural-language query for the lexical retrieval channel. When
+   * supplied with queryVector, recall fuses the independent vector and lexical
+   * ranks. When supplied alone, recall is lexical-only.
+   */
+  queryText?: string;
   filters?: ClaimRecallFilters;
   limit?: number;
   /**
@@ -219,7 +240,12 @@ export interface ClaimRecallResult {
   score: number;
   /** Cosine against queryVector, or null when no queryVector / no embedding. */
   cosine: number | null;
+  /** Exact-token/phrase coverage in [0, 1], or null without queryText. */
+  lexicalScore: number | null;
   sourceEpisode: string | null;
+  sourcePath: string | null;
+  sourceHeading: string | null;
+  sourceText: string | null;
   helpfulCount: number;
   unhelpfulCount: number;
   createdAt: number;

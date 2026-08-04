@@ -968,8 +968,8 @@ export class SessionManager {
   /**
    * Like `isAdmin` but WITHOUT the open-mode fallback: true only when the user
    * is explicitly listed (env var or admins table). Sensitive gates — the
-   * WhatsApp archive — use this so an unconfigured admin roster fails closed
-   * instead of promoting every workspace user.
+   * organization-wide message archives — use this so an unconfigured admin
+   * roster fails closed instead of promoting every workspace user.
    */
   async isExplicitAdmin(userId: string): Promise<boolean> {
     const envAdmin = this.config.adminSlackUserId;
@@ -2124,6 +2124,13 @@ export class SessionManager {
         const preRecallBlock = await this.preRecall(rawMessage, {
           repo: session.targetRepo,
           agent: agentName,
+          // Agent identity is trusted routing context, not a keyword guessed
+          // from the user's message. Specialist-tagged guidance gets the first
+          // pass; pre-recall falls back to untagged guidance when this is empty.
+          trustedTags:
+            agentName === "default" || agentName === "lead"
+              ? undefined
+              : [agentName],
         });
         assertRunOwnership();
         if (preRecallBlock) {

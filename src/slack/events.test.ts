@@ -3,8 +3,48 @@ import type { App } from "@slack/bolt";
 import {
   registerEventHandlers,
   isForeignBotThinking,
+  canonicalizeLiveSlackMessage,
+  type OnArchiveMessageCallback,
   type SlackMessageEvent,
 } from "./events.ts";
+
+describe("canonicalizeLiveSlackMessage", () => {
+  it("archives ignored top-level and file-only messages", () => {
+    expect(canonicalizeLiveSlackMessage({
+      type: "message",
+      channel: "C1",
+      ts: "1700000000.000001",
+      user: "U1",
+      files: [{ id: "F1", name: "brief.pdf", mimetype: "application/pdf" }],
+    })).toMatchObject({
+      channelId: "C1",
+      ts: "1700000000.000001",
+      threadTs: "1700000000.000001",
+      actorId: "U1",
+      text: "",
+      ingestSource: "live",
+      files: [{ id: "F1", name: "brief.pdf" }],
+    });
+  });
+
+  it("uses the canonical message identity for edits and deletions", () => {
+    expect(canonicalizeLiveSlackMessage({
+      type: "message",
+      subtype: "message_changed",
+      channel: "C1",
+      ts: "1700000010.000001",
+      message: { ts: "1700000000.000001", thread_ts: "1699999999.000001", user: "U1", text: "edited" },
+    })).toMatchObject({ ts: "1700000000.000001", threadTs: "1699999999.000001", text: "edited" });
+
+    expect(canonicalizeLiveSlackMessage({
+      type: "message",
+      subtype: "message_deleted",
+      channel: "C1",
+      deleted_ts: "1700000000.000001",
+      previous_message: { ts: "1700000000.000001", user: "U1", text: "private" },
+    })).toMatchObject({ ts: "1700000000.000001", text: "[message deleted]" });
+  });
+});
 
 type EventHandler = (args: { event: Record<string, unknown> }) => Promise<void> | void;
 
@@ -42,6 +82,74 @@ describe("isForeignBotThinking", () => {
 });
 
 describe("registerEventHandlers — ✽ filter", () => {
+  it("archives a message before response-routing filters drop it", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    const onArchive = mock<OnArchiveMessageCallback>(() => {});
+    registerEventHandlers(
+      app,
+      onMessage,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      onArchive,
+    );
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "ordinary channel context",
+        channel: "C123",
+        channel_type: "channel",
+        ts: "1700000000.000000",
+        user: "U1",
+      },
+    });
+
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(onMessage).not.toHaveBeenCalled();
+  });
+
+  it("captures non-public channels only when their exact ID is approved", async () => {
+    const { app, handlers } = makeMockApp();
+    const onArchive = mock<OnArchiveMessageCallback>(() => {});
+    registerEventHandlers(
+      app,
+      mock((_e: SlackMessageEvent) => {}),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      onArchive,
+      new Set(["G_APPROVED"]),
+    );
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "approved context",
+        channel: "G_APPROVED",
+        channel_type: "group",
+        ts: "1700000000.000005",
+        user: "U1",
+      },
+    });
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "not approved",
+        channel: "G_PRIVATE",
+        channel_type: "group",
+        ts: "1700000000.000006",
+        user: "U1",
+      },
+    });
+
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(onArchive.mock.calls[0][0].channelId).toBe("G_APPROVED");
+  });
+
   it("message handler drops a sibling-bot ✽ thinking line", async () => {
     const { app, handlers } = makeMockApp();
     const onMessage = mock((_e: SlackMessageEvent) => {});

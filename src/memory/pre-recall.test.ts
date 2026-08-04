@@ -11,6 +11,7 @@ import {
   FALLBACK_MIN_COSINE,
   maxCosine,
   parseSynthesisResult,
+  recallCandidates,
   selectFallbackCandidates,
   selectSynthesisCandidates,
   type RunTextFn,
@@ -85,6 +86,7 @@ function candidate(fields: {
   score: number;
   text: string;
   cosine?: number | null;
+  lexicalScore?: number | null;
 }): SynthesisCandidate {
   return {
     id: fields.id,
@@ -93,6 +95,7 @@ function candidate(fields: {
     factKind: null,
     score: fields.score,
     cosine: fields.cosine === undefined ? fields.score : fields.cosine,
+    lexicalScore: fields.lexicalScore ?? null,
   };
 }
 
@@ -330,6 +333,17 @@ describe("FALLBACK_MIN_COSINE", () => {
 });
 
 describe("selectFallbackCandidates", () => {
+  test("admits a strong lexical hit even when cosine is below its floor", () => {
+    const exact = candidate({
+      id: "exact",
+      text: "Configure GX_DEPLOY_TOKEN",
+      score: 0.8,
+      cosine: 0.1,
+      lexicalScore: 1,
+    });
+    expect(selectFallbackCandidates([exact])).toEqual([exact]);
+  });
+
   test("drops candidates below the relevance floor", () => {
     const kept = selectFallbackCandidates([
       candidate({ id: "strong", score: 0.81, text: "a", cosine: 0.81 }),
@@ -516,6 +530,57 @@ function shortlistFromPrompt(prompt: string): string[] {
 }
 
 describe("createPreRecall", () => {
+  test("uses trusted tagged guidance without mixing in untagged guidance", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      await addMemory(
+        {
+          text: "Team Atlas deploys through the release train",
+          tags: ["team-atlas", "production"],
+        },
+        deps,
+      );
+      await addMemory(
+        { text: "Generic deployments can run directly from a workstation" },
+        deps,
+      );
+
+      const candidates = await recallCandidates(
+        ["how should we deploy?"],
+        { trustedTags: ["team-atlas", "production"] },
+        deps,
+      );
+
+      expect(candidates.map((claim) => claim.text)).toEqual([
+        "Team Atlas deploys through the release train",
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("falls back to untagged guidance when trusted tags find nothing", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      await addMemory(
+        { text: "Generic deployments use the checked-in release workflow" },
+        deps,
+      );
+
+      const candidates = await recallCandidates(
+        ["how should we deploy?"],
+        { trustedTags: ["missing-team", "missing-project"] },
+        deps,
+      );
+
+      expect(candidates.map((claim) => claim.text)).toEqual([
+        "Generic deployments use the checked-in release workflow",
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("uses deterministic relevance filtering without spawning synthesis by default", async () => {
     const { deps, cleanup } = makeMemoryDeps();
     try {

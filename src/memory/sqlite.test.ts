@@ -277,6 +277,64 @@ describe("SqliteMemoryStore", () => {
     expect(results[1].cosine).toBeCloseTo(0, 5);
   });
 
+  it("fuses lexical and vector ranks so an exact identifier can rescue a weak vector hit", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "exact-identifier",
+      kind: "fact",
+      text: "Set GX_DEPLOY_TOKEN before publishing the site",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "semantic-distractor",
+      kind: "fact",
+      text: "Unrelated release guidance",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      queryText: "Where is GX_DEPLOY_TOKEN configured?",
+      limit: 2,
+      recordUsage: false,
+    });
+
+    expect(results[0].id).toBe("exact-identifier");
+    expect(results[0].cosine).toBeCloseTo(0, 5);
+    expect(results[0].lexicalScore).toBeGreaterThanOrEqual(0.75);
+  });
+
+  it("round-trips source provenance and lets parent-section text participate in lexical recall", async () => {
+    await store.upsertClaim({
+      id: "source-expanded",
+      kind: "fact",
+      text: "The release credential lives in the deployment secret store",
+      sourcePath: "memory/deployment.md",
+      sourceHeading: "Production publishing",
+      sourceText: "For production publishing, export SITE_RELEASE_KEY from the deployment secret store.",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: Date.now(),
+      skipDedup: true,
+    });
+
+    const [result] = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      queryText: "SITE_RELEASE_KEY",
+      limit: 1,
+      recordUsage: false,
+    });
+
+    expect(result.id).toBe("source-expanded");
+    expect(result.lexicalScore).toBe(1);
+    expect(result.sourcePath).toBe("memory/deployment.md");
+    expect(result.sourceHeading).toBe("Production publishing");
+    expect(result.sourceText).toContain("export SITE_RELEASE_KEY");
+  });
+
   it("ranks vector recall by cosine before historical weight", async () => {
     const now = Date.now();
     // A much higher weight must not beat stronger semantic relevance. These sit at
@@ -423,6 +481,119 @@ describe("SqliteMemoryStore", () => {
       limit: 5,
     });
     expect(byKindTagRecency.map((r) => r.id)).toEqual(["c-new-x"]);
+  });
+
+  it("pre-filters to guidance before top-k hybrid ranking", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "contextual-top-hit",
+      kind: "fact",
+      text: "deploy production",
+      embedding: new Float32Array([1, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "guidance-lower-hit",
+      kind: "lesson",
+      text: "deployment guidance",
+      embedding: new Float32Array([0.8, 0.2]),
+      createdAt: now,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0]),
+      queryText: "deploy production",
+      filters: { guidanceOnly: true },
+      limit: 1,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id)).toEqual(["guidance-lower-hit"]);
+  });
+
+  it("guidance includes durable claim kinds and legacy procedures only", async () => {
+    const now = Date.now();
+    for (const [id, kind] of [
+      ["lesson", "lesson"],
+      ["preference", "preference"],
+      ["decision", "decision"],
+      ["situation", "situation-claim"],
+      ["untyped-fact", "fact"],
+    ] as const) {
+      await store.upsertClaim({
+        id,
+        kind,
+        text: id,
+        embedding: new Float32Array([1, 0]),
+        createdAt: now,
+        skipDedup: true,
+      });
+    }
+    for (const factKind of ["procedure", "curated_fact", "routing_memory"] as const) {
+      const id = `${factKind}-fact`;
+      await store.upsertFact({ id, kind: factKind, body: id, createdAt: now });
+      await store.upsertClaim({
+        id,
+        kind: "fact",
+        text: id,
+        embedding: new Float32Array([1, 0]),
+        createdAt: now,
+        skipDedup: true,
+      });
+    }
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0]),
+      filters: { guidanceOnly: true },
+      limit: 20,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id).sort()).toEqual([
+      "decision",
+      "lesson",
+      "preference",
+      "procedure-fact",
+    ]);
+  });
+
+  it("requires all tags only when tagMatch is all", async () => {
+    const now = Date.now();
+    for (const [id, tags] of [
+      ["both", ["team-a", "project-x"]],
+      ["team-only", ["team-a"]],
+      ["project-only", ["project-x"]],
+    ] as const) {
+      await store.upsertClaim({
+        id,
+        kind: "lesson",
+        text: id,
+        tags: [...tags],
+        embedding: new Float32Array([1, 0]),
+        createdAt: now,
+        skipDedup: true,
+      });
+    }
+
+    const any = await store.recallClaims({
+      filters: { tags: ["team-a", "project-x"] },
+      limit: 10,
+      recordUsage: false,
+    });
+    const all = await store.recallClaims({
+      filters: { tags: ["team-a", "project-x"], tagMatch: "all" },
+      limit: 10,
+      recordUsage: false,
+    });
+
+    expect(any.map((result) => result.id).sort()).toEqual([
+      "both",
+      "project-only",
+      "team-only",
+    ]);
+    expect(all.map((result) => result.id)).toEqual(["both"]);
   });
 
   it("appends an episode plus its backing source record", async () => {

@@ -4,6 +4,10 @@ import type { PipelineInvocationRef } from "../session/types.ts";
 import { parseCommand } from "./commands.ts";
 import { isPersistentAgent } from "../support/agents.ts";
 import { log } from "../logger.ts";
+import type {
+  SlackArchiveFile,
+  SlackArchiveMessageInput,
+} from "./archive-types.ts";
 
 /**
  * Detect whether a self-bot message contains at least one `!<persistent-agent>`
@@ -78,6 +82,61 @@ export interface SlackMessageEvent {
 }
 
 export type OnMessageCallback = (event: SlackMessageEvent) => void | Promise<void>;
+export type OnArchiveMessageCallback = (
+  event: SlackArchiveMessageInput,
+) => void | Promise<void>;
+
+/**
+ * Convert a Socket Mode message event into the passive archive schema. This
+ * intentionally happens before any response-routing guards: ignored channel
+ * posts, foreign bots, and file-only messages are still useful history.
+ */
+export function canonicalizeLiveSlackMessage(
+  event: unknown,
+): SlackArchiveMessageInput | null {
+  if (!isRecord(event) || typeof event.channel !== "string") return null;
+
+  const subtype = typeof event.subtype === "string" ? event.subtype : null;
+  const nested = isRecord(event.message) ? event.message : null;
+  const previous = isRecord(event.previous_message) ? event.previous_message : null;
+  const source = subtype === "message_changed"
+    ? nested
+    : subtype === "message_deleted"
+      ? previous
+      : event;
+  const ts = subtype === "message_deleted"
+    ? stringValue(event.deleted_ts) ?? stringValue(source?.ts)
+    : stringValue(source?.ts) ?? stringValue(event.ts);
+  if (!source || !ts) return null;
+
+  const userId = stringValue(source.user);
+  const botId = stringValue(source.bot_id);
+  const isDeleted = subtype === "message_deleted";
+  const text = isDeleted ? "[message deleted]" : stringValue(source.text) ?? "";
+  return {
+    channelId: event.channel,
+    ts,
+    threadTs: stringValue(source.thread_ts) ?? ts,
+    userId,
+    botId,
+    actorId: userId ?? botId,
+    actorName: stringValue(source.username) ?? null,
+    actorKind: botId ? "bot" : userId ? "human" : subtype ? "system" : "unknown",
+    text,
+    files: canonicalizeArchiveFiles(source.files),
+    subtype,
+    metadata: {
+      ...(stringValue(source.client_msg_id)
+        ? { clientMsgId: stringValue(source.client_msg_id) }
+        : {}),
+      ...(stringValue(source.app_id) ? { appId: stringValue(source.app_id) } : {}),
+      ...(subtype === "message_changed" ? { edited: true } : {}),
+      ...(isDeleted ? { deleted: true } : {}),
+    },
+    ingestSource: "live",
+    observedAt: Date.now(),
+  };
+}
 
 export function registerEventHandlers(
   app: App,
@@ -86,8 +145,28 @@ export function registerEventHandlers(
   selfBotId?: string,
   selfUserId?: string,
   autoTriggerChannels?: Set<string>,
+  onArchiveMessage?: OnArchiveMessageCallback,
+  archiveApprovedChannels?: ReadonlySet<string>,
 ): void {
   app.event("message", async ({ event }) => {
+    const archiveChannelType = "channel_type" in event ? event.channel_type : undefined;
+    const archiveAllowed = archiveChannelType === "channel" ||
+      archiveApprovedChannels?.has(event.channel) === true;
+    if (onArchiveMessage && archiveAllowed) {
+      const archiveMessage = canonicalizeLiveSlackMessage(event);
+      if (archiveMessage) {
+        try {
+          await onArchiveMessage(archiveMessage);
+        } catch (error) {
+          // Archive availability must never break conversational routing.
+          log.warn(
+            "slack-archive",
+            `live capture failed channel=${archiveMessage.channelId} ts=${archiveMessage.ts}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    }
+
     const evMeta = {
       channel: event.channel,
       ts: "ts" in event ? event.ts : undefined,
@@ -245,6 +324,28 @@ export function registerEventHandlers(
       mentionsJunior,
     });
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function canonicalizeArchiveFiles(value: unknown): SlackArchiveFile[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isRecord).map((file) => ({
+    id: stringValue(file.id) ?? "",
+    name: stringValue(file.name) ?? null,
+    title: stringValue(file.title) ?? null,
+    mimetype: stringValue(file.mimetype) ?? null,
+    filetype: stringValue(file.filetype) ?? null,
+    size: typeof file.size === "number" ? file.size : null,
+    urlPrivate: stringValue(file.url_private) ?? null,
+    permalink: stringValue(file.permalink) ?? null,
+  }));
 }
 
 function detectSelfMention(text: string, selfUserId?: string): boolean {

@@ -1,10 +1,9 @@
 // Pre-recall hook: runs BEFORE the runner spawns to inject operational memory
 // into the prompt.
 //
-// Retrieval is embedding-only. The raw Slack message is embedded directly by
-// the configured provider (milliseconds, in-process) instead of being fed to a
-// model for query extraction — that was the unbounded half of the pipeline, so
-// no timeout could be sized for it and expiry left the turn with zero memory.
+// Retrieval fuses embedding and exact-token ranks. The raw Slack message is
+// embedded directly by the configured provider (milliseconds, in-process)
+// instead of being fed to a model for query extraction.
 //
 // The single LLM call is SYNTHESIS over the retrieved claims: a bounded input
 // (capped candidate count, per-claim truncation, total candidate-character
@@ -113,6 +112,8 @@ const FALLBACK_TOP_K = 3;
  * pre-recall.test.ts are the tests that can move this number.
  */
 export const FALLBACK_MIN_COSINE = 0.55;
+/** Conservative exact-token coverage that may rescue a weak vector match. */
+export const FALLBACK_MIN_LEXICAL = 0.75;
 /** Synthesized lines kept, and their length, so the injected block stays small. */
 const MAX_NOTES = 5;
 const MAX_NOTE_CHARS = 500;
@@ -142,6 +143,12 @@ export interface PreRecallOptions {
   repo?: string | null;
   /** Agent the turn is routed to. Only used to bias the retrieval query. */
   agent?: string | null;
+  /**
+   * Trusted, caller-derived scope tags (for example team/project identity).
+   * Every tag must match. User message text must never be promoted into this
+   * field; when the scoped guidance pool is empty pre-recall retries untagged.
+   */
+  trustedTags?: string[];
 }
 
 export type PreRecallFn = (
@@ -165,10 +172,12 @@ export interface SynthesisCandidate {
   text: string;
   kind: "lesson" | "fact" | "preference" | "decision" | "situation-claim";
   factKind: "curated_fact" | "routing_memory" | "procedure" | null;
-  /** cosine × weight — ranks candidates. */
+  /** Fused vector + lexical rank score. */
   score: number;
   /** Raw cosine — gates the fallback. Null when relevance is unmeasurable. */
   cosine: number | null;
+  /** Exact-token/phrase coverage — independently gates the fallback. */
+  lexicalScore: number | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────
@@ -332,10 +341,28 @@ export function deriveRecallQueries(
  * Run every derived query through recallMemory() and merge by claim id.
  * `recordUsage: false` — see recordClaimUsage for why the bump waits.
  */
-async function recallCandidates(
+export async function recallCandidates(
   queries: string[],
   options: PreRecallOptions | undefined,
   deps: MemoryToolDeps,
+): Promise<SynthesisCandidate[]> {
+  const trustedTags = options?.trustedTags
+    ?.map((tag) => tag.trim())
+    .filter(Boolean);
+
+  if (trustedTags?.length) {
+    const tagged = await recallCandidatesForScope(queries, options, deps, trustedTags);
+    if (tagged.length > 0) return tagged;
+  }
+
+  return recallCandidatesForScope(queries, options, deps);
+}
+
+async function recallCandidatesForScope(
+  queries: string[],
+  options: PreRecallOptions | undefined,
+  deps: MemoryToolDeps,
+  trustedTags?: string[],
 ): Promise<SynthesisCandidate[]> {
   const seen = new Set<string>();
   const candidates: SynthesisCandidate[] = [];
@@ -349,6 +376,10 @@ async function recallCandidates(
         // would drop the repo-less lessons that make up most of the corpus.
         repo: options?.repo ?? undefined,
         repoIncludeGlobal: true,
+        guidanceOnly: true,
+        ...(trustedTags?.length
+          ? { tags: trustedTags, tagMatch: "all" as const }
+          : {}),
         procedureQuota: PROCEDURE_CANDIDATE_QUOTA,
         // Pre-recall has its own measured floor after optional synthesis. Keep
         // the shared candidate set intact so synthesis can judge combinations.
@@ -362,11 +393,12 @@ async function recallCandidates(
       seen.add(claim.id);
       candidates.push({
         id: claim.id,
-        text: claim.text,
+        text: claim.contextText,
         kind: claim.kind,
         factKind: claim.factKind,
         score: claim.score,
         cosine: claim.cosine,
+        lexicalScore: claim.lexicalScore,
       });
     }
   }
@@ -411,10 +443,9 @@ export function selectSynthesisCandidates(
  * relevance floor stands in for the model: below it, emit nothing rather than
  * dressing up arbitrary nearest neighbours as recalled knowledge.
  *
- * Filter on cosine (relevance), rank by score (relevance × value): a
- * low-weight but exactly-on-topic claim is precisely what the fallback exists
- * to surface. A null cosine — no queryVector, or a claim with no embedding — is
- * unmeasurable relevance, which is not relevance.
+ * A claim may clear either independently calibrated relevance channel: cosine
+ * for paraphrases, or high exact-token coverage for identifiers and wording
+ * that embeddings miss. Rank by their fused score after eligibility.
  */
 export function selectFallbackCandidates(
   shortlist: SynthesisCandidate[],
@@ -422,7 +453,9 @@ export function selectFallbackCandidates(
   return shortlist
     .filter(
       (candidate) =>
-        candidate.cosine !== null && candidate.cosine >= FALLBACK_MIN_COSINE,
+        (candidate.cosine !== null && candidate.cosine >= FALLBACK_MIN_COSINE) ||
+        (candidate.lexicalScore !== null &&
+          candidate.lexicalScore >= FALLBACK_MIN_LEXICAL),
     )
     // Sorted here rather than inherited from the caller: "top K" is this
     // function's own contract, and an unsorted input would otherwise silently

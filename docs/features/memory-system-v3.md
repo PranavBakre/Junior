@@ -1,15 +1,15 @@
 # Junior Memory System — Entity Profiles & Episodic Memory (v3)
 
-> **Status: SHIPPED.** This is the live memory system and supersedes [memory-lesson-store.md](memory-lesson-store.md) (v2) and the whole legacy associative stack ([associative-memory.md](associative-memory.md), [memory-ingestion-rule-learning.md](memory-ingestion-rule-learning.md), [memory-system-overhaul.md](memory-system-overhaul.md) — all retired, kept only as historical evidence records). The cutover is complete: `migrate-v3.ts` folded the old `lesson`/`memory_fact` rows into claims and the condemned tables (`memory_event`, `edge`, `mention`, `memory_search_doc`, `candidate_rule`, `memory_fts`) were dropped; the legacy associative `recall()`/`consolidate()`, the rule-learning layer, and the `src/memory/eval/` harness are gone. **Recall is cosine-only — there is no FTS channel.** v3 keeps the v2 curated/embedded core and **generalizes the subject of memory**: Junior captures episodic experience (including affect), and consolidates it into a heterogeneous set of **derivations** (person/repo profiles, lessons, situation-patterns, facts). Every structural choice here was constrained by **why the original `memory_event` system failed** (§2).
+> **Status: SHIPPED.** This is the live memory system and supersedes [memory-lesson-store.md](memory-lesson-store.md) (v2) and the whole legacy associative stack ([associative-memory.md](associative-memory.md), [memory-ingestion-rule-learning.md](memory-ingestion-rule-learning.md), [memory-system-overhaul.md](memory-system-overhaul.md) — all retired, kept only as historical evidence records). The cutover is complete: `migrate-v3.ts` folded the old `lesson`/`memory_fact` rows into claims and the condemned tables (`memory_event`, `edge`, `mention`, `memory_search_doc`, `candidate_rule`, `memory_fts`) were dropped. Recall now fuses **vector similarity with an in-process exact-token channel** over the same filtered SQLite rows; this is not the condemned legacy `memory_fts` index. Claims may retain source file, heading, and parent-section text so a precise atomic hit can expand into useful context.
 >
-> Where this design doc and the shipped code diverge, sections below are annotated **(shipped: …)**. The most consequential divergence: §8/§11/§12 describe an FTS∥vector merge that was *not* built — production recall is pure cosine over the embedded claim store.
+> Where this design doc and the shipped code diverge, sections below are annotated **(shipped: …)**. Production uses exact-token coverage plus reciprocal-rank fusion, not a separately synchronized FTS index.
 
 ## 1. TL;DR
 
 - **Capture** raw turns as **source records / episodes** — provenance and evidence, *not* recallable memory. Episodes carry **affect** (emotion, intensity, valence, trigger, Junior's response, salience) and are **multi-subject**.
 - **Consolidate** (offline) reads episodes and builds/updates **derivations** — a heterogeneous set, not just one kind: **profiles** (person, repo, project, situation) and the keyless long tail (**lessons, facts, atomic claims**).
-- **Recall** (hot path) returns the **consolidated derivation** — never the raw episode stream.
-- **Two retrieval modes decide everything downstream:** **keyed** memory (profiles, fetched by `entity_ref` from context — no vector) and **semantic** memory (lessons/facts/claims, reached only by cosine — embedded per atomic claim).
+- **Recall** (hot path) returns the **consolidated derivation** — never the raw episode stream. Automatic pre-recall is narrower still: durable guidance only (lessons, preferences, decisions, typed procedures), not contextual facts.
+- **Two memory retrieval modes decide everything downstream:** **keyed** memory (profiles, fetched by `entity_ref` from context — no vector) and **hybrid guidance** (lessons/preferences/decisions/procedures, scoped by trusted tags and ranked by vector similarity plus lexical evidence). Source-backed context such as Slack belongs in a separate archive search surface.
 - **Storage follows retrieval mode:** profiles → **markdown files** (keyed, human-inspectable); claims/lessons → **SQLite rows** with text + embedding co-located; episodes → **SQLite raw log**.
 - **Embed locally** (`onnx-community/harrier-oss-v1-270m-ONNX`, pure-TS in Bun): affective memory must not leave for a remote API.
 - **Affect is record-and-inform, not behavior-shaping** (decided). Profiles are **Junior-internal, never surfaced verbatim** (decided).
@@ -55,7 +55,7 @@ So episodes are *read-by-the-consolidator* but *not-returned-by-recall*. Reading
                                  │
                                  ▼
    HOT-PATH RECALL:  context ─(entity key)─▶ profiles        (keyed, no vector)
-                     query   ─(filters)─▶ scope ─(cosine)─▶  lessons/claims/...
+                     query   ─(filters)─▶ scope ─(vector ∥ lexical)─▶ claims
 ```
 
 **Profiles are one derivation among several — do not hardcode "person", and do not assume every derivation is a profile.** The split that matters is **how you reach it** (§4.1), not whether it's a "profile."
@@ -64,9 +64,9 @@ So episodes are *read-by-the-consolidator* but *not-returned-by-recall*. Reading
 
 | | **Keyed** | **Semantic** |
 |---|---|---|
-| Kinds | person / repo / project / situation **profiles** | **lessons, facts, atomic claims** |
-| Reached by | a deterministic key from context (`entity_ref` — the interlocutor / cwd in front of you) | similarity only — there is no key |
-| Needs a vector? | **No** — fetching by key is a primary-key lookup | **Yes** — cosine is the only way in |
+| Kinds | person / repo / project / situation **profiles** | **lessons, preferences, decisions, procedures**; other claims remain explicit/on-demand |
+| Reached by | a deterministic key from context (`entity_ref` — the interlocutor / cwd in front of you) | fused vector similarity and exact-token evidence |
+| Needs a vector? | **No** — fetching by key is a primary-key lookup | Normally yes; lexical evidence also recovers exact identifiers and wording |
 | Granularity | a document (multi-facet sketch) | one atomic claim per unit |
 
 Two rules fall out (see [[embed-atomic-claims-not-documents-keyed-vs-semantic]]):
@@ -120,7 +120,11 @@ data/
 |---|---|---|---|
 | episode / source record | by id, bulk-scan | **SQLite** (raw log) | no |
 | **profile** (person/repo/…) | **keyed** (`entity_ref` from context) | **markdown file** | no |
-| **lesson / fact / claim** | **semantic** (cosine) | **SQLite row** | yes |
+| **guidance claim** | **hybrid** (vector + lexical after SQL/tag scope) | **SQLite row** | yes |
+
+Raw Slack history is not a fourth memory kind. It lives in the isolated
+[`slack-archive.db`](slack-archive.md), is searched on demand with source
+coordinates and thread expansion, and never competes in automatic pre-recall.
 
 - **Profiles → markdown files.** Keyed and human-inspected/corrected — "show me what Junior thinks of me, let me fix it," with git history of how a judgment evolved. The filesystem alone suffices (convention path `profiles/people/<entity>.md` + folder glob to list); a SQLite `entity_ref → path` index is optional convenience. **No embedding column.**
 - **Lessons/claims → SQLite rows** with text and embedding **co-located** (`{id, text, embedding, tags, weight}`). A markdown file for something you only reach by cosine is ceremony — you never navigate to it by path, and it's an atomic claim, not a browsable document.
@@ -163,14 +167,18 @@ claim (
   embed_model TEXT, dim INT,  -- invalidate/rebuild on model change
   repo TEXT, tags TEXT,       -- filter columns
   source_episode TEXT,        -- provenance (a field)
+  source_path TEXT,           -- originating file/document
+  source_heading TEXT,        -- parent section heading
+  source_text TEXT,           -- parent section for contextual expansion
   helpful_count INT, unhelpful_count INT, weight REAL DEFAULT 1.0,
   created_at INT, last_used_at INT, active INT DEFAULT 1
 )
 ```
 
 `text` is authoritative. `retrieval_text` and the embedding are derived and
-rebuildable; this lets retrieval expose a lesson's `applies_when` cue without an
-LLM rewriting the stored rule.
+rebuildable. Lexical scoring considers those fields plus source provenance.
+Recall returns the atomic `text` and a `contextText` expanded from `source_text`
+when available.
 
 ### 6.2 Vector storage — stay on SQLite (the ladder)
 
@@ -184,7 +192,7 @@ A dedicated vector store is premature infrastructure here, and it violates CLAUD
 
 | Rung | When | What |
 |---|---|---|
-| **1 — brute-force cosine** *(now)* | up to ~tens of thousands | `embedding` BLOB + cosine in TS, after the `WHERE` filter. Zero new infra, exact. |
+| **1 — brute-force hybrid** *(now)* | up to ~tens of thousands | cosine plus exact-token coverage in TS after the `WHERE` filter; normalized reciprocal-rank fusion. Zero new infra. |
 | **2 — `sqlite-vec`** *(gated)* | scan *measurably* exceeds budget | loadable SQLite extension (in-process, one file, **no service**, exact KNN); `bun:sqlite` loads it via `loadExtension`. |
 | **3 — ANN / vector DB** *(probably never)* | 100k+ vectors with measured latency pain | not this workload. |
 
