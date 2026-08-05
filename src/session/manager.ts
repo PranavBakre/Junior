@@ -74,7 +74,10 @@ import {
 } from "../agents/loader.ts";
 import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
-import { inferReviewRepo } from "../worktree/review-routing.ts";
+import {
+  inferReviewRepo,
+  inferReviewRepos,
+} from "../worktree/review-routing.ts";
 import {
   inferPipelinePrimaryRepo,
   resolvePipelineRepos,
@@ -3705,6 +3708,14 @@ export class SessionManager {
       }
     }
 
+    const explicitReviewRepos = durableTarget === "review"
+      ? inferReviewRepos(this.config.repos, event.text)
+      : [];
+    const repoRefs = explicitReviewRepos.length > 0
+      ? explicitReviewRepos.map((repo) => repo.name)
+      : session.targetRepo
+        ? [session.targetRepo]
+        : [];
     const started = await createDefaultRun(
       { store: this.pipelineStore },
       {
@@ -3715,7 +3726,7 @@ export class SessionManager {
         targetAgent: durableTarget,
         sourceAgent: event.isSelfBot ? "system" : "human",
         sourceSlackUserId: event.isSelfBot ? null : event.user,
-        repoRefs: session.targetRepo ? [session.targetRepo] : [],
+        repoRefs,
       },
     );
     await this.mutateSession(event.threadId, (current) => {

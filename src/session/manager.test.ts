@@ -412,6 +412,53 @@ describe("SessionManager", () => {
     expect(mockSpawnFn.mock.calls[0][1]).toContain("make the small config change");
   });
 
+  it("binds every PR repository before dispatching a multi-repo review", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    const reviewRepos = [
+      { name: "gx-client-next", path: "/tmp/client", defaultBase: "main" },
+      { name: "gx-backend", path: "/tmp/backend", defaultBase: "main" },
+      { name: "gx-community", path: "/tmp/community", defaultBase: "main" },
+    ];
+    manager = createTestManager(store, cloneConfig({
+      repos: reviewRepos,
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+    const paths = Object.fromEntries(
+      reviewRepos.map((repo) => [repo.name, `/tmp/${repo.name}.worktree`]),
+    );
+    manager.worktreeManager = {
+      createWorktree: mock(async (repoName: string) => paths[repoName]!),
+      getWorktreePath: (repoName: string) => paths[repoName]!,
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: [
+        "review",
+        "https://github.com/GrowthX-Club/gx-client-next/pull/5614",
+        "https://github.com/GrowthX-Club/gx-backend/pull/3597",
+        "https://github.com/GrowthX-Club/gx-community/pull/742",
+      ].join("\n"),
+    }), "review");
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    const run = await pipelineStore.getRunByThread("thread-1");
+    expect(run?.repoRefs).toEqual([
+      "gx-client-next",
+      "gx-backend",
+      "gx-community",
+    ]);
+    expect(mockSpawnFn.mock.calls[0][0].worktreePaths).toEqual(paths);
+  });
+
   it("routes a CHANNEL_DEFAULTS lead through a default run owned by lead", async () => {
     const pipelineStore = new InMemoryPipelineStore();
     manager = createTestManager(store, cloneConfig({

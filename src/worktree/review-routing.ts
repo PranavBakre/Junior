@@ -10,19 +10,27 @@ export function inferReviewRepo(
   prompt: string,
   pipelineRepoRefs: string[] = [],
 ): RepoConfig | undefined {
-  const urlMatches = repos.filter((repo) => {
-    const escaped = escapeRegExp(repo.name);
-    return new RegExp(
-      `github\\.com/[^/\\s]+/${escaped}(?:\\.git)?(?:/|\\s|$)`,
-      "i",
-    ).test(prompt);
-  });
+  const urlMatches = inferReviewRepos(repos, prompt);
   if (urlMatches.length === 1) return urlMatches[0];
 
   const refMatches = repos.filter((repo) =>
     pipelineRepoRefs.some((ref) => repoMatchesRef(repo.name, ref)),
   );
   return refMatches.length === 1 ? refMatches[0] : undefined;
+}
+
+/** Return every configured repository explicitly referenced by a GitHub URL. */
+export function inferReviewRepos(
+  repos: RepoConfig[],
+  prompt: string,
+): RepoConfig[] {
+  return repos.filter((repo) => {
+    const escaped = escapeRegExp(repo.name);
+    return new RegExp(
+      `github\\.com/[^/\\s]+/${escaped}(?:\\.git)?(?:/|\\s|$)`,
+      "i",
+    ).test(prompt);
+  });
 }
 
 export function repoMatchesRef(repoName: string, ref: string): boolean {
