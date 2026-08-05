@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { RepoConfig } from "../config.ts";
-import { inferReviewRepo } from "./review-routing.ts";
+import { inferReviewRepo, inferReviewRepos } from "./review-routing.ts";
 
 const repos: RepoConfig[] = [
   { name: "gx-backend", path: "/repos/backend", defaultBase: "origin/main" },
   { name: "gx-client-expo", path: "/repos/expo", defaultBase: "origin/main" },
+  { name: "gx-community", path: "/repos/community", defaultBase: "origin/main" },
 ];
 
 describe("inferReviewRepo", () => {
@@ -35,3 +36,18 @@ describe("inferReviewRepo", () => {
   });
 });
 
+describe("inferReviewRepos", () => {
+  it("collects every configured repository referenced by a multi-PR review", () => {
+    expect(
+      inferReviewRepos(
+        repos,
+        [
+          "review these PRs:",
+          "https://github.com/GrowthX-Club/gx-client-expo/pull/5614",
+          "https://github.com/GrowthX-Club/gx-backend/pull/3597",
+          "https://github.com/GrowthX-Club/gx-community/pull/742",
+        ].join("\n"),
+      ).map((repo) => repo.name),
+    ).toEqual(["gx-backend", "gx-client-expo", "gx-community"]);
+  });
+});
