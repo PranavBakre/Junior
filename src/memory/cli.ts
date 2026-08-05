@@ -165,6 +165,11 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         maxBatchChars: numberOption(options, "max-batch-chars"),
         bodyCap: numberOption(options, "body-cap"),
         kinds: listOption(options, "kinds"),
+        personaAll: booleanOption(options, "persona-all") === true,
+        profilesAll: booleanOption(options, "profiles-all") === true,
+        subjectsAll: booleanOption(options, "subjects-all") === true,
+        subjectRepoNames: listOption(options, "subject-repos"),
+        personaActorIds: listOption(options, "persona-actors"),
       });
 
       return json
@@ -277,9 +282,9 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       const kind = stringOption(options, "kind") as ClaimKind | undefined;
       const text = stringOption(options, "text");
       if (!id) throw new Error("--id <claim-id> is required");
-      if (!kind) throw new Error("--kind <lesson|fact|situation-claim> is required");
-      if (!["lesson", "fact", "situation-claim"].includes(kind)) {
-        throw new Error(`--kind must be one of: lesson, fact, situation-claim. Got: ${kind}`);
+      if (!kind) throw new Error("--kind <lesson|fact|preference|decision|situation-claim> is required");
+      if (!["lesson", "fact", "preference", "decision", "situation-claim"].includes(kind)) {
+        throw new Error(`--kind must be one of: lesson, fact, preference, decision, situation-claim. Got: ${kind}`);
       }
       if (!text) throw new Error("--text <text> is required");
       const skipDedup = booleanOption(options, "skip-dedup") === true;
@@ -305,6 +310,9 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         repo: stringOption(options, "repo"),
         tags: listOption(options, "tags"),
         sourceEpisode: stringOption(options, "source-episode"),
+        sourcePath: stringOption(options, "source-path"),
+        sourceHeading: stringOption(options, "source-heading"),
+        sourceText: stringOption(options, "source-text"),
         weight: numberOption(options, "weight"),
         createdAt: numberOption(options, "created-at") ?? Date.now(),
         skipDedup,
@@ -339,6 +347,8 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       const allowedKinds = [
         "lesson",
         "fact",
+        "preference",
+        "decision",
         "situation-claim",
         "curated_fact",
         "routing_memory",
@@ -364,6 +374,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       }
       const results = await store.recallClaims({
         queryVector,
+        queryText,
         filters: {
           repo: stringOption(options, "repo"),
           kind: factKind ? "fact" : requestedKind as ClaimKind | undefined,
@@ -467,9 +478,15 @@ function formatClaimRecall(results: ClaimRecallResult[]): string {
   return results
     .map((result, index) => {
       const cos = result.cosine != null ? `, cos ${result.cosine.toFixed(3)}` : "";
+      const lex = result.lexicalScore != null
+        ? `, lexical ${result.lexicalScore.toFixed(3)}`
+        : "";
       return [
-        `${index + 1}. ${result.id} (${result.factKind ?? result.kind}, score ${result.score.toFixed(3)}${cos})`,
+        `${index + 1}. ${result.id} (${result.factKind ?? result.kind}, score ${result.score.toFixed(3)}${cos}${lex})`,
         result.text,
+        ...(result.sourcePath
+          ? [`source: ${result.sourcePath}${result.sourceHeading ? ` # ${result.sourceHeading}` : ""}`]
+          : []),
         `repo: ${result.repo ?? "none"} | tags: ${result.tags.join(", ") || "none"} | weight: ${result.weight}`,
       ].join("\n");
     })
@@ -479,7 +496,26 @@ function formatClaimRecall(results: ClaimRecallResult[]): string {
 function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
   if (reports.length === 0) return "No unconsolidated source records.\n";
   return reports
-    .map(({ threadIds, report, error }) => {
+    .map(({ threadIds, report, persona, subject, error }) => {
+      if (persona) {
+        const who = persona.displayName
+          ? `${persona.displayName} (${persona.actorId})`
+          : persona.actorId;
+        if (persona.error) return `persona ${who}: FAILED — ${persona.error}`;
+        return `persona ${who}: ${persona.recordsReviewed} records reviewed → ${
+          persona.profileUpdated
+            ? `profile updated (${persona.entityRef})`
+            : `unchanged (${persona.skippedReason ?? "no durable change"})`
+        }`;
+      }
+      if (subject) {
+        if (subject.error) return `${subject.kind} ${subject.subject}: FAILED — ${subject.error}`;
+        return `${subject.kind} ${subject.subject}: ${subject.recordsReviewed} records reviewed → ${
+          subject.profilesUpdated > 0
+            ? `${subject.profilesUpdated} profile(s) updated`
+            : `unchanged (${subject.skippedReason ?? "no durable change"})`
+        }`;
+      }
       const scope = threadIds.length ? threadIds.join(", ") : "(all unthreaded)";
       if (error) return `${scope}: FAILED — ${error}`;
       if (!report || report.skipped) return `${scope}: skipped (nothing to consolidate)`;
@@ -497,11 +533,11 @@ function formatConsolidateV3(reports: ConsolidateV3Entry[]): string {
 function usage(): string {
   return [
     "Usage:",
-    "  bun run src/memory/cli.ts consolidate-v3 [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--kinds slack_message,curated_fact,...] [--runner claude|opencode|codex] [--model <model>] [--effort low|medium|high] [--timeout-ms n] [--json]",
+    "  bun run src/memory/cli.ts consolidate-v3 [--profiles-all | --subjects-all | --subject-repos name,... | --persona-all | --persona-actors U123,U456] [--thread <id>] [--limit n] [--max-batch-chars n] [--body-cap n] [--kinds slack_message,curated_fact,...] [--runner claude|opencode|codex] [--model <model>] [--effort low|medium|high] [--timeout-ms n] [--json]",
     "  bun run src/memory/cli.ts add-lesson --id <id> --title <title> --body <body> [--applies-when <text>] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
-    "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--skip-dedup] [--json]",
+    "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|preference|decision|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--source-path <path>] [--source-heading <heading>] [--source-text <section>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--skip-dedup] [--json]",
     "  bun run src/memory/cli.ts dedup-sweep [--threshold 0.92] [--apply] [--json]   (DRY RUN without --apply)",
-    "  bun run src/memory/cli.ts recall-claims [--query <text> | --query-vector 0.1,0.2,...] [--repo <name>] [--kind <lesson|fact|situation-claim|curated_fact|routing_memory|procedure>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
+    "  bun run src/memory/cli.ts recall-claims [--query <text> | --query-vector 0.1,0.2,...] [--repo <name>] [--kind <lesson|fact|preference|decision|procedure|situation-claim|curated_fact|routing_memory>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
   ].join("\n") + "\n";
 }

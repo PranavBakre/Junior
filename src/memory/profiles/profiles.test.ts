@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { parseDocument, serializeDocument } from "./frontmatter.ts";
 import { createProfileStore } from "./factory.ts";
-import type { PersonProfile, RepoProfile } from "./types.ts";
+import type { PersonProfile, ProjectProfile, RepoProfile } from "./types.ts";
 
 function withTmp<T>(fn: (root: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "junior-profiles-"));
@@ -72,11 +72,12 @@ describe("frontmatter serialize/parse", () => {
 });
 
 describe("ProfileStore keyed path scheme", () => {
-  it("writes person/repo/situation to the right kind folders", async () => {
+  it("writes each profile kind to the right folder", async () => {
     await withTmp(async (root) => {
       const store = createProfileStore({ root });
       await store.upsertProfile({ kind: "person", entity_ref: "pranav:person", role: "principal" });
       await store.upsertProfile({ kind: "repo", entity_ref: "gx-backend:repo", stack: "node" });
+      await store.upsertProfile({ kind: "project", entity_ref: "memory-v3:project", status: "active" });
       await store.upsertProfile({
         kind: "situation",
         entity_ref: "merge-bypass:situation",
@@ -85,6 +86,7 @@ describe("ProfileStore keyed path scheme", () => {
 
       expect(existsSync(join(root, "people", "pranav.md"))).toBe(true);
       expect(existsSync(join(root, "repos", "gx-backend.md"))).toBe(true);
+      expect(existsSync(join(root, "projects", "memory-v3.md"))).toBe(true);
       expect(existsSync(join(root, "situations", "merge-bypass.md"))).toBe(true);
     });
   });
@@ -155,6 +157,24 @@ describe("ProfileStore write-then-fetch round-trip", () => {
       expect(fetched.merge_flow).toBe("feature -> dev -> main");
       expect(fetched.owners).toEqual(["pranav:person"]);
       expect(fetched.evidence).toEqual([]);
+    });
+  });
+
+  it("round-trips a project profile", async () => {
+    await withTmp(async (root) => {
+      const store = createProfileStore({ root });
+      await store.upsertProfile({
+        kind: "project",
+        entity_ref: "memory-v3:project",
+        goals: ["build cumulative personas"],
+        constraints: ["never expose profiles verbatim"],
+        owners: ["pranav:person"],
+        status: "active",
+        body: "Junior's durable memory project.",
+      });
+      const fetched = await store.fetchByEntityRef("memory-v3:project") as ProjectProfile;
+      expect(fetched.goals).toEqual(["build cumulative personas"]);
+      expect(fetched.status).toBe("active");
     });
   });
 

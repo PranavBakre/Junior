@@ -10,6 +10,7 @@
     "build": "bun build ./src/index.ts --outdir ./dist --target bun",
     "cleanup": "bun run src/lifecycle/cleanup.ts",
     "memory:reembed": "bun run src/memory/reembed-retrieval.ts",
+    "slack:archive:import": "bun run src/slack/archive-cli.ts import",
     "migrate:prune-routing-logs": "bun run src/memory/migrations/2026-06-13-prune-routing-decision-logs.ts"
   },
   "dependencies": {

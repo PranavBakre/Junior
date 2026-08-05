@@ -148,6 +148,20 @@ machine can read `data/whatsapp.db` directly, so the MCP gate can never exceed
 filesystem-level protection — restricting which agents get Bash (or moving the
 archive off-box) is the stronger lever.
 
+### Slack archive tools
+
+`slack_archive_search` and `slack_archive_thread` read the separate passive
+Slack archive described in [slack-archive.md](slack-archive.md). They do not
+read `memory_source_record` and archive rows never enter consolidation or
+automatic pre-recall. Search is lexical by default, accepts exact metadata/time
+filters, and can expand hits to bounded chronological threads.
+
+Its MCP surface requires a signed runner context and authorizes the session's
+stored channel using server-side state. Public Slack channels are allowed;
+non-public channels must appear in `SLACK_ARCHIVE_APPROVED_CHANNEL_IDS`. The
+caller-controlled context channel is never trusted. All returned Slack content
+is marked untrusted and carries channel/thread/timestamp source coordinates.
+
 ### Memory tools
 
 `memory_recall`, `memory_add`, and `memory_consolidate` expose Junior's v3 memory
@@ -157,12 +171,13 @@ perform the requested operation, and close the store after each call. The local
 embedding model (harrier-270 ONNX) is lazy-loaded on the first recall/add, never at
 server startup.
 
-- `memory_recall` accepts `query`, `repo`, `tags` (OR match), `kinds`,
+- `memory_recall` accepts `query`, `repo`, `tags` (`tag_match` selects OR/AND), `kinds`,
   `fact_kinds`, `entity_refs`, and `limit`. It
   fetches the keyed entity profiles verbatim by `entity_ref` (no vector) and embeds
-  `query` locally to cosine-rank the atomic claim store; returns the profiles plus
+  `query` locally to hybrid-rank the atomic claim store; returns the profiles plus
   the top-k claims. Returned facts retain `factKind`, so procedures are filterable
-  and identifiable end to end. Recall is cosine-only — there is no FTS channel.
+  and identifiable end to end. `guidance_only` scopes candidates to lessons,
+  preferences, decisions, and typed procedures before ranking.
 - `memory_add` accepts `text`, `kind`, `repo`, and `tags`, embeds the text locally
   (document mode), and stores one atomic claim with its embedding co-located. The
   store's write guard collapses semantic near-duplicates, so the result carries an

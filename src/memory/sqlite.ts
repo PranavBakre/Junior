@@ -23,6 +23,7 @@ import type {
   MemorySourceRecord,
   RecallLogInput,
   SearchableMemoryKind,
+  SourceRecordQueryOptions,
   UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
 
@@ -58,6 +59,64 @@ const CLAIM_MERGE_WEIGHT_BUMP = 0.1;
  */
 const CLAIM_MERGE_WEIGHT_CEILING = 2.0;
 
+const LEXICAL_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does",
+  "for", "from", "how", "i", "in", "is", "it", "of", "on", "or", "should",
+  "that", "the", "this", "to", "was", "what", "when", "where", "which",
+  "with", "would", "you",
+]);
+
+function lexicalTerms(value: string): string[] {
+  const tokens = value
+    .toLowerCase()
+    .match(/[\p{L}\p{N}][\p{L}\p{N}._/#:-]*/gu) ?? [];
+  return unique(tokens.filter((token) => !LEXICAL_STOP_WORDS.has(token)));
+}
+
+function normalizeLexicalPhrase(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}._/#:-]+/gu, " ").trim();
+}
+
+/** Exact-token coverage, with extra weight for identifiers, paths, and numbers. */
+function lexicalRelevance(query: string, documents: Array<string | null | undefined>): number {
+  const queryTerms = lexicalTerms(query);
+  if (queryTerms.length === 0) return 0;
+  const document = documents.filter(Boolean).join("\n");
+  const documentTerms = new Set(lexicalTerms(document));
+  const termWeight = (term: string): number =>
+    /[\d._/#:-]/.test(term) || term.length >= 12 ? 4 : 1;
+  const totalWeight = queryTerms.reduce((sum, term) => sum + termWeight(term), 0);
+  const matchedWeight = queryTerms.reduce(
+    (sum, term) => sum + (documentTerms.has(term) ? termWeight(term) : 0),
+    0,
+  );
+  let score = matchedWeight / totalWeight;
+  const phrase = normalizeLexicalPhrase(query);
+  const singleOrdinaryTerm =
+    queryTerms.length === 1 && termWeight(queryTerms[0] ?? "") === 1;
+  if (
+    !singleOrdinaryTerm &&
+    phrase.length >= 4 &&
+    normalizeLexicalPhrase(document).includes(phrase)
+  ) {
+    score = 1;
+  }
+  // A lone ordinary word is grep-like but not strong enough to bypass the
+  // calibrated cosine floor. Exact identifiers/paths keep their full score.
+  if (singleOrdinaryTerm) score *= 0.5;
+  return score;
+}
+
+/** Normalized reciprocal-rank fusion. A rank-1 hit in both channels scores 1. */
+function fusedRankScore(vectorRank: number | null, lexicalRank: number | null): number {
+  const offset = 60;
+  const max = 2 / (offset + 1);
+  return (
+    (vectorRank == null ? 0 : 1 / (offset + vectorRank)) +
+    (lexicalRank == null ? 0 : 1 / (offset + lexicalRank))
+  ) / max;
+}
+
 type ClaimRow = {
   id: string;
   kind: string;
@@ -71,6 +130,9 @@ type ClaimRow = {
   repo: string | null;
   tags: string | null;
   source_episode: string | null;
+  source_path?: string | null;
+  source_heading?: string | null;
+  source_text?: string | null;
   helpful_count: number | null;
   unhelpful_count: number | null;
   weight: number | null;
@@ -157,6 +219,73 @@ export class SqliteMemoryStore implements MemoryStore {
         record.metadata ? JSON.stringify(record.metadata) : null,
         record.createdAt,
       );
+  }
+
+  async listSourceRecords(options: SourceRecordQueryOptions = {}): Promise<MemorySourceRecord[]> {
+    const limit = Math.max(1, Math.min(options.limit ?? 100, 1_000));
+    const rows = this.db
+      .query<SourceRecordRow, [string | null, string | null, string | null, string | null, string | null, string | null, string | null, string | null, number]>(
+        `SELECT id, kind, channel_id, thread_id, slack_ts, source_url, actor_id,
+                actor_kind, agent_name, repo_name, body, metadata_json, created_at
+         FROM memory_source_record
+         WHERE (? IS NULL OR kind = ?)
+           AND (? IS NULL OR actor_id = ?)
+           AND (? IS NULL OR actor_kind = ?)
+           AND (? IS NULL OR repo_name = ?)
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(
+        options.kind ?? null,
+        options.kind ?? null,
+        options.actorId ?? null,
+        options.actorId ?? null,
+        options.actorKind ?? null,
+        options.actorKind ?? null,
+        options.repoName ?? null,
+        options.repoName ?? null,
+        limit,
+      );
+    return rows.reverse().map(rowToSourceRecord);
+  }
+
+  async listSourceActors(
+    options: Pick<SourceRecordQueryOptions, "kind" | "actorKind"> = {},
+  ): Promise<string[]> {
+    return this.db
+      .query<
+        { actor_id: string },
+        [string | null, string | null, string | null, string | null]
+      >(
+        `SELECT DISTINCT actor_id
+         FROM memory_source_record
+         WHERE actor_id IS NOT NULL
+           AND (? IS NULL OR kind = ?)
+           AND (? IS NULL OR actor_kind = ?)
+         ORDER BY actor_id`,
+      )
+      .all(
+        options.kind ?? null,
+        options.kind ?? null,
+        options.actorKind ?? null,
+        options.actorKind ?? null,
+      )
+      .map((row) => row.actor_id);
+  }
+
+  async listSourceRepos(
+    options: Pick<SourceRecordQueryOptions, "kind"> = {},
+  ): Promise<string[]> {
+    return this.db
+      .query<{ repo_name: string }, [string | null, string | null]>(
+        `SELECT DISTINCT repo_name
+         FROM memory_source_record
+         WHERE repo_name IS NOT NULL
+           AND (? IS NULL OR kind = ?)
+         ORDER BY repo_name`,
+      )
+      .all(options.kind ?? null, options.kind ?? null)
+      .map((row) => row.repo_name);
   }
 
   async upsertLesson(lesson: MemoryLessonInput): Promise<void> {
@@ -335,7 +464,10 @@ export class SqliteMemoryStore implements MemoryStore {
                SET helpful_count = COALESCE(helpful_count, 0) + ?,
                    unhelpful_count = COALESCE(unhelpful_count, 0) + ?,
                    weight = MAX(COALESCE(weight, 1.0), MIN(COALESCE(weight, 1.0) + ?, ?)),
-                   last_used_at = ?
+                   last_used_at = ?,
+                   source_path = COALESCE(source_path, ?),
+                   source_heading = COALESCE(source_heading, ?),
+                   source_text = COALESCE(source_text, ?)
                WHERE id = ?`,
             )
             .run(
@@ -344,6 +476,9 @@ export class SqliteMemoryStore implements MemoryStore {
               CLAIM_MERGE_WEIGHT_BUMP,
               CLAIM_MERGE_WEIGHT_CEILING,
               now,
+              claim.sourcePath ?? null,
+              claim.sourceHeading ?? null,
+              claim.sourceText ?? null,
               survivor.id,
             );
           if (absorbed) {
@@ -362,8 +497,9 @@ export class SqliteMemoryStore implements MemoryStore {
         .query(
           `INSERT INTO claim (
             id, kind, text, retrieval_text, embedding, embed_model, dim, repo, tags, source_episode,
-            helpful_count, unhelpful_count, weight, created_at, last_used_at, active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 1.0), ?, ?, ?)
+            source_path, source_heading, source_text, helpful_count, unhelpful_count, weight,
+            created_at, last_used_at, active
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0), COALESCE(?, 0), COALESCE(?, 1.0), ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             kind = excluded.kind,
             text = excluded.text,
@@ -374,6 +510,9 @@ export class SqliteMemoryStore implements MemoryStore {
             repo = excluded.repo,
             tags = excluded.tags,
             source_episode = excluded.source_episode,
+            source_path = COALESCE(excluded.source_path, claim.source_path),
+            source_heading = COALESCE(excluded.source_heading, claim.source_heading),
+            source_text = COALESCE(excluded.source_text, claim.source_text),
             helpful_count = COALESCE(?, claim.helpful_count),
             unhelpful_count = COALESCE(?, claim.unhelpful_count),
             weight = COALESCE(?, claim.weight),
@@ -391,6 +530,9 @@ export class SqliteMemoryStore implements MemoryStore {
           claim.repo ?? null,
           tags.length ? JSON.stringify(tags) : null,
           claim.sourceEpisode ?? null,
+          claim.sourcePath ?? null,
+          claim.sourceHeading ?? null,
+          claim.sourceText ?? null,
           helpfulCount,
           unhelpfulCount,
           weight,
@@ -464,15 +606,16 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   /**
-   * BRUTE-FORCE COSINE recall over the claim corpus (rung 1 of the vector
-   * ladder). Filters are the WHERE (they narrow candidates FIRST) and the cosine
-   * against a PRE-COMPUTED queryVector is the ORDER BY. This method never embeds —
-   * the caller embeds at the boundary. With no queryVector it ranks by `weight`.
+   * Hybrid recall over the filtered claim corpus. Vector and exact-token ranks
+   * are computed independently, then fused with reciprocal-rank fusion. This
+   * method never embeds — the caller provides both the original query text and
+   * its pre-computed vector at the boundary.
    */
   async recallClaims(options: ClaimRecallOptions): Promise<ClaimRecallResult[]> {
     const limit = options.limit ?? 5;
     const filters = options.filters ?? {};
     const queryVector = options.queryVector;
+    const queryText = options.queryText?.trim() || null;
 
     // 1. SQL WHERE pre-filter — narrow candidates BEFORE any cosine.
     const where: string[] = ["active = 1"];
@@ -496,6 +639,16 @@ export class SqliteMemoryStore implements MemoryStore {
       );
       params.push(filters.factKind);
     }
+    if (filters.guidanceOnly) {
+      where.push(
+        `(kind IN ('lesson', 'preference', 'decision') OR (
+          kind = 'fact' AND EXISTS (
+            SELECT 1 FROM memory_fact AS guidance_fact
+            WHERE guidance_fact.id = claim.id AND guidance_fact.kind = 'procedure'
+          )
+        ))`,
+      );
+    }
     if (filters.sinceMs != null) {
       where.push("created_at >= ?");
       params.push(filters.sinceMs);
@@ -505,33 +658,73 @@ export class SqliteMemoryStore implements MemoryStore {
       const clauses = normTags.map(
         () => "EXISTS (SELECT 1 FROM json_each(claim.tags) WHERE value = ?)",
       );
-      where.push(`(${clauses.join(" OR ")})`);
+      where.push(`(${clauses.join(filters.tagMatch === "all" ? " AND " : " OR ")})`);
       params.push(...normTags);
     }
     const rows = this.db
       .query<ClaimRow, (string | number)[]>(
         `SELECT id, kind,
                 (SELECT mf.kind FROM memory_fact AS mf WHERE mf.id = claim.id) AS fact_kind,
-                text, embedding, embed_model, dim, repo, tags, source_episode,
+                text, retrieval_text, embedding, embed_model, dim, repo, tags, source_episode,
+                source_path, source_heading, source_text,
                 helpful_count, unhelpful_count, weight, created_at, last_used_at, active
          FROM claim WHERE ${where.join(" AND ")}`,
       )
       .all(...params);
 
-    // 2. Cosine in TS. Semantic recall is relevance-first: historical `weight`
-    //    is returned as metadata but cannot override a better vector match.
-    //    With no queryVector, rows still rank by `weight` alone.
+    // 2. Score the two retrieval channels independently. Lexical matching sees
+    //    both the atomic claim and its parent section/provenance projection.
     const scored = rows.map((row) => {
       const tags = row.tags ? (JSON.parse(row.tags) as string[]) : [];
       const weight = row.weight ?? 1;
       const vec = deserializeEmbedding(row.embedding);
       const cosine = queryVector && vec ? cosineSim(queryVector, vec) : null;
-      const score = queryVector ? (cosine ?? 0) : weight;
-      return { row, tags, weight, cosine, score };
+      const lexicalScore = queryText
+        ? lexicalRelevance(queryText, [
+            row.retrieval_text,
+            row.text,
+            row.source_heading,
+            row.source_text,
+            row.source_path,
+          ])
+        : null;
+      return { row, tags, weight, cosine, lexicalScore, score: 0 };
     });
+
+    const vectorRanks = new Map(
+      scored
+        .filter((entry) => entry.cosine !== null)
+        .sort((a, b) => (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity))
+        .map((entry, index) => [entry.row.id, index + 1]),
+    );
+    const lexicalRanks = new Map(
+      scored
+        .filter((entry) => (entry.lexicalScore ?? 0) > 0)
+        .sort((a, b) =>
+          (b.lexicalScore ?? 0) - (a.lexicalScore ?? 0) ||
+          a.row.id.localeCompare(b.row.id)
+        )
+        .map((entry, index) => [entry.row.id, index + 1]),
+    );
+    for (const entry of scored) {
+      if (queryVector && queryText) {
+        entry.score = fusedRankScore(
+          vectorRanks.get(entry.row.id) ?? null,
+          lexicalRanks.get(entry.row.id) ?? null,
+        );
+      } else if (queryVector) {
+        entry.score = entry.cosine ?? 0;
+      } else if (queryText) {
+        entry.score = entry.lexicalScore ?? 0;
+      } else {
+        entry.score = entry.weight;
+      }
+    }
 
     scored.sort((a, b) =>
       b.score - a.score ||
+      (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
+      (b.lexicalScore ?? -Infinity) - (a.lexicalScore ?? -Infinity) ||
       b.weight - a.weight ||
       a.row.id.localeCompare(b.row.id)
     );
@@ -547,7 +740,11 @@ export class SqliteMemoryStore implements MemoryStore {
       weight: entry.weight,
       score: entry.score,
       cosine: entry.cosine,
+      lexicalScore: entry.lexicalScore,
       sourceEpisode: entry.row.source_episode,
+      sourcePath: entry.row.source_path ?? null,
+      sourceHeading: entry.row.source_heading ?? null,
+      sourceText: entry.row.source_text ?? null,
       helpfulCount: entry.row.helpful_count ?? 0,
       unhelpfulCount: entry.row.unhelpful_count ?? 0,
       createdAt: entry.row.created_at,
@@ -865,7 +1062,13 @@ export class SqliteMemoryStore implements MemoryStore {
 
     const kinds: MemoryHealthKind[] = [];
 
-    const claimKinds: ClaimKind[] = ["lesson", "fact", "situation-claim"];
+    const claimKinds: ClaimKind[] = [
+      "lesson",
+      "fact",
+      "preference",
+      "decision",
+      "situation-claim",
+    ];
     for (const kind of claimKinds) {
       const summary = this.db
         .query<
@@ -1065,6 +1268,41 @@ export class SqliteMemoryStore implements MemoryStore {
     })();
   }
 
+  /** Retrofit the claim kind CHECK when the semantic taxonomy grows. */
+  private ensureClaimAllowsAllKinds(): void {
+    const row = this.db
+      .query<{ sql: string }, []>(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='claim'",
+      )
+      .get();
+    if (!row || ["'preference'", "'decision'"].every((kind) => row.sql.includes(kind))) {
+      return;
+    }
+    this.db.transaction(() => {
+      this.db.run(`CREATE TABLE claim_new (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'preference', 'decision', 'situation-claim')),
+        text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT,
+        dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT,
+        source_path TEXT, source_heading TEXT, source_text TEXT,
+        helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0,
+        weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER,
+        active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id)
+      )`);
+      this.db.run(`INSERT INTO claim_new (
+        id, kind, text, retrieval_text, embedding, embed_model, dim, repo, tags,
+        source_episode, source_path, source_heading, source_text,
+        helpful_count, unhelpful_count, weight, created_at,
+        last_used_at, active
+      ) SELECT id, kind, text, retrieval_text, embedding, embed_model, dim, repo,
+               tags, source_episode, source_path, source_heading, source_text,
+               helpful_count, unhelpful_count, weight,
+               created_at, last_used_at, active FROM claim`);
+      this.db.run("DROP TABLE claim");
+      this.db.run("ALTER TABLE claim_new RENAME TO claim");
+    })();
+  }
+
   private migrate(): void {
     this.db.run(`CREATE TABLE IF NOT EXISTS memory_source_record (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('slack_message', 'runner_output', 'routing_decision', 'routing_correction', 'ingestion_correction', 'curated_fact', 'manual_correction')), channel_id TEXT, thread_id TEXT, slack_ts TEXT, source_url TEXT, actor_id TEXT, actor_kind TEXT CHECK (actor_kind IN ('human', 'junior', 'agent', 'bot', 'system')), agent_name TEXT, repo_name TEXT, body TEXT NOT NULL, metadata_json TEXT, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS memory_node (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('event', 'lesson', 'summary', 'fact', 'procedure', 'routing_memory', 'entity', 'tag', 'claim')), created_at INTEGER NOT NULL, valid_at INTEGER, invalid_at INTEGER, superseded_by TEXT)`);
@@ -1079,8 +1317,12 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run(`CREATE TABLE IF NOT EXISTS consolidation_decision (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, source_ids_json TEXT NOT NULL, extractor TEXT NOT NULL, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS recall_log (id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT, tags_json TEXT, entities_json TEXT, kinds_json TEXT, caller_intent TEXT, returned_ids_json TEXT NOT NULL, result_count INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
     // memory v3: semantic claim store (text + embedding co-located) — mirrors the lesson/memory_node relationship.
-    this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'situation-claim')), text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'preference', 'decision', 'situation-claim')), text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, source_path TEXT, source_heading TEXT, source_text TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
     this.ensureColumn("claim", "retrieval_text", "TEXT");
+    this.ensureColumn("claim", "source_path", "TEXT");
+    this.ensureColumn("claim", "source_heading", "TEXT");
+    this.ensureColumn("claim", "source_text", "TEXT");
+    this.ensureClaimAllowsAllKinds();
     // memory v3: raw episodic log (affect sidecar over memory_source_record).
     this.db.run(`CREATE TABLE IF NOT EXISTS episode (id TEXT PRIMARY KEY, actor TEXT, subjects_json TEXT, what TEXT, emotion TEXT, intensity REAL, valence REAL, trigger TEXT, response TEXT, salience REAL, consolidated_into_json TEXT, created_at INTEGER NOT NULL, last_used_at INTEGER, FOREIGN KEY (id) REFERENCES memory_source_record(id))`);
     this.ensureColumn("episode", "last_used_at", "INTEGER");
