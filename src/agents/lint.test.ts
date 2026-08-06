@@ -76,6 +76,29 @@ describe("prompt lint", () => {
     });
   });
 
+  describe("all public agents declare trusted operational metadata", () => {
+    const REQUIRED_OPERATIONAL_KEYS = [
+      "operational.enabled",
+      "operational.lifecycle",
+      "operational.role",
+      "operational.capabilities",
+      "operational.mutationPolicy",
+      "operational.mayDelegateTo",
+      "operational.mayReturnTo",
+      "operational.maxParallel",
+    ];
+
+    it.each(ALL_PUBLIC_AGENTS)("%s has a complete operational declaration", async (name) => {
+      const content = await readAgent(name);
+      for (const key of REQUIRED_OPERATIONAL_KEYS) {
+        expect(content, `${name}: missing ${key}`).toMatch(
+          new RegExp(`^${key.replaceAll(".", "\\.")}:`, "m"),
+        );
+      }
+      expect(content).toMatch(/^operational\.enabled:\s*true\s*$/m);
+    });
+  });
+
   describe("all public agents declare context budget", () => {
     it.each(ALL_PUBLIC_AGENTS)("%s has context.threadHistory frontmatter", async (name) => {
       const content = await readAgent(name);
