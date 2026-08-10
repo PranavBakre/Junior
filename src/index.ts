@@ -55,6 +55,11 @@ import {
 import { gcTerminalPipelineHistory } from "./pipelines/gc.ts";
 import type { PipelineToolRuntime } from "./pipelines/tools.ts";
 import type { SlackAuditCallback } from "./pipelines/dispatch.ts";
+import { CatalogStore } from "./runbooks/catalog-store.ts";
+import {
+  bootstrapRunbookRuntime,
+  resolveGitCommitSha,
+} from "./runbooks/runtime.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -66,6 +71,9 @@ const memoryStore = createMemoryStore(config.memory.sqlitePath, {
   dedupThreshold: config.memory.dedupThreshold,
 });
 const memoryIngestor = new MemoryIngestor(memoryStore);
+const runbookCatalogStore = new CatalogStore(
+  resolve(process.env.RUNBOOK_CATALOG_DB_PATH ?? "data/runbooks.db"),
+);
 let pipelineAudit: SlackAuditCallback | undefined;
 const sessionManager = new SessionManager(store, config);
 sessionManager.setMemoryIngestor(memoryIngestor);
@@ -122,14 +130,6 @@ const pipelineToolRuntime: PipelineToolRuntime = {
     });
   },
 };
-startMcpServer(
-  config.slack.botToken,
-  store,
-  worktreeManager,
-  sessionManager,
-  actionStore,
-  pipelineToolRuntime,
-);
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
 sessionManager.pipelineStore = pipelineStore;
@@ -340,6 +340,7 @@ setupGracefulShutdown(sessionManager, devServerManager, async () => {
   pipelineStore.close?.();
   actionStore.close();
   memoryStore.close();
+  runbookCatalogStore.close();
   if (whatsappHandle) {
     // Detach the MCP tools before closing the store so a late tool call gets
     // the "not enabled" answer instead of a closed-database throw.
@@ -603,6 +604,28 @@ setInterval(() => {
       `overlay-identity load failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+
+  try {
+    await bootstrapRunbookRuntime(runbookCatalogStore, {
+      privateCommitSha: resolveGitCommitSha("agents-org"),
+      publicCommitSha: resolveGitCommitSha("."),
+    });
+  } catch (err) {
+    log.error(
+      "boot",
+      `runbook activation failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  startMcpServer(
+    config.slack.botToken,
+    store,
+    worktreeManager,
+    sessionManager,
+    actionStore,
+    pipelineToolRuntime,
+    runbookCatalogStore,
+  );
 
   // Bootstrap dev-server worktrees and check for external port conflicts before
   // accepting any Slack events. Failure here is non-fatal — log loudly and

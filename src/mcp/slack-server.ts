@@ -2344,12 +2344,14 @@ export function startMcpServer(
   manager?: SessionManager,
   actionStore?: SlackActionStore,
   pipeline?: PipelineToolRuntime,
+  runbookCatalog?: CatalogStore,
 ): void {
   slack = new WebClient(botToken);
   sessionStore = store;
   worktreeManager = wtManager;
   sessionManager = manager;
   slackActionStore = actionStore;
+  catalogStore = runbookCatalog;
   if (pipeline) {
     pipelineRuntime = pipeline;
   }

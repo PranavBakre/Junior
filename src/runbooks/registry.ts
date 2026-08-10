@@ -8,14 +8,21 @@ const PUBLIC_RUNBOOKS_DIR = "runbooks";
 
 const registry = new Map<string, RunbookDefinition>();
 
-export async function reloadRunbookRegistry(): Promise<{
+export interface RunbookRegistrySource {
+  path: string;
+  origin: "private" | "public";
+}
+
+export async function reloadRunbookRegistry(options?: {
+  sources?: RunbookRegistrySource[];
+}): Promise<{
   loaded: number;
   errors: number;
 }> {
   let loaded = 0;
   let errors = 0;
 
-  for (const dir of [
+  for (const dir of options?.sources ?? [
     { path: PRIVATE_RUNBOOKS_DIR, origin: "private" as const },
     { path: PUBLIC_RUNBOOKS_DIR, origin: "public" as const },
   ]) {

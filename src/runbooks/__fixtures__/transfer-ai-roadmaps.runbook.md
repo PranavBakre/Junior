@@ -6,6 +6,7 @@ ownerAgent: db-executioner
 intent:
   examples:
     - move all AI roadmaps from one account to another
+    - move my AI roadmaps from one account to another
     - transfer AI roadmaps from user A to user B
   excludes:
     - transfer arbitrary user-owned data

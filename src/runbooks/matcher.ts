@@ -200,6 +200,10 @@ function tokenize(text: string): Set<string> {
   return new Set(
     text
       .toLowerCase()
+      // Bound values are parameters, not intent. Leaving email fragments in
+      // the token set dilutes an otherwise exact operational request below the
+      // production confidence threshold.
+      .replace(/\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g, " ")
       .replace(/[^\w\s]/g, " ")
       .split(/\s+/)
       .filter((t) => t.length > 1),
