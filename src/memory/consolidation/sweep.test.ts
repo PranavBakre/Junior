@@ -321,6 +321,50 @@ describe("runConsolidationSweep", () => {
     // Nothing pending → the engine is never invoked again.
     expect(calls).toBe(1);
   });
+
+  it("backfills every historical human actor even when no thread records are pending", async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await seed({
+        id: `historical-${index}`,
+        threadId: `T-${index}`,
+        actorId: "U12345",
+        body: `Explicit preference ${index}`,
+        createdAt: index + 1,
+      });
+    }
+    await store.markSourceRecordsConsolidated(
+      ["historical-0", "historical-1", "historical-2"],
+      10,
+    );
+
+    const reports = await runConsolidationSweep({
+      store,
+      profileStore,
+      embedder,
+      personaAll: true,
+      resolvePeople: async () => new Map([["U12345", "Alex Doe"]]),
+      invoke: async () => ({
+        episodes: [],
+        claims: [],
+        profiles: [{
+          kind: "person",
+          entity_ref: "alex-doe:person",
+          preferences: ["an explicit preference"],
+          evidence: ["historical-0"],
+        }],
+      }),
+    });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0].persona).toMatchObject({
+      actorId: "U12345",
+      recordsReviewed: 3,
+      profileUpdated: true,
+    });
+    expect(await profileStore.fetchByEntityRef("alex-doe:person")).toMatchObject({
+      slack_user_id: "U12345",
+    });
+  });
 });
 
 describe("summarizeConsolidationSweep", () => {

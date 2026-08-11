@@ -165,6 +165,13 @@ file enabled === true AND workflow_states.status === active
 
 If the file says `enabled: false`, it wins. `!workflow start <name>` refuses to start it until the file is changed back to `enabled: true`.
 
+The dashboard's prominent workflow status is a live projection: an active run
+tracked by the current scheduler process takes precedence over the persisted
+scheduler status. Historical `workflow_runs.status = 'running'` rows are not
+used as proof of live work because a hard process exit can leave one behind.
+The scheduler counts active runs per workflow so this remains correct for both
+`skip` and `parallel` concurrency.
+
 ## Slack Commands
 
 Read commands:

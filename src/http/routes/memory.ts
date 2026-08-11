@@ -78,6 +78,7 @@ export async function handleMemoryRecall(
   }
   const results = await store.recallClaims({
     queryVector,
+    queryText: query,
     filters: {
       repo: params.get("repo") ?? undefined,
       // ClaimRecallFilters carries a single kind; use the first requested.

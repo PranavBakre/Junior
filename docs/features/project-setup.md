@@ -178,6 +178,10 @@ interface Config {
 | `PRE_RECALL_ENABLED` | no | `false` | optional deterministic memory pre-recall before runner turns |
 | `PRE_RECALL_SYNTHESIS_ENABLED` | no | `false` | opt into bounded model synthesis over recalled candidates |
 | `WHATSAPP_ENABLED` | no | `false` | enable read-only WhatsApp archive ingestion/tools |
+| `SLACK_ARCHIVE_ENABLED` | no | `false` | enable passive live Slack archive capture and read-only MCP tools |
+| `SLACK_ARCHIVE_DB_PATH` | no | `data/slack-archive.db` | isolated Slack archive SQLite database |
+| `SLACK_ARCHIVE_EXPORT_PATH` | no | unset | default Slack export ZIP for the import CLI |
+| `SLACK_ARCHIVE_APPROVED_CHANNEL_IDS` | no | unset | comma-separated non-public channel IDs approved for archive capture/use |
 | `PIPELINE_RUNTIME_MODE` | no | `off` | `off`, `shadow`, or `active` |
 | `PRODUCT_PIPELINE_ENABLED` | no | `false` | typed product pipeline starts; requires active mode |
 | `BUG_PIPELINE_ENABLED` | no | `false` | typed bug pipeline starts; requires active mode |

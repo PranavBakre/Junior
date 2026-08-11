@@ -7,7 +7,7 @@
 // These types are intentionally local to src/memory/profiles/ — the shared
 // src/memory/types.ts is owned by another concern and must not be touched here.
 
-export type ProfileKind = "person" | "repo" | "situation";
+export type ProfileKind = "person" | "repo" | "project" | "situation";
 
 /** Fields every profile carries, regardless of kind. */
 export interface ProfileBase {
@@ -33,6 +33,8 @@ export interface ProfileBase {
 /** Person profile — §6.1. */
 export interface PersonProfile extends ProfileBase {
   kind: "person";
+  /** Stable identity key; display names and derived slugs can change. */
+  slack_user_id?: string;
   role?: string;
   comms_style?: string;
   values?: string[];
@@ -41,6 +43,17 @@ export interface PersonProfile extends ProfileBase {
   preferences?: string[];
   relationship_trajectory?: string;
   sentiment_trend?: string;
+}
+
+/** Project profile — durable goals, constraints, ownership, and current direction. */
+export interface ProjectProfile extends ProfileBase {
+  kind: "project";
+  goals?: string[];
+  constraints?: string[];
+  decisions?: string[];
+  owners?: string[];
+  status?: string;
+  next_steps?: string[];
 }
 
 /** Repo profile — §6.1. Repos are first-class memory subjects. */
@@ -62,7 +75,7 @@ export interface SituationProfile extends ProfileBase {
   recommended_action?: string;
 }
 
-export type Profile = PersonProfile | RepoProfile | SituationProfile;
+export type Profile = PersonProfile | RepoProfile | ProjectProfile | SituationProfile;
 
 /**
  * Upsert payload: a full profile minus the store-managed/optional fields.
@@ -74,6 +87,7 @@ type WithOptional<T, K extends keyof T> = Omit<T, K> & Partial<Pick<T, K>>;
 export type ProfileInput =
   | WithOptional<PersonProfile, "updated_at" | "evidence" | "body">
   | WithOptional<RepoProfile, "updated_at" | "evidence" | "body">
+  | WithOptional<ProjectProfile, "updated_at" | "evidence" | "body">
   | WithOptional<SituationProfile, "updated_at" | "evidence" | "body">;
 
 export interface ProfileStoreOptions {
