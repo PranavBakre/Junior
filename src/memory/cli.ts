@@ -21,6 +21,7 @@ import type { ProfileStore } from "./profiles/store.ts";
 import {
   buildFactRetrievalText,
   buildLessonRetrievalText,
+  buildLessonRetrievalTexts,
 } from "./retrieval-text.ts";
 
 /**
@@ -73,6 +74,7 @@ async function mirrorClaim(
     kind: "lesson" | "fact";
     text: string;
     retrievalText?: string;
+    retrievalTexts?: string[];
     tags?: string[];
     weight?: number;
     createdAt: number;
@@ -82,11 +84,18 @@ async function mirrorClaim(
   // embedder for every store-side throw (a failed guard, a locked DB), which
   // sends the reader looking at the wrong component.
   let embedding: Float32Array;
+  let retrievalEmbeddings: Array<{ text: string; embedding: Float32Array }> | undefined;
   try {
-    [embedding] = await embedder.embed(
-      [claim.retrievalText ?? claim.text],
-      "document",
-    );
+    const retrievalTexts = claim.retrievalTexts ?? [claim.retrievalText ?? claim.text];
+    const texts = claim.retrievalTexts
+      ? [claim.text, ...retrievalTexts]
+      : retrievalTexts;
+    const vectors = await embedder.embed(texts, "document");
+    embedding = vectors[0]!;
+    retrievalEmbeddings = retrievalTexts.map((text, index) => ({
+      text,
+      embedding: vectors[index + (claim.retrievalTexts ? 1 : 0)]!,
+    }));
   } catch (err) {
     console.error(
       `[add] claim mirror skipped (embed failed): ${err instanceof Error ? err.message : String(err)}`,
@@ -98,8 +107,9 @@ async function mirrorClaim(
       id: claim.id,
       kind: claim.kind,
       text: claim.text,
-      retrievalText: claim.retrievalText,
+      retrievalText: claim.retrievalTexts?.[0] ?? claim.retrievalText,
       embedding,
+      retrievalEmbeddings,
       embedModel: embedder.model,
       dim: embedder.dim,
       tags: claim.tags,
@@ -206,6 +216,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         kind: "lesson",
         text: `${title}\n${body}`,
         retrievalText: buildLessonRetrievalText({ title, body, appliesWhen }),
+        retrievalTexts: buildLessonRetrievalTexts({ title, body, appliesWhen }),
         tags: lessonTags,
         weight: numberOption(options, "importance"),
         createdAt: lessonCreatedAt,

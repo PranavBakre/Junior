@@ -2,10 +2,16 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
-  cosineSim,
   deserializeEmbedding,
   serializeEmbedding,
 } from "../memory/sqlite.ts";
+import {
+  ReloadingSlackArchiveVectorIndex,
+  SlackArchiveVectorIndex,
+  type SlackArchiveMutableVectorIndex,
+  type SlackArchiveVectorRecord,
+  type SlackArchiveVectorSearcher,
+} from "./archive-vector-index.ts";
 import type {
   SlackArchiveCheckpoint,
   SlackArchiveCheckpointInput,
@@ -22,7 +28,24 @@ const DEFAULT_RESULT_LIMIT = 20;
 const MAX_RESULT_LIMIT = 100;
 const DEFAULT_THREAD_LIMIT = 100;
 const MAX_THREAD_LIMIT = 500;
-const MAX_VECTOR_CANDIDATES = 50_000;
+const MAX_RETRIEVAL_CANDIDATES = 2_000;
+const DEFAULT_VECTOR_DIMENSIONS = 640;
+const BUSY_TIMEOUT_MS = 5_000;
+const BUSY_RETRY_ATTEMPTS = 5;
+const BUSY_RETRY_BASE_DELAY_MS = 25;
+const FTS_ROWID_MIGRATION = "fts-rowid-v1";
+
+export interface SlackArchiveEmbeddingCandidate {
+  channelId: string;
+  ts: string;
+  text: string;
+}
+
+export interface SlackArchiveEmbeddingUpdate extends SlackArchiveEmbeddingCandidate {
+  embedding: Float32Array;
+  embedModel: string;
+  dim: number;
+}
 
 type ArchiveRow = {
   channel_id: string;
@@ -54,73 +77,110 @@ type ArchiveRow = {
  */
 export class SlackArchiveStore {
   private db: Database;
+  private readonly vectorIndex: SlackArchiveVectorSearcher;
+  private readonly mutableVectorIndex: SlackArchiveMutableVectorIndex | null;
 
-  constructor(dbPath: string) {
-    mkdirSync(dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.run("PRAGMA journal_mode = WAL");
-    this.db.run("PRAGMA synchronous = NORMAL");
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS slack_archive_message (
-        channel_id TEXT NOT NULL,
-        channel_name TEXT,
-        ts TEXT NOT NULL,
-        thread_ts TEXT NOT NULL,
-        actor_id TEXT,
-        user_id TEXT,
-        bot_id TEXT,
-        actor_name TEXT,
-        actor_kind TEXT,
-        text TEXT NOT NULL,
-        files_json TEXT,
-        subtype TEXT,
-        permalink TEXT,
-        metadata_json TEXT,
-        raw_json TEXT,
-        embedding BLOB,
-        embed_model TEXT,
-        dim INTEGER,
-        ingest_source TEXT NOT NULL CHECK (ingest_source IN ('live', 'backfill')),
-        observed_at INTEGER NOT NULL,
-        event_time_ms INTEGER NOT NULL,
-        PRIMARY KEY (channel_id, ts)
-      )
-    `);
-    this.db.run(
-      "CREATE INDEX IF NOT EXISTS idx_slack_archive_thread ON slack_archive_message(channel_id, thread_ts, event_time_ms, ts)",
-    );
-    this.db.run(
-      "CREATE INDEX IF NOT EXISTS idx_slack_archive_actor_time ON slack_archive_message(actor_id, event_time_ms)",
-    );
-    this.db.run(
-      "CREATE INDEX IF NOT EXISTS idx_slack_archive_channel_time ON slack_archive_message(channel_id, event_time_ms)",
-    );
-    this.db.run(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS slack_archive_fts USING fts5(
-        channel_id UNINDEXED,
-        ts UNINDEXED,
-        text,
-        actor_name,
-        channel_name,
-        tokenize = 'unicode61'
-      )
-    `);
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS slack_archive_conversation (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        kind TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS slack_archive_checkpoint (
-        scope TEXT PRIMARY KEY,
-        cursor TEXT NOT NULL,
-        metadata_json TEXT,
-        updated_at INTEGER NOT NULL
-      )
-    `);
+  constructor(dbPath: string, options: {
+    readonly?: boolean;
+    vectorDimensions?: number;
+    vectorIndex?: SlackArchiveVectorSearcher;
+    vectorIndexPath?: string;
+  } = {}) {
+    if (!options.readonly) mkdirSync(dirname(dbPath), { recursive: true });
+    this.db = options.readonly
+      ? new Database(dbPath, { readonly: true })
+      : new Database(dbPath);
+    this.db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    const vectorDimensions = options.vectorDimensions ?? DEFAULT_VECTOR_DIMENSIONS;
+    if (options.vectorIndex) {
+      this.vectorIndex = options.vectorIndex;
+      this.mutableVectorIndex = isMutableVectorIndex(options.vectorIndex)
+        ? options.vectorIndex
+        : null;
+    } else if (dbPath === ":memory:") {
+      const index = new SlackArchiveVectorIndex(vectorDimensions);
+      this.vectorIndex = index;
+      this.mutableVectorIndex = index;
+    } else {
+      this.vectorIndex = new ReloadingSlackArchiveVectorIndex(
+        options.vectorIndexPath ?? `${dbPath}.usearch`,
+        vectorDimensions,
+      );
+      this.mutableVectorIndex = null;
+    }
+    if (options.readonly) return;
+    retrySqliteBusy(() => {
+      this.db.run("PRAGMA journal_mode = WAL");
+      this.db.run("PRAGMA synchronous = NORMAL");
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS slack_archive_message (
+          channel_id TEXT NOT NULL,
+          channel_name TEXT,
+          ts TEXT NOT NULL,
+          thread_ts TEXT NOT NULL,
+          actor_id TEXT,
+          user_id TEXT,
+          bot_id TEXT,
+          actor_name TEXT,
+          actor_kind TEXT,
+          text TEXT NOT NULL,
+          files_json TEXT,
+          subtype TEXT,
+          permalink TEXT,
+          metadata_json TEXT,
+          raw_json TEXT,
+          embedding BLOB,
+          embed_model TEXT,
+          dim INTEGER,
+          ingest_source TEXT NOT NULL CHECK (ingest_source IN ('live', 'backfill')),
+          observed_at INTEGER NOT NULL,
+          event_time_ms INTEGER NOT NULL,
+          PRIMARY KEY (channel_id, ts)
+        )
+      `);
+      this.db.run(
+        "CREATE INDEX IF NOT EXISTS idx_slack_archive_thread ON slack_archive_message(channel_id, thread_ts, event_time_ms, ts)",
+      );
+      this.db.run(
+        "CREATE INDEX IF NOT EXISTS idx_slack_archive_actor_time ON slack_archive_message(actor_id, event_time_ms)",
+      );
+      this.db.run(
+        "CREATE INDEX IF NOT EXISTS idx_slack_archive_channel_time ON slack_archive_message(channel_id, event_time_ms)",
+      );
+      this.db.run(`
+        CREATE INDEX IF NOT EXISTS idx_slack_archive_pending_embedding
+        ON slack_archive_message(channel_id, ts)
+        WHERE embedding IS NULL
+          AND length(trim(text, char(9) || char(10) || char(11) || char(12) || char(13) || ' ')) > 0
+      `);
+      this.db.run(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS slack_archive_fts USING fts5(
+          channel_id UNINDEXED,
+          ts UNINDEXED,
+          text,
+          actor_name,
+          channel_name,
+          tokenize = 'unicode61'
+        )
+      `);
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS slack_archive_conversation (
+          id TEXT PRIMARY KEY,
+          name TEXT,
+          kind TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS slack_archive_checkpoint (
+          scope TEXT PRIMARY KEY,
+          cursor TEXT NOT NULL,
+          metadata_json TEXT,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      migrateFtsRowids(this.db);
+    });
   }
 
   close(): void {
@@ -129,6 +189,11 @@ export class SlackArchiveStore {
 
   upsertMessage(input: SlackArchiveMessageInput): SlackArchiveWriteResult {
     validateMessage(input);
+    const transaction = this.db.transaction(() => this.writeMessage(input));
+    return retrySqliteBusy(() => transaction());
+  }
+
+  private writeMessage(input: SlackArchiveMessageInput): SlackArchiveWriteResult {
     const observedAt = input.observedAt ?? Date.now();
     const existing = this.db
       .query<{ observed_at: number; ingest_source: string }, [string, string]>(
@@ -148,89 +213,106 @@ export class SlackArchiveStore {
     const eventTimeMs = input.eventTimeMs ?? slackTsToMs(input.ts);
     const embedding = input.embedding ?? null;
     const blob = embedding ? serializeEmbedding(embedding) : null;
-    const transaction = this.db.transaction(() => {
-      this.db.query(`
-        INSERT INTO slack_archive_message (
-          channel_id, channel_name, ts, thread_ts, actor_id, user_id, bot_id, actor_name, actor_kind,
-          text, files_json, subtype, permalink, metadata_json, raw_json, embedding, embed_model, dim,
-          ingest_source, observed_at, event_time_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(channel_id, ts) DO UPDATE SET
-          channel_name = excluded.channel_name,
-          thread_ts = excluded.thread_ts,
-          actor_id = excluded.actor_id,
-          user_id = excluded.user_id,
-          bot_id = excluded.bot_id,
-          actor_name = excluded.actor_name,
-          actor_kind = excluded.actor_kind,
-          text = excluded.text,
-          files_json = excluded.files_json,
-          subtype = excluded.subtype,
-          permalink = excluded.permalink,
-          metadata_json = excluded.metadata_json,
-          raw_json = excluded.raw_json,
-          embedding = CASE
-            WHEN excluded.embedding IS NOT NULL THEN excluded.embedding
-            WHEN excluded.text = slack_archive_message.text THEN slack_archive_message.embedding
-            ELSE NULL END,
-          embed_model = CASE
-            WHEN excluded.embedding IS NOT NULL THEN excluded.embed_model
-            WHEN excluded.text = slack_archive_message.text THEN slack_archive_message.embed_model
-            ELSE NULL END,
-          dim = CASE
-            WHEN excluded.embedding IS NOT NULL THEN excluded.dim
-            WHEN excluded.text = slack_archive_message.text THEN slack_archive_message.dim
-            ELSE NULL END,
-          ingest_source = excluded.ingest_source,
-          observed_at = excluded.observed_at,
-          event_time_ms = excluded.event_time_ms
-      `).run(
-        input.channelId,
-        input.channelName ?? null,
-        input.ts,
-        input.threadTs ?? input.ts,
-        input.actorId ?? input.userId ?? input.botId ?? null,
-        input.userId ?? null,
-        input.botId ?? null,
-        input.actorName ?? null,
-        input.actorKind ?? null,
-        input.text,
-        input.files?.length ? JSON.stringify(input.files) : null,
-        input.subtype ?? null,
-        input.permalink ?? null,
-        input.metadata ? JSON.stringify(input.metadata) : null,
-        input.rawJson ? JSON.stringify(input.rawJson) : null,
-        blob,
-        embedding ? (input.embedModel ?? null) : null,
-        embedding ? (input.dim ?? embedding.length) : null,
-        ingestSource,
-        observedAt,
-        eventTimeMs,
-      );
-      this.db
-        .query("DELETE FROM slack_archive_fts WHERE channel_id = ? AND ts = ?")
-        .run(input.channelId, input.ts);
-      this.db.query(`
-        INSERT INTO slack_archive_fts(channel_id, ts, text, actor_name, channel_name)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(
-        input.channelId,
-        input.ts,
-        input.text,
-        input.actorName ?? "",
-        input.channelName ?? "",
-      );
-    });
-    transaction();
+    this.db.query(`
+      INSERT INTO slack_archive_message (
+        channel_id, channel_name, ts, thread_ts, actor_id, user_id, bot_id, actor_name, actor_kind,
+        text, files_json, subtype, permalink, metadata_json, raw_json, embedding, embed_model, dim,
+        ingest_source, observed_at, event_time_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(channel_id, ts) DO UPDATE SET
+        channel_name = excluded.channel_name,
+        thread_ts = excluded.thread_ts,
+        actor_id = excluded.actor_id,
+        user_id = excluded.user_id,
+        bot_id = excluded.bot_id,
+        actor_name = excluded.actor_name,
+        actor_kind = excluded.actor_kind,
+        text = excluded.text,
+        files_json = excluded.files_json,
+        subtype = excluded.subtype,
+        permalink = excluded.permalink,
+        metadata_json = excluded.metadata_json,
+        raw_json = excluded.raw_json,
+        embedding = CASE
+          WHEN excluded.embedding IS NOT NULL THEN excluded.embedding
+          WHEN excluded.text = slack_archive_message.text THEN slack_archive_message.embedding
+          ELSE NULL END,
+        embed_model = CASE
+          WHEN excluded.embedding IS NOT NULL THEN excluded.embed_model
+          WHEN excluded.text = slack_archive_message.text THEN slack_archive_message.embed_model
+          ELSE NULL END,
+        dim = CASE
+          WHEN excluded.embedding IS NOT NULL THEN excluded.dim
+          WHEN excluded.text = slack_archive_message.text THEN slack_archive_message.dim
+          ELSE NULL END,
+        ingest_source = excluded.ingest_source,
+        observed_at = excluded.observed_at,
+        event_time_ms = excluded.event_time_ms
+    `).run(
+      input.channelId,
+      input.channelName ?? null,
+      input.ts,
+      input.threadTs ?? input.ts,
+      input.actorId ?? input.userId ?? input.botId ?? null,
+      input.userId ?? null,
+      input.botId ?? null,
+      input.actorName ?? null,
+      input.actorKind ?? null,
+      input.text,
+      input.files?.length ? JSON.stringify(input.files) : null,
+      input.subtype ?? null,
+      input.permalink ?? null,
+      input.metadata ? JSON.stringify(input.metadata) : null,
+      input.rawJson ? JSON.stringify(input.rawJson) : null,
+      blob,
+      embedding ? (input.embedModel ?? null) : null,
+      embedding ? (input.dim ?? embedding.length) : null,
+      ingestSource,
+      observedAt,
+      eventTimeMs,
+    );
+    const messageRow = this.db
+      .query<{ rowid: number }, [string, string]>(
+        "SELECT rowid FROM slack_archive_message WHERE channel_id = ? AND ts = ?",
+      )
+      .get(input.channelId, input.ts);
+    if (!messageRow) throw new Error("Slack archive message disappeared during FTS update");
+    this.db
+      .query("DELETE FROM slack_archive_fts WHERE rowid = ?")
+      .run(messageRow.rowid);
+    this.db.query(`
+      INSERT INTO slack_archive_fts(rowid, channel_id, ts, text, actor_name, channel_name)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      messageRow.rowid,
+      input.channelId,
+      input.ts,
+      input.text,
+      input.actorName ?? "",
+      input.channelName ?? "",
+    );
+    const storedEmbedding = this.db.query<
+      { embedding: Uint8Array | null },
+      [number]
+    >("SELECT embedding FROM slack_archive_message WHERE rowid = ?").get(messageRow.rowid)?.embedding;
+    if (storedEmbedding) {
+      this.mutableVectorIndex?.upsert({
+        rowid: messageRow.rowid,
+        embedding: deserializeEmbedding(storedEmbedding)!,
+      });
+    } else {
+      this.mutableVectorIndex?.remove(messageRow.rowid);
+    }
     return existing ? "updated" : "inserted";
   }
 
   upsertMessages(inputs: SlackArchiveMessageInput[]): SlackArchiveWriteResult[] {
     if (inputs.length === 0) return [];
+    inputs.forEach(validateMessage);
     const transaction = this.db.transaction((rows: SlackArchiveMessageInput[]) =>
-      rows.map((row) => this.upsertMessage(row))
+      rows.map((row) => this.writeMessage(row))
     );
-    return transaction(inputs);
+    return retrySqliteBusy(() => transaction(inputs));
   }
 
   getMessage(channelId: string, ts: string): SlackArchiveMessage | null {
@@ -242,13 +324,114 @@ export class SlackArchiveStore {
     return row ? rowToMessage(row) : null;
   }
 
+  countMessagesPendingEmbedding(): { pending: number; emptyText: number } {
+    const row = this.db.query<{ pending: number; empty_text: number }, []>(`
+      SELECT
+        SUM(CASE WHEN length(trim(text, char(9) || char(10) || char(11) || char(12) || char(13) || ' ')) > 0 THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN length(trim(text, char(9) || char(10) || char(11) || char(12) || char(13) || ' ')) = 0 THEN 1 ELSE 0 END) AS empty_text
+      FROM slack_archive_message
+      WHERE embedding IS NULL
+    `).get();
+    return { pending: row?.pending ?? 0, emptyText: row?.empty_text ?? 0 };
+  }
+
+  getMessagesPendingEmbedding(limit: number): SlackArchiveEmbeddingCandidate[] {
+    const bounded = boundedLimit(limit, 100, 10_000);
+    return this.db.query<
+      { channel_id: string; ts: string; text: string },
+      [number]
+    >(`
+      SELECT channel_id, ts, text
+      FROM slack_archive_message
+      WHERE embedding IS NULL
+        AND length(trim(text, char(9) || char(10) || char(11) || char(12) || char(13) || ' ')) > 0
+      ORDER BY channel_id ASC, ts ASC
+      LIMIT ?
+    `).all(bounded).map((row) => ({
+      channelId: row.channel_id,
+      ts: row.ts,
+      text: row.text,
+    }));
+  }
+
+  countEmbeddedMessages(dim: number): number {
+    return this.db.query<{ count: number }, [number]>(`
+      SELECT count(*) AS count
+      FROM slack_archive_message
+      WHERE embedding IS NOT NULL AND dim = ?
+    `).get(dim)?.count ?? 0;
+  }
+
+  getEmbeddedVectorRecords(
+    afterRowid: number,
+    limit: number,
+    dim: number,
+  ): SlackArchiveVectorRecord[] {
+    return this.db.query<
+      { rowid: number; embedding: Uint8Array },
+      [number, number, number]
+    >(`
+      SELECT rowid, embedding
+      FROM slack_archive_message
+      WHERE rowid > ? AND embedding IS NOT NULL AND dim = ?
+      ORDER BY rowid ASC
+      LIMIT ?
+    `).all(afterRowid, dim, boundedLimit(limit, 1_000, 10_000)).map((row) => ({
+      rowid: row.rowid,
+      embedding: deserializeEmbedding(row.embedding)!,
+    }));
+  }
+
+  updateMessageEmbeddings(updates: SlackArchiveEmbeddingUpdate[]): number {
+    if (updates.length === 0) return 0;
+    for (const update of updates) {
+      if (update.embedding.length !== update.dim) {
+        throw new Error("Slack archive embedding length does not match dim");
+      }
+    }
+    const statement = this.db.query(`
+      UPDATE slack_archive_message
+      SET embedding = ?, embed_model = ?, dim = ?
+      WHERE channel_id = ? AND ts = ? AND text = ? AND embedding IS NULL
+    `);
+    const rowidStatement = this.db.query<
+      { rowid: number },
+      [string, string]
+    >("SELECT rowid FROM slack_archive_message WHERE channel_id = ? AND ts = ?");
+    const indexed: SlackArchiveVectorRecord[] = [];
+    const transaction = this.db.transaction((rows: SlackArchiveEmbeddingUpdate[]) => {
+      let updated = 0;
+      for (const row of rows) {
+        const result = statement.run(
+          serializeEmbedding(row.embedding),
+          row.embedModel,
+          row.dim,
+          row.channelId,
+          row.ts,
+          row.text,
+        );
+        updated += result.changes;
+        if (result.changes > 0 && this.mutableVectorIndex) {
+          const stored = rowidStatement.get(row.channelId, row.ts);
+          if (stored) indexed.push({ rowid: stored.rowid, embedding: row.embedding });
+        }
+      }
+      return updated;
+    });
+    const updated = retrySqliteBusy(() => transaction(updates));
+    for (const record of indexed) this.mutableVectorIndex?.upsert(record);
+    return updated;
+  }
+
   upsertConversation(conversation: SlackArchiveConversation): void {
-    this.db.query(`
-      INSERT INTO slack_archive_conversation(id, name, kind, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        name = excluded.name, kind = excluded.kind, updated_at = excluded.updated_at
-    `).run(conversation.id, conversation.name, conversation.kind, Date.now());
+    retrySqliteBusy(() => {
+      this.db.query(`
+        INSERT INTO slack_archive_conversation(id, name, kind, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name, kind = excluded.kind, updated_at = excluded.updated_at
+      `).run(conversation.id, conversation.name, conversation.kind, Date.now());
+    });
   }
 
   getThread(
@@ -283,12 +466,12 @@ export class SlackArchiveStore {
             SELECT m.channel_id, m.ts
             FROM slack_archive_fts AS f
             JOIN slack_archive_message AS m
-              ON m.channel_id = f.channel_id AND m.ts = f.ts
+              ON m.rowid = f.rowid
             WHERE slack_archive_fts MATCH ? ${filterSql}
             ORDER BY bm25(slack_archive_fts), m.event_time_ms DESC
             LIMIT ?
           `)
-          .all(match, ...filterParams, Math.min(MAX_VECTOR_CANDIDATES, limit * 20));
+          .all(match, ...filterParams, Math.min(MAX_RETRIEVAL_CANDIDATES, limit * 20));
         rows.forEach((row, index) => lexicalRanks.set(identity(row.channel_id, row.ts), index + 1));
       }
     }
@@ -296,21 +479,32 @@ export class SlackArchiveStore {
     const vectorCosines = new Map<string, number>();
     const vectorRanks = new Map<string, number>();
     if (queryVector) {
-      const rows = this.db
-        .query<ArchiveRow, (string | number)[]>(`
-          SELECT * FROM slack_archive_message AS m
-          WHERE m.embedding IS NOT NULL ${filterSql}
-          ORDER BY m.event_time_ms DESC LIMIT ?
-        `)
-        .all(...filterParams, MAX_VECTOR_CANDIDATES);
-      const ranked = rows
-        .map((row) => ({ row, cosine: cosineSim(queryVector, deserializeEmbedding(row.embedding)!) }))
-        .sort((a, b) => b.cosine - a.cosine || b.row.event_time_ms - a.row.event_time_ms);
-      ranked.forEach((entry, index) => {
-        const key = identity(entry.row.channel_id, entry.row.ts);
-        vectorCosines.set(key, entry.cosine);
-        vectorRanks.set(key, index + 1);
-      });
+      const desired = Math.min(MAX_RETRIEVAL_CANDIDATES, Math.max(limit * 20, 100));
+      const initial = Math.min(this.vectorIndex.size, Math.max(desired, limit * 50));
+      const hits = this.vectorIndex.search(queryVector, initial);
+      if (hits.length > 0) {
+        const rowids = hits.map((hit) => hit.rowid);
+        const placeholders = rowids.map(() => "?").join(", ");
+        const rows = this.db.query<
+          { rowid: number; channel_id: string; ts: string },
+          (string | number)[]
+        >(`
+          SELECT m.rowid, m.channel_id, m.ts
+          FROM slack_archive_message AS m
+          WHERE m.rowid IN (${placeholders}) ${filterSql}
+        `).all(...rowids, ...filterParams);
+        const byRowid = new Map(rows.map((row) => [row.rowid, row]));
+        let rank = 0;
+        for (const hit of hits) {
+          const row = byRowid.get(hit.rowid);
+          if (!row) continue;
+          rank += 1;
+          const key = identity(row.channel_id, row.ts);
+          vectorCosines.set(key, hit.cosine);
+          vectorRanks.set(key, rank);
+          if (rank >= desired) break;
+        }
+      }
     }
 
     const candidateKeys = new Set([...lexicalRanks.keys(), ...vectorRanks.keys()]);
@@ -369,24 +563,90 @@ export class SlackArchiveStore {
     const input: SlackArchiveCheckpointInput = typeof inputOrScope === "string"
       ? { scope: inputOrScope, cursor: cursor ?? "" }
       : inputOrScope;
-    this.db.query(`
-      INSERT INTO slack_archive_checkpoint(scope, cursor, metadata_json, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(scope) DO UPDATE SET
-        cursor = excluded.cursor,
-        metadata_json = excluded.metadata_json,
-        updated_at = excluded.updated_at
-    `).run(
-      input.scope,
-      input.cursor,
-      input.metadata ? JSON.stringify(input.metadata) : null,
-      input.updatedAt ?? Date.now(),
-    );
+    retrySqliteBusy(() => {
+      this.db.query(`
+        INSERT INTO slack_archive_checkpoint(scope, cursor, metadata_json, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(scope) DO UPDATE SET
+          cursor = excluded.cursor,
+          metadata_json = excluded.metadata_json,
+          updated_at = excluded.updated_at
+      `).run(
+        input.scope,
+        input.cursor,
+        input.metadata ? JSON.stringify(input.metadata) : null,
+        input.updatedAt ?? Date.now(),
+      );
+    });
   }
 
   clearCheckpoint(scope: string): void {
-    this.db.query("DELETE FROM slack_archive_checkpoint WHERE scope = ?").run(scope);
+    retrySqliteBusy(() => {
+      this.db.query("DELETE FROM slack_archive_checkpoint WHERE scope = ?").run(scope);
+    });
   }
+}
+
+function isMutableVectorIndex(
+  index: SlackArchiveVectorSearcher,
+): index is SlackArchiveMutableVectorIndex {
+  return "upsert" in index && "remove" in index;
+}
+
+function migrateFtsRowids(db: Database): void {
+  const migrate = db.transaction(() => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS slack_archive_schema_migration (
+        name TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      )
+    `);
+    const applied = db
+      .query<{ name: string }, [string]>(
+        "SELECT name FROM slack_archive_schema_migration WHERE name = ?",
+      )
+      .get(FTS_ROWID_MIGRATION);
+    if (applied) return;
+
+    db.run("DELETE FROM slack_archive_fts");
+    db.run(`
+      INSERT INTO slack_archive_fts(rowid, channel_id, ts, text, actor_name, channel_name)
+      SELECT rowid, channel_id, ts, text, coalesce(actor_name, ''), coalesce(channel_name, '')
+      FROM slack_archive_message
+    `);
+    db.query(`
+      INSERT INTO slack_archive_schema_migration(name, applied_at)
+      VALUES (?, ?)
+    `).run(FTS_ROWID_MIGRATION, Date.now());
+  });
+  migrate();
+}
+
+export function retrySqliteBusy<T>(
+  operation: () => T,
+  options: { attempts?: number; baseDelayMs?: number } = {},
+): T {
+  const attempts = Math.max(1, options.attempts ?? BUSY_RETRY_ATTEMPTS);
+  const baseDelayMs = Math.max(0, options.baseDelayMs ?? BUSY_RETRY_BASE_DELAY_MS);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return operation();
+    } catch (error) {
+      if (!isSqliteBusy(error) || attempt >= attempts) throw error;
+      sleepSync(baseDelayMs * 2 ** (attempt - 1));
+    }
+  }
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = "code" in error ? String(error.code) : "";
+  return code.startsWith("SQLITE_BUSY") || /SQLITE_BUSY|database is (?:locked|busy)/i.test(error.message);
+}
+
+function sleepSync(milliseconds: number): void {
+  if (milliseconds <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
 function validateMessage(input: SlackArchiveMessageInput): void {

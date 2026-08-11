@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  buildPreRecallCodexArgs,
   buildPreRecallClaudeArgs,
   buildSynthesisPrompt,
   createPreRecall,
@@ -17,6 +18,21 @@ import {
   type RunTextFn,
   type SynthesisCandidate,
 } from "./pre-recall.ts";
+
+describe("buildPreRecallCodexArgs", () => {
+  test("pins the requested model and reasoning effort in an isolated run", () => {
+    const args = buildPreRecallCodexArgs(
+      "gpt-5.6-luna",
+      "medium",
+      "/tmp/pre-recall.txt",
+    );
+    expect(args).toContain("--ephemeral");
+    expect(args).toContain("--ignore-user-config");
+    expect(args[args.indexOf("-m") + 1]).toBe("gpt-5.6-luna");
+    expect(args[args.indexOf("-c") + 1]).toBe('model_reasoning_effort="medium"');
+    expect(args.at(-1)).toBe("-");
+  });
+});
 import type { Config } from "../config.ts";
 import { addMemory, type MemoryToolDeps } from "../mcp/slack-server.ts";
 import { createMemoryStore } from "./factory.ts";
@@ -67,13 +83,19 @@ describe("deriveRecallQueries", () => {
       deriveRecallQueries("review the PR", { repo: "gx-backend", agent: "review" }),
     ).toEqual([
       "review the PR",
-      "How should review handle this task in gx-backend? review the PR",
+      "How should review handle this situation in gx-backend? review the PR",
     ]);
   });
 
   test("collapses whitespace and drops empty messages", () => {
     expect(deriveRecallQueries("  hey\n\n  there ")).toEqual(["hey there"]);
     expect(deriveRecallQueries("   ")).toEqual([]);
+  });
+
+  test("does not dilute an already-complete scenario with generic expansion", () => {
+    const message = "The overnight worker has gone quiet and I cannot tell whether waiting or intervention is safer now";
+    expect(deriveRecallQueries(message, { repo: "junior", agent: "default" }))
+      .toEqual([message]);
   });
 });
 
@@ -124,17 +146,17 @@ describe("selectSynthesisCandidates", () => {
 
   test("caps the candidate count, keeping the highest scores", () => {
     const kept = selectSynthesisCandidates(makeCandidates(30, 10));
-    expect(kept).toHaveLength(12);
+    expect(kept).toHaveLength(20);
     expect(kept.map((c) => c.id)).toEqual(
-      Array.from({ length: 12 }, (_, i) => `claim-${i}`),
+      Array.from({ length: 20 }, (_, i) => `claim-${i}`),
     );
   });
 
   test("drops the lowest-scoring candidates at the character ceiling", () => {
-    // 12 max-length claims would be 7200 chars; the 6000 ceiling admits 10.
-    const kept = selectSynthesisCandidates(makeCandidates(12, 600));
-    expect(kept).toHaveLength(10);
-    expect(kept.at(-1)!.id).toBe("claim-9");
+    // Twenty max-length claims exactly fill the 12,000-character ceiling.
+    const kept = selectSynthesisCandidates(makeCandidates(21, 600));
+    expect(kept).toHaveLength(20);
+    expect(kept.at(-1)!.id).toBe("claim-19");
   });
 
   test("keeps the top candidate even when it alone fills the budget", () => {

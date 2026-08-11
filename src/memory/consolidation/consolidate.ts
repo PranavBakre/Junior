@@ -8,6 +8,7 @@
 
 import { dedupScopeKey, resolveDedupThreshold } from "../dedup.ts";
 import type { EmbeddingProvider } from "../embedding/types.ts";
+import { buildLessonRetrievalTexts } from "../retrieval-text.ts";
 import type { ProfileStore } from "../profiles/store.ts";
 import type { ProfileKind } from "../profiles/types.ts";
 import type { MemoryStore } from "../store.ts";
@@ -157,7 +158,11 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
   for (const draft of output.claims ?? []) {
     const text = draft.text?.trim();
     if (!text) continue;
-    const [vector] = await embedder.embed([text], "document");
+    const retrievalTexts = draft.kind === "lesson"
+      ? buildLessonRetrievalTexts({ title: text, body: text })
+      : [text];
+    const vectors = await embedder.embed([text, ...retrievalTexts], "document");
+    const vector = vectors[0]!;
 
     // In-batch dedup: the store's write guard cannot see drafts that have not
     // been written yet, so near-identical drafts within one batch are still
@@ -181,7 +186,12 @@ export async function consolidateSession(args: ConsolidateSessionArgs): Promise<
       id: `claim_${fnv1a(text)}`,
       kind: draft.kind,
       text,
+      retrievalText: retrievalTexts[0],
       embedding: vector,
+      retrievalEmbeddings: retrievalTexts.map((retrievalText, index) => ({
+        text: retrievalText,
+        embedding: vectors[index + 1]!,
+      })),
       embedModel: embedder.model,
       dim: embedder.dim,
       repo: draft.repo ?? null,

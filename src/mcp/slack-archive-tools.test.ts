@@ -75,7 +75,7 @@ describe("Slack archive MCP tools", () => {
   let tools: Map<string, ToolHandler>;
 
   beforeEach(() => {
-    store = new SlackArchiveStore(":memory:");
+    store = new SlackArchiveStore(":memory:", { vectorDimensions: 2 });
     seed(store);
     setSlackArchiveStore(store);
     const captured = captureTools();
@@ -120,6 +120,39 @@ describe("Slack archive MCP tools", () => {
     });
     expect(output.indexOf("deploy payments safely")).toBeLessThan(output.indexOf("payments deploy complete"));
     expect(output).toContain("expanded_thread=true");
+  });
+
+  test("embeds the natural-language query in query mode and uses semantic results", async () => {
+    store.upsertMessage({
+      channelId: "C_OPS",
+      ts: "1700000200.000001",
+      actorId: "U_ALICE",
+      actorKind: "human",
+      text: "verify process liveness and durable counters before restarting a background worker",
+      embedding: new Float32Array([1, 0]),
+      embedModel: "test",
+      dim: 2,
+    });
+    const calls: Array<{ texts: string[]; mode: string }> = [];
+    const captured = captureTools();
+    registerSlackArchiveTools(captured.server, SIGNED_PUBLIC_CHANNEL, {
+      getEmbedder: async () => ({
+        model: "test",
+        dim: 2,
+        async embed(texts, mode) {
+          calls.push({ texts, mode });
+          return texts.map(() => new Float32Array([1, 0]));
+        },
+      }),
+    });
+    const output = (await captured.tools.get("slack_archive_search")!({
+      query: "How should I handle a stalled job?",
+    })).content[0]!.text;
+    expect(calls).toEqual([{
+      texts: ["How should I handle a stalled job?"],
+      mode: "query",
+    }]);
+    expect(output).toContain("verify process liveness");
   });
 
   test("thread reads exact channel and thread_ts in chronological order", async () => {
@@ -167,7 +200,7 @@ describe("Slack archive MCP authorization", () => {
   let store: SlackArchiveStore;
 
   beforeEach(() => {
-    store = new SlackArchiveStore(":memory:");
+    store = new SlackArchiveStore(":memory:", { vectorDimensions: 2 });
     seed(store);
     setSlackArchiveStore(store);
   });

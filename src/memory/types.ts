@@ -111,6 +111,16 @@ export interface ClaimInput {
   retrievalText?: string | null;
   /** Pre-computed embedding. Stored as a Float32 LE BLOB. */
   embedding?: Float32Array | null;
+  /**
+   * Alternate retrieval projections for the same atomic claim. Recall scores
+   * the claim by the best cosine across these vectors, while still returning
+   * the authoritative `text` once. The primary `embedding` remains the
+   * canonical authoritative-text vector for near-duplicate detection.
+   */
+  retrievalEmbeddings?: Array<{
+    text: string;
+    embedding: Float32Array;
+  }>;
   embedModel?: string | null;
   dim?: number | null;
   repo?: string | null;

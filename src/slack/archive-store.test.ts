@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SlackArchiveStore } from "./archive-store.ts";
 import type { SlackArchiveMessageInput } from "./archive-types.ts";
 
@@ -26,7 +30,7 @@ describe("SlackArchiveStore", () => {
   let store: SlackArchiveStore;
 
   beforeEach(() => {
-    store = new SlackArchiveStore(":memory:");
+    store = new SlackArchiveStore(":memory:", { vectorDimensions: 2 });
   });
   afterEach(() => store.close());
 
@@ -110,5 +114,98 @@ describe("SlackArchiveStore", () => {
     expect(store.getCheckpointRecord("C1")?.metadata).toEqual({ page: 2 });
     store.clearCheckpoint("C1");
     expect(store.getCheckpoint("C1")).toBeNull();
+  });
+});
+
+describe("SlackArchiveStore FTS rowids", () => {
+  let tempDirectory: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    tempDirectory = mkdtempSync(join(tmpdir(), "junior-slack-archive-"));
+    dbPath = join(tempDirectory, "archive.db");
+  });
+  afterEach(() => rmSync(tempDirectory, { recursive: true, force: true }));
+
+  test("keeps insert and update FTS rows aligned with message rowids", () => {
+    const fileStore = new SlackArchiveStore(dbPath);
+    expect(fileStore.upsertMessage(message())).toBe("inserted");
+    expect(fileStore.search({ queryText: "payments" })).toHaveLength(1);
+
+    expect(fileStore.upsertMessage(message({
+      text: "rollback the billing release",
+      observedAt: 101,
+    }))).toBe("updated");
+    expect(fileStore.search({ queryText: "payments" })).toHaveLength(0);
+    expect(fileStore.search({ queryText: "billing" })[0]?.message.text)
+      .toBe("rollback the billing release");
+    fileStore.close();
+
+    const db = new Database(dbPath, { readonly: true });
+    const rows = db.query<{ message_rowid: number; fts_rowid: number }, []>(`
+      SELECT m.rowid AS message_rowid, f.rowid AS fts_rowid
+      FROM slack_archive_message AS m
+      JOIN slack_archive_fts AS f ON f.channel_id = m.channel_id AND f.ts = m.ts
+    `).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.fts_rowid).toBe(rows[0]?.message_rowid);
+
+    const plan = db.query<{ detail: string }, [number]>(
+      "EXPLAIN QUERY PLAN DELETE FROM slack_archive_fts WHERE rowid = ?",
+    ).all(rows[0]!.message_rowid).map((row) => row.detail);
+    expect(plan.some((detail) => detail.includes("VIRTUAL TABLE INDEX 0:="))).toBe(true);
+    expect(plan.some((detail) => /VIRTUAL TABLE INDEX 0:$/.test(detail))).toBe(false);
+    db.close();
+  });
+
+  test("transactionally migrates a legacy unaligned FTS once and skips migration for readonly opens", () => {
+    const seedStore = new SlackArchiveStore(dbPath);
+    seedStore.upsertMessages([
+      message(),
+      message({
+        ts: "1700000001.000100",
+        threadTs: "1700000001.000100",
+        text: "second searchable message",
+        observedAt: 101,
+      }),
+    ]);
+    seedStore.close();
+
+    const legacyDb = new Database(dbPath);
+    legacyDb.run("DELETE FROM slack_archive_schema_migration WHERE name = 'fts-rowid-v1'");
+    legacyDb.run("DELETE FROM slack_archive_fts");
+    legacyDb.run(`
+      INSERT INTO slack_archive_fts(rowid, channel_id, ts, text, actor_name, channel_name)
+      SELECT rowid + 1000, channel_id, ts, text, coalesce(actor_name, ''), coalesce(channel_name, '')
+      FROM slack_archive_message
+    `);
+    legacyDb.close();
+
+    const readonlyStore = new SlackArchiveStore(dbPath, { readonly: true });
+    readonlyStore.close();
+    const afterReadonly = new Database(dbPath, { readonly: true });
+    expect(afterReadonly.query<{ count: number }, []>(`
+      SELECT count(*) AS count FROM slack_archive_schema_migration
+      WHERE name = 'fts-rowid-v1'
+    `).get()?.count).toBe(0);
+    afterReadonly.close();
+
+    const migratedStore = new SlackArchiveStore(dbPath);
+    expect(migratedStore.search({ queryText: "searchable" })).toHaveLength(1);
+    migratedStore.close();
+
+    const reopenedStore = new SlackArchiveStore(dbPath);
+    reopenedStore.close();
+    const migratedDb = new Database(dbPath, { readonly: true });
+    expect(migratedDb.query<{ count: number }, []>(`
+      SELECT count(*) AS count
+      FROM slack_archive_message AS m
+      JOIN slack_archive_fts AS f ON f.rowid = m.rowid
+    `).get()?.count).toBe(2);
+    expect(migratedDb.query<{ count: number }, []>(`
+      SELECT count(*) AS count FROM slack_archive_schema_migration
+      WHERE name = 'fts-rowid-v1'
+    `).get()?.count).toBe(1);
+    migratedDb.close();
   });
 });

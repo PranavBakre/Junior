@@ -3,7 +3,24 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SqliteMemoryStore } from "./sqlite.ts";
+import { queryHasExactLexicalAnchor, SqliteMemoryStore } from "./sqlite.ts";
+
+describe("queryHasExactLexicalAnchor", () => {
+  it("recognizes identifiers, paths, URLs, flags, issue numbers, and quotations", () => {
+    expect(queryHasExactLexicalAnchor("Where is GX_DEPLOY_TOKEN configured?")).toBe(true);
+    expect(queryHasExactLexicalAnchor("open src/memory/sqlite.ts")).toBe(true);
+    expect(queryHasExactLexicalAnchor("check https://example.com/a")).toBe(true);
+    expect(queryHasExactLexicalAnchor("run --dry-run first")).toBe(true);
+    expect(queryHasExactLexicalAnchor("review #123")).toBe(true);
+    expect(queryHasExactLexicalAnchor('find "database is locked"')).toBe(true);
+  });
+
+  it("keeps ordinary conceptual prose on vector ordering", () => {
+    expect(queryHasExactLexicalAnchor(
+      "The overnight thing has gone quiet and I cannot tell whether patience is safer",
+    )).toBe(false);
+  });
+});
 
 describe("SqliteMemoryStore", () => {
   let tmpDir: string;
@@ -142,6 +159,7 @@ describe("SqliteMemoryStore", () => {
         .map((row) => row.name),
     );
     expect(names.has("claim")).toBe(true);
+    expect(names.has("claim_embedding")).toBe(true);
     expect(names.has("episode")).toBe(true);
   });
 
@@ -306,6 +324,84 @@ describe("SqliteMemoryStore", () => {
     expect(results[0].id).toBe("exact-identifier");
     expect(results[0].cosine).toBeCloseTo(0, 5);
     expect(results[0].lexicalScore).toBeGreaterThanOrEqual(0.75);
+  });
+
+  it("does not let ordinary lexical overlap displace the best semantic paraphrase", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "semantic-answer",
+      kind: "lesson",
+      text: "Verify process liveness and durable progress before intervention",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "word-overlap-distractor",
+      kind: "lesson",
+      text: "Quiet patience is useful during a safer database migration",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      queryText: "The overnight thing has gone quiet and I cannot tell whether patience is safer",
+      limit: 2,
+      recordUsage: false,
+    });
+
+    expect(results[0]?.id).toBe("semantic-answer");
+    expect(results[1]?.lexicalScore).toBeGreaterThan(0);
+  });
+
+  it("scores a claim by its best retrieval embedding without returning duplicates", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "multi-cue",
+      kind: "lesson",
+      text: "Authoritative lesson",
+      retrievalText: "first cue",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      retrievalEmbeddings: [
+        { text: "first cue", embedding: new Float32Array([1, 0, 0, 0]) },
+        { text: "second cue", embedding: new Float32Array([0, 1, 0, 0]) },
+        { text: "third cue", embedding: new Float32Array([0, 0, 1, 0]) },
+      ],
+      createdAt: now,
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "single-cue",
+      kind: "lesson",
+      text: "Distractor",
+      embedding: new Float32Array([0.6, 0.4, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([0, 1, 0, 0]),
+      limit: 5,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id)).toEqual(["multi-cue", "single-cue"]);
+    expect(results[0]?.cosine).toBeCloseTo(1, 5);
+  });
+
+  it("rejects malformed alternate retrieval embeddings", async () => {
+    await expect(store.upsertClaim({
+      id: "bad-variants",
+      kind: "lesson",
+      text: "A bounded lesson",
+      embedding: new Float32Array([1, 0]),
+      retrievalEmbeddings: [
+        { text: "wrong dimension", embedding: new Float32Array([1, 0, 0]) },
+      ],
+      createdAt: Date.now(),
+    })).rejects.toThrow("dimensions must match");
   });
 
   it("round-trips source provenance and lets parent-section text participate in lexical recall", async () => {

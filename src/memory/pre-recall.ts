@@ -1,9 +1,10 @@
 // Pre-recall hook: runs BEFORE the runner spawns to inject operational memory
 // into the prompt.
 //
-// Retrieval fuses embedding and exact-token ranks. The raw Slack message is
-// embedded directly by the configured provider (milliseconds, in-process)
-// instead of being fed to a model for query extraction.
+// Retrieval uses semantic ordering for prose and fuses exact-token ranks only
+// when a query contains an identifier, path, URL, flag, issue, or quotation.
+// The raw Slack message is embedded directly by the configured provider
+// (milliseconds, in-process) instead of being fed to a model for extraction.
 //
 // The single LLM call is SYNTHESIS over the retrieved claims: a bounded input
 // (capped candidate count, per-claim truncation, total candidate-character
@@ -37,7 +38,8 @@ export type PreRecallRunner = "claude" | "opencode" | "codex";
 // ── Pinned cheapest models per runner ────────────────────────────────────────
 const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4-pro";
-const DEFAULT_CODEX_MODEL = "gpt-5.4-nano";
+const DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
+const DEFAULT_CODEX_REASONING_EFFORT = "medium";
 
 // ── Bounds ───────────────────────────────────────────────────────────────────
 // Claim text has no length ceiling in the schema, so "N claims" is not a
@@ -45,15 +47,15 @@ const DEFAULT_CODEX_MODEL = "gpt-5.4-nano";
 // budget sizeable; without them the "predictable timeout" argument is empty.
 
 /** Claims recalled per derived query. */
-const CANDIDATE_LIMIT = 8;
+const CANDIDATE_LIMIT = 20;
 /** Slots inside that limit reserved for procedure memories. */
 const PROCEDURE_CANDIDATE_QUOTA = 2;
 /** Candidates that reach the prompt after the per-query sets are merged. */
-const MAX_SYNTHESIS_CANDIDATES = 12;
+const MAX_SYNTHESIS_CANDIDATES = 20;
 /** Per-claim truncation before a candidate enters the prompt. */
 const MAX_CLAIM_CHARS = 600;
 /** Total candidate characters; the lowest-scoring candidates are dropped. */
-const MAX_CANDIDATE_CHARS = 6_000;
+const MAX_CANDIDATE_CHARS = 12_000;
 /** The request itself is untrusted-length input — cap it too. */
 const MAX_REQUEST_CHARS = 1_200;
 /** Retrieval query length. Embedding providers truncate anyway. */
@@ -129,7 +131,7 @@ Return ONLY a JSON object:
 {"notes": ["..."], "used": [1, 4]}
 
 - "notes": at most ${MAX_NOTES} lines of merged operational knowledge that actually applies to this request. Merge overlapping candidates into one line and drop the rest. Keep concrete details (names, paths, commands, ids) verbatim — never generalize them away. Every note must come from the candidates; never add knowledge of your own.
-- "used": the 1-based indexes of the candidates that contributed to "notes". Never return notes with an empty "used".
+- "used": the 1-based indexes of the candidates that contributed to "notes", ordered from most to least relevant to the incoming request. Never return notes with an empty "used".
 
 Return {"notes": [], "used": []} when nothing applies. That is the common case and it is the correct answer — do not pad.`;
 
@@ -330,11 +332,18 @@ export function deriveRecallQueries(
   if (!normalized) return [];
 
   const repo = options?.repo?.trim();
-  const agent = options?.agent?.trim() || "Junior";
-  if (!repo && !options?.agent?.trim()) return [normalized];
+  const requestedAgent = options?.agent?.trim();
+  // A complete scenario is already the embedding model's ideal query shape.
+  // Prefix expansion is only useful for terse, context-bearing commands; on
+  // long scenarios it dilutes the salient words with generic scaffolding.
+  if ((!repo && !requestedAgent) || normalized.split(/\s+/).length >= 12) {
+    return [normalized];
+  }
+  const agent = requestedAgent || "Junior";
   const question =
-    `How should ${agent} handle this task${repo ? ` in ${repo}` : ""}? ${normalized}`;
-  return [normalized, question.slice(0, MAX_QUERY_CHARS)];
+    `How should ${agent} handle this situation${repo ? ` in ${repo}` : ""}? ${normalized}`;
+  const expanded = question.slice(0, MAX_QUERY_CHARS);
+  return expanded === normalized ? [normalized] : [normalized, expanded];
 }
 
 /**
@@ -650,6 +659,7 @@ export interface RunTextRequest {
   prompt: string;
   model: string;
   timeoutMs: number;
+  reasoningEffort?: string;
 }
 
 export type RunTextFn = (req: RunTextRequest) => Promise<string>;
@@ -687,7 +697,7 @@ export function buildPreRecallClaudeArgs(model: string): string[] {
   ];
 }
 
-async function claudeRunText(req: RunTextRequest): Promise<string> {
+export async function claudeRunText(req: RunTextRequest): Promise<string> {
   // Neutral cwd outside the repo so the run can't inherit junior's CLAUDE.md /
   // .claude/ / .mcp.json context.
   const args = buildPreRecallClaudeArgs(req.model);
@@ -770,23 +780,16 @@ function extractOpenCodeAssistantText(stdout: string): string {
 
 // ── Codex subprocess ─────────────────────────────────────────────────────────
 
-async function codexRunText(req: RunTextRequest): Promise<string> {
+export async function codexRunText(req: RunTextRequest): Promise<string> {
   const outFile = join(tmpdir(), `junior-pre-recall-codex-${crypto.randomUUID()}.txt`);
   // Bake system prompt into stdin since codex exec has no --system-prompt flag.
   const combinedPrompt = `${SYNTHESIS_SYSTEM_PROMPT}\n\n---\n\n${req.prompt}`;
 
-  const args = [
-    "exec",
-    "--ephemeral",
-    "--ignore-user-config",
-    "--ignore-rules",
-    "--skip-git-repo-check",
-    "-s", "read-only",
-    "--color", "never",
-    "-m", req.model,
-    "-o", outFile,
-    "-",
-  ];
+  const args = buildPreRecallCodexArgs(
+    req.model,
+    req.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+    outFile,
+  );
 
   const proc = Bun.spawn(["codex", ...args], {
     cwd: tmpdir(),
@@ -821,6 +824,26 @@ async function codexRunText(req: RunTextRequest): Promise<string> {
   } finally {
     await rm(outFile, { force: true }).catch(() => {});
   }
+}
+
+export function buildPreRecallCodexArgs(
+  model: string,
+  reasoningEffort: string,
+  outFile: string,
+): string[] {
+  return [
+    "exec",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--skip-git-repo-check",
+    "-s", "read-only",
+    "--color", "never",
+    "-m", model,
+    "-c", `model_reasoning_effort="${reasoningEffort}"`,
+    "-o", outFile,
+    "-",
+  ];
 }
 
 /**

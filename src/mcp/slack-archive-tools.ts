@@ -3,6 +3,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { SlackArchiveStore } from "../slack/archive-store.ts";
+import type { EmbeddingProvider } from "../memory/embedding/types.ts";
 import type {
   SlackArchiveActorKind,
   SlackArchiveMessage,
@@ -127,15 +128,16 @@ const actorKinds = ["human", "bot", "app", "system", "unknown"] as const satisfi
 export function registerSlackArchiveTools(
   server: McpServer,
   auth: SlackArchiveToolAuth,
+  dependencies: { getEmbedder?: () => Promise<EmbeddingProvider> } = {},
 ): void {
   registerTool(
     server,
     "slack_archive_search",
     {
       description:
-        "Search the read-only organization-wide Slack archive lexically. Optionally filter by exact channel/actor IDs and event time, and attach bounded chronological thread context.",
+        "Hybrid semantic and exact-text search over the read-only organization-wide Slack archive. Optionally filter by exact channel/actor IDs and event time, and attach bounded chronological thread context.",
       inputSchema: {
-        query: z.string().trim().min(1).max(2_000).describe("Lexical search text"),
+        query: z.string().trim().min(1).max(2_000).describe("Natural-language or exact-text search query"),
         channel: z.string().trim().min(1).max(200).optional().describe("Exact Slack channel ID"),
         actor: z.string().trim().min(1).max(200).optional().describe("Exact archived actor ID"),
         actor_kind: z.enum(actorKinds).optional(),
@@ -152,8 +154,15 @@ export function registerSlackArchiveTools(
       if (args.since_ms !== undefined && args.until_ms !== undefined && args.since_ms > args.until_ms) {
         return text("Invalid time range: since_ms must be less than or equal to until_ms.");
       }
+      const embedder = dependencies.getEmbedder
+        ? await dependencies.getEmbedder()
+        : null;
+      const [queryVector] = embedder
+        ? await embedder.embed([args.query], "query")
+        : [];
       const results = archiveStore.search({
         queryText: args.query,
+        queryVector,
         filters: {
           channelId: args.channel,
           actorId: args.actor,

@@ -191,6 +191,8 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
       const session = await sessionStore?.get(threadId);
       return session ? { channel: session.channel } : null;
     },
+  }, {
+    getEmbedder: getEmbeddingProvider,
   });
   // Task routes share the memory DB and its embedding provider; the repo
   // lookups come from the worktree manager's configured checkouts.

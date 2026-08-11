@@ -58,6 +58,7 @@ const CLAIM_MERGE_WEIGHT_BUMP = 0.1;
  * feeds no ranking, and the honest count of rediscoveries is the useful signal.
  */
 const CLAIM_MERGE_WEIGHT_CEILING = 2.0;
+const MAX_CLAIM_RETRIEVAL_EMBEDDINGS = 8;
 
 const LEXICAL_STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does",
@@ -75,6 +76,24 @@ function lexicalTerms(value: string): string[] {
 
 function normalizeLexicalPhrase(value: string): string {
   return value.toLowerCase().replace(/[^\p{L}\p{N}._/#:-]+/gu, " ").trim();
+}
+
+/**
+ * Equal-rank lexical fusion is useful for exact anchors, but ordinary shared
+ * prose can pull a semantically wrong claim above the right paraphrase. Keep
+ * lexical scoring available for diagnostics/floors, and fuse it into ordering
+ * only when the query visibly asks for exact-token behaviour.
+ */
+export function queryHasExactLexicalAnchor(value: string): boolean {
+  return (
+    /https?:\/\/|www\./i.test(value) ||
+    /[`"]([^`"\n]{2,})[`"]/.test(value) ||
+    /(?:^|\s)(?:\.{0,2}\/|\/)[\p{L}\p{N}_.\-/]+/u.test(value) ||
+    /\b[\p{L}\p{N}_.-]+(?:\/[\p{L}\p{N}_.-]+)+\b/u.test(value) ||
+    /(?:^|\s)--?[a-z][a-z0-9-]*/i.test(value) ||
+    /(?:^|\s)#\d+\b/.test(value) ||
+    /\b(?:[A-Z][A-Z0-9]*[_./:-][A-Z0-9_./:-]*|[a-zA-Z_]+\d+[a-zA-Z0-9_.:/-]*)\b/.test(value)
+  );
 }
 
 /** Exact-token coverage, with extra weight for identifiers, paths, and numbers. */
@@ -383,6 +402,19 @@ export class SqliteMemoryStore implements MemoryStore {
           "caller, or set skipDedup to write a historical row verbatim.",
       );
     }
+    if ((claim.retrievalEmbeddings?.length ?? 0) > MAX_CLAIM_RETRIEVAL_EMBEDDINGS) {
+      throw new Error(
+        `upsertClaim: at most ${MAX_CLAIM_RETRIEVAL_EMBEDDINGS} retrieval embeddings are allowed`,
+      );
+    }
+    for (const variant of claim.retrievalEmbeddings ?? []) {
+      if (!variant.text.trim()) {
+        throw new Error("upsertClaim: retrieval embedding text must not be empty");
+      }
+      if (embedding && variant.embedding.length !== embedding.length) {
+        throw new Error("upsertClaim: retrieval embedding dimensions must match the primary embedding");
+      }
+    }
 
     const blob = embedding ? serializeEmbedding(embedding) : null;
     const helpfulCount = claim.helpfulCount ?? null;
@@ -548,6 +580,30 @@ export class SqliteMemoryStore implements MemoryStore {
           weight,
           lastUsedAt,
         );
+
+      // Replace alternate vectors only when the caller supplied a new
+      // projection. Idempotent metadata-only writes preserve the curated set.
+      if (!preserveProjection && writeBlob) {
+        const variants = claim.retrievalEmbeddings?.length
+          ? claim.retrievalEmbeddings
+          : [{ text: retrievalText, embedding: embedding! }];
+        this.db.query("DELETE FROM claim_embedding WHERE claim_id = ?").run(claim.id);
+        const insertVariant = this.db.query(
+          `INSERT INTO claim_embedding (
+             claim_id, variant, retrieval_text, embedding, embed_model, dim
+           ) VALUES (?, ?, ?, ?, ?, ?)`,
+        );
+        variants.forEach((variant, index) => {
+          insertVariant.run(
+            claim.id,
+            index,
+            variant.text,
+            serializeEmbedding(variant.embedding),
+            claim.embedModel ?? null,
+            variant.embedding.length,
+          );
+        });
+      }
       return { id: claim.id, action: existing ? "updated" : "inserted" };
     });
     return txn.immediate();
@@ -672,13 +728,38 @@ export class SqliteMemoryStore implements MemoryStore {
       )
       .all(...params);
 
+    const embeddingRows = this.db
+      .query<
+        { claim_id: string; embedding: Uint8Array },
+        (string | number)[]
+      >(
+        `SELECT ce.claim_id, ce.embedding
+         FROM claim_embedding AS ce
+         INNER JOIN claim ON claim.id = ce.claim_id
+         WHERE ${where.join(" AND ")} AND ce.embedding IS NOT NULL
+         ORDER BY ce.claim_id, ce.variant`,
+      )
+      .all(...params);
+    const vectorsByClaim = new Map<string, Float32Array[]>();
+    for (const embeddingRow of embeddingRows) {
+      const vector = deserializeEmbedding(embeddingRow.embedding);
+      if (!vector) continue;
+      const existing = vectorsByClaim.get(embeddingRow.claim_id);
+      if (existing) existing.push(vector);
+      else vectorsByClaim.set(embeddingRow.claim_id, [vector]);
+    }
+
     // 2. Score the two retrieval channels independently. Lexical matching sees
     //    both the atomic claim and its parent section/provenance projection.
     const scored = rows.map((row) => {
       const tags = row.tags ? (JSON.parse(row.tags) as string[]) : [];
       const weight = row.weight ?? 1;
-      const vec = deserializeEmbedding(row.embedding);
-      const cosine = queryVector && vec ? cosineSim(queryVector, vec) : null;
+      const vectors = vectorsByClaim.get(row.id) ?? [];
+      const legacyVector = deserializeEmbedding(row.embedding);
+      if (vectors.length === 0 && legacyVector) vectors.push(legacyVector);
+      const cosine = queryVector && vectors.length > 0
+        ? Math.max(...vectors.map((vector) => cosineSim(queryVector, vector)))
+        : null;
       const lexicalScore = queryText
         ? lexicalRelevance(queryText, [
             row.retrieval_text,
@@ -707,7 +788,7 @@ export class SqliteMemoryStore implements MemoryStore {
         .map((entry, index) => [entry.row.id, index + 1]),
     );
     for (const entry of scored) {
-      if (queryVector && queryText) {
+      if (queryVector && queryText && queryHasExactLexicalAnchor(queryText)) {
         entry.score = fusedRankScore(
           vectorRanks.get(entry.row.id) ?? null,
           lexicalRanks.get(entry.row.id) ?? null,
@@ -1318,6 +1399,8 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run(`CREATE TABLE IF NOT EXISTS recall_log (id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT, tags_json TEXT, entities_json TEXT, kinds_json TEXT, caller_intent TEXT, returned_ids_json TEXT NOT NULL, result_count INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
     // memory v3: semantic claim store (text + embedding co-located) — mirrors the lesson/memory_node relationship.
     this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'preference', 'decision', 'situation-claim')), text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, source_path TEXT, source_heading TEXT, source_text TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS claim_embedding (claim_id TEXT NOT NULL, variant INTEGER NOT NULL, retrieval_text TEXT NOT NULL, embedding BLOB NOT NULL, embed_model TEXT, dim INTEGER NOT NULL, PRIMARY KEY (claim_id, variant), FOREIGN KEY (claim_id) REFERENCES claim(id))`);
+    this.db.run(`INSERT OR IGNORE INTO claim_embedding (claim_id, variant, retrieval_text, embedding, embed_model, dim) SELECT id, 0, COALESCE(retrieval_text, text), embedding, embed_model, dim FROM claim WHERE embedding IS NOT NULL AND dim IS NOT NULL`);
     this.ensureColumn("claim", "retrieval_text", "TEXT");
     this.ensureColumn("claim", "source_path", "TEXT");
     this.ensureColumn("claim", "source_heading", "TEXT");
@@ -1336,6 +1419,7 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run("CREATE INDEX IF NOT EXISTS claim_repo_idx ON claim(repo)");
     this.db.run("CREATE INDEX IF NOT EXISTS claim_kind_idx ON claim(kind)");
     this.db.run("CREATE INDEX IF NOT EXISTS claim_active_created_idx ON claim(active, created_at)");
+    this.db.run("CREATE INDEX IF NOT EXISTS claim_embedding_claim_idx ON claim_embedding(claim_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS episode_created_idx ON episode(created_at)");
     this.db.run("CREATE INDEX IF NOT EXISTS source_record_unconsolidated_idx ON memory_source_record(consolidated_at, created_at)");
   }

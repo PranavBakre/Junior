@@ -2,7 +2,8 @@
 
 Pre-recall injects durable guidance into a turn's prompt before the runner
 spawns. It excludes contextual/untyped facts before top-k ranking. Retrieval
-fuses embedding and exact-token ranks. Deterministic relevance filtering is the
+uses the best cosine across each lesson's retrieval projections and fuses
+exact-token ranks only for queries containing an exact anchor. Deterministic relevance filtering is the
 default hot path; bounded LLM synthesis is optional through
 `PRE_RECALL_SYNTHESIS_ENABLED`.
 
@@ -29,7 +30,7 @@ default hot path; bounded LLM synthesis is optional through
 message ──► deriveRecallQueries (embed, no subprocess)
         ──► guidance SQL scope (lesson/preference/decision/typed procedure)
         ──► trusted tags AND-filter, then untagged fallback when empty
-        ──► recallMemory × N   (recordUsage:false, hybrid rank, limit 8)
+        ──► recallMemory × N   (recordUsage:false, conditional hybrid rank, limit 20)
         ──► dedupe by claim id ──► selectSynthesisCandidates (3 caps)
         ──► deterministic cosine-or-lexical floor (default)
           or runText when PRE_RECALL_SYNTHESIS_ENABLED=true
