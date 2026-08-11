@@ -437,8 +437,15 @@ export class AgentDispatcher {
           a.status === "waiting",
       )
       .sort((a, b) => b.createdAt - a.createdAt);
+    const isHumanDirective = !event.isSelfBot && !event.botId;
+    const productNeedsHuman =
+      run.kind === "product" && run.phase === "needs-human";
+    const isHumanReviewResume =
+      isHumanDirective &&
+      productNeedsHuman &&
+      directives.some((directive) => directive.agentName === "review");
     const caller = sourceAgent ?? run.ownerAgent;
-    const sourceAssignment =
+    let sourceAssignment =
       open.find((a) => a.targetAgent === caller) ??
       open.find((a) => a.targetAgent === run.ownerAgent) ??
       open[0];
@@ -450,6 +457,43 @@ export class AgentDispatcher {
       return false;
     }
 
+    // Waiting assignments cannot emit outcomes. A human directive is new
+    // control-plane input, so give it its own runnable owner assignment rather
+    // than silently attempting a handoff from the waiting assignment.
+    if (
+      isHumanDirective &&
+      (sourceAssignment.status === "waiting" || isHumanReviewResume) &&
+      (!productNeedsHuman || isHumanReviewResume)
+    ) {
+      sourceAssignment = await pipeline.store.createAssignment({
+        id: crypto.randomUUID(),
+        runId: run.id,
+        parentAssignmentId: sourceAssignment.id,
+        sourceAgent: "human",
+        sourceSlackUserId: event.user,
+        targetAgent: caller,
+        objective: directives
+          .map((directive) =>
+            directive.prompt || `Handle !${directive.agentName} directive`
+          )
+          .join("\n"),
+        contextRefs: [`human-directive:${event.ts}`],
+        artifactRefs: sourceAssignment.artifactRefs,
+        acceptanceCriteria:
+          sourceAssignment.acceptanceCriteria.length > 0
+            ? sourceAssignment.acceptanceCriteria
+            : run.acceptanceCriteria,
+        mutationScope: [],
+        dependsOn: [],
+        attempt: sourceAssignment.attempt,
+        attemptId: sourceAssignment.attemptId,
+        candidateRevisionDigest: sourceAssignment.candidateRevisionDigest,
+        deadlineAt: run.deadlineAt,
+        idempotencyKey:
+          `legacy-directive-source:${run.id}:${event.ts}:${caller}`,
+      });
+    }
+
     const result = await convertLegacyDirectivesToHandoffs(
       pipeline.store,
       {
@@ -459,6 +503,7 @@ export class AgentDispatcher {
         runId: run.id,
         sourceAssignmentId: sourceAssignment.id,
         expectedRunVersion: run.stateVersion,
+        humanInitiated: isHumanDirective,
         auth: {
           agent: caller,
           channelId: event.channel,
@@ -488,10 +533,24 @@ export class AgentDispatcher {
       );
     }
 
-    // If every directive was skipped (e.g. unauthorized), fall back to legacy
-    // so existing Slack routing still surfaces the attempt.
-    if (result.converted.length === 0) return false;
-    return true;
+    // Preserve each rejected directive individually. Falling the entire message
+    // through would dispatch already-converted directives a second time, while
+    // returning early would silently lose rejected siblings.
+    await Promise.all(
+      result.skipped.map(({ directive, index }) =>
+        this.manager.handleAgentMessage(
+          {
+            ...event,
+            text: directive.prompt,
+            command: null,
+            dedupeKey: `${event.ts}:${directive.agentName}:${index}`,
+          },
+          directive.agentName,
+        )
+      ),
+    );
+
+    return result.converted.length > 0 || result.skipped.length > 0;
   }
 
   // ---------------------------------------------------------------------------
