@@ -75,6 +75,11 @@ export type ClaimKind =
   | "decision"
   | "situation-claim";
 
+/** Hard write/read bounds for optional source-context metadata. */
+export const MAX_CLAIM_SOURCE_PATH_CHARS = 2_048;
+export const MAX_CLAIM_SOURCE_HEADING_CHARS = 512;
+export const MAX_CLAIM_SOURCE_TEXT_CHARS = 12_000;
+
 /**
  * Options for the consolidation engine's read of raw source records that have
  * not yet been folded into a derivation (`consolidated_at IS NULL`). Oldest
@@ -225,6 +230,9 @@ export interface ClaimRecallOptions {
    * ranks. When supplied alone, recall is lexical-only.
    */
   queryText?: string;
+  /** Optional raw-channel floors applied before `limit` slices the result set. */
+  minCosine?: number;
+  minLexicalScore?: number;
   filters?: ClaimRecallFilters;
   limit?: number;
   /**

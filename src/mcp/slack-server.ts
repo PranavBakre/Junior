@@ -32,6 +32,11 @@ import type {
   ClaimWriteResult,
   MemoryFactInput,
 } from "../memory/types.ts";
+import {
+  MAX_CLAIM_SOURCE_HEADING_CHARS,
+  MAX_CLAIM_SOURCE_PATH_CHARS,
+  MAX_CLAIM_SOURCE_TEXT_CHARS,
+} from "../memory/types.ts";
 import type { EmbeddingProvider } from "../memory/embedding/types.ts";
 // `import type` keeps the heavy harrier/transformers graph (pulled in by the
 // embedding factory's local provider) out of the module graph; the factory is
@@ -1599,9 +1604,18 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           .describe("Claim kind (default 'lesson')"),
         repo: z.string().optional().describe("Associate the claim with a repo (filter column)"),
         tags: z.array(z.string()).optional().describe("Optional filter tags"),
-        source_path: z.string().optional().describe("Source file or durable document path"),
-        source_heading: z.string().optional().describe("Heading of the source section"),
-        source_text: z.string().optional().describe("Parent-section text for contextual expansion"),
+        source_path: z.string()
+          .max(MAX_CLAIM_SOURCE_PATH_CHARS)
+          .optional()
+          .describe("Source file or durable document path"),
+        source_heading: z.string()
+          .max(MAX_CLAIM_SOURCE_HEADING_CHARS)
+          .optional()
+          .describe("Heading of the source section"),
+        source_text: z.string()
+          .max(MAX_CLAIM_SOURCE_TEXT_CHARS)
+          .optional()
+          .describe("Parent-section text for contextual expansion"),
       },
     },
     async ({ text, kind, repo, tags, source_path, source_heading, source_text }) => {
@@ -2138,6 +2152,14 @@ export async function recallMemory(
   // 2. Semantic claim recall — embed the query once, run one filtered recall per
   //    kind (ClaimRecallFilters carries a single kind), then merge + re-rank.
   const [queryVector] = await deps.provider.embed([args.query], "query");
+  const minCosine = Math.min(
+    Math.max(args.minCosine ?? DEFAULT_MIN_RECALL_COSINE, -1),
+    1,
+  );
+  const minLexicalScore = Math.min(
+    Math.max(args.minLexicalScore ?? DEFAULT_MIN_RECALL_LEXICAL, 0),
+    1,
+  );
   const scopes: Array<{
     kind?: ClaimKind;
     factKind?: MemoryFactInput["kind"];
@@ -2165,6 +2187,8 @@ export async function recallMemory(
       queryText: args.query,
       filters,
       limit,
+      minCosine,
+      minLexicalScore,
       recordUsage: false,
     });
     for (const r of results) {
@@ -2180,14 +2204,6 @@ export async function recallMemory(
     a.id.localeCompare(b.id)
   );
 
-  const minCosine = Math.min(
-    Math.max(args.minCosine ?? DEFAULT_MIN_RECALL_COSINE, -1),
-    1,
-  );
-  const minLexicalScore = Math.min(
-    Math.max(args.minLexicalScore ?? DEFAULT_MIN_RECALL_LEXICAL, 0),
-    1,
-  );
   const eligibleMerged = merged.filter(
     (claim) =>
       (claim.cosine ?? -Infinity) >= minCosine ||
@@ -2211,6 +2227,8 @@ export async function recallMemory(
         factKind: "procedure",
       },
       limit: procedureQuota,
+      minCosine,
+      minLexicalScore,
       recordUsage: false,
     });
     const procedures = procedureResults

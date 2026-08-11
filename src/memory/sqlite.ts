@@ -26,6 +26,11 @@ import type {
   SourceRecordQueryOptions,
   UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
+import {
+  MAX_CLAIM_SOURCE_HEADING_CHARS,
+  MAX_CLAIM_SOURCE_PATH_CHARS,
+  MAX_CLAIM_SOURCE_TEXT_CHARS,
+} from "./types.ts";
 
 /**
  * Weight added to the survivor each time a near-duplicate write merges into it.
@@ -396,6 +401,22 @@ export class SqliteMemoryStore implements MemoryStore {
     const skipDedup = claim.skipDedup === true;
     const explicitRetrievalText = claim.retrievalText?.trim() || null;
 
+    validateSourceField(
+      "sourcePath",
+      claim.sourcePath,
+      MAX_CLAIM_SOURCE_PATH_CHARS,
+    );
+    validateSourceField(
+      "sourceHeading",
+      claim.sourceHeading,
+      MAX_CLAIM_SOURCE_HEADING_CHARS,
+    );
+    validateSourceField(
+      "sourceText",
+      claim.sourceText,
+      MAX_CLAIM_SOURCE_TEXT_CHARS,
+    );
+
     if (!skipDedup && !embedding) {
       throw new Error(
         `upsertClaim: claim "${claim.id}" has no embedding. Embed the text at the ` +
@@ -542,9 +563,9 @@ export class SqliteMemoryStore implements MemoryStore {
             repo = excluded.repo,
             tags = excluded.tags,
             source_episode = excluded.source_episode,
-            source_path = COALESCE(excluded.source_path, claim.source_path),
-            source_heading = COALESCE(excluded.source_heading, claim.source_heading),
-            source_text = COALESCE(excluded.source_text, claim.source_text),
+            source_path = CASE WHEN ? THEN excluded.source_path ELSE COALESCE(excluded.source_path, claim.source_path) END,
+            source_heading = CASE WHEN ? THEN excluded.source_heading ELSE COALESCE(excluded.source_heading, claim.source_heading) END,
+            source_text = CASE WHEN ? THEN excluded.source_text ELSE COALESCE(excluded.source_text, claim.source_text) END,
             helpful_count = COALESCE(?, claim.helpful_count),
             unhelpful_count = COALESCE(?, claim.unhelpful_count),
             weight = COALESCE(?, claim.weight),
@@ -575,6 +596,9 @@ export class SqliteMemoryStore implements MemoryStore {
           writeBlob,
           writeEmbedModel,
           writeDim,
+          textIsNew ? 1 : 0,
+          textIsNew ? 1 : 0,
+          textIsNew ? 1 : 0,
           helpfulCount,
           unhelpfulCount,
           weight,
@@ -722,7 +746,9 @@ export class SqliteMemoryStore implements MemoryStore {
         `SELECT id, kind,
                 (SELECT mf.kind FROM memory_fact AS mf WHERE mf.id = claim.id) AS fact_kind,
                 text, retrieval_text, embedding, embed_model, dim, repo, tags, source_episode,
-                source_path, source_heading, source_text,
+                substr(source_path, 1, ${MAX_CLAIM_SOURCE_PATH_CHARS}) AS source_path,
+                substr(source_heading, 1, ${MAX_CLAIM_SOURCE_HEADING_CHARS}) AS source_heading,
+                substr(source_text, 1, ${MAX_CLAIM_SOURCE_TEXT_CHARS}) AS source_text,
                 helpful_count, unhelpful_count, weight, created_at, last_used_at, active
          FROM claim WHERE ${where.join(" AND ")}`,
       )
@@ -809,7 +835,16 @@ export class SqliteMemoryStore implements MemoryStore {
       b.weight - a.weight ||
       a.row.id.localeCompare(b.row.id)
     );
-    const results = scored.slice(0, limit).map((entry) => ({
+    const eligible = scored.filter((entry) => {
+      if (options.minCosine === undefined && options.minLexicalScore === undefined) return true;
+      return (
+        (options.minCosine !== undefined &&
+          (entry.cosine ?? -Infinity) >= options.minCosine) ||
+        (options.minLexicalScore !== undefined &&
+          (entry.lexicalScore ?? 0) >= options.minLexicalScore)
+      );
+    });
+    const results = eligible.slice(0, limit).map((entry) => ({
       id: entry.row.id,
       kind: entry.row.kind as ClaimKind,
       factKind:
@@ -1422,6 +1457,16 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run("CREATE INDEX IF NOT EXISTS claim_embedding_claim_idx ON claim_embedding(claim_id)");
     this.db.run("CREATE INDEX IF NOT EXISTS episode_created_idx ON episode(created_at)");
     this.db.run("CREATE INDEX IF NOT EXISTS source_record_unconsolidated_idx ON memory_source_record(consolidated_at, created_at)");
+  }
+}
+
+function validateSourceField(
+  name: string,
+  value: string | null | undefined,
+  maxChars: number,
+): void {
+  if (value !== undefined && value !== null && value.length > maxChars) {
+    throw new Error(`upsertClaim: ${name} exceeds ${maxChars} characters`);
   }
 }
 

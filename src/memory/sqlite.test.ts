@@ -326,6 +326,39 @@ describe("SqliteMemoryStore", () => {
     expect(results[0].lexicalScore).toBeGreaterThanOrEqual(0.75);
   });
 
+  it("applies raw-channel eligibility before the fused result limit", async () => {
+    const now = Date.now();
+    for (let index = 0; index < 5; index += 1) {
+      await store.upsertClaim({
+        id: `dual-ineligible-${index}`,
+        kind: "fact",
+        text: `deploy release now distractor ${index}`,
+        embedding: new Float32Array([0.5, 0.866, 0, 0]),
+        createdAt: now + index,
+        skipDedup: true,
+      });
+    }
+    await store.upsertClaim({
+      id: "exact-eligible",
+      kind: "fact",
+      text: "Configure GX_ONLY_TOKEN before deploy release now",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: now + 10,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      queryText: "GX_ONLY_TOKEN deploy release now",
+      minCosine: 0.55,
+      minLexicalScore: 0.75,
+      limit: 5,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id)).toEqual(["exact-eligible"]);
+  });
+
   it("does not let ordinary lexical overlap displace the best semantic paraphrase", async () => {
     const now = Date.now();
     await store.upsertClaim({
@@ -429,6 +462,51 @@ describe("SqliteMemoryStore", () => {
     expect(result.sourcePath).toBe("memory/deployment.md");
     expect(result.sourceHeading).toBe("Production publishing");
     expect(result.sourceText).toContain("export SITE_RELEASE_KEY");
+  });
+
+  it("clears stale source context when authoritative claim text changes", async () => {
+    await store.upsertClaim({
+      id: "source-replacement",
+      kind: "fact",
+      text: "Old release rule",
+      sourcePath: "memory/old.md",
+      sourceHeading: "Old publishing",
+      sourceText: "Use OLD_RELEASE_TOKEN.",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: Date.now(),
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "source-replacement",
+      kind: "fact",
+      text: "New release rule",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: Date.now(),
+      skipDedup: true,
+    });
+
+    const [result] = await store.recallClaims({
+      queryVector: new Float32Array([0, 1, 0, 0]),
+      limit: 1,
+      recordUsage: false,
+    });
+    expect(result).toMatchObject({
+      text: "New release rule",
+      sourcePath: null,
+      sourceHeading: null,
+      sourceText: null,
+    });
+  });
+
+  it("rejects oversized source-context fields at the store boundary", async () => {
+    await expect(store.upsertClaim({
+      id: "oversized-source",
+      kind: "fact",
+      text: "Bound source context",
+      sourceText: "x".repeat(12_001),
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: Date.now(),
+    })).rejects.toThrow("sourceText exceeds 12000 characters");
   });
 
   it("ranks vector recall by cosine before historical weight", async () => {

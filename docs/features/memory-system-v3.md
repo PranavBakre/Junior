@@ -257,14 +257,12 @@ Every unit carries a `last_used_at` so the system can identify memory that shoul
 Recall runs **two channels** and merges:
 
 1. **Keyed fetch.** The interlocutor and workspace are *ground truth*: in a thread with Pranav, in `gx-backend` → read `profiles/people/pranav.md` and `profiles/repos/gx-backend.md` **directly by path**. No LLM phrasing, no cosine.
-2. **Semantic search** over the claim store: embed the query → **filters scope** (`WHERE repo/kind/recency`) → **cosine ranks** within scope. (See [[junior-memory-filters-scope-vectors-rank]].)
-3. **Return** the keyed profiles + claims above the relevance floor, ordered by
-   raw cosine. `weight` remains value metadata and is only the fallback ranking
-   when no query vector exists. Never the raw episode stream.
+2. **Hybrid claim search** over one claim store: embed the query → **filters scope** (`WHERE repo/kind/recency`) → independently score cosine and deterministic exact-token coverage. Ordinary conceptual prose stays cosine-ordered; reciprocal-rank fusion is enabled only when the query contains an explicit exact anchor such as an identifier, path, URL, flag, issue number, or quotation. (See [[junior-memory-filters-scope-vectors-rank]].)
+3. **Apply raw-channel eligibility before the result limit** (`cosine >= 0.55 OR lexical >= 0.75` by default), then return keyed profiles plus the surviving claims. `weight` remains value metadata and is only the fallback ranking when no query vector exists. Never return the raw episode stream.
 
-**Filters are the `WHERE`, cosine is the `ORDER BY` — and profiles skip both, fetched by key.** Keyed retrieval is the extreme of "filters scope": the context narrows to exactly one row.
+**Filters are the `WHERE`; vector similarity is the normal `ORDER BY`; explicit exact anchors may activate hybrid RRF — and profiles skip all three, fetched by key.** Keyed retrieval is the extreme of "filters scope": the context narrows to exactly one row.
 
-> **Shipped (cosine-only — divergence from the original §8 design).** The FTS identifier escape-hatch was *not* built; `memory_fts` is gone and there is no lexical channel. `recallClaims` pre-filters by `repo`/`kind`/`sinceMs` (the SQL `WHERE`) and orders vector recall by raw cosine. The caller embeds at the boundary (`recallClaims` never embeds); with no query vector it ranks by `weight` alone. `recallMemory` runs one recall per requested claim kind or fact subtype, preserves `factKind`, merges/de-dupes, applies a 0.55 raw-cosine floor, records the final returned ids in `recall_log`, and can reserve procedure slots for automatic pre-recall. Semantic queries should describe the complete situation and desired action; repo/tags remain structured filters.
+> **Shipped (conditional hybrid).** The synchronized `memory_fts` index is gone. Instead, `recallClaims` computes exact-token coverage in process over the same filtered claim rows and activates normalized reciprocal-rank fusion only for queries with explicit exact anchors. This preserves semantic ordering for ordinary prose while letting exact identifiers rescue weak vector hits. The caller embeds at the boundary (`recallClaims` never embeds); with no query vector it ranks by `weight` alone. `recallMemory` runs one recall per requested claim kind or fact subtype, preserves `factKind`, merges/de-dupes, applies raw-channel eligibility before each store limit, records the final returned ids in `recall_log`, and can reserve procedure slots for automatic pre-recall. Optional source context is bounded (`source_path` 2,048 chars, `source_heading` 512, `source_text` 12,000); changing authoritative claim text clears omitted old source context so contradictory evidence cannot survive the replacement.
 
 ## 9. Governance & affect policy (decided)
 
@@ -301,7 +299,7 @@ Recall runs **two channels** and merges:
 
 **New in v3:** episodes with affect; the keyed/semantic split as the organizing axis; profiles (person/repo/project/situation) as keyed markdown derivations beside the embedded claim tail; typed semantic preferences and decisions; markdown-as-source-of-truth for keyed memory; the local-first embedding mandate for affective data.
 
-**Deleted:** event-as-memory promotion, the edge graph + spreading activation, any O(N²) similarity-edge builder, RRF-as-a-recall-play, and (shipped) **the FTS keyword channel, the candidate-rule learning layer, and the `src/memory/eval/` harness** — recall is cosine-only and the eval-replay gate ran during migration, then the harness was removed. The whole-profile embedding was dropped before v1 (profiles are keyed, not embedded).
+**Deleted:** event-as-memory promotion, the edge graph + spreading activation, any O(N²) similarity-edge builder, always-on RRF-as-a-recall-play, and (shipped) **the synchronized FTS keyword index, the candidate-rule learning layer, and the `src/memory/eval/` harness**. A small in-process exact-token channel over the same claim rows remains as an explicit-anchor escape hatch; the eval-replay gate ran during migration, then the harness was removed. The whole-profile embedding was dropped before v1 (profiles are keyed, not embedded).
 
 ## 12. Phasing (each behind the eval gate)
 
@@ -310,7 +308,7 @@ Phasing as originally planned, annotated with what shipped:
 - **P0 — done:** `recall_log` + eval harness + routing-log prune (v2 Phase 0). *(The eval harness has since been removed — it served its purpose gating the migration.)*
 - **P1 — shipped:** `episode` table; `profiles/` markdown files; `claim` table; the offline consolidation engine (`consolidateSession` + `runConsolidationSweep` + runner) builds person/repo/project/situation profiles (keyed dedup) and typed atomic claims (cosine proximity dedup); the legacy event flood is gone. Person profiles use a separate rolling cross-thread view for active users, because consuming isolated threads once cannot reveal recurring behavior across sessions.
 - **P2 — partial:** keyed profile fetch by context is shipped (`memory_recall` with `entity_refs`). The helpful/unhelpful feedback *columns* exist (`helpful_count`/`unhelpful_count`/`weight`) but the production feedback loop that writes them is not yet wired.
-- **P3 — shipped (cosine-only):** harrier-270-ONNX provider (last-token pooling, q8); the claim store is embedded; recall is **cosine over the embedded corpus**. The planned FTS ∥ vector merge was **dropped** — there is no lexical channel.
+- **P3 — shipped (conditional hybrid):** harrier-270-ONNX provider (last-token pooling, q8); ordinary semantic recall is cosine over the embedded corpus. Explicit exact anchors activate an in-process exact-token channel and RRF over the same filtered claim rows. The planned synchronized FTS index was dropped.
 - **P4 — affect record-and-inform:** episodes capture affect today; surfacing it into Junior's live context is not yet wired.
 - **P5 — scale infra** (sqlite-vec, then ANN) only when measured latency demands. Not built — rung 1 (brute-force cosine) is the current and sufficient implementation.
 
