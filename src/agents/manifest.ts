@@ -148,6 +148,43 @@ const CAPABILITIES = new Set<AgentCapability>([
   "orchestrate",
 ]);
 
+/**
+ * MCP-only runs deny every tool by default and exact-grant declarations. Keep
+ * the compiler's allowlist equally explicit so a trusted-definition typo
+ * cannot turn a read-only utility into a production writer.
+ */
+const MCP_ONLY_READ_TOOLS = new Set([
+  "mcp__slack-bot__slack_read_thread",
+  "mcp__slack-bot__slack_read_channel",
+  "mcp__slack-bot__slack_search",
+  "mcp__slack-bot__slack_search_users",
+  "mcp__slack-bot__memory_recall",
+  "mcp__slack-bot__runbook_search",
+  "mcp__slack-bot__runbook_select",
+]);
+
+const MCP_ONLY_CAPABILITY_TOOLS: Partial<
+  Record<AgentCapability, readonly string[]>
+> = {
+  "mongodb-read": [
+    "mcp__mongodb__find",
+    "mcp__mongodb__list-collections",
+    "mcp__mongodb__collection-schema",
+  ],
+  "pipeline-artifact-write": [
+    "mcp__slack-bot__pipeline_get_state",
+    "mcp__slack-bot__pipeline_write_artifact",
+    "mcp__slack-bot__pipeline_report_outcome",
+  ],
+  "pipeline-run-start": ["mcp__slack-bot__pipeline_start_run"],
+  "github-review-read": ["mcp__slack-bot__github_read_pr_review_state"],
+  "github-review-comment": ["mcp__slack-bot__github_post_review"],
+  dispatch: [
+    "mcp__slack-bot__agent_dispatch",
+    "mcp__slack-bot__skill_dispatch",
+  ],
+};
+
 interface CatalogEntry {
   manifest: AgentManifest;
   tools: readonly string[];
@@ -220,10 +257,18 @@ function parseCatalogEntry(
   );
   const tools = parseFrontmatterCsv(frontmatter.tools);
   if (permissionIntent === "mcp-only") {
-    const unsafeTool = tools.find((tool) => !tool.startsWith("mcp__"));
+    const capabilityTools = new Set(
+      capabilities.flatMap(
+        (capability) => MCP_ONLY_CAPABILITY_TOOLS[capability] ?? [],
+      ),
+    );
+    const unsafeTool = tools.find(
+      (tool) =>
+        !MCP_ONLY_READ_TOOLS.has(tool) && !capabilityTools.has(tool),
+    );
     if (unsafeTool) {
       throw new Error(
-        `${sourcePath}: mcp-only agent '${name}' cannot request '${unsafeTool}'`,
+        `${sourcePath}: mcp-only agent '${name}' cannot safely request '${unsafeTool}'`,
       );
     }
   }
@@ -317,7 +362,10 @@ function readCatalogDirectory(
 export function loadTrustedAgentCatalog(
   options: TrustedCatalogOptions,
 ): readonly AgentManifest[] {
-  const orgDirectoryPresent = existsSync(options.orgAgentsDir);
+  // Git creates an empty directory for an uninitialized submodule. That is an
+  // absent optional overlay, not a mounted-but-incomplete one.
+  const orgDirectoryPresent = existsSync(options.orgAgentsDir) &&
+    readdirSync(options.orgAgentsDir).length > 0;
   const entries = [
     ...readCatalogDirectory(options.publicAgentsDir, "junior"),
     ...readCatalogDirectory(options.orgAgentsDir, "agents-org", true),

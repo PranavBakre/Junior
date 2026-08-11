@@ -128,11 +128,64 @@ describe("trusted operational frontmatter", () => {
         publicAgentsDir: publicDir,
         orgAgentsDir: orgDir,
       }),
-    ).toThrow("mcp-only agent 'unsafe' cannot request 'Read'");
+    ).toThrow("mcp-only agent 'unsafe' cannot safely request 'Read'");
+  });
+
+  it("rejects mutating MCP tools for mcp-only agents", () => {
+    const { publicDir, orgDir } = fixture();
+    writeFileSync(
+      join(publicDir, "default.md"),
+      definition({ name: "default", delegates: "unsafe, human" }),
+    );
+    writeFileSync(
+      join(orgDir, "unsafe.md"),
+      definition({
+        name: "unsafe",
+        intent: "mcp-only",
+        capabilities: "mongodb-read",
+        tools: "mcp__mongodb__update-one",
+      }),
+    );
+
+    expect(() =>
+      loadTrustedAgentCatalog({
+        publicAgentsDir: publicDir,
+        orgAgentsDir: orgDir,
+      }),
+    ).toThrow(
+      "mcp-only agent 'unsafe' cannot safely request 'mcp__mongodb__update-one'",
+    );
+  });
+
+  it("requires an MCP-only tool's granting capability", () => {
+    const { publicDir, orgDir } = fixture();
+    writeFileSync(
+      join(publicDir, "default.md"),
+      definition({ name: "default", delegates: "unsafe, human" }),
+    );
+    writeFileSync(
+      join(orgDir, "unsafe.md"),
+      definition({
+        name: "unsafe",
+        intent: "mcp-only",
+        capabilities: "pipeline-artifact-write",
+        tools: "mcp__mongodb__find",
+      }),
+    );
+
+    expect(() =>
+      loadTrustedAgentCatalog({
+        publicAgentsDir: publicDir,
+        orgAgentsDir: orgDir,
+      }),
+    ).toThrow(
+      "mcp-only agent 'unsafe' cannot safely request 'mcp__mongodb__find'",
+    );
   });
 
   it("rejects unresolved handoffs when the private overlay is mounted", () => {
     const { publicDir, orgDir } = fixture();
+    writeFileSync(join(orgDir, "README.md"), "# Mounted private overlay\n");
     writeFileSync(
       join(publicDir, "default.md"),
       definition({ name: "default", delegates: "missing-worker, human" }),
@@ -158,6 +211,21 @@ describe("trusted operational frontmatter", () => {
       loadTrustedAgentCatalog({
         publicAgentsDir: publicDir,
         orgAgentsDir: missingOrgDir,
+      }).map((entry) => entry.name),
+    ).toEqual(["default"]);
+  });
+
+  it("treats an empty uninitialized submodule directory as optional", () => {
+    const { publicDir, orgDir } = fixture();
+    writeFileSync(
+      join(publicDir, "default.md"),
+      definition({ name: "default", delegates: "private-worker, human" }),
+    );
+
+    expect(
+      loadTrustedAgentCatalog({
+        publicAgentsDir: publicDir,
+        orgAgentsDir: orgDir,
       }).map((entry) => entry.name),
     ).toEqual(["default"]);
   });
