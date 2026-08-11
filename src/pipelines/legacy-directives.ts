@@ -75,14 +75,14 @@ export async function convertLegacyDirectivesToHandoffs(
 
   for (const [index, directive] of input.directives.entries()) {
     if (
-      directive.agentName === "review" &&
       run?.kind === "product" &&
       run.phase === "needs-human" &&
-      input.humanInitiated !== true
+      (directive.agentName !== "review" || input.humanInitiated !== true)
     ) {
       skipped.push({
         agentName: directive.agentName,
-        reason: "needs-human re-review requires a human directive",
+        reason:
+          "needs-human product run only resumes through a human review directive",
         directive,
         index,
       });

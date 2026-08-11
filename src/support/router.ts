@@ -438,6 +438,12 @@ export class AgentDispatcher {
       )
       .sort((a, b) => b.createdAt - a.createdAt);
     const isHumanDirective = !event.isSelfBot && !event.botId;
+    const productNeedsHuman =
+      run.kind === "product" && run.phase === "needs-human";
+    const isHumanReviewResume =
+      isHumanDirective &&
+      productNeedsHuman &&
+      directives.some((directive) => directive.agentName === "review");
     const caller = sourceAgent ?? run.ownerAgent;
     let sourceAssignment =
       open.find((a) => a.targetAgent === caller) ??
@@ -454,7 +460,11 @@ export class AgentDispatcher {
     // Waiting assignments cannot emit outcomes. A human directive is new
     // control-plane input, so give it its own runnable owner assignment rather
     // than silently attempting a handoff from the waiting assignment.
-    if (sourceAssignment.status === "waiting" && isHumanDirective) {
+    if (
+      isHumanDirective &&
+      (sourceAssignment.status === "waiting" || isHumanReviewResume) &&
+      (!productNeedsHuman || isHumanReviewResume)
+    ) {
       sourceAssignment = await pipeline.store.createAssignment({
         id: crypto.randomUUID(),
         runId: run.id,
