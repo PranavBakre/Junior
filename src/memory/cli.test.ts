@@ -55,8 +55,14 @@ describe("memory CLI", () => {
         expect(claimRow!.dim).toBe(640);
         expect(claimRow!.embedding).not.toBeNull();
         expect(claimRow!.retrieval_text).toContain(
-          "Use this lesson when: Starting implementation work in a fresh worktree.",
+          "What should I do in this situation: Starting implementation work in a fresh worktree?",
         );
+        const variants = db
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM claim_embedding WHERE claim_id = 'lesson-claimed'",
+          )
+          .get();
+        expect(variants?.count).toBe(3);
       } finally {
         store.close();
       }

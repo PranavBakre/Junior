@@ -16,7 +16,7 @@ Entry point, configuration, logging, persona loading, and boot sequence. The pro
 
 | Type | File | Shape |
 |---|---|---|
-| `Config` | `config.ts` | `{ slack, claude, runner, opencode, codex, repos, session, memory, threadArchives, channelDefaults, adminSlackUserId, http, whatsapp?, pipeline?, github? }` |
+| `Config` | `config.ts` | `{ slack, claude, runner, opencode, codex, repos, session, memory, threadArchives, channelDefaults, adminSlackUserId, http, whatsapp?, slackArchive?, pipeline?, github? }` |
 | `RepoConfig` | `config.ts` | `{ name, path, defaultBase, worktreeSetupCommand?, devCommand?, devPort?, readyUrl? }` |
 | `SessionStoreKind` | `config.ts` | `"memory" \| "sqlite"` |
 
@@ -48,6 +48,10 @@ Entry point, configuration, logging, persona loading, and boot sequence. The pro
 | `PRE_RECALL_ENABLED` | no | `false` | Optional pre-recall hook |
 | `PRE_RECALL_SYNTHESIS_ENABLED` | no | `false` | Optional bounded LLM synthesis; deterministic filtering is the default |
 | `WHATSAPP_ENABLED` | no | `false` | Read-only archive ingestion/tools |
+| `SLACK_ARCHIVE_ENABLED` | no | `false` | Passive Slack archive capture/tools |
+| `SLACK_ARCHIVE_DB_PATH` | no | `data/slack-archive.db` | Isolated Slack archive database |
+| `SLACK_ARCHIVE_EXPORT_PATH` | no | unset | Default export ZIP for archive import |
+| `SLACK_ARCHIVE_APPROVED_CHANNEL_IDS` | no | unset | Additional non-public channels approved for archive capture/use |
 | `PIPELINE_RUNTIME_MODE` | no | `off` | Typed pipeline mode (`off`, `shadow`, `active`) |
 | `PRODUCT_PIPELINE_ENABLED` | no | `false` | Product pipeline starts; requires active mode |
 | `BUG_PIPELINE_ENABLED` | no | `false` | Bug pipeline starts; requires active mode |
@@ -74,10 +78,11 @@ Entry point, configuration, logging, persona loading, and boot sequence. The pro
 16. Intervals: orphan health (60s), stale cleanup (cleanupIntervalMs)
 17. await loadOverlayIdentities("agents-org")   ← non-fatal
 18. await devServerManager.bootstrap()                  ← non-fatal
-19. await app.start()                                   ← Socket Mode connect
-20. auth.test()  → sessionManager.botUserId, selfBotId
-21. registerEventHandlers(app, dispatcher.handleMessage, store, selfBotId, botUserId, autoTriggerChannels)
-22. if (http.enabled) startHttpServer(...)              ← workflows + memory routes; non-fatal
+19. optionally open SlackArchiveStore + attach MCP read handle
+20. await app.start()                                   ← Socket Mode connect
+21. auth.test()  → sessionManager.botUserId, selfBotId
+22. registerEventHandlers(..., archiveCapture)           ← archive before response-routing guards
+23. if (http.enabled) startHttpServer(...)              ← workflows + memory routes; non-fatal
 ```
 
 ## Logger

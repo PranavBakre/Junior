@@ -1,10 +1,10 @@
 // Pre-recall hook: runs BEFORE the runner spawns to inject operational memory
 // into the prompt.
 //
-// Retrieval is embedding-only. The raw Slack message is embedded directly by
-// the configured provider (milliseconds, in-process) instead of being fed to a
-// model for query extraction — that was the unbounded half of the pipeline, so
-// no timeout could be sized for it and expiry left the turn with zero memory.
+// Retrieval uses semantic ordering for prose and fuses exact-token ranks only
+// when a query contains an identifier, path, URL, flag, issue, or quotation.
+// The raw Slack message is embedded directly by the configured provider
+// (milliseconds, in-process) instead of being fed to a model for extraction.
 //
 // The single LLM call is SYNTHESIS over the retrieved claims: a bounded input
 // (capped candidate count, per-claim truncation, total candidate-character
@@ -38,7 +38,8 @@ export type PreRecallRunner = "claude" | "opencode" | "codex";
 // ── Pinned cheapest models per runner ────────────────────────────────────────
 const DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4-pro";
-const DEFAULT_CODEX_MODEL = "gpt-5.4-nano";
+const DEFAULT_CODEX_MODEL = "gpt-5.6-luna";
+const DEFAULT_CODEX_REASONING_EFFORT = "medium";
 
 // ── Bounds ───────────────────────────────────────────────────────────────────
 // Claim text has no length ceiling in the schema, so "N claims" is not a
@@ -46,15 +47,15 @@ const DEFAULT_CODEX_MODEL = "gpt-5.4-nano";
 // budget sizeable; without them the "predictable timeout" argument is empty.
 
 /** Claims recalled per derived query. */
-const CANDIDATE_LIMIT = 8;
+const CANDIDATE_LIMIT = 20;
 /** Slots inside that limit reserved for procedure memories. */
 const PROCEDURE_CANDIDATE_QUOTA = 2;
 /** Candidates that reach the prompt after the per-query sets are merged. */
-const MAX_SYNTHESIS_CANDIDATES = 12;
+const MAX_SYNTHESIS_CANDIDATES = 20;
 /** Per-claim truncation before a candidate enters the prompt. */
 const MAX_CLAIM_CHARS = 600;
 /** Total candidate characters; the lowest-scoring candidates are dropped. */
-const MAX_CANDIDATE_CHARS = 6_000;
+const MAX_CANDIDATE_CHARS = 12_000;
 /** The request itself is untrusted-length input — cap it too. */
 const MAX_REQUEST_CHARS = 1_200;
 /** Retrieval query length. Embedding providers truncate anyway. */
@@ -113,6 +114,8 @@ const FALLBACK_TOP_K = 3;
  * pre-recall.test.ts are the tests that can move this number.
  */
 export const FALLBACK_MIN_COSINE = 0.55;
+/** Conservative exact-token coverage that may rescue a weak vector match. */
+export const FALLBACK_MIN_LEXICAL = 0.75;
 /** Synthesized lines kept, and their length, so the injected block stays small. */
 const MAX_NOTES = 5;
 const MAX_NOTE_CHARS = 500;
@@ -128,7 +131,7 @@ Return ONLY a JSON object:
 {"notes": ["..."], "used": [1, 4]}
 
 - "notes": at most ${MAX_NOTES} lines of merged operational knowledge that actually applies to this request. Merge overlapping candidates into one line and drop the rest. Keep concrete details (names, paths, commands, ids) verbatim — never generalize them away. Every note must come from the candidates; never add knowledge of your own.
-- "used": the 1-based indexes of the candidates that contributed to "notes". Never return notes with an empty "used".
+- "used": the 1-based indexes of the candidates that contributed to "notes", ordered from most to least relevant to the incoming request. Never return notes with an empty "used".
 
 Return {"notes": [], "used": []} when nothing applies. That is the common case and it is the correct answer — do not pad.`;
 
@@ -142,6 +145,12 @@ export interface PreRecallOptions {
   repo?: string | null;
   /** Agent the turn is routed to. Only used to bias the retrieval query. */
   agent?: string | null;
+  /**
+   * Trusted, caller-derived scope tags (for example team/project identity).
+   * Every tag must match. User message text must never be promoted into this
+   * field; when the scoped guidance pool is empty pre-recall retries untagged.
+   */
+  trustedTags?: string[];
 }
 
 export type PreRecallFn = (
@@ -163,12 +172,14 @@ export interface PreRecallOverrides {
 export interface SynthesisCandidate {
   id: string;
   text: string;
-  kind: "lesson" | "fact" | "situation-claim";
+  kind: "lesson" | "fact" | "preference" | "decision" | "situation-claim";
   factKind: "curated_fact" | "routing_memory" | "procedure" | null;
-  /** cosine × weight — ranks candidates. */
+  /** Fused vector + lexical rank score. */
   score: number;
   /** Raw cosine — gates the fallback. Null when relevance is unmeasurable. */
   cosine: number | null;
+  /** Exact-token/phrase coverage — independently gates the fallback. */
+  lexicalScore: number | null;
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────
@@ -321,21 +332,46 @@ export function deriveRecallQueries(
   if (!normalized) return [];
 
   const repo = options?.repo?.trim();
-  const agent = options?.agent?.trim() || "Junior";
-  if (!repo && !options?.agent?.trim()) return [normalized];
+  const requestedAgent = options?.agent?.trim();
+  // A complete scenario is already the embedding model's ideal query shape.
+  // Prefix expansion is only useful for terse, context-bearing commands; on
+  // long scenarios it dilutes the salient words with generic scaffolding.
+  if ((!repo && !requestedAgent) || normalized.split(/\s+/).length >= 12) {
+    return [normalized];
+  }
+  const agent = requestedAgent || "Junior";
   const question =
-    `How should ${agent} handle this task${repo ? ` in ${repo}` : ""}? ${normalized}`;
-  return [normalized, question.slice(0, MAX_QUERY_CHARS)];
+    `How should ${agent} handle this situation${repo ? ` in ${repo}` : ""}? ${normalized}`;
+  const expanded = question.slice(0, MAX_QUERY_CHARS);
+  return expanded === normalized ? [normalized] : [normalized, expanded];
 }
 
 /**
  * Run every derived query through recallMemory() and merge by claim id.
  * `recordUsage: false` — see recordClaimUsage for why the bump waits.
  */
-async function recallCandidates(
+export async function recallCandidates(
   queries: string[],
   options: PreRecallOptions | undefined,
   deps: MemoryToolDeps,
+): Promise<SynthesisCandidate[]> {
+  const trustedTags = options?.trustedTags
+    ?.map((tag) => tag.trim())
+    .filter(Boolean);
+
+  if (trustedTags?.length) {
+    const tagged = await recallCandidatesForScope(queries, options, deps, trustedTags);
+    if (tagged.length > 0) return tagged;
+  }
+
+  return recallCandidatesForScope(queries, options, deps);
+}
+
+async function recallCandidatesForScope(
+  queries: string[],
+  options: PreRecallOptions | undefined,
+  deps: MemoryToolDeps,
+  trustedTags?: string[],
 ): Promise<SynthesisCandidate[]> {
   const seen = new Set<string>();
   const candidates: SynthesisCandidate[] = [];
@@ -349,6 +385,10 @@ async function recallCandidates(
         // would drop the repo-less lessons that make up most of the corpus.
         repo: options?.repo ?? undefined,
         repoIncludeGlobal: true,
+        guidanceOnly: true,
+        ...(trustedTags?.length
+          ? { tags: trustedTags, tagMatch: "all" as const }
+          : {}),
         procedureQuota: PROCEDURE_CANDIDATE_QUOTA,
         // Pre-recall has its own measured floor after optional synthesis. Keep
         // the shared candidate set intact so synthesis can judge combinations.
@@ -362,11 +402,12 @@ async function recallCandidates(
       seen.add(claim.id);
       candidates.push({
         id: claim.id,
-        text: claim.text,
+        text: claim.contextText,
         kind: claim.kind,
         factKind: claim.factKind,
         score: claim.score,
         cosine: claim.cosine,
+        lexicalScore: claim.lexicalScore,
       });
     }
   }
@@ -411,10 +452,9 @@ export function selectSynthesisCandidates(
  * relevance floor stands in for the model: below it, emit nothing rather than
  * dressing up arbitrary nearest neighbours as recalled knowledge.
  *
- * Filter on cosine (relevance), rank by score (relevance × value): a
- * low-weight but exactly-on-topic claim is precisely what the fallback exists
- * to surface. A null cosine — no queryVector, or a claim with no embedding — is
- * unmeasurable relevance, which is not relevance.
+ * A claim may clear either independently calibrated relevance channel: cosine
+ * for paraphrases, or high exact-token coverage for identifiers and wording
+ * that embeddings miss. Rank by their fused score after eligibility.
  */
 export function selectFallbackCandidates(
   shortlist: SynthesisCandidate[],
@@ -422,7 +462,9 @@ export function selectFallbackCandidates(
   return shortlist
     .filter(
       (candidate) =>
-        candidate.cosine !== null && candidate.cosine >= FALLBACK_MIN_COSINE,
+        (candidate.cosine !== null && candidate.cosine >= FALLBACK_MIN_COSINE) ||
+        (candidate.lexicalScore !== null &&
+          candidate.lexicalScore >= FALLBACK_MIN_LEXICAL),
     )
     // Sorted here rather than inherited from the caller: "top K" is this
     // function's own contract, and an unsorted input would otherwise silently
@@ -617,6 +659,7 @@ export interface RunTextRequest {
   prompt: string;
   model: string;
   timeoutMs: number;
+  reasoningEffort?: string;
 }
 
 export type RunTextFn = (req: RunTextRequest) => Promise<string>;
@@ -654,7 +697,7 @@ export function buildPreRecallClaudeArgs(model: string): string[] {
   ];
 }
 
-async function claudeRunText(req: RunTextRequest): Promise<string> {
+export async function claudeRunText(req: RunTextRequest): Promise<string> {
   // Neutral cwd outside the repo so the run can't inherit junior's CLAUDE.md /
   // .claude/ / .mcp.json context.
   const args = buildPreRecallClaudeArgs(req.model);
@@ -737,23 +780,16 @@ function extractOpenCodeAssistantText(stdout: string): string {
 
 // ── Codex subprocess ─────────────────────────────────────────────────────────
 
-async function codexRunText(req: RunTextRequest): Promise<string> {
+export async function codexRunText(req: RunTextRequest): Promise<string> {
   const outFile = join(tmpdir(), `junior-pre-recall-codex-${crypto.randomUUID()}.txt`);
   // Bake system prompt into stdin since codex exec has no --system-prompt flag.
   const combinedPrompt = `${SYNTHESIS_SYSTEM_PROMPT}\n\n---\n\n${req.prompt}`;
 
-  const args = [
-    "exec",
-    "--ephemeral",
-    "--ignore-user-config",
-    "--ignore-rules",
-    "--skip-git-repo-check",
-    "-s", "read-only",
-    "--color", "never",
-    "-m", req.model,
-    "-o", outFile,
-    "-",
-  ];
+  const args = buildPreRecallCodexArgs(
+    req.model,
+    req.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+    outFile,
+  );
 
   const proc = Bun.spawn(["codex", ...args], {
     cwd: tmpdir(),
@@ -788,6 +824,26 @@ async function codexRunText(req: RunTextRequest): Promise<string> {
   } finally {
     await rm(outFile, { force: true }).catch(() => {});
   }
+}
+
+export function buildPreRecallCodexArgs(
+  model: string,
+  reasoningEffort: string,
+  outFile: string,
+): string[] {
+  return [
+    "exec",
+    "--ephemeral",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--skip-git-repo-check",
+    "-s", "read-only",
+    "--color", "never",
+    "-m", model,
+    "-c", `model_reasoning_effort="${reasoningEffort}"`,
+    "-o", outFile,
+    "-",
+  ];
 }
 
 /**

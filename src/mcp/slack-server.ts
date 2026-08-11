@@ -32,6 +32,11 @@ import type {
   ClaimWriteResult,
   MemoryFactInput,
 } from "../memory/types.ts";
+import {
+  MAX_CLAIM_SOURCE_HEADING_CHARS,
+  MAX_CLAIM_SOURCE_PATH_CHARS,
+  MAX_CLAIM_SOURCE_TEXT_CHARS,
+} from "../memory/types.ts";
 import type { EmbeddingProvider } from "../memory/embedding/types.ts";
 // `import type` keeps the heavy harrier/transformers graph (pulled in by the
 // embedding factory's local provider) out of the module graph; the factory is
@@ -50,6 +55,7 @@ import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 import { registerTool } from "./register-tool.ts";
 import { registerWhatsAppTools } from "./whatsapp-tools.ts";
+import { registerSlackArchiveTools } from "./slack-archive-tools.ts";
 import { registerTaskRouteTools } from "../routes/tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 import { registerPendingApproval } from "./approval.ts";
@@ -152,6 +158,7 @@ let sessionManager: SessionManager | undefined;
 let slackActionStore: SlackActionStore | undefined;
 let pipelineRuntime: PipelineToolRuntime | undefined;
 let catalogStore: CatalogStore | undefined;
+let slackArchiveApprovedChannelIds = new Set<string>();
 
 /** Inject pipeline tool runtime (store + mode). Called from boot or tests. */
 export function setPipelineRuntime(runtime: PipelineToolRuntime | undefined): void {
@@ -173,6 +180,24 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         ? { channel: session.channel, humanParticipants: session.humanParticipants }
         : null;
     },
+  });
+  registerSlackArchiveTools(server, {
+    runContext,
+    isAllowedChannel: async (channelId) => {
+      if (slackArchiveApprovedChannelIds.has(channelId)) return true;
+      try {
+        const result = await slack.conversations.info({ channel: channelId });
+        return result.channel?.is_channel === true && result.channel.is_private !== true;
+      } catch {
+        return false;
+      }
+    },
+    getSession: async (threadId) => {
+      const session = await sessionStore?.get(threadId);
+      return session ? { channel: session.channel } : null;
+    },
+  }, {
+    getEmbedder: getEmbeddingProvider,
   });
   // Task routes share the memory DB and its embedding provider; the repo
   // lookups come from the worktree manager's configured checkouts.
@@ -1496,12 +1521,13 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         "when you pass `entity_refs` (the people/repos in front of you, e.g. 'pranav:person', " +
         "'gx-backend:repo'), their markdown profiles are fetched VERBATIM by key — no embedding, " +
         "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
-        "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
-        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`tags`/`kinds`). " +
+        "(2) HYBRID claims: `query` is matched against the atomic " +
+        "lesson/fact/preference/decision/situation-claim store by fused embedding and exact-token ranks " +
+        "(filtered by `repo`/`tags`/`kinds`). " +
         "Fact subtypes such as procedures can be requested with `fact_kinds`. " +
         "Use a complete natural-language situation/question for `query`; use repo/tags as " +
         "filters, not as query keywords. Returns keyed profiles plus relevant claims above " +
-        "the cosine floor, including `factKind`, text, score, repo, and tags.",
+        "the cosine or lexical floor, including parent-source context when available.",
       inputSchema: {
         query: z.string().describe(
           "Complete natural-language situation and desired action, preferably a question; never a tag/keyword bundle",
@@ -1511,8 +1537,16 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           .array(z.string())
           .optional()
           .describe("Restrict claims to any matching tag (OR match)"),
+        tag_match: z
+          .enum(["any", "all"])
+          .optional()
+          .describe("Tag scope mode (default 'any'; use 'all' for trusted context tags)"),
+        guidance_only: z
+          .boolean()
+          .optional()
+          .describe("Return only lessons, preferences, decisions, and typed procedures"),
         kinds: z
-          .array(z.enum(["lesson", "fact", "situation-claim"]))
+          .array(z.enum(["lesson", "fact", "preference", "decision", "situation-claim"]))
           .optional()
           .describe("Restrict claims to these kinds (default: all)"),
         fact_kinds: z
@@ -1530,13 +1564,15 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         limit: z.number().optional().describe("Max semantic claims to return (default 5, max 50)"),
       },
     },
-    async ({ query, repo, tags, kinds, fact_kinds, entity_refs, limit }) => {
+    async ({ query, repo, tags, tag_match, guidance_only, kinds, fact_kinds, entity_refs, limit }) => {
       return withMemoryStore(async (memory) => {
         const result = await recallMemory(
           {
             query,
             repo,
             tags,
+            tagMatch: tag_match,
+            guidanceOnly: guidance_only,
             kinds,
             factKinds: fact_kinds,
             entityRefs: entity_refs,
@@ -1555,7 +1591,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
     {
       description:
         "Add a single atomic claim to Junior's v3 semantic memory and embed it in one step. " +
-        "The text is embedded locally (document mode) and stored as a lesson/fact/situation-claim row " +
+        "The text is embedded locally (document mode) and stored as a typed semantic claim " +
         "with its embedding co-located, so it is immediately retrievable by `memory_recall`. Write ONE " +
         "atomic claim per call (the unit of semantic recall), not a paragraph. Near-duplicates are " +
         "merged into the existing claim rather than stored twice. Returns the claim id plus " +
@@ -1563,17 +1599,37 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
       inputSchema: {
         text: z.string().describe("One atomic claim — the authoritative text that gets embedded"),
         kind: z
-          .enum(["lesson", "fact", "situation-claim"])
+          .enum(["lesson", "fact", "preference", "decision", "situation-claim"])
           .optional()
           .describe("Claim kind (default 'lesson')"),
         repo: z.string().optional().describe("Associate the claim with a repo (filter column)"),
         tags: z.array(z.string()).optional().describe("Optional filter tags"),
+        source_path: z.string()
+          .max(MAX_CLAIM_SOURCE_PATH_CHARS)
+          .optional()
+          .describe("Source file or durable document path"),
+        source_heading: z.string()
+          .max(MAX_CLAIM_SOURCE_HEADING_CHARS)
+          .optional()
+          .describe("Heading of the source section"),
+        source_text: z.string()
+          .max(MAX_CLAIM_SOURCE_TEXT_CHARS)
+          .optional()
+          .describe("Parent-section text for contextual expansion"),
       },
     },
-    async ({ text, kind, repo, tags }) => {
+    async ({ text, kind, repo, tags, source_path, source_heading, source_text }) => {
       return withMemoryStore(async (memory) => {
         const result = await addMemory(
-          { text, kind, repo, tags },
+          {
+            text,
+            kind,
+            repo,
+            tags,
+            sourcePath: source_path,
+            sourceHeading: source_heading,
+            sourceText: source_text,
+          },
           { store: memory, provider: await getEmbeddingProvider(), profileStore: getProfileStore() },
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -1987,7 +2043,8 @@ async function withMemoryStore<T>(fn: (memory: ReturnType<typeof createMemorySto
 // memory v3 read/write path (memory-system-v3.md §6, §8, §10)
 //
 // Two retrieval modes drive the read path: KEYED profile fetch (no vector) and
-// SEMANTIC claim recall (cosine + FTS over an embedded corpus). The MCP tool
+// HYBRID claim recall (vector + exact-token evidence over an embedded corpus).
+// The MCP tool
 // handlers above are thin wrappers; the logic lives in these exported functions
 // so tests can drive them with an in-memory store + the hashing provider, mocking
 // only at the system boundary (CLAUDE.md rule 15).
@@ -2007,6 +2064,10 @@ export interface RecallMemoryArgs {
   repoIncludeGlobal?: boolean;
   /** Restrict claims to any matching tag (OR match). */
   tags?: string[];
+  /** Internal pre-recall scope: only durable guidance, never contextual facts. */
+  guidanceOnly?: boolean;
+  /** Whether any or every requested tag must match; defaults to `any`. */
+  tagMatch?: "any" | "all";
   kinds?: ClaimKind[];
   /** Restrict fact claims to legacy semantic subtypes such as `procedure`. */
   factKinds?: MemoryFactInput["kind"][];
@@ -2020,6 +2081,8 @@ export interface RecallMemoryArgs {
   limit?: number;
   /** Drop semantic matches below this raw cosine (default 0.55). */
   minCosine?: number;
+  /** Admit strong exact-token matches below the cosine floor (default 0.75). */
+  minLexicalScore?: number;
   /** Optional label stored with the recall observation for offline evaluation. */
   callerIntent?: string;
   /**
@@ -2033,31 +2096,39 @@ export interface RecallMemoryArgs {
 export interface RecallMemoryResult {
   /** Keyed profiles, returned verbatim (Junior-internal — never surfaced in a thread). */
   profiles: Profile[];
-  /** Top-k semantic claims, ranked by raw cosine relevance. */
+  /** Top-k claims ranked by fused vector + lexical relevance. */
   claims: Array<{
     id: string;
     kind: ClaimKind;
     factKind: MemoryFactInput["kind"] | null;
     text: string;
+    /** Atomic claim expanded to its parent source section when available. */
+    contextText: string;
     score: number;
     /**
-     * Raw cosine, unweighted — null with no queryVector or no embedding.
-     * For vector recall this is also the ranking `score`.
+     * Raw cosine, unweighted — null with no queryVector or no embedding. The
+     * ranking `score` is fused when both retrieval channels are present.
      */
     cosine: number | null;
+    lexicalScore: number | null;
     repo: string | null;
     tags: string[];
+    sourcePath: string | null;
+    sourceHeading: string | null;
   }>;
 }
 
 export const DEFAULT_MIN_RECALL_COSINE = 0.55;
+export const DEFAULT_MIN_RECALL_LEXICAL = 0.75;
+const MAX_SOURCE_CONTEXT_CHARS = 4_000;
 
 /**
  * Recall over two channels and merge (§8):
  *  1. KEYED — `entityRefs` are fetched by path from the profile store, verbatim,
  *     with no embedding. The interlocutor/workspace is ground truth.
- *  2. SEMANTIC — `query` is embedded in QUERY mode, then `recallClaims` filters
- *     by repo/kind (the WHERE) and ranks by cosine (the ORDER BY). The store never
+ *  2. HYBRID — `query` is embedded in QUERY mode, then `recallClaims` filters
+ *     by repo/kind/tag (the WHERE). Explicit exact anchors activate fusion with
+ *     exact-token ranks; ordinary prose remains vector-ordered. The store never
  *     embeds — we embed at this boundary.
  */
 export async function recallMemory(
@@ -2082,6 +2153,14 @@ export async function recallMemory(
   // 2. Semantic claim recall — embed the query once, run one filtered recall per
   //    kind (ClaimRecallFilters carries a single kind), then merge + re-rank.
   const [queryVector] = await deps.provider.embed([args.query], "query");
+  const minCosine = Math.min(
+    Math.max(args.minCosine ?? DEFAULT_MIN_RECALL_COSINE, -1),
+    1,
+  );
+  const minLexicalScore = Math.min(
+    Math.max(args.minLexicalScore ?? DEFAULT_MIN_RECALL_LEXICAL, 0),
+    1,
+  );
   const scopes: Array<{
     kind?: ClaimKind;
     factKind?: MemoryFactInput["kind"];
@@ -2100,12 +2179,17 @@ export async function recallMemory(
       if (args.repoIncludeGlobal) filters.repoIncludeGlobal = true;
     }
     if (args.tags && args.tags.length > 0) filters.tags = args.tags;
+    if (args.guidanceOnly) filters.guidanceOnly = true;
+    if (args.tagMatch) filters.tagMatch = args.tagMatch;
     if (scope.kind) filters.kind = scope.kind;
     if (scope.factKind) filters.factKind = scope.factKind;
     const results = await deps.store.recallClaims({
       queryVector,
+      queryText: args.query,
       filters,
       limit,
+      minCosine,
+      minLexicalScore,
       recordUsage: false,
     });
     for (const r of results) {
@@ -2115,17 +2199,16 @@ export async function recallMemory(
     }
   }
   merged.sort((a, b) =>
+    b.score - a.score ||
     (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
     b.weight - a.weight ||
     a.id.localeCompare(b.id)
   );
 
-  const minCosine = Math.min(
-    Math.max(args.minCosine ?? DEFAULT_MIN_RECALL_COSINE, -1),
-    1,
-  );
   const eligibleMerged = merged.filter(
-    (claim) => (claim.cosine ?? -Infinity) >= minCosine,
+    (claim) =>
+      (claim.cosine ?? -Infinity) >= minCosine ||
+      (claim.lexicalScore ?? 0) >= minLexicalScore,
   );
   const procedureQuota = args.factKinds?.length
     ? 0
@@ -2134,19 +2217,27 @@ export async function recallMemory(
   if (procedureQuota > 0) {
     const procedureResults = await deps.store.recallClaims({
       queryVector,
+      queryText: args.query,
       filters: {
         ...(args.repo
           ? { repo: args.repo, repoIncludeGlobal: args.repoIncludeGlobal }
           : {}),
         ...(args.tags?.length ? { tags: args.tags } : {}),
+        ...(args.tagMatch ? { tagMatch: args.tagMatch } : {}),
         kind: "fact",
         factKind: "procedure",
       },
       limit: procedureQuota,
+      minCosine,
+      minLexicalScore,
       recordUsage: false,
     });
     const procedures = procedureResults
-      .filter((claim) => (claim.cosine ?? -Infinity) >= minCosine)
+      .filter(
+        (claim) =>
+          (claim.cosine ?? -Infinity) >= minCosine ||
+          (claim.lexicalScore ?? 0) >= minLexicalScore,
+      )
       .slice(0, procedureQuota);
     const procedureIds = new Set(procedures.map((claim) => claim.id));
     selected = [
@@ -2154,6 +2245,7 @@ export async function recallMemory(
       ...eligibleMerged.filter((claim) => !procedureIds.has(claim.id)),
     ].slice(0, limit);
     selected.sort((a, b) =>
+      b.score - a.score ||
       (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
       b.weight - a.weight ||
       a.id.localeCompare(b.id)
@@ -2188,10 +2280,14 @@ export async function recallMemory(
       kind: c.kind,
       factKind: c.factKind ?? null,
       text: c.text,
+      contextText: (c.sourceText?.trim() || c.text).slice(0, MAX_SOURCE_CONTEXT_CHARS),
       score: c.score,
       cosine: c.cosine,
+      lexicalScore: c.lexicalScore,
       repo: c.repo,
       tags: c.tags,
+      sourcePath: c.sourcePath,
+      sourceHeading: c.sourceHeading,
     })),
   };
 }
@@ -2201,6 +2297,9 @@ export interface AddMemoryArgs {
   kind?: ClaimKind;
   repo?: string;
   tags?: string[];
+  sourcePath?: string;
+  sourceHeading?: string;
+  sourceText?: string;
 }
 
 /**
@@ -2232,6 +2331,9 @@ export async function addMemory(
     dim: deps.provider.dim,
     repo: args.repo ?? null,
     tags: args.tags ?? [],
+    sourcePath: args.sourcePath ?? null,
+    sourceHeading: args.sourceHeading ?? null,
+    sourceText: args.sourceText ?? null,
     createdAt: Date.now(),
   });
 }
@@ -2344,12 +2446,14 @@ export function startMcpServer(
   manager?: SessionManager,
   actionStore?: SlackActionStore,
   pipeline?: PipelineToolRuntime,
+  archiveApprovedChannelIds: string[] = [],
 ): void {
   slack = new WebClient(botToken);
   sessionStore = store;
   worktreeManager = wtManager;
   sessionManager = manager;
   slackActionStore = actionStore;
+  slackArchiveApprovedChannelIds = new Set(archiveApprovedChannelIds);
   if (pipeline) {
     pipelineRuntime = pipeline;
   }

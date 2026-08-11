@@ -13,9 +13,11 @@ import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerManager } from "../lifecycle/dev-server.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { WorkflowRegistry } from "../workflows/registry.ts";
+import type { WorkflowScheduler } from "../workflows/scheduler.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
 import type { MemoryStore } from "../memory/store.ts";
 import type { PipelineStore } from "../pipelines/store/interface.ts";
+import type { ProfileStore } from "../memory/profiles/store.ts";
 import { handleHealth } from "./routes/health.ts";
 import { handleSessions, handleSessionDetail } from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
@@ -23,6 +25,7 @@ import { handleMemoryList, handleMemoryProjection, handleMemoryRead, handleMemor
 import { handleDevServers } from "./routes/dev-server.ts";
 import { handleWorkflows } from "./routes/workflows.ts";
 import { handlePipelines } from "./routes/pipelines.ts";
+import { handleProfiles } from "./routes/profiles.ts";
 import { log } from "../logger.ts";
 
 const PUBLIC_DIR = path.resolve(import.meta.dir, "../../public");
@@ -35,8 +38,10 @@ export interface HttpServerDeps {
   devServerQueue: DevServerQueue;
   repos: RepoConfig[];
   workflowRegistry: WorkflowRegistry;
+  workflowScheduler: WorkflowScheduler;
   workflowStore: WorkflowStore;
   memoryStore?: MemoryStore;
+  profileStore?: ProfileStore;
   pipelineStore: PipelineStore;
 }
 
@@ -48,8 +53,10 @@ export function startHttpServer(deps: HttpServerDeps): void {
     devServerQueue,
     repos,
     workflowRegistry,
+    workflowScheduler,
     workflowStore,
     memoryStore,
+    profileStore,
     pipelineStore,
   } = deps;
 
@@ -124,7 +131,11 @@ export function startHttpServer(deps: HttpServerDeps): void {
         } else if (url.pathname === "/api/dev-server") {
           return await handleDevServers(devServerManager, devServerQueue, repos);
         } else if (url.pathname === "/api/workflows") {
-          return await handleWorkflows(workflowRegistry, workflowStore);
+          return await handleWorkflows(
+            workflowRegistry,
+            workflowStore,
+            workflowScheduler,
+          );
         } else if (url.pathname === "/api/pipelines") {
           return await handlePipelines(pipelineStore, url.searchParams);
         } else if (url.pathname.startsWith("/api/pipelines/")) {
@@ -134,6 +145,9 @@ export function startHttpServer(deps: HttpServerDeps): void {
           return await handlePipelines(pipelineStore, url.searchParams, runId);
         } else if (url.pathname === "/api/logs") {
           return await handleLogs(url.searchParams);
+        } else if (url.pathname === "/api/profiles") {
+          if (!profileStore) return Response.json({ error: "profile store not available" }, { status: 503 });
+          return await handleProfiles(profileStore, url.searchParams);
         } else if (url.pathname === "/api/memory/recall") {
           if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
           return await handleMemoryRecall(memoryStore, url.searchParams);
