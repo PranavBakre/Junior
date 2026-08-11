@@ -360,6 +360,90 @@ describe("review verdict contract", () => {
     });
   });
 
+  it("rejects a succeeded review continuation without a completed verdict", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1_000));
+    await store.createRun(
+      makeProductRun({
+        id: "run-review-continuation",
+        phase: "reviewing",
+        ownerAgent: "default",
+      }),
+    );
+    const review = await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-review-continuation",
+        runId: "run-review-continuation",
+        sourceAgent: "default",
+        targetAgent: "review",
+        status: "leased",
+        idempotencyKey: "asg-review-continuation",
+      }),
+    );
+
+    const receipt = await reduceProductOutcome(cfg(store), {
+      actorId: "review",
+      outcome: baseOutcome({
+        assignmentId: review.id,
+        action: "continue_self",
+        status: "succeeded",
+        reason: "approved without completing",
+        progressFingerprint: "review-continuation",
+      }),
+    });
+
+    expect(receipt).toMatchObject({
+      status: "rejected",
+      reason: "review verdict must use action=complete",
+    });
+    expect(await store.getRun("run-review-continuation")).toMatchObject({
+      phase: "reviewing",
+      stateVersion: 0,
+    });
+    expect(await store.listOutbox("run-review-continuation")).toHaveLength(0);
+  });
+
+  it("rejects an explicit review phase change without a completed verdict", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1_000));
+    await store.createRun(
+      makeProductRun({
+        id: "run-review-explicit-phase",
+        phase: "reviewing",
+        ownerAgent: "default",
+      }),
+    );
+    const review = await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-review-explicit-phase",
+        runId: "run-review-explicit-phase",
+        sourceAgent: "default",
+        targetAgent: "review",
+        status: "leased",
+        idempotencyKey: "asg-review-explicit-phase",
+      }),
+    );
+
+    const receipt = await reduceProductOutcome(cfg(store), {
+      actorId: "review",
+      toPhase: "approved",
+      outcome: baseOutcome({
+        assignmentId: review.id,
+        action: "continue_self",
+        status: "progress",
+        reason: "advance without verdict",
+        progressFingerprint: "review-explicit-phase",
+      }),
+    });
+
+    expect(receipt).toMatchObject({
+      status: "rejected",
+      reason: "leaving reviewing requires a completed typed review verdict",
+    });
+    expect(await store.getRun("run-review-explicit-phase")).toMatchObject({
+      phase: "reviewing",
+      stateVersion: 0,
+    });
+  });
+
   it("rejects succeeded plus a failed review verdict", async () => {
     const store = new InMemoryPipelineStore(fakeClock(1_000));
     await store.createRun(

@@ -285,8 +285,9 @@ describe("AgentDispatcher pipeline mode soft integration", () => {
     await dispatcher.handleMessage(
       makeEvent({
         text: "!review re-review",
-        isSelfBot: true,
-        botUsername: "Junior",
+        isSelfBot: false,
+        botId: "BFOREIGN",
+        botUsername: "Automation",
       }),
     );
 
@@ -297,6 +298,146 @@ describe("AgentDispatcher pipeline mode soft integration", () => {
         (assignment) => assignment.targetAgent === "review",
       ),
     ).toHaveLength(0);
+  });
+
+  it("does not let a bot directive resume a needs-human product run", async () => {
+    const handleAgentMessage = mock(
+      async (_event: SlackMessageEvent, _agent: string) => {},
+    );
+    const sessions = new Map<string, ThreadSession>();
+    const session = createSession("thread-1", "CBUGS");
+    session.activePipelineRunId = "run-1";
+    session.activePipelineKind = "product";
+    sessions.set("thread-1", session);
+
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1000));
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-1",
+        threadId: "thread-1",
+        channelId: "CBUGS",
+        phase: "needs-human",
+        status: "needs-human",
+        ownerAgent: "default",
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-open",
+        runId: "run-1",
+        targetAgent: "default",
+        status: "leased",
+        idempotencyKey: "asg-open",
+      }),
+    );
+
+    const dispatcher = new AgentDispatcher(
+      {
+        handleAgentMessage,
+        handleLeadMessage: mock(async () => {}),
+        handleMessage: mock(async () => {}),
+      } as never,
+      new Set(["CBUGS"]),
+      {
+        sessionStore: memorySessionStore(sessions),
+        pipeline: {
+          store: pipelineStore,
+          runtimeMode: "active",
+          legacyDirectivesEnabled: true,
+        },
+      },
+    );
+
+    await dispatcher.handleMessage(
+      makeEvent({
+        text: "!review re-review",
+        isSelfBot: true,
+        botUsername: "Junior",
+      }),
+    );
+
+    expect(await pipelineStore.getRun("run-1")).toMatchObject({
+      phase: "needs-human",
+      status: "needs-human",
+      stateVersion: 0,
+    });
+    expect(
+      (await pipelineStore.listAssignments("run-1")).filter(
+        (assignment) => assignment.targetAgent === "review",
+      ),
+    ).toHaveLength(0);
+    expect(handleAgentMessage.mock.calls.map((call) => call[1])).toEqual([
+      "review",
+    ]);
+  });
+
+  it("falls back only rejected siblings from a mixed directive message", async () => {
+    const handleAgentMessage = mock(
+      async (_event: SlackMessageEvent, _agent: string) => {},
+    );
+    const sessions = new Map<string, ThreadSession>();
+    const session = createSession("thread-1", "CBUGS");
+    session.activePipelineRunId = "run-1";
+    session.activePipelineKind = "product";
+    sessions.set("thread-1", session);
+
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1000));
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-1",
+        threadId: "thread-1",
+        channelId: "CBUGS",
+        phase: "building",
+        ownerAgent: "default",
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-orch",
+        runId: "run-1",
+        targetAgent: "default",
+        sourceAgent: "system",
+        idempotencyKey: "asg-orch",
+      }),
+    );
+
+    const dispatcher = new AgentDispatcher(
+      {
+        handleAgentMessage,
+        handleLeadMessage: mock(async () => {}),
+        handleMessage: mock(async () => {}),
+      } as never,
+      new Set(["CBUGS"]),
+      {
+        sessionStore: memorySessionStore(sessions),
+        pipeline: {
+          store: pipelineStore,
+          runtimeMode: "active",
+          legacyDirectivesEnabled: true,
+        },
+      },
+    );
+
+    await dispatcher.handleMessage(
+      makeEvent({
+        text: "!review check the PR\n!reproducer verify the behavior",
+        isSelfBot: true,
+        botUsername: "Junior",
+      }),
+    );
+
+    const assignments = await pipelineStore.listAssignments("run-1");
+    expect(
+      assignments.filter((assignment) => assignment.targetAgent === "review"),
+    ).toHaveLength(1);
+    expect(
+      assignments.filter(
+        (assignment) => assignment.targetAgent === "reproducer",
+      ),
+    ).toHaveLength(0);
+    const agents = handleAgentMessage.mock.calls.map((call) => call[1]);
+    expect(agents.filter((agent) => agent === "review")).toHaveLength(1);
+    expect(agents.filter((agent) => agent === "reproducer")).toHaveLength(1);
   });
 
   it("resumes a needs-human product run for a human !review re-review", async () => {

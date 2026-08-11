@@ -730,6 +730,21 @@ export async function reduceProductOutcome(
     };
   }
 
+  if (
+    run.phase === "reviewing" &&
+    assignment.targetAgent === "review" &&
+    input.toPhase !== undefined &&
+    input.toPhase !== "reviewing" &&
+    input.outcome.action !== "complete"
+  ) {
+    return {
+      status: "rejected",
+      runVersion: run.stateVersion,
+      assignmentId: assignment.id,
+      reason: "leaving reviewing requires a completed typed review verdict",
+    };
+  }
+
   // Gate consistency for revision-bound completions.
   if (
     input.outcome.action === "complete" &&

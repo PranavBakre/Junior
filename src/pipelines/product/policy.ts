@@ -54,28 +54,57 @@ export function validateProductOutcome(
 
   if (
     run.phase === "reviewing" &&
-    assignment.targetAgent === "review" &&
-    outcome.action === "complete"
+    assignment.targetAgent === "review"
   ) {
-    const reviewCheck = outcome.checks.find(
+    const reviewChecks = outcome.checks.filter(
       (check) => check.name === "review" || check.name === "verdict",
     );
-    if (!reviewCheck || reviewCheck.status === "skipped") {
+    const decisiveChecks = reviewChecks.filter(
+      (check) => check.status === "passed" || check.status === "failed",
+    );
+    if (
+      outcome.action !== "complete" &&
+      (outcome.status === "succeeded" ||
+        outcome.status === "failed" ||
+        decisiveChecks.length > 0)
+    ) {
+      return {
+        ok: false,
+        reason: "review verdict must use action=complete",
+      };
+    }
+    if (
+      outcome.action === "complete" &&
+      (decisiveChecks.length === 0 ||
+        reviewChecks.some((check) => check.status === "skipped"))
+    ) {
       return {
         ok: false,
         reason:
           "review completion requires a passed or failed review/verdict check",
       };
     }
-    if (
-      (reviewCheck.status === "passed" && outcome.status !== "succeeded") ||
-      (reviewCheck.status === "failed" && outcome.status !== "failed")
-    ) {
-      return {
-        ok: false,
-        reason:
-          `review outcome is contradictory: status=${outcome.status}, verdict=${reviewCheck.status}`,
-      };
+    if (outcome.action === "complete") {
+      const verdictStatuses = new Set(
+        decisiveChecks.map((check) => check.status),
+      );
+      if (verdictStatuses.size !== 1) {
+        return {
+          ok: false,
+          reason: "review completion contains contradictory verdict checks",
+        };
+      }
+      const reviewCheck = decisiveChecks[0]!;
+      if (
+        (reviewCheck.status === "passed" && outcome.status !== "succeeded") ||
+        (reviewCheck.status === "failed" && outcome.status !== "failed")
+      ) {
+        return {
+          ok: false,
+          reason:
+            `review outcome is contradictory: status=${outcome.status}, verdict=${reviewCheck.status}`,
+        };
+      }
     }
   }
 

@@ -437,6 +437,7 @@ export class AgentDispatcher {
           a.status === "waiting",
       )
       .sort((a, b) => b.createdAt - a.createdAt);
+    const isHumanDirective = !event.isSelfBot && !event.botId;
     const caller = sourceAgent ?? run.ownerAgent;
     let sourceAssignment =
       open.find((a) => a.targetAgent === caller) ??
@@ -453,7 +454,7 @@ export class AgentDispatcher {
     // Waiting assignments cannot emit outcomes. A human directive is new
     // control-plane input, so give it its own runnable owner assignment rather
     // than silently attempting a handoff from the waiting assignment.
-    if (sourceAssignment.status === "waiting" && !event.isSelfBot) {
+    if (sourceAssignment.status === "waiting" && isHumanDirective) {
       sourceAssignment = await pipeline.store.createAssignment({
         id: crypto.randomUUID(),
         runId: run.id,
@@ -491,6 +492,7 @@ export class AgentDispatcher {
         runId: run.id,
         sourceAssignmentId: sourceAssignment.id,
         expectedRunVersion: run.stateVersion,
+        humanInitiated: isHumanDirective,
         auth: {
           agent: caller,
           channelId: event.channel,
@@ -520,10 +522,24 @@ export class AgentDispatcher {
       );
     }
 
-    // If every directive was skipped (e.g. unauthorized), fall back to legacy
-    // so existing Slack routing still surfaces the attempt.
-    if (result.converted.length === 0) return false;
-    return true;
+    // Preserve each rejected directive individually. Falling the entire message
+    // through would dispatch already-converted directives a second time, while
+    // returning early would silently lose rejected siblings.
+    await Promise.all(
+      result.skipped.map(({ directive, index }) =>
+        this.manager.handleAgentMessage(
+          {
+            ...event,
+            text: directive.prompt,
+            command: null,
+            dedupeKey: `${event.ts}:${directive.agentName}:${index}`,
+          },
+          directive.agentName,
+        )
+      ),
+    );
+
+    return result.converted.length > 0 || result.skipped.length > 0;
   }
 
   // ---------------------------------------------------------------------------

@@ -25,6 +25,8 @@ export type LegacyDirectiveConversionInput = {
   sourceAssignmentId: string;
   expectedRunVersion: number;
   auth: OutcomeAuthContext;
+  /** True only for a directive received directly from a human Slack user. */
+  humanInitiated?: boolean;
   orchestratorContext?: OrchestratorContext;
 };
 
@@ -34,7 +36,12 @@ export type LegacyDirectiveConversionResult = {
     receipt: TransitionReceipt;
     idempotencyKey: string;
   }>;
-  skipped: Array<{ agentName: string; reason: string }>;
+  skipped: Array<{
+    agentName: string;
+    reason: string;
+    directive: AgentDirective;
+    index: number;
+  }>;
 };
 
 /**
@@ -64,12 +71,30 @@ export async function convertLegacyDirectivesToHandoffs(
   const skipped: LegacyDirectiveConversionResult["skipped"] = [];
   const ctx = input.orchestratorContext ?? "default";
   const run = await store.getRun(input.runId);
+  const priorEvents = await store.listEvents(input.runId);
 
   for (const [index, directive] of input.directives.entries()) {
+    if (
+      directive.agentName === "review" &&
+      run?.kind === "product" &&
+      run.phase === "needs-human" &&
+      input.humanInitiated !== true
+    ) {
+      skipped.push({
+        agentName: directive.agentName,
+        reason: "needs-human re-review requires a human directive",
+        directive,
+        index,
+      });
+      continue;
+    }
+
     if (!canDispatch(input.sourceAgent, directive.agentName, ctx)) {
       skipped.push({
         agentName: directive.agentName,
         reason: `unauthorized edge ${input.sourceAgent}→${directive.agentName}`,
+        directive,
+        index,
       });
       continue;
     }
@@ -82,6 +107,24 @@ export async function convertLegacyDirectivesToHandoffs(
       index,
     });
     const nextIdempotencyKey = `${idempotencyKey}:assignment`;
+    const priorEvent = priorEvents.find(
+      (event) => event.idempotencyKey === idempotencyKey,
+    );
+    if (priorEvent) {
+      converted.push({
+        agentName: directive.agentName,
+        idempotencyKey,
+        receipt: {
+          status: "duplicate",
+          runVersion: run?.stateVersion ?? input.expectedRunVersion,
+          assignmentId: priorEvent.assignmentId ?? input.sourceAssignmentId,
+          reason: "duplicate idempotency key",
+          eventId: priorEvent.id,
+          outcomeId: priorEvent.outcomeId ?? undefined,
+        },
+      });
+      continue;
+    }
 
     log.info(
       "pipeline-legacy",
@@ -103,6 +146,7 @@ export async function convertLegacyDirectivesToHandoffs(
         // human gate. Other phases retain their controller-owned transition.
         toPhase:
           directive.agentName === "review" &&
+            input.humanInitiated === true &&
             run?.kind === "product" &&
             run.phase === "needs-human"
             ? "reviewing"
@@ -111,10 +155,16 @@ export async function convertLegacyDirectivesToHandoffs(
       },
     );
 
-    if (receipt.status === "rejected") {
+    if (
+      receipt.status === "rejected" ||
+      (receipt.status === "duplicate" &&
+        receipt.eventId === undefined)
+    ) {
       skipped.push({
         agentName: directive.agentName,
         reason: receipt.reason ?? "typed handoff rejected",
+        directive,
+        index,
       });
       continue;
     }
