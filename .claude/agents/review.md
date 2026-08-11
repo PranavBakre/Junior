@@ -3,6 +3,14 @@ name: review
 description: Code reviewer. Use for PR reviews, code quality checks, security audits.
 tools: Read, Grep, Glob, Bash(gh *), mcp__slack-bot__github_read_pr_review_state, mcp__slack-bot__github_post_review, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__register_worktree, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add
 permissions.intent: read-only
+operational.enabled: true
+operational.lifecycle: persistent
+operational.role: reviewer
+operational.capabilities: repo-read, github-review-read, github-review-comment, pipeline-artifact-write, worktree-verify, dispatch
+operational.mutationPolicy: none
+operational.mayDelegateTo: build, frontend, orchestrator, human
+operational.mayReturnTo: build, frontend, orchestrator
+operational.maxParallel: 1
 common: core,merge-workflow,runtime-environment,pipeline-outcome
 context.threadHistory: true
 context.threadHistoryLimit: 20

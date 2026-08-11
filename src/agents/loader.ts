@@ -1,4 +1,8 @@
 import { clampPermissionIntent } from "./registry.ts";
+import {
+  parseAgentFrontmatter,
+  parseFrontmatterCsv,
+} from "./frontmatter.ts";
 
 /**
  * Per-agent preamble context profile. Each flag controls whether the
@@ -106,7 +110,7 @@ export async function loadAgentDefinition(
   if (!exists) return null;
 
   const content = await file.text();
-  const { frontmatter, body } = parseFrontmatter(content);
+  const { frontmatter, body } = parseAgentFrontmatter(content);
 
   return {
     name: frontmatter["name"] ?? "",
@@ -181,13 +185,7 @@ function parsePermissionIntent(value: string | undefined): AgentPermissionIntent
   return "no-tools";
 }
 
-function parseCsv(value: string | undefined): string[] {
-  if (!value) return [];
-  return value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-}
+const parseCsv = parseFrontmatterCsv;
 
 function mcpServersFromTools(tools: string[]): string[] {
   return tools
@@ -212,47 +210,4 @@ function parsePositiveInt(value: string | undefined): number | undefined {
   const parsed = Number.parseInt(value.trim(), 10);
   if (!Number.isInteger(parsed) || parsed <= 0) return undefined;
   return parsed;
-}
-
-function parseFrontmatter(content: string): {
-  frontmatter: Record<string, string>;
-  body: string;
-} {
-  const frontmatter: Record<string, string> = {};
-
-  if (!content.startsWith("---")) {
-    return { frontmatter, body: content };
-  }
-
-  const firstDelim = content.indexOf("---");
-  const secondDelim = content.indexOf("---", firstDelim + 3);
-
-  if (secondDelim === -1) {
-    return { frontmatter, body: content };
-  }
-
-  const fmBlock = content.slice(firstDelim + 3, secondDelim).trim();
-  const body = content.slice(secondDelim + 3);
-
-  for (const line of fmBlock.split("\n")) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) continue;
-
-    const key = line.slice(0, colonIdx).trim();
-    let value = line.slice(colonIdx + 1).trim();
-
-    // Strip surrounding quotes
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-
-    if (key) {
-      frontmatter[key] = value;
-    }
-  }
-
-  return { frontmatter, body };
 }

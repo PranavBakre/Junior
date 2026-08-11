@@ -2,14 +2,15 @@
 
 The agent catalog is the provider-neutral source of truth for which agent
 roles may be selected, what they are allowed to do, and which handoffs are
-valid. Markdown definitions provide prompts; the catalog adds capabilities,
-policy, and verification metadata.
+valid. Trusted Markdown definitions provide both prompts and operational
+metadata; TypeScript parses, validates, and enforces that catalog.
 
 ## Sources
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `AGENT_CATALOG` | `src/agents/manifest.ts` | Declares role metadata, capabilities, and handoff policy. |
+| `operational.*` frontmatter | `.claude/agents/*.md`, `agents-org/*.md` | Single source for each trusted role's lifecycle, capabilities, mutation policy, and handoffs. |
+| `loadTrustedAgentCatalog()` | `src/agents/manifest.ts` | Compiles trusted frontmatter and fails on invalid metadata, duplicate names, MCP-only tools outside capability-derived safe lists, or unresolved handoffs. An empty uninitialized `agents-org` gitlink is treated as an absent optional overlay; a populated overlay remains strict. |
 | `AGENT_IDENTITIES` | `src/support/agents.ts` | Public Slack identities and dispatch aliases. Core identities are `default`, `lead`, `reproducer`, `review`, and `echo`; support-channel `lead` sessions resolve to the `default` definition. |
 | `loadOverlayIdentities()` | `src/support/agents.ts` | Loads private `agents-org` identities from frontmatter without replacing existing public entries. |
 | `AgentRegistry` | `src/agents/registry.ts` | Loads/reloads definitions and resolves dispatchable agents. |
@@ -44,7 +45,8 @@ the catalog roles.
 
 ## Safety boundary
 
-Catalog verification must run before dispatch. A role may narrow its declared
-permissions but cannot widen the target repository, MCP scope, or handoff
-policy supplied by the runtime. Keep changes to role metadata and prompt
-content covered by `src/agents/*.test.ts` and the provider-parity tests.
+Catalog verification runs at startup. Only Junior's public definitions and the
+`agents-org` overlay are trusted for operational fields. A target-repository
+override may narrow its declared permissions but cannot widen capabilities,
+MCP scope, mutation policy, or handoffs. Keep role metadata and prompt changes
+covered by `src/agents/*.test.ts` and the provider-parity tests.

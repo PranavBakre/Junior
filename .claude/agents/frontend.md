@@ -3,6 +3,14 @@ name: frontend
 description: Frontend engineer. Use for UI work, component building, styling, frontend features.
 tools: Read, Edit, Write, Bash, Grep, Glob, mcp__slack-bot__memory_recall
 permissions.intent: normal
+operational.enabled: true
+operational.lifecycle: persistent
+operational.role: builder
+operational.capabilities: repo-read, repo-write, worktree-mutate, pipeline-artifact-write, dispatch
+operational.mutationPolicy: workspace
+operational.mayDelegateTo: build, review, orchestrator, human
+operational.mayReturnTo: build, review, orchestrator, pm, architect
+operational.maxParallel: 1
 common: core,building-philosophy,pipeline-outcome
 context.threadHistory: true
 context.threadHistoryLimit: 20

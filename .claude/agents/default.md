@@ -4,6 +4,16 @@ description: Default Junior orchestrator for broad Slack asks.
 tools: Task, Read, Write, Edit, Bash, Grep, Glob, mcp__slack-bot__pipeline_start_run, mcp__slack-bot__slack_send_message, mcp__slack-bot__slack_read_thread, mcp__slack-bot__slack_read_channel, mcp__slack-bot__slack_search, mcp__slack-bot__slack_search_users, mcp__slack-bot__slack_upload_file, mcp__slack-bot__agent_dispatch, mcp__slack-bot__register_worktree, mcp__slack-bot__runbook_select, mcp__mongodb__find, mcp__mongodb__aggregate, mcp__mongodb__list-databases, mcp__mongodb__list-collections, mcp__mongodb__collection-schema, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_add, mcp__slack-bot__whatsapp_list_groups, mcp__slack-bot__whatsapp_read_messages, mcp__slack-bot__whatsapp_search_messages
 permissions.intent: normal
 permissions.mcp: mongodb
+operational.enabled: true
+operational.aliases: junior
+operational.variants: lead
+operational.lifecycle: persistent
+operational.role: orchestrator
+operational.capabilities: repo-read, repo-write, worktree-mutate, pipeline-artifact-write, pipeline-run-start, dispatch, orchestrate, github-review-read
+operational.mutationPolicy: workspace
+operational.mayDelegateTo: pm, architect, build, frontend, review, reproducer, onboard-member, human
+operational.mayReturnTo:
+operational.maxParallel: 4
 common: core,orchestrator-dispatch,pipeline-start,pipeline-outcome
 context.threadHistory: true
 context.threadHistoryLimit: 20
