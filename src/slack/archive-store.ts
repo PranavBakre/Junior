@@ -324,6 +324,27 @@ export class SlackArchiveStore {
     return row ? rowToMessage(row) : null;
   }
 
+  listChannelIds(): string[] {
+    return this.db
+      .query<{ channel_id: string }, []>(
+        "SELECT DISTINCT channel_id FROM slack_archive_message ORDER BY channel_id",
+      )
+      .all()
+      .map((row) => row.channel_id);
+  }
+
+  getThreadLatestTimestamps(channelId: string): Map<string, string> {
+    const rows = this.db
+      .query<{ thread_ts: string; ts: string }, [string]>(`
+        SELECT thread_ts, max(ts) AS ts
+        FROM slack_archive_message
+        WHERE channel_id = ?
+        GROUP BY thread_ts
+      `)
+      .all(channelId);
+    return new Map(rows.map((row) => [row.thread_ts, row.ts]));
+  }
+
   countMessagesPendingEmbedding(): { pending: number; emptyText: number } {
     const row = this.db.query<{ pending: number; empty_text: number }, []>(`
       SELECT
@@ -480,30 +501,58 @@ export class SlackArchiveStore {
     const vectorRanks = new Map<string, number>();
     if (queryVector) {
       const desired = Math.min(MAX_RETRIEVAL_CANDIDATES, Math.max(limit * 20, 100));
-      const initial = Math.min(this.vectorIndex.size, Math.max(desired, limit * 50));
-      const hits = this.vectorIndex.search(queryVector, initial);
-      if (hits.length > 0) {
-        const rowids = hits.map((hit) => hit.rowid);
-        const placeholders = rowids.map(() => "?").join(", ");
-        const rows = this.db.query<
-          { rowid: number; channel_id: string; ts: string },
-          (string | number)[]
-        >(`
-          SELECT m.rowid, m.channel_id, m.ts
-          FROM slack_archive_message AS m
-          WHERE m.rowid IN (${placeholders}) ${filterSql}
-        `).all(...rowids, ...filterParams);
-        const byRowid = new Map(rows.map((row) => [row.rowid, row]));
-        let rank = 0;
-        for (const hit of hits) {
-          const row = byRowid.get(hit.rowid);
-          if (!row) continue;
-          rank += 1;
-          const key = identity(row.channel_id, row.ts);
-          vectorCosines.set(key, hit.cosine);
-          vectorRanks.set(key, rank);
-          if (rank >= desired) break;
+      const indexSize = this.vectorIndex.size;
+      let requested = Math.min(indexSize, Math.max(desired, limit * 50));
+      let ranked = 0;
+      while (requested > 0) {
+        const hits = this.vectorIndex.search(queryVector, requested);
+        const hitByRowid = new Map(hits.map((hit) => [hit.rowid, hit]));
+        const byRowid = new Map<number, {
+          rowid: number;
+          channel_id: string;
+          ts: string;
+          embedding: Uint8Array;
+        }>();
+        // Stay below SQLite's variable limit when adaptive filtering has to
+        // inspect a large fraction of the global ANN result set.
+        for (let offset = 0; offset < hits.length; offset += 500) {
+          const rowids = hits.slice(offset, offset + 500).map((hit) => hit.rowid);
+          const placeholders = rowids.map(() => "?").join(", ");
+          const rows = this.db.query<
+            { rowid: number; channel_id: string; ts: string; embedding: Uint8Array },
+            (string | number)[]
+          >(`
+            SELECT m.rowid, m.channel_id, m.ts, m.embedding
+            FROM slack_archive_message AS m
+            WHERE m.rowid IN (${placeholders})
+              AND m.embedding IS NOT NULL ${filterSql}
+          `).all(...rowids, ...filterParams);
+          for (const row of rows) byRowid.set(row.rowid, row);
         }
+        const currentCandidates: Array<{ key: string; cosine: number }> = [];
+        vectorCosines.clear();
+        vectorRanks.clear();
+        for (const row of byRowid.values()) {
+          const hit = hitByRowid.get(row.rowid);
+          if (!hit) continue;
+          const currentEmbedding = deserializeEmbedding(row.embedding);
+          if (!currentEmbedding || currentEmbedding.length !== queryVector.length) continue;
+          const key = identity(row.channel_id, row.ts);
+          const currentCosine = cosineSimilarity(queryVector, currentEmbedding);
+          // A file-backed index can lag a text edit/re-embedding until the next
+          // atomic rebuild. Its recorded distance must agree with SQLite's
+          // current vector or this row is a stale ANN hit and is rejected.
+          if (Math.abs(currentCosine - hit.cosine) > 1e-4) continue;
+          currentCandidates.push({ key, cosine: currentCosine });
+        }
+        currentCandidates.sort((a, b) => b.cosine - a.cosine || a.key.localeCompare(b.key));
+        ranked = Math.min(currentCandidates.length, desired);
+        currentCandidates.slice(0, desired).forEach((candidate, index) => {
+          vectorCosines.set(candidate.key, candidate.cosine);
+          vectorRanks.set(candidate.key, index + 1);
+        });
+        if (ranked >= desired || requested >= indexSize) break;
+        requested = Math.min(indexSize, Math.max(requested + 1, requested * 2));
       }
     }
 
@@ -681,11 +730,33 @@ function buildFilters(filters: SlackArchiveFilters = {}): {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
   if (filters.channelId) { clauses.push("m.channel_id = ?"); params.push(filters.channelId); }
+  if (filters.channelIds) {
+    if (filters.channelIds.length === 0) clauses.push("1 = 0");
+    else {
+      clauses.push("m.channel_id IN (SELECT value FROM json_each(?))");
+      params.push(JSON.stringify(filters.channelIds));
+    }
+  }
   if (filters.actorId) { clauses.push("m.actor_id = ?"); params.push(filters.actorId); }
   if (filters.actorKind) { clauses.push("m.actor_kind = ?"); params.push(filters.actorKind); }
   if (filters.sinceMs !== undefined) { clauses.push("m.event_time_ms >= ?"); params.push(filters.sinceMs); }
   if (filters.untilMs !== undefined) { clauses.push("m.event_time_ms <= ?"); params.push(filters.untilMs); }
   return { sql: clauses.length ? `AND ${clauses.join(" AND ")}` : "", params };
+}
+
+function cosineSimilarity(left: Float32Array, right: Float32Array): number {
+  let dot = 0;
+  let leftNorm = 0;
+  let rightNorm = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index]!;
+    const b = right[index]!;
+    dot += a * b;
+    leftNorm += a * a;
+    rightNorm += b * b;
+  }
+  const denominator = Math.sqrt(leftNorm) * Math.sqrt(rightNorm);
+  return denominator === 0 ? 0 : dot / denominator;
 }
 
 const FTS_STOP_WORDS = new Set([

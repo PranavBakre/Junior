@@ -25,6 +25,8 @@ export interface SlackArchiveImportOptions {
   store: SlackArchiveImportStore;
   dryRun?: boolean;
   batchSize?: number;
+  /** Non-public conversations that the operator explicitly approved. */
+  approvedChannelIds?: ReadonlySet<string>;
 }
 
 export interface SlackArchiveImportReport {
@@ -132,6 +134,12 @@ export async function importSlackArchive(
 
   for (const [directory, paths] of byDirectory) {
     const conversation = channels.get(directory) ?? fallbackConversation(directory);
+    if (
+      conversation.kind !== "public_channel" &&
+      options.approvedChannelIds?.has(conversation.id) !== true
+    ) {
+      continue;
+    }
     if (!dryRun) await options.store.upsertConversation?.(conversation);
     let latestTs: string | undefined;
     const batch: SlackArchiveMessageInput[] = [];
@@ -280,7 +288,9 @@ function dmDirectoryName(
 }
 
 function fallbackConversation(directory: string): SlackArchiveConversation {
-  return { id: directory, name: directory, kind: "public_channel" };
+  // A missing manifest must fail closed: the directory could be a private
+  // channel or DM whose manifest was omitted from a partial export.
+  return { id: directory, name: directory, kind: "private_channel" };
 }
 
 function parseMessageEntry(path: string): { path: string; directory: string } | null {

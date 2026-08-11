@@ -44,9 +44,13 @@ bun run slack:archive:import -- --zip /absolute/path/export.zip --apply
 
 `SLACK_ARCHIVE_EXPORT_PATH` can supply the default ZIP path. Imports read each
 JSON member using `unzip -p`, resolve channel/user manifests, and leave raw JSON
-and embeddings unset. Live observations always win over a later import of the
-same message. Per-channel checkpoints record the newest successfully imported
-Slack timestamp for incremental API repair through `SlackArchiveSync`.
+and embeddings unset. Public channels are imported by default; private channels
+and DMs require their exact ID in `SLACK_ARCHIVE_APPROVED_CHANNEL_IDS`, and
+directories missing from the export manifests fail closed. Live observations
+always win over a later import of the same message. Per-channel history
+checkpoints stay in the top-level-message timestamp domain; `SlackArchiveSync`
+also compares full root metadata with locally archived thread timestamps so it
+can repair missed replies on roots older than the history checkpoint.
 
 ## Retrieval and security
 
@@ -57,11 +61,13 @@ embeddings by default. `slack_archive_thread` reads one exact channel/thread in
 chronological order.
 
 Both tools require a signed runner turn whose stored session channel is public
-or explicitly approved. Public/private status is resolved through Slack on the
-server; configured IDs provide the explicit exception. Bare MCP calls, unknown
-sessions, caller-forged channel parameters, and unapproved non-public channels
-are denied. Results are size-bounded, source-labelled, and wrapped as untrusted
-third-party data.
+or explicitly approved. Every requested or returned archive channel is checked
+independently against the same public-or-approved policy, including unfiltered
+searches and exact thread reads. Public/private status is resolved through Slack
+on the server; configured IDs provide the explicit exception. Bare MCP calls,
+unknown sessions, caller-forged channel parameters, and unapproved non-public
+channels are denied. Results are size-bounded, source-labelled, and wrapped as
+untrusted third-party data.
 
 This MCP policy is not filesystem isolation. Agents with unrestricted local
 filesystem access can still read the SQLite file; use OS-level controls or an

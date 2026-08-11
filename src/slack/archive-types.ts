@@ -75,6 +75,8 @@ export interface SlackArchiveMessage {
 
 export interface SlackArchiveFilters {
   channelId?: string;
+  /** Server-authorized channel scope for archive-wide searches. */
+  channelIds?: string[];
   actorId?: string;
   actorKind?: SlackArchiveActorKind;
   sinceMs?: number;

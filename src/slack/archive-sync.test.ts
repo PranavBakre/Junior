@@ -27,6 +27,17 @@ class MemoryStore implements ArchiveSyncStore {
   upsertConversation(conversation: SlackArchiveConversation): void {
     this.conversations.push(conversation);
   }
+
+  getThreadLatestTimestamps(channelId: string): Map<string, string> {
+    const latest = new Map<string, string>();
+    for (const message of this.messages.values()) {
+      if (message.channelId !== channelId) continue;
+      const threadTs = message.threadTs ?? message.ts;
+      const current = latest.get(threadTs);
+      if (!current || message.ts > current) latest.set(threadTs, message.ts);
+    }
+    return latest;
+  }
 }
 
 describe("SlackArchiveSync", () => {
@@ -57,7 +68,12 @@ describe("SlackArchiveSync", () => {
       },
     });
 
-    const result = await new SlackArchiveSync({ client, store, pageSize: 2 }).sync();
+    const result = await new SlackArchiveSync({
+      client,
+      store,
+      pageSize: 2,
+      approvedChannelIds: new Set(["D2"]),
+    }).sync();
 
     expect(result).toEqual({ channels: 2, messages: 3 });
     expect(calls).toEqual([
@@ -127,10 +143,10 @@ describe("SlackArchiveSync", () => {
     const store = new MemoryStore();
     store.checkpoints.set("C1", "20.000001");
     store.upsertMessage(message("20.000001", "live copy"));
-    let historyArgs: Record<string, unknown> | undefined;
+    const historyCalls: Record<string, unknown>[] = [];
     const client = fakeClient({
       history: async (args) => {
-        historyArgs = args;
+        historyCalls.push(args);
         return {
           ok: true,
           messages: [messageInput("21.000001", "new"), messageInput("20.000001", "backfill copy")],
@@ -140,7 +156,7 @@ describe("SlackArchiveSync", () => {
 
     await new SlackArchiveSync({ client, store }).sync();
 
-    expect(historyArgs).toMatchObject({ oldest: "20.000001", inclusive: true });
+    expect(historyCalls[0]).toMatchObject({ oldest: "20.000001", inclusive: true });
     expect(store.messages.size).toBe(2);
     expect(store.messages.get("C1:20.000001")?.text).toBe("backfill copy");
     expect(store.checkpoints.get("C1")).toBe("21.000001");
@@ -181,6 +197,79 @@ describe("SlackArchiveSync", () => {
     );
     expect(store.messages.has("C1:71.000001")).toBe(false);
     expect(store.checkpoints.get("C1")).toBe("70.000001");
+  });
+
+  it("keeps the history checkpoint in the root-message timestamp domain", async () => {
+    const store = new MemoryStore();
+    const client = fakeClient({
+      history: async () => ({
+        ok: true,
+        messages: [{ ts: "100.000001", text: "root", reply_count: 1 }],
+      }),
+      replies: async () => ({
+        ok: true,
+        messages: [
+          { ts: "100.000001", text: "root" },
+          { ts: "200.000001", thread_ts: "100.000001", text: "reply" },
+        ],
+      }),
+    });
+    await new SlackArchiveSync({ client, store }).sync();
+    expect(store.checkpoints.get("C1")).toBe("100.000001");
+  });
+
+  it("repairs replies on roots older than the channel history checkpoint", async () => {
+    const store = new MemoryStore();
+    store.checkpoints.set("C1", "200.000001");
+    const replyRoots: string[] = [];
+    const client = fakeClient({
+      history: async (args) => args.oldest
+        ? { ok: true, messages: [] }
+        : {
+            ok: true,
+            messages: [{
+              ts: "100.000001",
+              text: "old root",
+              reply_count: 1,
+              latest_reply: "250.000001",
+            }],
+          },
+      replies: async ({ ts }) => {
+        replyRoots.push(ts);
+        return {
+          ok: true,
+          messages: [
+            { ts, text: "old root" },
+            { ts: "250.000001", thread_ts: ts, text: "missed reply" },
+          ],
+        };
+      },
+    });
+    await new SlackArchiveSync({ client, store }).sync();
+    expect(replyRoots).toEqual(["100.000001"]);
+    expect(store.messages.get("C1:250.000001")?.text).toBe("missed reply");
+    expect(store.checkpoints.get("C1")).toBe("200.000001");
+  });
+
+  it("skips non-public conversations unless explicitly approved", async () => {
+    const store = new MemoryStore();
+    const historyChannels: string[] = [];
+    const client = fakeClient({
+      list: async () => ({
+        ok: true,
+        channels: [
+          { id: "C1", name: "public", is_channel: true },
+          { id: "G1", name: "private", is_private: true },
+          { id: "D1", is_im: true },
+        ],
+      }),
+      history: async ({ channel }) => {
+        historyChannels.push(channel);
+        return { ok: true, messages: [] };
+      },
+    });
+    await new SlackArchiveSync({ client, store }).sync();
+    expect(historyChannels).toEqual(["C1"]);
   });
 });
 

@@ -106,6 +106,12 @@ async function runImport(options: ImportCliOptions): Promise<void> {
       store: store ?? noWriteStore,
       dryRun: !options.apply,
       batchSize: options.batchSize,
+      approvedChannelIds: new Set(
+        (process.env.SLACK_ARCHIVE_APPROVED_CHANNEL_IDS ?? "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
     });
     console.log(JSON.stringify({
       ...report,

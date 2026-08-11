@@ -145,6 +145,28 @@ describe("importSlackArchive", () => {
     );
     expect(store.checkpoints.size).toBe(0);
   });
+
+  it("imports non-public conversations only when explicitly approved", async () => {
+    const reader = new FakeReader({
+      "channels.json": [{ id: "C1", name: "public" }],
+      "groups.json": [{ id: "G1", name: "private" }],
+      "public/2026-08-04.json": [{ type: "message", ts: "1.000001", text: "public" }],
+      "private/2026-08-04.json": [{ type: "message", ts: "2.000001", text: "private" }],
+      "unknown/2026-08-04.json": [{ type: "message", ts: "3.000001", text: "unknown" }],
+    });
+    const denied = new ImportStore();
+    await importSlackArchive({ reader, store: denied });
+    expect([...denied.messages.values()].map((message) => message.text)).toEqual(["public"]);
+
+    const approved = new ImportStore();
+    await importSlackArchive({
+      reader,
+      store: approved,
+      approvedChannelIds: new Set(["G1", "unknown"]),
+    });
+    expect([...approved.messages.values()].map((message) => message.text))
+      .toEqual(["public", "private", "unknown"]);
+  });
 });
 
 function simpleReader(): SlackExportReader {

@@ -28,7 +28,8 @@ const SIGNED_PUBLIC_CHANNEL: SlackArchiveToolAuth = {
     threadId: "1700000000.000001",
     signed: true,
   },
-  isAllowedChannel: async (channelId) => channelId === "C_PUBLIC",
+  isAllowedChannel: async (channelId) =>
+    channelId === "C_PUBLIC" || channelId.startsWith("C_"),
   getSession: async () => ({ channel: "C_PUBLIC" }),
 };
 
@@ -249,5 +250,31 @@ describe("Slack archive MCP authorization", () => {
       getSession: async () => ({ channel: "G_PRIVATE" }),
       isAllowedChannel: async () => false,
     })).toContain("denied");
+  });
+
+  test("does not let a public-channel turn read an unapproved private target", async () => {
+    store.upsertMessage({
+      channelId: "G_PRIVATE",
+      ts: "1700000300.000001",
+      actorId: "U_SECRET",
+      actorKind: "human",
+      text: "private acquisition plan",
+    });
+    const captured = captureTools();
+    registerSlackArchiveTools(captured.server, {
+      ...SIGNED_PUBLIC_CHANNEL,
+      isAllowedChannel: async (channelId) =>
+        channelId === "C_PUBLIC" || channelId === "C_ENG" || channelId === "C_SALES",
+    });
+    const search = captured.tools.get("slack_archive_search")!;
+    const broad = (await search({ query: "plan" })).content[0]!.text;
+    const targeted = (await search({ query: "plan", channel: "G_PRIVATE" })).content[0]!.text;
+    const thread = (await captured.tools.get("slack_archive_thread")!({
+      channel: "G_PRIVATE",
+      thread_ts: "1700000300.000001",
+    })).content[0]!.text;
+    expect(broad).not.toContain("private acquisition plan");
+    expect(targeted).not.toContain("private acquisition plan");
+    expect(thread).toContain("denied");
   });
 });

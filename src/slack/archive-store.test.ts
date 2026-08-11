@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlackArchiveStore } from "./archive-store.ts";
 import type { SlackArchiveMessageInput } from "./archive-types.ts";
+import type { SlackArchiveVectorSearcher } from "./archive-vector-index.ts";
 
 function message(overrides: Partial<SlackArchiveMessageInput> = {}): SlackArchiveMessageInput {
   return {
@@ -114,6 +115,87 @@ describe("SlackArchiveStore", () => {
     expect(store.getCheckpointRecord("C1")?.metadata).toEqual({ page: 2 });
     store.clearCheckpoint("C1");
     expect(store.getCheckpoint("C1")).toBeNull();
+  });
+
+  test("rejects a persisted-index hit after the SQLite embedding was invalidated", () => {
+    const staleIndex: SlackArchiveVectorSearcher = {
+      size: 1,
+      search: () => [{ rowid: 1, cosine: 1 }],
+    };
+    const indexedStore = new SlackArchiveStore(":memory:", {
+      vectorDimensions: 2,
+      vectorIndex: staleIndex,
+    });
+    try {
+      indexedStore.upsertMessage(message());
+      indexedStore.upsertMessage(message({
+        text: "edited body",
+        embedding: null,
+        observedAt: 101,
+      }));
+      expect(indexedStore.search({ queryVector: new Float32Array([1, 0]) })).toEqual([]);
+    } finally {
+      indexedStore.close();
+    }
+  });
+
+  test("rejects a persisted-index hit whose distance disagrees with a re-embedded edit", () => {
+    const staleIndex: SlackArchiveVectorSearcher = {
+      size: 1,
+      search: () => [{ rowid: 1, cosine: 1 }],
+    };
+    const indexedStore = new SlackArchiveStore(":memory:", {
+      vectorDimensions: 2,
+      vectorIndex: staleIndex,
+    });
+    try {
+      indexedStore.upsertMessage(message());
+      indexedStore.upsertMessage(message({
+        text: "edited and re-embedded body",
+        embedding: new Float32Array([0, 1]),
+        observedAt: 101,
+      }));
+      expect(indexedStore.search({ queryVector: new Float32Array([1, 0]) })).toEqual([]);
+    } finally {
+      indexedStore.close();
+    }
+  });
+
+  test("adaptively expands ANN candidates until a filtered channel has enough hits", () => {
+    const requests: number[] = [];
+    const adaptiveIndex: SlackArchiveVectorSearcher = {
+      size: 120,
+      search: (_query, limit) => {
+        requests.push(limit);
+        return Array.from({ length: limit }, (_, index) => ({
+          rowid: index + 1,
+          cosine: 1,
+        }));
+      },
+    };
+    const indexedStore = new SlackArchiveStore(":memory:", {
+      vectorDimensions: 2,
+      vectorIndex: adaptiveIndex,
+    });
+    try {
+      for (let index = 0; index < 120; index += 1) {
+        indexedStore.upsertMessage(message({
+          channelId: index === 119 ? "C_ALLOWED" : "C_OTHER",
+          ts: `${1700000000 + index}.000100`,
+          threadTs: `${1700000000 + index}.000100`,
+          observedAt: index + 1,
+        }));
+      }
+      const hits = indexedStore.search({
+        queryVector: new Float32Array([1, 0]),
+        filters: { channelId: "C_ALLOWED" },
+        limit: 1,
+      });
+      expect(requests).toEqual([100, 120]);
+      expect(hits.map((hit) => hit.message.channelId)).toEqual(["C_ALLOWED"]);
+    } finally {
+      indexedStore.close();
+    }
   });
 });
 

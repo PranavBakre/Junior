@@ -138,6 +138,7 @@ describe("runPersonaConsolidationSweep", () => {
             kind: "person",
             entity_ref: "pranav:person",
             body: "Updated.",
+            evidence: ["m0"],
           }],
         }),
       });
@@ -147,6 +148,45 @@ describe("runPersonaConsolidationSweep", () => {
         slack_user_id: "U99999",
         body: "Updated.",
       });
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a persona update that cites no evidence in the review window", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-persona-evidence-"));
+    const store = new SqliteMemoryStore(join(dir, "memory.db"));
+    const profileStore = new ProfileStore({ root: join(dir, "profiles") });
+    try {
+      const records = ["one", "two", "three"].map((body, index) => ({
+        id: `e${index}`,
+        kind: "slack_message" as const,
+        actorId: "U77777",
+        actorKind: "human" as const,
+        body,
+        createdAt: index + 1,
+      }));
+      for (const record of records) await store.appendSourceRecord(record);
+      const reports = await runPersonaConsolidationSweep({
+        store,
+        profileStore,
+        resolvePeople: async () => new Map([["U77777", "Evidence Test"]]),
+        pendingRecords: [records[2]!],
+        invoke: async () => ({
+          episodes: [], claims: [], profiles: [{
+            kind: "person",
+            entity_ref: "evidence-test:person",
+            body: "Ungrounded rewrite.",
+            evidence: ["not-in-window"],
+          }],
+        }),
+      });
+      expect(reports[0]).toMatchObject({
+        profileUpdated: false,
+        skippedReason: "profile cited no valid evidence",
+      });
+      expect(await profileStore.fetchByEntityRef("evidence-test:person")).toBeNull();
     } finally {
       store.close();
       rmSync(dir, { recursive: true, force: true });

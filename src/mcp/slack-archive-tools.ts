@@ -48,6 +48,24 @@ async function isAuthorized(auth: SlackArchiveToolAuth): Promise<boolean> {
   return session ? auth.isAllowedChannel(session.channel) : false;
 }
 
+async function allowedArchiveChannels(
+  auth: SlackArchiveToolAuth,
+  requestedChannel?: string,
+): Promise<string[]> {
+  if (!archiveStore) return [];
+  if (requestedChannel) {
+    return await auth.isAllowedChannel(requestedChannel) ? [requestedChannel] : [];
+  }
+  const channelIds = archiveStore.listChannelIds();
+  const decisions = await Promise.all(
+    channelIds.map(async (channelId) => ({
+      channelId,
+      allowed: await auth.isAllowedChannel(channelId),
+    })),
+  );
+  return decisions.filter((decision) => decision.allowed).map((decision) => decision.channelId);
+}
+
 function text(value: string) {
   return { content: [{ type: "text" as const, text: value }] };
 }
@@ -154,6 +172,8 @@ export function registerSlackArchiveTools(
       if (args.since_ms !== undefined && args.until_ms !== undefined && args.since_ms > args.until_ms) {
         return text("Invalid time range: since_ms must be less than or equal to until_ms.");
       }
+      const allowedChannelIds = await allowedArchiveChannels(auth, args.channel);
+      if (allowedChannelIds.length === 0) return text("No archived Slack messages matched.");
       const embedder = dependencies.getEmbedder
         ? await dependencies.getEmbedder()
         : null;
@@ -164,7 +184,7 @@ export function registerSlackArchiveTools(
         queryText: args.query,
         queryVector,
         filters: {
-          channelId: args.channel,
+          channelIds: allowedChannelIds,
           actorId: args.actor,
           actorKind: args.actor_kind,
           sinceMs: args.since_ms,
@@ -196,6 +216,7 @@ export function registerSlackArchiveTools(
     async ({ channel, thread_ts, limit }) => {
       if (!archiveStore) return text(NOT_ENABLED);
       if (!(await isAuthorized(auth))) return text(NOT_AUTHORIZED);
+      if (!(await auth.isAllowedChannel(channel))) return text(NOT_AUTHORIZED);
       const messages = archiveStore.getThread(channel, thread_ts, { limit });
       return text(boundedArchiveResponse(
         messages.map(formatMessage),

@@ -22,6 +22,9 @@ export interface ArchiveSyncStore {
   setCheckpoint(channelId: string, ts: string): void | Promise<void>;
   upsertMessage(message: SlackArchiveMessageInput): unknown | Promise<unknown>;
   upsertConversation?(conversation: SlackArchiveConversation): void | Promise<void>;
+  getThreadLatestTimestamps?(
+    channelId: string,
+  ): Map<string, string> | Promise<Map<string, string>>;
 }
 
 interface SlackCursorMetadata {
@@ -105,6 +108,8 @@ export interface SlackArchiveSyncOptions {
   store: ArchiveSyncStore;
   embedder?: EmbeddingProvider;
   pageSize?: number;
+  /** Non-public conversations that the operator explicitly approved. */
+  approvedChannelIds?: ReadonlySet<string>;
 }
 
 export interface SlackArchiveSyncResult {
@@ -141,11 +146,17 @@ export class SlackArchiveSync {
       assertSlackOk(result, "conversations.list");
       for (const channel of result.channels ?? []) {
         if (!channel.id) continue;
-        yield {
+        const conversation: SlackArchiveConversation = {
           id: channel.id,
           name: channel.name ?? null,
           kind: conversationKind(channel),
         };
+        if (
+          conversation.kind === "public_channel" ||
+          this.options.approvedChannelIds?.has(conversation.id) === true
+        ) {
+          yield conversation;
+        }
       }
       cursor = nextCursor(result);
     } while (cursor);
@@ -155,9 +166,13 @@ export class SlackArchiveSync {
     await this.options.store.upsertConversation?.(conversation);
     const checkpoint = await this.options.store.getCheckpoint(conversation.id);
     let cursor: string | undefined;
-    let newestTs = checkpoint ?? undefined;
+    // This watermark belongs to conversations.history only. Reply timestamps
+    // are from a different cursor domain and must never move `oldest` past a
+    // top-level message that history has not returned yet.
+    let newestHistoryTs = checkpoint ?? undefined;
     let stored = 0;
     const byTimestamp = new Map<string, SlackMessage>();
+    const repairedRoots = new Set<string>();
 
     // `oldest` is deliberately inclusive. A live event can land immediately
     // before a backfill page; replaying that boundary through an upsert closes
@@ -174,19 +189,49 @@ export class SlackArchiveSync {
       for (const message of result.messages ?? []) {
         if (!message.ts) continue;
         byTimestamp.set(message.ts, message);
-        newestTs = maxSlackTs(newestTs, message.ts);
+        newestHistoryTs = maxSlackTs(newestHistoryTs, message.ts);
 
         if ((message.reply_count ?? 0) > 0 || message.latest_reply) {
+          repairedRoots.add(message.ts);
           for (const reply of await this.fetchReplies(conversation.id, message.ts)) {
             if (!reply.ts) continue;
             byTimestamp.set(reply.ts, reply);
-            newestTs = maxSlackTs(newestTs, reply.ts);
           }
         }
       }
 
       cursor = nextCursor(result);
     } while (cursor);
+
+    // `conversations.history(oldest=...)` excludes old roots even when they
+    // receive a new reply. On incremental runs, page through root metadata once
+    // without `oldest`, but call conversations.replies only when Slack's
+    // latest_reply is newer than the locally archived thread. This repairs the
+    // first or a later missed reply without an N+1 request for every old root.
+    if (checkpoint && this.options.store.getThreadLatestTimestamps) {
+      const localLatest = await this.options.store.getThreadLatestTimestamps(conversation.id);
+      let repairCursor: string | undefined;
+      do {
+        const result = await this.options.client.conversations.history({
+          channel: conversation.id,
+          limit: this.pageSize,
+          ...(repairCursor ? { cursor: repairCursor } : {}),
+        });
+        assertSlackOk(result, "conversations.history(reply repair)");
+        for (const root of result.messages ?? []) {
+          if (!root.ts || repairedRoots.has(root.ts)) continue;
+          const remoteLatest = root.latest_reply;
+          if (!remoteLatest && (root.reply_count ?? 0) === 0) continue;
+          const archivedLatest = localLatest.get(root.ts) ?? root.ts;
+          if (remoteLatest && compareSlackTs(remoteLatest, archivedLatest) <= 0) continue;
+          repairedRoots.add(root.ts);
+          for (const reply of await this.fetchReplies(conversation.id, root.ts)) {
+            if (reply.ts) byTimestamp.set(reply.ts, reply);
+          }
+        }
+        repairCursor = nextCursor(result);
+      } while (repairCursor);
+    }
 
     // Slack history pages arrive newest-first. Canonicalize and write only
     // after every page is collected so the store observes strict chronology
@@ -206,8 +251,8 @@ export class SlackArchiveSync {
 
     // Advancing the checkpoint is the commit marker for the whole channel.
     // Any history, replies, embedding, or store failure above leaves it alone.
-    if (newestTs !== undefined && newestTs !== checkpoint) {
-      await this.options.store.setCheckpoint(conversation.id, newestTs);
+    if (newestHistoryTs !== undefined && newestHistoryTs !== checkpoint) {
+      await this.options.store.setCheckpoint(conversation.id, newestHistoryTs);
     }
     return stored;
   }

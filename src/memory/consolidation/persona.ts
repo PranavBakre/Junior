@@ -125,12 +125,24 @@ export async function runPersonaConsolidationSweep(
       }
 
       const validEvidence = new Set(records.map((record) => record.id));
+      const groundedEvidence = (draft.evidence ?? []).filter((id) => validEvidence.has(id));
+      if (groundedEvidence.length === 0) {
+        reports.push({
+          actorId,
+          displayName,
+          entityRef,
+          recordsReviewed: records.length,
+          profileUpdated: false,
+          skippedReason: "profile cited no valid evidence",
+        });
+        continue;
+      }
       const profile: ProfileInput = {
         ...draft,
         kind: "person",
         entity_ref: entityRef,
         slack_user_id: actorId,
-        evidence: (draft.evidence ?? []).filter((id) => validEvidence.has(id)),
+        evidence: groundedEvidence,
       };
       await args.profileStore.upsertProfile(profile);
       reports.push({
