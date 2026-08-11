@@ -31,6 +31,7 @@ describe("trusted agent catalog", () => {
       [
         "architect",
         "build",
+        "db-executioner",
         "default",
         "frontend",
         "lead",

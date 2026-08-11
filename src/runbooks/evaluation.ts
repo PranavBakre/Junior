@@ -30,9 +30,10 @@ export function runEvaluationSuite(
   const results: EvaluationResult[] = [];
 
   for (const fixture of fixtures) {
-    const match = matchRunbook(fixture.request, {
-      minConfidence: 0.4,
-    });
+    // Evaluations must exercise the production routing threshold. A looser
+    // test-only threshold can report healthy routing that the live selector
+    // will reject.
+    const match = matchRunbook(fixture.request);
 
     const actualMatch = match !== null;
     const matchedRunbook = match?.runbook.name ?? null;

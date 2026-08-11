@@ -1,5 +1,4 @@
 import { resolveAgentManifest } from "../agents/registry.ts";
-import { isPersistentAgent } from "../support/agents.ts";
 import { isCapabilitySubset, isValidCapabilityBundle } from "./capabilities.ts";
 import {
   HIGH_RISK_KINDS,
@@ -53,12 +52,15 @@ export function validateRunbook(
     errors.push({ field: "description", message: "description is required" });
   }
 
+  const ownerManifest = def.ownerAgent
+    ? resolveAgentManifest(def.ownerAgent)
+    : null;
   if (!def.ownerAgent) {
     errors.push({ field: "ownerAgent", message: "ownerAgent is required" });
-  } else if (!resolveAgentManifest(def.ownerAgent) && !isPersistentAgent(def.ownerAgent)) {
+  } else if (!ownerManifest) {
     errors.push({
       field: "ownerAgent",
-      message: `ownerAgent "${def.ownerAgent}" not found in trusted catalog or identity registry`,
+      message: `ownerAgent "${def.ownerAgent}" has no trusted operational manifest`,
     });
   }
 
@@ -125,7 +127,7 @@ export function validateRunbook(
   }
 
   const validCaps = def.capabilities.filter(isValidCapabilityBundle);
-  if (validCaps.length > 0 && def.ownerAgent) {
+  if (validCaps.length > 0 && def.ownerAgent && ownerManifest) {
     const subset = isCapabilitySubset(validCaps, def.ownerAgent);
     if (!subset.ok) {
       for (const v of subset.violations) {

@@ -2446,6 +2446,7 @@ export function startMcpServer(
   manager?: SessionManager,
   actionStore?: SlackActionStore,
   pipeline?: PipelineToolRuntime,
+  runbookCatalog?: CatalogStore,
   archiveApprovedChannelIds: string[] = [],
 ): void {
   slack = new WebClient(botToken);
@@ -2453,6 +2454,7 @@ export function startMcpServer(
   worktreeManager = wtManager;
   sessionManager = manager;
   slackActionStore = actionStore;
+  catalogStore = runbookCatalog;
   slackArchiveApprovedChannelIds = new Set(archiveApprovedChannelIds);
   if (pipeline) {
     pipelineRuntime = pipeline;

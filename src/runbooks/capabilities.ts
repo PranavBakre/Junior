@@ -55,15 +55,12 @@ export function isCapabilitySubset(
 ): { ok: boolean; violations: string[] } {
   const manifest = resolveAgentManifest(ownerAgent);
   if (!manifest) {
-    // Overlay-only agents lack a catalog entry. Validate bundle names only;
-    // capability enforcement defers to runtime dispatch policy.
-    const violations: string[] = [];
-    for (const name of requested) {
-      if (!CAPABILITY_BUNDLES[name]) {
-        violations.push(`unknown capability bundle "${name}"`);
-      }
-    }
-    return { ok: violations.length === 0, violations };
+    return {
+      ok: false,
+      violations: [
+        `owner agent "${ownerAgent}" has no trusted operational manifest`,
+      ],
+    };
   }
 
   const agentCaps = new Set<string>(manifest.capabilities);
