@@ -11,7 +11,7 @@ operational.lifecycle: persistent
 operational.role: orchestrator
 operational.capabilities: repo-read, repo-write, worktree-mutate, pipeline-artifact-write, pipeline-run-start, dispatch, orchestrate, github-review-read
 operational.mutationPolicy: workspace
-operational.mayDelegateTo: pm, architect, build, frontend, review, reproducer, onboard-member, human
+operational.mayDelegateTo: pm, architect, build, frontend, review, reproducer, onboard-member, db-executioner, human
 operational.mayReturnTo:
 operational.maxParallel: 4
 common: core,orchestrator-dispatch,pipeline-start,pipeline-outcome
