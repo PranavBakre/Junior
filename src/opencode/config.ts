@@ -51,15 +51,18 @@ export function buildOpenCodeConfig(
   if (!primaryAgentName) {
     throw new Error("OpenCode agentName is required");
   }
+  const runtimePermission = denyProviderNativeFanout(
+    options.permission ?? "allow",
+  );
 
   const config: OpenCodeGeneratedConfig = {
     $schema: "https://opencode.ai/config.json",
-    permission: options.permission ?? "allow",
+    permission: runtimePermission,
     agent: {
       [primaryAgentName]: {
         description: options.description ?? "Junior Slack runner",
         mode: "primary",
-        permission: toAgentPermissionConfig(options.permission ?? "allow"),
+        permission: toAgentPermissionConfig(runtimePermission),
         prompt: options.agentPrompt,
       },
     },
@@ -81,7 +84,9 @@ export function buildOpenCodeConfig(
       description: subagent.description ?? `Junior support subagent: ${name}`,
       mode: "subagent",
       permission: toAgentPermissionConfig(
-        subagent.permission ?? options.permission ?? "allow",
+        denyProviderNativeFanout(
+          subagent.permission ?? options.permission ?? "allow",
+        ),
       ),
       prompt: subagent.prompt,
     };
@@ -111,4 +116,12 @@ function toAgentPermissionConfig(
     return { "*": permission };
   }
   return permission;
+}
+
+function denyProviderNativeFanout(
+  permission: OpenCodePermissionConfig,
+): OpenCodeAgentPermissionConfig {
+  return typeof permission === "string"
+    ? { "*": permission, task: "deny" }
+    : { ...permission, task: "deny" };
 }

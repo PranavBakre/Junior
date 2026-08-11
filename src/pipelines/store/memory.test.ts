@@ -3,6 +3,7 @@ import { fakeClock } from "../../time/clock.ts";
 import { InMemoryPipelineStore } from "./memory.ts";
 import {
   makeAssignmentCreate,
+  makeBugRun,
   makeDefaultPromotionInput,
   makeDefaultRun,
   makeProductRun,
@@ -26,6 +27,19 @@ function baseOutcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
 }
 
 describe("InMemoryPipelineStore", () => {
+  it("round-trips a trusted skill capability envelope", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(2_000));
+    await store.createRun(makeProductRun());
+    await store.createAssignment(makeAssignmentCreate({
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+    }));
+    expect(await store.getAssignment("asg-1")).toMatchObject({
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+    });
+  });
+
   it("promotes a default run in place with source outcome, child, and dispatch", async () => {
     const store = new InMemoryPipelineStore(fakeClock(2_000));
     await store.createRun(makeDefaultRun());
@@ -278,6 +292,24 @@ describe("InMemoryPipelineStore", () => {
     await store.createRun(run);
     expect((await store.getRun("run-1"))?.phase).toBe("building");
     expect((await store.getRunByThread("T1"))?.id).toBe("run-1");
+  });
+
+  it("lists every run newest-first and filters by pipeline kind", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1000));
+    await store.createRun(makeProductRun({ updatedAt: 1_000 }));
+    await store.createRun(makeBugRun({ updatedAt: 2_000 }));
+    await store.createRun(makeDefaultRun({ updatedAt: 3_000 }));
+
+    expect((await store.listRuns()).map((run) => run.kind)).toEqual([
+      "default",
+      "bug",
+      "product",
+    ]);
+    expect((await store.listRuns({ kind: "bug" })).map((run) => run.id)).toEqual([
+      "bug-run-1",
+    ]);
+    expect(await store.listRuns({ limit: 2 })).toHaveLength(2);
+    expect(await store.countOpenRuns()).toBe(3);
   });
 
   it("is idempotent on assignment idempotency keys", async () => {
@@ -591,6 +623,7 @@ describe("InMemoryPipelineStore", () => {
         reason: "ready for review",
         nextAssignment: {
           parentAssignmentId: "asg-1",
+          sourceSlackUserId: null,
           targetAgent: "review",
           objective: "review PR",
           contextRefs: [],

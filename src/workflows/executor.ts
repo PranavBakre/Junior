@@ -26,6 +26,7 @@ import {
   type PeopleResolver,
 } from "../memory/consolidation/index.ts";
 import { createRunnerInvoke } from "../memory/consolidation/runner.ts";
+import { formatDedupSweep, runDedupSweep } from "../memory/dedup-sweep.ts";
 import { createProfileStore } from "../memory/profiles/factory.ts";
 import type { ProfileStore } from "../memory/profiles/store.ts";
 import type { EmbeddingProvider } from "../memory/embedding/types.ts";
@@ -117,6 +118,11 @@ export class WorkflowExecutor {
         // run a prompt still written for the retired deterministic consolidate().
         // The sweep's own summary is the workflow artifact.
         summary = await this.runMemoryConsolidation();
+      } else if (request.definition.name === "memory-dedup-sweep" && this.memoryStore) {
+        // Same reasoning as the consolidation branch: the sweep is the work, and
+        // it is fully deterministic — an agent pass on top would only paraphrase
+        // a report it cannot improve.
+        summary = await this.runMemoryDedupSweep();
       } else if (request.definition.runner) {
         summary = await this.runWithRunner(
           request.definition,
@@ -391,6 +397,19 @@ export class WorkflowExecutor {
       resolvePeople,
     });
     return summarizeConsolidationSweep(reports);
+  }
+
+  private async runMemoryDedupSweep(): Promise<string> {
+    if (!this.memoryStore) throw new Error("memory store not configured");
+    // Deterministic cosine clustering — no LLM, so it runs natively rather than
+    // through a runner. REPORT ONLY: a merged-away claim is recoverable only
+    // from provenance, so committing stays an explicit operator action
+    // (`bun run src/memory/cli.ts dedup-sweep --apply`).
+    const report = await runDedupSweep({
+      store: this.memoryStore,
+      threshold: this.config.memory.dedupThreshold,
+    });
+    return formatDedupSweep(report);
   }
 
   private async postSlack(

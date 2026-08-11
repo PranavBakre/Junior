@@ -106,6 +106,7 @@ describe("SqliteSessionStore", () => {
       dispatchKey: "dispatch-top",
       outcomeCountAtDispatch: 2,
       retryCount: 1,
+      pendingUserResponse: "top-level response awaiting settlement",
     };
     session.agentSessions.build = makeAgent("build", {
       activePipelineInvocation: {
@@ -114,6 +115,7 @@ describe("SqliteSessionStore", () => {
         dispatchKey: "dispatch-agent",
         outcomeCountAtDispatch: 4,
         retryCount: 2,
+        pendingUserResponse: null,
       },
     });
 

@@ -261,7 +261,15 @@ export type Assignment = {
   runId: string;
   parentAssignmentId: string | null;
   sourceAgent: string | "human" | "system";
+  sourceSlackUserId: string | null;
   targetAgent: string;
+  /** Trusted skill registry name. Null for ordinary agent assignments. */
+  skillRef: string | null;
+  /**
+   * Immutable capability envelope compiled by Junior at dispatch. Skill
+   * frontmatter is never authoritative for tools or MCP access.
+   */
+  capabilityRefs: import("../agents/manifest.ts").AgentCapability[];
   status: AssignmentStatus;
   objective: string;
   contextRefs: string[];
@@ -283,8 +291,16 @@ export type Assignment = {
 /** Input shape when creating an assignment (store fills timestamps / defaults). */
 export type AssignmentCreate = Omit<
   Assignment,
-  "status" | "leaseOwner" | "leaseExpiresAt" | "createdAt" | "updatedAt"
+  | "skillRef"
+  | "capabilityRefs"
+  | "status"
+  | "leaseOwner"
+  | "leaseExpiresAt"
+  | "createdAt"
+  | "updatedAt"
 > & {
+  skillRef?: string | null;
+  capabilityRefs?: import("../agents/manifest.ts").AgentCapability[];
   status?: AssignmentStatus;
   leaseOwner?: string | null;
   leaseExpiresAt?: number | null;
@@ -339,6 +355,11 @@ export type AgentOutcome = {
    */
   wait?: {
     conditionName: string;
+    /**
+     * Optional scheduled self-wake before the final deadline. Use this for
+     * polling/monitoring turns; omit it for external-condition waits.
+     */
+    wakeAt?: number;
     deadlineAt: number;
   };
   nextAssignment?: Omit<
@@ -469,6 +490,11 @@ export type RecordOutcomeInput = {
   outcome: AgentOutcome;
   /** Proposed phase advance. Omitted means keep current phase. */
   toPhase?: PipelinePhase | string;
+  /**
+   * Effective repository refs to bind to the run in the same transaction as
+   * the accepted outcome/next assignment.
+   */
+  repoRefs?: string[];
   actorType: "agent" | "human" | "system";
   actorId: string;
   /** Optional event idempotency key for duplicate detection. */

@@ -15,6 +15,10 @@ data/
 *.db-wal
 *.db-shm
 
+# Runtime migration/export artifacts can contain authoritative memory text and
+# large database backups. They must never be staged into the public repository.
+/work/
+
 # Derived entity profiles — character sketches of real people (person/repo/situation),
 # written at consolidation time. Runtime data, never tracked. (Anchored to repo root so
 # it does NOT match the src/memory/profiles/ source code.)

@@ -10,6 +10,8 @@ import {
 import { createCodexAppServerEventMapper } from "./parser.ts";
 import { mapCodexRunPolicy } from "./policy.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
+import { skillInvocationPrompt } from "../skills/runtime.ts";
 
 interface JsonRpcResponse {
   id: number;
@@ -46,9 +48,19 @@ export function spawnCodexAppServer(
     cwd: runtime.cwd,
   });
   const mcp = buildCodexMcpConfig(config, session, policy.mcpAllowed);
+  const activeSkill = session.activeSkill
+    ? resolveTrustedSkill(session.activeSkill.name)
+    : null;
+  if (
+    session.activeSkill &&
+    (!activeSkill || activeSkill.path !== session.activeSkill.path)
+  ) {
+    throw new Error("active skill does not match Junior's trusted registry");
+  }
   const codexHome = prepareCodexHome({
     isolatedHomePath: config.codex.isolatedHomePath ?? resolve(process.cwd(), "data/codex-home"),
     model,
+    reasoningEffort: config.codex.reasoningEffort ?? "medium",
     approvalPolicy: config.codex.askForApproval,
     sandbox: config.codex.sandbox,
     mcp,
@@ -109,6 +121,10 @@ export function spawnCodexAppServer(
     });
   };
 
+  const notify = (method: string, params: Record<string, unknown> = {}) => {
+    proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+  };
+
   const respond = (id: number, result: Record<string, unknown>) => {
     proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
   };
@@ -164,6 +180,7 @@ export function spawnCodexAppServer(
           optOutNotificationMethods: [],
         },
       });
+      notify("initialized");
 
       if (session.sessionId) {
         try {
@@ -201,7 +218,15 @@ export function spawnCodexAppServer(
 
       const turn = record(await send("turn/start", {
         threadId: activeThreadId,
-        input: inputItems(prompt, imagePaths),
+        input: inputItems(
+          activeSkill
+            ? skillInvocationPrompt("codex", activeSkill, prompt)
+            : prompt,
+          imagePaths,
+          activeSkill
+            ? { name: activeSkill.name, path: activeSkill.path }
+            : null,
+        ),
         approvalPolicy: policy.approvalPolicy,
         sandboxPolicy: policy.sandboxPolicy,
       }));
@@ -288,21 +313,32 @@ function codexCompatibleModel(model: string | null): string | null {
   return model;
 }
 
-function baseInstructions(): string {
+function juniorBaselineInstructions(): string {
   return [
     "You are Junior running inside Codex as a Slack-controlled coding agent.",
     "Preserve Junior's Slack session semantics and respond with concise, useful final text.",
-    "Use provider-native subagents only when the task or active Junior agent prompt explicitly asks for delegation or parallel agent work.",
+    "Do not use provider-native subagents. Junior owns fan-out through its durable assignment graph.",
   ].join("\n");
 }
 
 function developerInstructions(session: ThreadSession): string {
-  return session.systemPrompt ?? "Follow the active Junior agent instructions for this Slack thread.";
+  return [
+    juniorBaselineInstructions(),
+    session.systemPrompt ??
+      "Follow the active Junior agent instructions for this Slack thread.",
+  ].join("\n\n");
 }
 
-function inputItems(prompt: string, imagePaths: string[]): Array<Record<string, unknown>> {
+function inputItems(
+  prompt: string,
+  imagePaths: string[],
+  skill: { name: string; path: string } | null = null,
+): Array<Record<string, unknown>> {
   return [
     { type: "text", text: prompt, text_elements: [] },
+    ...(skill
+      ? [{ type: "skill", name: skill.name, path: skill.path }]
+      : []),
     ...imagePaths.map((path) => ({ type: "localImage", path })),
   ];
 }
@@ -319,7 +355,9 @@ function threadStartParams(options: {
     approvalPolicy: options.policy.approvalPolicy,
     sandbox: options.policy.sandbox,
     sandboxPolicy: options.policy.sandboxPolicy,
-    baseInstructions: baseInstructions(),
+    // Omit baseInstructions so Codex retains its native coding-agent operating
+    // prompt. Junior is an additive developer layer, not a replacement for
+    // Codex's tool, persistence, safety, and editing contract.
     developerInstructions: developerInstructions(options.session),
     ephemeral: false,
     experimentalRawEvents: false,

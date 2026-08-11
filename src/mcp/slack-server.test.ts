@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +9,7 @@ import {
   addMemory,
   dispatchAgentDirectivesFromSlackPost,
   recallMemory,
+  registerTools,
   searchAgentDefinitions,
   sendSlackDirectMessage,
   type MemoryToolDeps,
@@ -13,6 +17,52 @@ import {
 import { createMemoryStore } from "../memory/factory.ts";
 import { HashingEmbeddingProvider } from "../memory/embedding/hashing.ts";
 import { createProfileStore } from "../memory/profiles/index.ts";
+
+describe("MCP Slack tool catalogue", () => {
+  it("serializes every registered tool through tools/list", async () => {
+    const server = new McpServer({ name: "slack-bot-test", version: "0.1.0" });
+    registerTools(server);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "slack-bot-test-client", version: "0.1.0" });
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const { tools } = await client.listTools();
+      const names = tools.map((tool) => tool.name);
+
+      expect(names).toContain("pipeline_report_outcome");
+      expect(names).toContain("runbook_select");
+      expect(names).toContain("promotion_record");
+      const memoryRecall = tools.find((tool) => tool.name === "memory_recall");
+      expect(memoryRecall?.inputSchema).toMatchObject({
+        properties: {
+          fact_kinds: { type: "array" },
+        },
+      });
+      const dispatch = tools.find((tool) => tool.name === "agent_dispatch");
+      expect(dispatch?.inputSchema).toMatchObject({
+        properties: {
+          repo_refs: { type: "array" },
+        },
+      });
+      const skillDispatch = tools.find((tool) => tool.name === "skill_dispatch");
+      expect(skillDispatch?.inputSchema).toMatchObject({
+        required: expect.arrayContaining([
+          "skill_name",
+          "objective",
+          "reason",
+          "idempotency_key",
+        ]),
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
 
 /**
  * Build memory-tool deps backed by REAL infrastructure (in-memory SQLite store,
@@ -67,6 +117,38 @@ describe("MCP memory v3 tools", () => {
     }
   });
 
+  it("memory_add merges a reworded claim instead of storing a near-duplicate", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      // memory_add derives its id from the text, so a one-word edit used to
+      // produce a different id and a brand-new row: exact-match dedup, not
+      // semantic. The store's write guard is what closes that.
+      const first = await addMemory(
+        {
+          text: "`command <tool>` is the escape hatch when a wrapper alias or hook is rewriting your invocation",
+          kind: "lesson",
+        },
+        deps,
+      );
+      expect(first.action).toBe("inserted");
+
+      const second = await addMemory(
+        {
+          text: "`command <tool>` is the escape hatch when a wrapper alias or hook is silently rewriting your invocation",
+          kind: "lesson",
+        },
+        deps,
+      );
+
+      expect(second.action).toBe("merged");
+      expect(second.mergedInto).toBe(first.id);
+      // One row, not two: recall gets one distinct idea back, not a paraphrase pair.
+      expect(await deps.store.exportClaimVectors()).toHaveLength(1);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("memory_recall returns the added claim for a related query", async () => {
     const { deps, cleanup } = makeMemoryDeps();
     try {
@@ -76,12 +158,104 @@ describe("MCP memory v3 tools", () => {
       );
 
       const result = await recallMemory(
-        { query: "where do I resolve merge conflicts target branch", limit: 5 },
+        {
+          query: "where do I resolve merge conflicts target branch",
+          limit: 5,
+          minCosine: 0,
+        },
         deps,
       );
 
       expect(result.claims.some((c) => c.id === id)).toBe(true);
       expect(result.profiles).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("memory_recall preserves legacy OR tag filtering", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const relevant = await addMemory(
+        {
+          text: "Reuse the event registration pricing helper for summary-card tooltips",
+          tags: ["gx-client-next", "event-registration"],
+        },
+        deps,
+      );
+      await addMemory(
+        {
+          text: "Event payout invoices join through payment identifiers",
+          tags: ["payouts", "mongodb"],
+        },
+        deps,
+      );
+
+      const result = await recallMemory(
+        {
+          query:
+            "price breakdown tooltip event registration summary card pricing helper",
+          tags: ["gx-client-next", "event-registration", "pricing"],
+          limit: 5,
+        },
+        deps,
+      );
+
+      expect(result.claims.map((claim) => claim.id)).toEqual([relevant.id]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("memory_recall filters and identifies procedure fact subtypes", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const procedureId = "procedure-clean-merged-worktrees";
+      const procedureText =
+        "Clean merged worktrees only after verifying the pull request is merged";
+      const [embedding] = await deps.provider.embed([procedureText], "document");
+      await deps.store.upsertFact({
+        id: procedureId,
+        kind: "procedure",
+        body: procedureText,
+        createdAt: Date.now(),
+      });
+      await deps.store.upsertClaim({
+        id: procedureId,
+        kind: "fact",
+        text: procedureText,
+        embedding,
+        embedModel: deps.provider.model,
+        dim: deps.provider.dim,
+        tags: ["procedure", "worktree"],
+        createdAt: Date.now(),
+        skipDedup: true,
+      });
+      await addMemory(
+        {
+          text: "Worktree cards display their branch names",
+          kind: "fact",
+        },
+        deps,
+      );
+
+      const result = await recallMemory(
+        {
+          query: "how to clean merged worktrees",
+          factKinds: ["procedure"],
+          limit: 5,
+          minCosine: 0,
+        },
+        deps,
+      );
+
+      expect(result.claims).toEqual([
+        expect.objectContaining({
+          id: procedureId,
+          kind: "fact",
+          factKind: "procedure",
+        }),
+      ]);
     } finally {
       cleanup();
     }
@@ -128,6 +302,103 @@ describe("MCP memory v3 tools", () => {
         deps,
       );
       expect(result.profiles).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("drops low-relevance filler and logs only the final returned ids", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const relevant = await addMemory(
+        { text: "Deploy production only from a saved immutable site version" },
+        deps,
+      );
+      await addMemory(
+        { text: "MongoDB invoices retain external payment identifiers" },
+        deps,
+      );
+
+      const result = await recallMemory(
+        {
+          query: "Deploy production only from a saved immutable site version",
+          limit: 5,
+        },
+        deps,
+      );
+      expect(result.claims.map((claim) => claim.id)).toEqual([relevant.id]);
+
+      const db = (
+        deps.store as unknown as { db: import("bun:sqlite").Database }
+      ).db;
+      const row = db
+        .query(
+          "SELECT query, returned_ids_json, result_count FROM recall_log ORDER BY id DESC LIMIT 1",
+        )
+        .get() as {
+          query: string;
+          returned_ids_json: string;
+          result_count: number;
+        };
+      expect(row.query).toBe(
+        "Deploy production only from a saved immutable site version",
+      );
+      expect(JSON.parse(row.returned_ids_json)).toEqual([relevant.id]);
+      expect(row.result_count).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not let below-floor procedure quota under-fill relevant results", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      deps.provider = {
+        model: "controlled",
+        dim: 2,
+        embed: async () => [new Float32Array([1, 0])],
+      };
+      for (let index = 0; index < 5; index += 1) {
+        await deps.store.upsertClaim({
+          id: `relevant-${index}`,
+          kind: "lesson",
+          text: `Relevant lesson ${index}`,
+          embedding: new Float32Array([0.9 - index * 0.01, 0.1]),
+          createdAt: index,
+          skipDedup: true,
+        });
+      }
+      for (let index = 0; index < 2; index += 1) {
+        const id = `irrelevant-procedure-${index}`;
+        await deps.store.upsertFact({
+          id,
+          kind: "procedure",
+          body: `Irrelevant procedure ${index}`,
+          createdAt: index,
+        });
+        await deps.store.upsertClaim({
+          id,
+          kind: "fact",
+          text: `Irrelevant procedure ${index}`,
+          embedding: new Float32Array([0.1, 0.9]),
+          createdAt: index,
+          skipDedup: true,
+        });
+      }
+
+      const result = await recallMemory(
+        {
+          query: "relevant task",
+          limit: 5,
+          procedureQuota: 2,
+          minCosine: 0.55,
+        },
+        deps,
+      );
+      expect(result.claims).toHaveLength(5);
+      expect(result.claims.every((claim) => claim.id.startsWith("relevant-"))).toBe(
+        true,
+      );
     } finally {
       cleanup();
     }

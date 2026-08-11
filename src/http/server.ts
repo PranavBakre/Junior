@@ -15,12 +15,14 @@ import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { WorkflowRegistry } from "../workflows/registry.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
 import type { MemoryStore } from "../memory/store.ts";
+import type { PipelineStore } from "../pipelines/store/interface.ts";
 import { handleHealth } from "./routes/health.ts";
 import { handleSessions, handleSessionDetail } from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryProjection, handleMemoryRead, handleMemoryRecall } from "./routes/memory.ts";
 import { handleDevServers } from "./routes/dev-server.ts";
 import { handleWorkflows } from "./routes/workflows.ts";
+import { handlePipelines } from "./routes/pipelines.ts";
 import { log } from "../logger.ts";
 
 const PUBLIC_DIR = path.resolve(import.meta.dir, "../../public");
@@ -35,6 +37,7 @@ export interface HttpServerDeps {
   workflowRegistry: WorkflowRegistry;
   workflowStore: WorkflowStore;
   memoryStore?: MemoryStore;
+  pipelineStore: PipelineStore;
 }
 
 export function startHttpServer(deps: HttpServerDeps): void {
@@ -47,6 +50,7 @@ export function startHttpServer(deps: HttpServerDeps): void {
     workflowRegistry,
     workflowStore,
     memoryStore,
+    pipelineStore,
   } = deps;
 
   const server = Bun.serve({
@@ -76,6 +80,38 @@ export function startHttpServer(deps: HttpServerDeps): void {
           });
         }
 
+        const threeAsset = {
+          "/assets/three.module.js": "three.module.min.js",
+          "/assets/three.core.min.js": "three.core.min.js",
+        }[url.pathname];
+        if (threeAsset) {
+          const file = Bun.file(
+            path.resolve(import.meta.dir, "../../node_modules/three/build", threeAsset),
+          );
+          if (await file.exists()) {
+            return new Response(file, {
+              headers: {
+                "Content-Type": "text/javascript; charset=utf-8",
+                "Cache-Control": "public, max-age=86400",
+              },
+            });
+          }
+          return new Response("Three.js runtime not found", { status: 404 });
+        }
+
+        if (url.pathname === "/assets/pipeline-worker.js") {
+          const file = Bun.file(path.join(PUBLIC_DIR, "pipeline-worker.js"));
+          if (await file.exists()) {
+            return new Response(file, {
+              headers: {
+                "Content-Type": "text/javascript; charset=utf-8",
+                "Cache-Control": "no-cache",
+              },
+            });
+          }
+          return new Response("Pipeline worker not found", { status: 404 });
+        }
+
         if (url.pathname === "/api/health") {
           return await handleHealth(store, config, startedAt);
         } else if (url.pathname === "/api/sessions") {
@@ -89,6 +125,13 @@ export function startHttpServer(deps: HttpServerDeps): void {
           return await handleDevServers(devServerManager, devServerQueue, repos);
         } else if (url.pathname === "/api/workflows") {
           return await handleWorkflows(workflowRegistry, workflowStore);
+        } else if (url.pathname === "/api/pipelines") {
+          return await handlePipelines(pipelineStore, url.searchParams);
+        } else if (url.pathname.startsWith("/api/pipelines/")) {
+          const runId = decodeURIComponent(
+            url.pathname.slice("/api/pipelines/".length),
+          );
+          return await handlePipelines(pipelineStore, url.searchParams, runId);
         } else if (url.pathname === "/api/logs") {
           return await handleLogs(url.searchParams);
         } else if (url.pathname === "/api/memory/recall") {
@@ -96,7 +139,7 @@ export function startHttpServer(deps: HttpServerDeps): void {
           return await handleMemoryRecall(memoryStore, url.searchParams);
         } else if (url.pathname === "/api/memory/projection") {
           if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
-          return await handleMemoryProjection(memoryStore);
+          return await handleMemoryProjection(memoryStore, url.searchParams);
         } else if (url.pathname === "/api/memory") {
           return await handleMemoryList();
         } else if (url.pathname.startsWith("/api/memory/")) {

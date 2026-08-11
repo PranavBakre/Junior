@@ -34,7 +34,9 @@ indexes, and the source links in those documents.
 - [GitHub reconciliation](code_index/github-reconciliation.md): review-state
   reads, idempotent comments, and optional polling/event wake-up.
 - [Memory v3](features/memory-system-v3.md): source records, claims, profiles,
-  local embeddings, recall, and consolidation.
+  local embeddings, recall, and consolidation. The
+  [claim dedup write guard](features/claim-dedup-write-guard.md) is the store's
+  near-duplicate merge on every claim write, plus the offline backfill sweep.
 - [Worktrees and dev servers](features/bug-pipeline-worktrees.md) plus
   [worktree runtime](features/worktree-manager.md): target-repo isolation and
   the serialized dev-server slot.
@@ -52,14 +54,26 @@ surfaces have dedicated indexes:
 - [HTTP dashboard](code_index/http-dashboard.md)
 - [MCP server](code_index/mcp-server.md)
 - [Pipelines](code_index/pipelines.md)
+- [Pre-recall](code_index/pre-recall.md)
 - [Project setup and boot](code_index/project-setup.md)
 - [Runner providers](code_index/runner-providers.md)
 - [Support router](code_index/support-router.md)
+- [Task routes](code_index/task-routes.md)
 - [Workflows](code_index/workflows.md)
 
 The remaining indexes are listed by module in `docs/code_index/`.
 
 ## Historical and proposal documents
+
+Active proposals (designed, not implemented):
+
+None right now. The claim dedup write guard, pre-recall synthesis, and task
+routes all graduated out of this list — they are shipped and listed under
+[current runtime surfaces](#current-runtime-surfaces).
+
+Two things they shipped without, deliberately: the dedup backfill sweep is
+dry-run by default and has not been applied to the live corpus, and task routes
+have no adoption wiring yet, so nothing writes routes in normal operation.
 
 Feature files with an explicit `Historical`, `Proposal`, `Future`, or
 `Superseded` status are retained as design history. In particular, the older

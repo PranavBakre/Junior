@@ -44,6 +44,7 @@ export type OutcomeTxContext = {
   input: {
     outcome: AgentOutcome;
     toPhase?: string;
+    repoRefs?: string[];
     actorType: "agent" | "human" | "system";
     actorId: string;
     idempotencyKey?: string;
@@ -218,6 +219,10 @@ export function decideOutcomeTransaction(
     ...run,
     phase: resolvedToPhase as PipelinePhase,
     status: runStatus,
+    repoRefs: uniqueStrings([
+      ...run.repoRefs,
+      ...(input.repoRefs ?? []),
+    ]),
     stateVersion: newVersion,
     terminalOutcome:
       runStatus === "terminal" ? terminalOutcome : run.terminalOutcome,
@@ -343,11 +348,15 @@ export function decideOutcomeTransaction(
       payload: {
         assignmentId: assignment.id,
         conditionName: effectiveOutcome.wait?.conditionName,
+        wakeAt: effectiveOutcome.wait?.wakeAt,
         deadlineAt: effectiveOutcome.wait?.deadlineAt,
       },
       status: "pending",
       attempts: 0,
-      availableAt: effectiveOutcome.wait?.deadlineAt ?? now,
+      availableAt:
+        effectiveOutcome.wait?.wakeAt ??
+        effectiveOutcome.wait?.deadlineAt ??
+        now,
       leaseOwner: null,
       leaseExpiresAt: null,
       idempotencyKey:
@@ -457,7 +466,10 @@ function materializeNextAssignment(
     runId,
     parentAssignmentId: create.parentAssignmentId,
     sourceAgent,
+    sourceSlackUserId: create.sourceSlackUserId ?? null,
     targetAgent: create.targetAgent,
+    skillRef: create.skillRef ?? null,
+    capabilityRefs: [...(create.capabilityRefs ?? [])],
     objective: create.objective,
     contextRefs: create.contextRefs ?? [],
     artifactRefs: create.artifactRefs ?? [],
@@ -473,6 +485,8 @@ function materializeNextAssignment(
   };
   return {
     ...base,
+    skillRef: base.skillRef ?? null,
+    capabilityRefs: [...(base.capabilityRefs ?? [])],
     status: "pending",
     leaseOwner: null,
     leaseExpiresAt: null,

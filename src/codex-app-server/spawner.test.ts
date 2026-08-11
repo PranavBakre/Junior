@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { createSession } from "../session/types.ts";
 import { resolveCodexModel, spawnCodexAppServer } from "./spawner.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
 
 const originalCodexBin = process.env.CODEX_BIN;
 
@@ -74,9 +75,53 @@ describe("spawnCodexAppServer", () => {
         .map((line) => JSON.parse(line));
       const threadStart = requests.find((request) => request.method === "thread/start");
       const turnStart = requests.find((request) => request.method === "turn/start");
+      expect(threadStart.params).not.toHaveProperty("baseInstructions");
+      expect(threadStart.params.developerInstructions).toContain(
+        "You are Junior running inside Codex",
+      );
       expect(threadStart.params.sandbox).toBe("danger-full-access");
       expect(threadStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
       expect(turnStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
+    } finally {
+      fakeCodex.cleanup();
+    }
+  });
+
+  it("invokes an assignment skill as a structured turn item without changing developer instructions", async () => {
+    const fakeCodex = installFakeCodex(recordingFakeCodexScript());
+    process.env.CODEX_BIN = fakeCodex.command;
+
+    try {
+      const session = createSession("thread-skill", "C01");
+      session.provider = "codex-app-server";
+      const skill = resolveTrustedSkill("sentry-fetch")!;
+      session.activeSkill = {
+        name: skill.name,
+        path: skill.path,
+        execution: "stateless",
+      };
+      const config = {
+        ...testConfig,
+        codex: {
+          ...testConfig.codex,
+          isolatedHomePath: join(fakeCodex.root, "codex-home"),
+        },
+      };
+
+      await spawnCodexAppServer(session, "inspect the last hour", config).result;
+      const requests = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const threadStart = requests.find((request) => request.method === "thread/start");
+      const turnStart = requests.find((request) => request.method === "turn/start");
+      expect(threadStart.params.developerInstructions).not.toContain("# Sentry evidence");
+      expect(turnStart.params.input).toContainEqual({
+        type: "skill",
+        name: "sentry-fetch",
+        path: skill.path,
+      });
+      expect(turnStart.params.input[0].text).toContain("$sentry-fetch");
     } finally {
       fakeCodex.cleanup();
     }
@@ -114,6 +159,7 @@ describe("spawnCodexAppServer", () => {
         .map((line) => JSON.parse(line));
       expect(requests.map((request) => request.method)).toEqual([
         "initialize",
+        "initialized",
         "thread/resume",
         "thread/start",
         "turn/start",
@@ -128,9 +174,9 @@ describe("spawnCodexAppServer", () => {
 
 describe("resolveCodexModel", () => {
   it("ignores Claude agent aliases and falls back to Codex config", () => {
-    expect(resolveCodexModel("sonnet", "gpt-5.5")).toBe("gpt-5.5");
-    expect(resolveCodexModel("opus", "gpt-5.5")).toBe("gpt-5.5");
-    expect(resolveCodexModel("haiku", "gpt-5.5")).toBe("gpt-5.5");
+    expect(resolveCodexModel("sonnet", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(resolveCodexModel("opus", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(resolveCodexModel("haiku", "gpt-5.6-sol")).toBe("gpt-5.6-sol");
   });
 
   it("omits unsupported Claude model names when no Codex fallback is configured", () => {
@@ -139,7 +185,7 @@ describe("resolveCodexModel", () => {
   });
 
   it("keeps explicit Codex-compatible model overrides", () => {
-    expect(resolveCodexModel("gpt-5.5", "gpt-5.1-codex")).toBe("gpt-5.5");
+    expect(resolveCodexModel("gpt-5.6-sol", "gpt-5.1-codex")).toBe("gpt-5.6-sol");
     expect(resolveCodexModel(null, "gpt-5.1-codex")).toBe("gpt-5.1-codex");
   });
 });
@@ -282,6 +328,8 @@ const testConfig: Config = {
     defaultVerbosity: "quiet",
     idleTimeoutMs: 300000,
     maxIdleInterrupts: 3,
+    shortFollowupInterruptEnabled: false,
+    shortFollowupMaxLength: 280,
   },
   memory: { sqlitePath: "data/memory.db" },
   threadArchives: { dir: "data/thread-archives" },

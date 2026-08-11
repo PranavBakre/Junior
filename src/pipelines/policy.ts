@@ -154,6 +154,23 @@ function validateWait(outcome: AgentOutcome, now: number): PolicyResult {
       reason: "wait.deadlineAt must be in the future",
     };
   }
+  if (
+    wait.wakeAt != null &&
+    (!Number.isFinite(wait.wakeAt) || wait.wakeAt <= now)
+  ) {
+    return {
+      ok: false,
+      receiptStatus: "rejected",
+      reason: "wait.wakeAt must be in the future",
+    };
+  }
+  if (wait.wakeAt != null && wait.wakeAt > wait.deadlineAt) {
+    return {
+      ok: false,
+      receiptStatus: "rejected",
+      reason: "wait.wakeAt must not be after wait.deadlineAt",
+    };
+  }
   return { ok: true, receiptStatus: "waiting" };
 }
 

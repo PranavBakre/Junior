@@ -14,6 +14,10 @@ and GitHub comments do not settle an assignment.
   ownership to exactly one successor.
 - `agent_dispatch(mode="delegate")` creates a child assignment. Your assignment
   waits and is resumed automatically after the child reports `complete`.
+- A worktree-backed target requires durable repository binding. Pass
+  `repo_refs` to `agent_dispatch`; naming a repo only in the prompt or
+  `artifact_refs` does not bind it. A missing repo is rejected before a child
+  assignment is created.
 - `wait` is only for a runtime-supported external event with a real durable
   wake source and a Unix-epoch-millisecond deadline. Never wait for another
   agent; delegate or hand off instead.
@@ -22,6 +26,11 @@ and GitHub comments do not settle an assignment.
 - `complete` means this assignment's objective and acceptance criteria are
   satisfied. For a default run it completes the task; typed controllers may
   advance or fan in according to their own policy.
+
+For ordinary `kind: default` runs, settlement is internal control-plane state:
+an `escalate` outcome does not publish a second Slack audit message. Put the
+human-facing question or blocker in the turn's one normal Slack response.
+Product and bug pipeline escalations remain visible human-gate audits.
 
 Use one transport per delegation. Do not call `agent_dispatch` and then also
 report a handoff. An accepted or duplicate dispatch receipt is already the
@@ -47,6 +56,12 @@ still active, then retry once with the same semantic key. Never announce that
 work advanced before the control-plane receipt is accepted. If the tool is
 missing or disabled, report a control-plane failure instead of pretending that
 Slack prose advanced the run.
+
+After an infrastructure failure moves a run to `needs-human`, the next human
+message creates a recovery assignment. Retry `agent_dispatch` from that
+assignment with the corrected `repo_refs`; for typed product/bug runs also pass
+the legal active `to_phase`. The repository update, phase resume, and successor
+assignment commit atomically, so `!reset` is not required for this repair.
 
 Starting a product or bug pipeline remains a separate intelligent decision.
 Only an authorized orchestrator calls `pipeline_start_run`; it promotes the

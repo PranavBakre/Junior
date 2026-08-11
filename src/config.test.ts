@@ -21,6 +21,7 @@ const ENV_KEYS = [
   "OPENCODE_MONGODB_MCP_ENABLED",
   "CODEX_MODE",
   "CODEX_MODEL",
+  "CODEX_REASONING_EFFORT",
   "CODEX_TIMEOUT_MS",
   "CODEX_SANDBOX",
   "CODEX_ASK_FOR_APPROVAL",
@@ -34,6 +35,7 @@ const ENV_KEYS = [
   "CODEX_MEMORY_MCP_ENABLED",
   "CODEX_ISOLATED_HOME_PATH",
   "REPOS",
+  "REPO_DISCOVERY_ROOTS",
   "SESSION_STALE_TIMEOUT_MS",
   "SESSION_CLEANUP_INTERVAL_MS",
   "SESSION_STORE",
@@ -42,7 +44,11 @@ const ENV_KEYS = [
   "SESSION_DEFAULT_VERBOSITY",
   "SESSION_IDLE_TIMEOUT_MS",
   "SESSION_MAX_IDLE_INTERRUPTS",
+  "SESSION_SHORT_FOLLOWUP_INTERRUPT_ENABLED",
+  "SESSION_SHORT_FOLLOWUP_MAX_LENGTH",
   "MEMORY_DB_PATH",
+  "PRE_RECALL_ENABLED",
+  "PRE_RECALL_SYNTHESIS_ENABLED",
   "CHANNEL_DEFAULTS",
   "ADMIN_SLACK_USER_ID",
   "HTTP_DASHBOARD_PORT",
@@ -102,6 +108,7 @@ describe("loadConfig runner providers", () => {
     expect(config.codex).toEqual({
       mode: "app-server",
       model: null,
+      reasoningEffort: "medium",
       timeoutMs: 300000,
       sandbox: "workspace-write",
       askForApproval: "never",
@@ -116,8 +123,20 @@ describe("loadConfig runner providers", () => {
       isolatedHomePath: "data/codex-home",
     });
     expect(config.memory.sqlitePath).toBe("data/memory.db");
+    expect(config.memory.preRecall?.synthesisEnabled).toBe(false);
     expect(config.session.idleTimeoutMs).toBe(300000);
     expect(config.session.maxIdleInterrupts).toBe(3);
+  });
+
+  it("uses conservative short-follow-up defaults", () => {
+    const config = loadConfig();
+    expect(config.session.shortFollowupInterruptEnabled).toBe(false);
+    expect(config.session.shortFollowupMaxLength).toBe(240);
+  });
+
+  it("rejects an invalid short-follow-up length", () => {
+    process.env.SESSION_SHORT_FOLLOWUP_MAX_LENGTH = "not-a-number";
+    expect(() => loadConfig()).toThrow(/SESSION_SHORT_FOLLOWUP_MAX_LENGTH/);
   });
 
   it("parses memory db path", () => {
@@ -126,6 +145,11 @@ describe("loadConfig runner providers", () => {
     const config = loadConfig();
 
     expect(config.memory.sqlitePath).toBe("data/test-memory.db");
+  });
+
+  it("opts into pre-recall synthesis explicitly", () => {
+    process.env.PRE_RECALL_SYNTHESIS_ENABLED = "true";
+    expect(loadConfig().memory.preRecall?.synthesisEnabled).toBe(true);
   });
 
   it("parses runner provider and OpenCode env vars", () => {
@@ -277,7 +301,8 @@ describe("loadConfig runner providers", () => {
   it("parses codex-app-server provider and Codex env vars", () => {
     process.env.RUNNER_PROVIDER = "codex-app-server";
     process.env.CODEX_MODE = "app-server";
-    process.env.CODEX_MODEL = "gpt-5.5";
+    process.env.CODEX_MODEL = "gpt-5.6-sol";
+    process.env.CODEX_REASONING_EFFORT = "medium";
     process.env.CODEX_TIMEOUT_MS = "2345";
     process.env.CODEX_SANDBOX = "read-only";
     process.env.CODEX_ASK_FOR_APPROVAL = "on-request";
@@ -296,7 +321,8 @@ describe("loadConfig runner providers", () => {
     expect(config.runner.provider).toBe("codex-app-server");
     expect(config.codex).toEqual({
       mode: "app-server",
-      model: "gpt-5.5",
+      model: "gpt-5.6-sol",
+      reasoningEffort: "medium",
       timeoutMs: 2345,
       sandbox: "read-only",
       askForApproval: "on-request",

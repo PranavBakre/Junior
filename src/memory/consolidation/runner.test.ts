@@ -144,7 +144,7 @@ describe("createRunnerInvoke", () => {
     expect(seenModel).toBe(DEFAULT_CLAUDE_MODEL);
   });
 
-  it("pins the codex model + low effort when runner=codex and neither is given", async () => {
+  it("pins the codex model + medium effort when runner=codex and neither is given", async () => {
     let seenModel: string | undefined;
     let seenEffort: string | undefined;
     const invoke = createRunnerInvoke({
@@ -157,7 +157,7 @@ describe("createRunnerInvoke", () => {
     });
     await invoke("PROMPT");
     expect(seenModel).toBe(DEFAULT_CODEX_MODEL);
-    expect(seenEffort).toBe("low");
+    expect(seenEffort).toBe("medium");
   });
 
   it("forwards an explicit codex effort override", async () => {
@@ -208,7 +208,7 @@ describe("opencode consolidation runText helpers", () => {
 
 describe("codex consolidation runText helpers", () => {
   it("builds a fully-isolated one-shot argv reading the prompt from stdin", () => {
-    const args = buildCodexConsolidationArgs("gpt-5.5", "low", "/tmp/out-abc.txt");
+    const args = buildCodexConsolidationArgs("gpt-5.6-sol", "low", "/tmp/out-abc.txt");
 
     // Isolation flags — must all be present so junior's hooks/rules can't hijack output.
     expect(args).toContain("--ephemeral");
@@ -218,7 +218,7 @@ describe("codex consolidation runText helpers", () => {
 
     // Model + reasoning effort are pinned.
     expect(args).toContain("-m");
-    expect(args[args.indexOf("-m") + 1]).toBe("gpt-5.5");
+    expect(args[args.indexOf("-m") + 1]).toBe("gpt-5.6-sol");
     expect(args).toContain("-c");
     expect(args[args.indexOf("-c") + 1]).toBe('model_reasoning_effort="low"');
 
@@ -233,20 +233,20 @@ describe("codex consolidation runText helpers", () => {
   });
 
   it("threads the effort override into the -c flag", () => {
-    const args = buildCodexConsolidationArgs("gpt-5.5", "high", "/tmp/out.txt");
+    const args = buildCodexConsolidationArgs("gpt-5.6-sol", "high", "/tmp/out.txt");
     expect(args[args.indexOf("-c") + 1]).toBe('model_reasoning_effort="high"');
   });
 });
 
 describe("sanitizeClaudeModel", () => {
   it("strips a trailing [1M]-style bracket tag that is not part of the model id", () => {
-    expect(sanitizeClaudeModel("claude-opus-4-6[1M]")).toBe("claude-opus-4-6");
-    expect(sanitizeClaudeModel("claude-opus-4-6 [1M]")).toBe("claude-opus-4-6");
+    expect(sanitizeClaudeModel("claude-opus-5[1M]")).toBe("claude-opus-5");
+    expect(sanitizeClaudeModel("claude-opus-5 [1M]")).toBe("claude-opus-5");
   });
 
   it("leaves a clean model id untouched", () => {
-    expect(sanitizeClaudeModel("claude-opus-4-6")).toBe("claude-opus-4-6");
-    expect(sanitizeClaudeModel(DEFAULT_CLAUDE_MODEL)).toBe("claude-opus-4-6");
+    expect(sanitizeClaudeModel("claude-opus-5")).toBe("claude-opus-5");
+    expect(sanitizeClaudeModel(DEFAULT_CLAUDE_MODEL)).toBe("claude-opus-5");
   });
 });
 

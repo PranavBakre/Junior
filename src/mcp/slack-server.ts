@@ -29,6 +29,8 @@ import type {
   ClaimKind,
   ClaimRecallFilters,
   ClaimRecallResult,
+  ClaimWriteResult,
+  MemoryFactInput,
 } from "../memory/types.ts";
 import type { EmbeddingProvider } from "../memory/embedding/types.ts";
 // `import type` keeps the heavy harrier/transformers graph (pulled in by the
@@ -48,6 +50,7 @@ import { parsePureAgentDirectiveResponse } from "../support/directives.ts";
 import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 import { registerTool } from "./register-tool.ts";
 import { registerWhatsAppTools } from "./whatsapp-tools.ts";
+import { registerTaskRouteTools } from "../routes/tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 import { registerPendingApproval } from "./approval.ts";
 import { prepareSlackResponseWithActions, type SlackActionButtonSpec } from "../slack/formatting.ts";
@@ -58,6 +61,7 @@ import type { PipelineToolRuntime } from "../pipelines/tools.ts";
 import {
   pipelineGetState,
   pipelineDispatchAgent,
+  pipelineDispatchSkill,
   pipelineRegisterPr,
   pipelineReportOutcome,
   pipelineRunCheck,
@@ -68,6 +72,42 @@ import {
   postGitHubReview,
   readGitHubReviewState,
 } from "../github/review-comments.ts";
+import {
+  getRunbook,
+  searchRunbooks,
+} from "../runbooks/registry.ts";
+import { selectRunbookWithProcedureRecall } from "../runbooks/selector.ts";
+import type { RunbookRisk } from "../runbooks/types.ts";
+import type { RunbookRunEvidence } from "../runbooks/evidence.ts";
+import {
+  recordSuccessfulExecution as promotionRecordExecution,
+  checkPromotionThreshold as promotionCheckThreshold,
+  listCandidates as promotionListCandidates,
+  getCandidate as promotionGetCandidate,
+} from "../runbooks/promotion.ts";
+import {
+  renderRunbookTemplate,
+  generateProposalReport,
+  type AuthoringContext as AuthoringContextType,
+} from "../runbooks/authoring.ts";
+import { classifyReusablePattern } from "../runbooks/classifier.ts";
+import {
+  createRunbookPr,
+  type PrCreationResult as PrCreationResultType,
+} from "../runbooks/github.ts";
+import { CatalogStore } from "../runbooks/catalog-store.ts";
+import { computeMetrics as computeDefinitionMetrics } from "../runbooks/metrics.ts";
+import {
+  runEvaluationSuite as runEvaluationSuiteImpl,
+  type EvaluationFixture as EvaluationFixtureType,
+} from "../runbooks/evaluation.ts";
+import {
+  newRelicNrqlCommand,
+  runReadOnlyCommand,
+  sentryListCommand,
+  vercelReadCommand,
+  type ReadOnlyCommand,
+} from "../observability/read-only-cli.ts";
 
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const FALLBACK_AGENTS_DIR = ".claude/agents";
@@ -111,13 +151,14 @@ let worktreeManager: WorktreeManager | undefined;
 let sessionManager: SessionManager | undefined;
 let slackActionStore: SlackActionStore | undefined;
 let pipelineRuntime: PipelineToolRuntime | undefined;
+let catalogStore: CatalogStore | undefined;
 
 /** Inject pipeline tool runtime (store + mode). Called from boot or tests. */
 export function setPipelineRuntime(runtime: PipelineToolRuntime | undefined): void {
   pipelineRuntime = runtime;
 }
 
-function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
+export function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
   registerWhatsAppTools(server, {
     runContext,
     // Deny-by-default until the SessionManager/SessionStore are wired in:
@@ -133,6 +174,169 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         : null;
     },
   });
+  // Task routes share the memory DB and its embedding provider; the repo
+  // lookups come from the worktree manager's configured checkouts.
+  registerTaskRouteTools(server, {
+    dbPath: MEMORY_DB_PATH,
+    getEmbedder: getEmbeddingProvider,
+    resolveRepoPath: (repo) => worktreeManager?.getRepo(repo)?.path ?? null,
+    resolveDefaultBase: (repo) => worktreeManager?.getRepo(repo)?.defaultBase,
+  });
+
+  const runObservabilityRead = async (
+    expectedAgent: string,
+    command: ReadOnlyCommand,
+  ) => {
+    if (runContext?.agent !== expectedAgent) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            ok: false,
+            reason: `${expectedAgent} assignment context is required`,
+          }),
+        }],
+        isError: true,
+      };
+    }
+    try {
+      const result = await runReadOnlyCommand(command);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ ok: result.exitCode === 0, ...result }),
+        }],
+        isError: result.exitCode !== 0,
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            ok: false,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        }],
+        isError: true,
+      };
+    }
+  };
+
+  registerTool(
+    server,
+    "newrelic_nrql_query",
+    {
+      description:
+        "Run one bounded read-only New Relic NRQL SELECT/FROM query. Available only to the trusted nr-research skill.",
+      inputSchema: {
+        query: z.string().min(1).max(10_000),
+        account_id: z.number().int().positive().optional(),
+      },
+    },
+    ({ query, account_id }) =>
+      runObservabilityRead(
+        "skill:nr-research",
+        newRelicNrqlCommand({ query, accountId: account_id }),
+      ),
+  );
+
+  registerTool(
+    server,
+    "sentry_list",
+    {
+      description:
+        "List bounded Sentry issues or events without mutation. Available only to the trusted sentry-fetch skill.",
+      inputSchema: {
+        resource: z.enum(["issues", "events"]),
+        organization: z.string().min(1).max(200),
+        project: z.string().min(1).max(200).optional(),
+        query: z.string().min(1).max(1_000).optional(),
+        status: z.enum(["resolved", "muted", "unresolved"]).optional(),
+        max_rows: z.number().int().min(1).max(500).optional(),
+      },
+    },
+    (args) =>
+      runObservabilityRead(
+        "skill:sentry-fetch",
+        sentryListCommand({
+          resource: args.resource,
+          organization: args.organization,
+          project: args.project,
+          query: args.query,
+          status: args.status,
+          maxRows: args.max_rows,
+        }),
+      ),
+  );
+
+  registerTool(
+    server,
+    "vercel_read",
+    {
+      description:
+        "List deployments, inspect one deployment, or fetch bounded non-following logs. Available only to the trusted vercel-status skill.",
+      inputSchema: {
+        operation: z.enum(["list", "inspect", "logs"]),
+        project: z.string().min(1).max(200).optional(),
+        deployment: z.string().min(1).max(500).optional(),
+        environment: z.enum(["production", "preview", "development"]).optional(),
+        status: z.string().min(1).max(100).optional(),
+        level: z.enum(["error", "warning", "info", "fatal"]).optional(),
+        since: z.string().min(1).max(100).optional(),
+        until: z.string().min(1).max(100).optional(),
+        query: z.string().min(1).max(1_000).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+        scope: z.string().min(1).max(200).optional(),
+        include_build_logs: z.boolean().optional(),
+      },
+    },
+    (args) => {
+      if (args.operation === "inspect" && !args.deployment) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              ok: false,
+              reason: "deployment is required for inspect",
+            }),
+          }],
+          isError: true,
+        };
+      }
+      const command = args.operation === "inspect"
+        ? vercelReadCommand({
+            operation: "inspect",
+            deployment: args.deployment!,
+            includeBuildLogs: args.include_build_logs,
+            scope: args.scope,
+          })
+        : args.operation === "list"
+          ? vercelReadCommand({
+              operation: "list",
+              project: args.project,
+              environment: args.environment,
+              status: args.status,
+              limit: args.limit === undefined ? undefined : Math.min(args.limit, 100),
+              scope: args.scope,
+            })
+          : vercelReadCommand({
+              operation: "logs",
+              deployment: args.deployment,
+              project: args.project,
+              environment: args.environment === "development"
+                ? undefined
+                : args.environment,
+              level: args.level,
+              since: args.since,
+              until: args.until,
+              query: args.query,
+              limit: args.limit,
+              scope: args.scope,
+            });
+      return runObservabilityRead("skill:vercel-status", command);
+    },
+  );
+
   registerTool(
     server,
     "github_read_pr_review_state",
@@ -759,13 +963,14 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         evidence_refs: z.array(z.string()).optional().describe("Durable evidence references supporting the transition"),
         artifact_refs: z.array(z.string()).optional().describe("Durable artifact references inherited by the child assignment"),
         acceptance_criteria: z.array(z.string()).optional().describe("Acceptance criteria for the child assignment"),
+        repo_refs: z.array(z.string().min(1).max(200)).max(20).optional().describe("Repositories to validate and atomically bind to the durable run before dispatch"),
         channel_id: z.string().optional().describe("Deprecated; authenticated channel is derived from signed context"),
         thread_ts: z.string().optional().describe("Deprecated; authenticated thread is derived from signed context"),
         user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
         trigger_ts: z.string().optional().describe("Slack message timestamp that caused the dispatch. Defaults to thread_ts."),
       },
     },
-    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, evidence_refs, artifact_refs, acceptance_criteria, channel_id, thread_ts, user_id, trigger_ts }) => {
+    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, evidence_refs, artifact_refs, acceptance_criteria, repo_refs, channel_id, thread_ts, user_id, trigger_ts }) => {
       if (!sessionManager) {
         return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
       }
@@ -801,6 +1006,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           evidence_refs,
           artifact_refs,
           acceptance_criteria,
+          repo_refs,
         });
       }
       if (pipelineRuntime && session?.activeRunId) {
@@ -860,6 +1066,52 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
           },
         ],
       };
+    },
+  );
+
+  registerTool(
+    server,
+    "skill_dispatch",
+    {
+      description:
+        "Run one trusted Junior skill as an isolated durable child assignment. The skill body is loaded natively by the selected provider and its MCP capabilities come from Junior's trusted registry.",
+      inputSchema: {
+        skill_name: z.string().min(1).describe(
+          "Trusted skill name, e.g. nr-research, sentry-fetch, vercel-status",
+        ),
+        objective: z.string().min(1).describe("Bounded objective for the skill"),
+        reason: z.string().min(1).describe("Why this skill is needed"),
+        idempotency_key: z.string().min(1).describe(
+          "Stable semantic key reused on retries",
+        ),
+        artifact_refs: z.array(z.string()).optional(),
+        acceptance_criteria: z.array(z.string()).optional(),
+      },
+    },
+    async ({
+      skill_name,
+      objective,
+      reason,
+      idempotency_key,
+      artifact_refs,
+      acceptance_criteria,
+    }) => {
+      if (!pipelineRuntime) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "Error: pipeline runtime not available",
+          }],
+        };
+      }
+      return pipelineDispatchSkill(pipelineRuntime, runContext, {
+        skill_name,
+        objective,
+        reason,
+        idempotency_key,
+        artifact_refs,
+        acceptance_criteria,
+      });
     },
   );
 
@@ -928,6 +1180,315 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
 
   registerTool(
     server,
+    "runbook_search",
+    {
+      description:
+        "Search Junior runbook definitions by query, tags, owner agent, or risk level.",
+      inputSchema: {
+        query: z.string().optional().describe("Case-insensitive text to match against runbook name, description, or tags"),
+        tags: z.array(z.string()).optional().describe("Filter by tag (OR match)"),
+        owner_agent: z.string().optional().describe("Filter by owning agent name"),
+        risk: z.string().optional().describe("Filter by risk level"),
+        limit: z.number().optional().describe("Maximum results to return (default 25, max 100)"),
+      },
+    },
+    async ({ query, tags, owner_agent, risk, limit }) => {
+      const results = searchRunbooks({
+        query,
+        tags,
+        ownerAgent: owner_agent,
+        risk,
+        limit: Math.min(limit ?? 25, 100),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ runbooks: results }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_get",
+    {
+      description:
+        "Get a runbook definition by name, including its full prompt, inputs, verification, and provenance.",
+      inputSchema: {
+        name: z.string().describe("Runbook name (kebab-case)"),
+      },
+    },
+    async ({ name }) => {
+      const def = getRunbook(name);
+      if (!def) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({ error: `runbook "${name}" not found` }),
+            },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(def, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_select",
+    {
+      description:
+        "Select the best matching runbook for a natural-language request, bind inputs from context, and return execution evidence. Falls back to procedure-memory guidance when no runbook matches.",
+      inputSchema: {
+        request: z.string().describe("Natural-language description of the task"),
+        context: z.record(z.string(), z.string()).optional().describe("Key-value pairs from thread context for input binding"),
+        owner_agent: z.string().optional().describe("Filter to runbooks owned by this agent"),
+        risk_ceiling: z.string().optional().describe("Exclude runbooks above this risk level"),
+      },
+    },
+    async ({ request, context, owner_agent, risk_ceiling }) => {
+      const result = await selectRunbookWithProcedureRecall(
+        request,
+        context ?? {},
+        async (query) =>
+          withMemoryStore(async (memory) => {
+            const recalled = await recallMemory(
+              {
+                query,
+                factKinds: ["procedure"],
+                limit: 5,
+              },
+              {
+                store: memory,
+                provider: await getEmbeddingProvider(),
+                profileStore: getProfileStore(),
+              },
+            );
+            return recalled.claims.map((claim) => ({
+              id: claim.id,
+              text: claim.text,
+              score: claim.score,
+              cosine: claim.cosine,
+              repo: claim.repo,
+              tags: claim.tags,
+            }));
+          }),
+        {
+          ownerAgent: owner_agent,
+          riskCeiling: risk_ceiling as RunbookRisk | undefined,
+        },
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "promotion_candidates",
+    {
+      description:
+        "List promotion candidates — repeated tasks that may warrant a reviewed runbook.",
+      inputSchema: {
+        status: z.string().optional().describe("Filter by status: tracking, proposed, accepted, rejected, archived"),
+        min_occurrences: z.number().optional().describe("Minimum occurrence count (default 1)"),
+        limit: z.number().optional().describe("Maximum results (default 25, max 100)"),
+      },
+    },
+    async ({ status, min_occurrences, limit }) => {
+      const results = promotionListCandidates({
+        status,
+        minOccurrences: min_occurrences,
+      });
+      const capped = results.slice(0, Math.min(limit ?? 25, 100));
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ candidates: capped }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "promotion_record",
+    {
+      description:
+        "Record a completed run's evidence for promotion tracking. Returns the candidate and whether it should be proposed as a runbook.",
+      inputSchema: {
+        evidence: z.object({
+          runId: z.string(),
+          runbookName: z.string(),
+          contentDigest: z.string(),
+          ownerAgent: z.string(),
+          risk: z.string(),
+          boundInputs: z.record(z.string(), z.string()),
+          status: z.string(),
+          startedAt: z.number(),
+          completedAt: z.number().optional(),
+          intentFingerprint: z.string(),
+        }).describe("RunbookRunEvidence from a completed run"),
+      },
+    },
+    async ({ evidence }) => {
+      promotionRecordExecution(evidence as RunbookRunEvidence);
+      const check = promotionCheckThreshold(evidence.intentFingerprint);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              fingerprint: evidence.intentFingerprint,
+              shouldPropose: check.shouldPropose,
+              reason: check.reason,
+              candidate: check.candidate,
+            }, null, 2),
+          },
+        ],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "runbook_propose",
+    {
+      description:
+        "Generate a runbook proposal from a promotion candidate. Returns rendered .runbook.md content, a structured proposal report, and a dry-run PR result.",
+      inputSchema: {
+        fingerprint: z.string().describe("Intent fingerprint from a promotion candidate"),
+        dry_run: z.boolean().optional().describe("Whether to skip actual PR creation (default true)"),
+        inferred_inputs: z.array(z.object({
+          name: z.string(),
+          type: z.string(),
+          required: z.boolean(),
+          description: z.string().optional(),
+        })).optional().describe("Inferred typed inputs for the runbook"),
+        inferred_capabilities: z.array(z.string()).optional().describe("Inferred capability bundles"),
+        inferred_assertions: z.array(z.string()).optional().describe("Inferred verification assertions"),
+      },
+    },
+    async ({ fingerprint, dry_run, inferred_inputs, inferred_capabilities, inferred_assertions }) => {
+      const candidate = promotionGetCandidate(fingerprint);
+      if (!candidate) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: `no candidate found for fingerprint "${fingerprint}"` }) }],
+        };
+      }
+
+      const context: AuthoringContextType = {
+        candidate,
+        executionEvidence: [],
+        inferredInputs: inferred_inputs,
+        inferredCapabilities: inferred_capabilities,
+        inferredVerificationAssertions: inferred_assertions,
+      };
+
+      const rendered = renderRunbookTemplate(context);
+      const classification = classifyReusablePattern(
+        candidate.normalizedIntent,
+        candidate.ownerAgent,
+        candidate.risk,
+        candidate.capabilities,
+        candidate.occurrenceCount,
+      );
+      const report = generateProposalReport(context, rendered, classification);
+
+      let pr: PrCreationResultType | undefined;
+      if (rendered.ok) {
+        pr = await createRunbookPr(rendered, report, { dryRun: dry_run ?? true });
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ rendered, report, pr }, null, 2),
+        }],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "definitions_status",
+    {
+      description:
+        "Show the catalogue status of runbook definitions, including Git provenance and computed metrics.",
+      inputSchema: {
+        name: z.string().optional().describe("Filter to a specific definition name"),
+      },
+    },
+    async ({ name }) => {
+      if (!catalogStore) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "catalogue store not initialized" }) }] };
+      }
+      const entries = name
+        ? [catalogStore.getCatalogEntry("runbook", name)].filter(Boolean)
+        : catalogStore.listCatalogEntries("runbook");
+      let metrics = null;
+      if (name) {
+        const runs = catalogStore.getRunsByName(name);
+        metrics = computeDefinitionMetrics(runs);
+      }
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ catalog: entries, metrics }, null, 2) }],
+      };
+    },
+  );
+
+  registerTool(
+    server,
+    "evaluation_run",
+    {
+      description:
+        "Run an evaluation suite against loaded runbooks. Uses default fixtures for the named runbook or custom fixtures if provided.",
+      inputSchema: {
+        runbook_name: z.string().optional().describe("Run default evaluation fixtures for this runbook"),
+        fixtures: z.array(z.object({
+          request: z.string(),
+          shouldMatch: z.boolean(),
+          expectedRunbook: z.string().optional(),
+        })).optional().describe("Custom evaluation fixtures"),
+      },
+    },
+    async ({ runbook_name, fixtures: customFixtures }) => {
+      let fixtures = customFixtures as EvaluationFixtureType[] | undefined;
+      if (!fixtures && runbook_name === "transfer-ai-roadmaps") {
+        const { TRANSFER_AI_ROADMAPS_FIXTURES } = await import("../runbooks/__fixtures__/transfer-ai-roadmaps.eval.ts");
+        fixtures = TRANSFER_AI_ROADMAPS_FIXTURES;
+      }
+      if (!fixtures || fixtures.length === 0) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "no fixtures provided or found" }) }] };
+      }
+      const result = runEvaluationSuiteImpl(fixtures, { runbookName: runbook_name });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+      };
+    },
+  );
+
+  registerTool(
+    server,
     "memory_recall",
     {
       description:
@@ -936,15 +1497,30 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         "'gx-backend:repo'), their markdown profiles are fetched VERBATIM by key — no embedding, " +
         "no ranking — and are Junior-internal context (never surface a profile verbatim in a thread). " +
         "(2) SEMANTIC claims: `query` is embedded locally and matched against the atomic " +
-        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`kinds`). " +
-        "Returns the keyed profiles plus the top-k claims (text, score, repo, tags).",
+        "lesson/fact/situation-claim store by cosine (filtered by `repo`/`tags`/`kinds`). " +
+        "Fact subtypes such as procedures can be requested with `fact_kinds`. " +
+        "Use a complete natural-language situation/question for `query`; use repo/tags as " +
+        "filters, not as query keywords. Returns keyed profiles plus relevant claims above " +
+        "the cosine floor, including `factKind`, text, score, repo, and tags.",
       inputSchema: {
-        query: z.string().describe("Natural-language query, embedded for semantic claim retrieval"),
+        query: z.string().describe(
+          "Complete natural-language situation and desired action, preferably a question; never a tag/keyword bundle",
+        ),
         repo: z.string().optional().describe("Scope claims to a repo (e.g. 'gx-backend')"),
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe("Restrict claims to any matching tag (OR match)"),
         kinds: z
           .array(z.enum(["lesson", "fact", "situation-claim"]))
           .optional()
           .describe("Restrict claims to these kinds (default: all)"),
+        fact_kinds: z
+          .array(z.enum(["curated_fact", "routing_memory", "procedure"]))
+          .optional()
+          .describe(
+            "Restrict fact claims to semantic subtypes, e.g. ['procedure']. When set, only matching fact subtypes are returned.",
+          ),
         entity_refs: z
           .array(z.string())
           .optional()
@@ -954,10 +1530,18 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         limit: z.number().optional().describe("Max semantic claims to return (default 5, max 50)"),
       },
     },
-    async ({ query, repo, kinds, entity_refs, limit }) => {
+    async ({ query, repo, tags, kinds, fact_kinds, entity_refs, limit }) => {
       return withMemoryStore(async (memory) => {
         const result = await recallMemory(
-          { query, repo, kinds, entityRefs: entity_refs, limit },
+          {
+            query,
+            repo,
+            tags,
+            kinds,
+            factKinds: fact_kinds,
+            entityRefs: entity_refs,
+            limit,
+          },
           { store: memory, provider: await getEmbeddingProvider(), profileStore: getProfileStore() },
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
@@ -973,7 +1557,9 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         "Add a single atomic claim to Junior's v3 semantic memory and embed it in one step. " +
         "The text is embedded locally (document mode) and stored as a lesson/fact/situation-claim row " +
         "with its embedding co-located, so it is immediately retrievable by `memory_recall`. Write ONE " +
-        "atomic claim per call (the unit of semantic recall), not a paragraph. Returns the stored claim id.",
+        "atomic claim per call (the unit of semantic recall), not a paragraph. Near-duplicates are " +
+        "merged into the existing claim rather than stored twice. Returns the claim id plus " +
+        "`action`: 'inserted' (new), 'updated' (same id re-saved), or 'merged' (Junior already knew it).",
       inputSchema: {
         text: z.string().describe("One atomic claim — the authoritative text that gets embedded"),
         kind: z
@@ -1119,7 +1705,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
       inputSchema: {
         outcome: z
           .record(z.string(), z.unknown())
-          .describe("AgentOutcome object with assignmentId, expectedRunVersion, action, status, reason, evidenceRefs, artifactRefs, blockers, checks, progressFingerprint, plus wait when action=wait"),
+          .describe("AgentOutcome object with assignmentId, expectedRunVersion, action, status, reason, evidenceRefs, artifactRefs, blockers, checks, progressFingerprint, plus wait when action=wait. For scheduled monitoring, wait includes wakeAt (next check) and deadlineAt (final stop); external-condition waits omit wakeAt."),
         to_phase: z.string().optional().describe("Optional phase advance"),
         idempotency_key: z.string().optional().describe("Duplicate-safe idempotency key"),
       },
@@ -1158,7 +1744,7 @@ function registerTools(server: McpServer, runContext: SlackMcpRunContext | null 
         path: z.string().describe("Relative path under the run artifact directory"),
         content: z.string().describe("File contents"),
         run_id: z.string().optional(),
-        assignment_id: z.string().optional(),
+        assignment_id: z.string(),
       },
     },
     async (args) => {
@@ -1419,24 +2005,52 @@ export interface RecallMemoryArgs {
   repo?: string;
   /** With `repo`, also include repo-less (global) claims. See ClaimRecallFilters. */
   repoIncludeGlobal?: boolean;
+  /** Restrict claims to any matching tag (OR match). */
+  tags?: string[];
   kinds?: ClaimKind[];
+  /** Restrict fact claims to legacy semantic subtypes such as `procedure`. */
+  factKinds?: MemoryFactInput["kind"][];
+  /**
+   * Reserve up to this many slots for procedure memories while keeping the
+   * total result count within `limit`. Used by automatic pre-recall so durable
+   * operational sequences cannot be crowded out by generic facts.
+   */
+  procedureQuota?: number;
   entityRefs?: string[];
   limit?: number;
+  /** Drop semantic matches below this raw cosine (default 0.55). */
+  minCosine?: number;
+  /** Optional label stored with the recall observation for offline evaluation. */
+  callerIntent?: string;
+  /**
+   * Bump `last_used_at` on the returned claims (default true). Callers that
+   * retrieve CANDIDATES and decide usefulness later — pre-recall synthesis —
+   * pass false and record usage themselves via `markClaimsUsed`.
+   */
+  recordUsage?: boolean;
 }
 
 export interface RecallMemoryResult {
   /** Keyed profiles, returned verbatim (Junior-internal — never surfaced in a thread). */
   profiles: Profile[];
-  /** Top-k semantic claims, ranked by cosine+FTS and weighted. */
+  /** Top-k semantic claims, ranked by raw cosine relevance. */
   claims: Array<{
     id: string;
     kind: ClaimKind;
+    factKind: MemoryFactInput["kind"] | null;
     text: string;
     score: number;
+    /**
+     * Raw cosine, unweighted — null with no queryVector or no embedding.
+     * For vector recall this is also the ranking `score`.
+     */
+    cosine: number | null;
     repo: string | null;
     tags: string[];
   }>;
 }
+
+export const DEFAULT_MIN_RECALL_COSINE = 0.55;
 
 /**
  * Recall over two channels and merge (§8):
@@ -1468,22 +2082,31 @@ export async function recallMemory(
   // 2. Semantic claim recall — embed the query once, run one filtered recall per
   //    kind (ClaimRecallFilters carries a single kind), then merge + re-rank.
   const [queryVector] = await deps.provider.embed([args.query], "query");
-  const kindScopes: Array<ClaimKind | undefined> =
-    args.kinds && args.kinds.length > 0 ? args.kinds : [undefined];
+  const scopes: Array<{
+    kind?: ClaimKind;
+    factKind?: MemoryFactInput["kind"];
+  }> = args.factKinds && args.factKinds.length > 0
+    ? args.factKinds.map((factKind) => ({ kind: "fact", factKind }))
+    : args.kinds && args.kinds.length > 0
+      ? args.kinds.map((kind) => ({ kind }))
+      : [{}];
 
   const seen = new Set<string>();
   const merged: ClaimRecallResult[] = [];
-  for (const kind of kindScopes) {
+  for (const scope of scopes) {
     const filters: ClaimRecallFilters = {};
     if (args.repo) {
       filters.repo = args.repo;
       if (args.repoIncludeGlobal) filters.repoIncludeGlobal = true;
     }
-    if (kind) filters.kind = kind;
+    if (args.tags && args.tags.length > 0) filters.tags = args.tags;
+    if (scope.kind) filters.kind = scope.kind;
+    if (scope.factKind) filters.factKind = scope.factKind;
     const results = await deps.store.recallClaims({
       queryVector,
       filters,
       limit,
+      recordUsage: false,
     });
     for (const r of results) {
       if (seen.has(r.id)) continue;
@@ -1491,15 +2114,82 @@ export async function recallMemory(
       merged.push(r);
     }
   }
-  merged.sort((a, b) => b.score - a.score);
+  merged.sort((a, b) =>
+    (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
+    b.weight - a.weight ||
+    a.id.localeCompare(b.id)
+  );
+
+  const minCosine = Math.min(
+    Math.max(args.minCosine ?? DEFAULT_MIN_RECALL_COSINE, -1),
+    1,
+  );
+  const eligibleMerged = merged.filter(
+    (claim) => (claim.cosine ?? -Infinity) >= minCosine,
+  );
+  const procedureQuota = args.factKinds?.length
+    ? 0
+    : Math.min(Math.max(Math.trunc(args.procedureQuota ?? 0), 0), limit);
+  let selected = eligibleMerged.slice(0, limit);
+  if (procedureQuota > 0) {
+    const procedureResults = await deps.store.recallClaims({
+      queryVector,
+      filters: {
+        ...(args.repo
+          ? { repo: args.repo, repoIncludeGlobal: args.repoIncludeGlobal }
+          : {}),
+        ...(args.tags?.length ? { tags: args.tags } : {}),
+        kind: "fact",
+        factKind: "procedure",
+      },
+      limit: procedureQuota,
+      recordUsage: false,
+    });
+    const procedures = procedureResults
+      .filter((claim) => (claim.cosine ?? -Infinity) >= minCosine)
+      .slice(0, procedureQuota);
+    const procedureIds = new Set(procedures.map((claim) => claim.id));
+    selected = [
+      ...procedures,
+      ...eligibleMerged.filter((claim) => !procedureIds.has(claim.id)),
+    ].slice(0, limit);
+    selected.sort((a, b) =>
+      (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
+      b.weight - a.weight ||
+      a.id.localeCompare(b.id)
+    );
+  }
+
+  if (args.recordUsage !== false && selected.length > 0) {
+    await deps.store.markClaimsUsed(selected.map((claim) => claim.id), Date.now());
+  }
+  try {
+    await deps.store.appendRecallLog({
+      query: args.query,
+      tags: args.tags,
+      entityRefs: args.entityRefs,
+      kinds: [
+        ...(args.kinds ?? []),
+        ...(args.factKinds?.map((kind) => `fact:${kind}`) ?? []),
+      ],
+      callerIntent: args.callerIntent,
+      returnedIds: selected.map((claim) => claim.id),
+    });
+  } catch (error) {
+    console.warn(
+      `[memory_recall] failed to append recall log: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   return {
     profiles,
-    claims: merged.slice(0, limit).map((c) => ({
+    claims: selected.map((c) => ({
       id: c.id,
       kind: c.kind,
+      factKind: c.factKind ?? null,
       text: c.text,
       score: c.score,
+      cosine: c.cosine,
       repo: c.repo,
       tags: c.tags,
     })),
@@ -1517,12 +2207,15 @@ export interface AddMemoryArgs {
  * Add + embed a single atomic claim (§6.1). The text is embedded in DOCUMENT
  * mode and stored with its embedding co-located; the id is a deterministic slug
  * of the text, so re-adding the same claim upserts in place rather than
- * duplicating. Returns the stored id.
+ * duplicating. The store's write guard additionally collapses SEMANTIC
+ * near-duplicates (a one-word edit produces a different id but the same claim),
+ * so the result reports whether the claim was stored or merged into an existing
+ * one — "already knew that".
  */
 export async function addMemory(
   args: AddMemoryArgs,
   deps: MemoryToolDeps,
-): Promise<{ id: string }> {
+): Promise<ClaimWriteResult> {
   const text = args.text.trim();
   if (!text) throw new Error("memory_add: `text` must be a non-empty claim");
 
@@ -1530,7 +2223,7 @@ export async function addMemory(
   const [embedding] = await deps.provider.embed([text], "document");
   const id = claimIdFromText(text);
 
-  await deps.store.upsertClaim({
+  return deps.store.upsertClaim({
     id,
     kind,
     text,
@@ -1541,8 +2234,6 @@ export async function addMemory(
     tags: args.tags ?? [],
     createdAt: Date.now(),
   });
-
-  return { id };
 }
 
 /** Deterministic claim id: a readable slug of the text + a short content hash. */

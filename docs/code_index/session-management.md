@@ -27,6 +27,7 @@ Core orchestrator: routes Slack messages to Claude, manages the buffer/drain sta
 | `onMessageBuffered(event)` | Message buffered while busy → `eyes` reaction |
 | `onCommandResponse(event, text)` | Command (`!status`, `!help`, etc.) returns text |
 | `onReaction(event, emoji)` | Used for admin-denied commands (`x` reaction) |
+| `onTurnReaction(action, channel, ts, emoji)` | Turn-progress marker (`hourglass_flowing_sand`) on the message that started a turn — top-level or a dispatched agent turn carrying its own `event.ts`. Added before pre-turn work (prompt composition, worktree setup, pre-recall), removed in `runRunnerWithAgent`'s `finally` so every terminal path clears it — including the suppressed-response one. Ref-counted per message by `markTurnProgress`, which also requires a real Slack ts shape (`/^\d+\.\d+$/`) — pipeline dispatch and action buttons synthesize `event.ts` as an identity key, and reacting to those only produces error-level noise. Ref-counted because turns overlap on one message (cold-start restart, guard continuation, agent turn beside the top-level one). Wired to `SlackResponder.addReaction` / `removeReaction`, which serialize writes per `channel:ts` so a remove cannot overtake its add. |
 | `onError(session, error)` | Spawn fails or times out |
 
 ### SessionManager dependencies
@@ -97,14 +98,22 @@ Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, c
 ## Prompt Composition (in `runRunnerWithAgent`)
 
 1. For an active pipeline assignment, resolve every durable repo ref, provision all managed worktrees, and select the primary cwd from review/workstream affinity. Otherwise resolve `targetRepo` and create its worktree when set.
-2. Resolve agent definition + context profile (defaults to all-true)
+2. Resolve agent definition + context profile (defaults to all-true). Typed
+   worker assignments force `threadHistory:false` because their durable
+   assignment envelope is the compiled handoff; Junior/lead and direct worker
+   turns keep their declared history profile.
 3. First turn: `buildPromptPreamble(...)` injects enabled blocks
 4. Resumed turn: just `buildWorkspaceBlock` (cheap safety insurance) if workspace flag is on
 5. `resolveSlackMentions` rewrites `<@U…>` → `@Name (<@U…>)`
 6. Download image files → append paths
 7. `composeSystemPrompt` (common + agent body) + identity block + dispatch-allow block → `session.systemPrompt`
 8. Optional `<persistent-agent-state>` block when `context.agentState` is on
-9. `spawnRunner(runSession, prompt, ..., agentIdentity)` wrapped in `withTimeout`
+9. Optional pre-recall. Compiled typed worker assignments skip it because
+   Junior's handoff owns recall selection. Junior/lead assignments recall on
+   retry `0`; settlement continuations reuse that context.
+10. Emit content-free `prompt-context` telemetry (character count and block
+    presence), then `spawnRunner(runSession, prompt, ..., agentIdentity)`
+    wrapped in `withTimeout`.
 
 ## Concurrency Guards
 

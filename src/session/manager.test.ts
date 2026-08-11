@@ -220,6 +220,8 @@ const testConfig: Config = {
     defaultVerbosity: "quiet",
     idleTimeoutMs: 300000,
     maxIdleInterrupts: 3,
+    shortFollowupInterruptEnabled: false,
+    shortFollowupMaxLength: 280,
   },
   memory: {
     sqlitePath: "data/memory.db",
@@ -474,6 +476,45 @@ describe("SessionManager", () => {
     );
   });
 
+  it("interrupts attributed human follow-ups on the durable default-run path", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    const first = createMockHandle();
+    const replacement = createMockHandle();
+    first.kill = mock(() => first._complete("stale durable response"));
+    const handles = [first, replacement];
+    mockSpawnFn = mock(() => handles.shift()!);
+    manager = createTestManager(store, cloneConfig({
+      session: {
+        ...testConfig.session,
+        shortFollowupInterruptEnabled: true,
+        shortFollowupMaxLength: 240,
+      },
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+    const responses: string[] = [];
+    manager.onResponse = (_session, response) => responses.push(response);
+
+    await manager.handleMessage(makeEvent({ text: "start the task" }));
+    await manager.handleMessage(makeEvent({
+      text: "small human correction",
+      ts: "1234567890.223456",
+    }));
+
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+    expect(first.kill).toHaveBeenCalledWith("SIGINT");
+    expect(responses).toEqual([]);
+    const prompt = mockSpawnFn.mock.calls[1]?.[1] as string;
+    expect(prompt).toContain("start the task");
+    expect(prompt).toContain("small human correction");
+  });
+
   it("creates a resumable child assignment for human input after a durable wait", async () => {
     const pipelineStore = new InMemoryPipelineStore();
     manager = createTestManager(store, cloneConfig({
@@ -500,7 +541,7 @@ describe("SessionManager", () => {
         status: "blocked",
         reason: "Need the user's decision",
         evidenceRefs: [],
-        artifactRefs: [],
+        artifactRefs: ["pipeline-artifact:onboarding-packet.md"],
         blockers: [],
         checks: [],
         progressFingerprint: "wait:user-decision",
@@ -531,7 +572,14 @@ describe("SessionManager", () => {
     expect(child).toBeDefined();
     expect(child?.parentAssignmentId).toBe(invocation?.assignmentId);
     expect(child?.status).toBe("pending");
+    expect(child?.artifactRefs).toContain(
+      "pipeline-artifact:onboarding-packet.md",
+    );
     expect(mockSpawnFn.mock.calls[1][1]).toContain("use option B");
+    expect(mockSpawnFn.mock.calls[1][1]).toContain("Need the user's decision");
+    expect(mockSpawnFn.mock.calls[1][1]).toContain(
+      "pipeline-artifact:onboarding-packet.md",
+    );
     expect(mockSpawnFn.mock.calls[1][1]).toContain(child!.id);
   });
 
@@ -720,6 +768,228 @@ describe("SessionManager", () => {
     expect(runSession.targetRepo).toBe("frontend");
     expect(runSession.worktreePath).toBe(paths.frontend);
     expect(runSession.worktreePaths).toEqual(paths);
+  });
+
+  it("keeps the onboarding agent repo-less outside a pipeline", async () => {
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: () => "/tmp/should-not-be-created",
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "check membership state" }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(mockSpawnFn.mock.calls[0]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+    });
+  });
+
+  it("keeps a stale-cwd onboarding cold start isolated from repo agent definitions", async () => {
+    const resolvedSessions: ThreadSession[] = [];
+    manager.agentRouter = {
+      resolveAgent: mock(async (runSession: ThreadSession) => {
+        resolvedSessions.push(runSession);
+        return null;
+      }),
+      composeSystemPrompt: mock(async () => null),
+    } as unknown as NonNullable<typeof manager.agentRouter>;
+
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    existing.agentSessions["onboard-member"] = {
+      agentName: "onboard-member",
+      provider: "claude",
+      sessionId: "legacy-onboarding-session",
+      sessionCwd: "/tmp/stale-worktree",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "continue the membership check" }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(resolvedSessions).toHaveLength(1);
+    expect(resolvedSessions[0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+      sessionId: null,
+    });
+    expect(mockSpawnFn.mock.calls[0]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+      sessionId: null,
+    });
+    // Invocation isolation must not erase worktree state needed by later
+    // build/review assignments on the durable thread.
+    expect(await store.get("thread-1")).toMatchObject({
+      targetRepo: "junior",
+      worktreePath: "/tmp/stale-worktree",
+      worktreePaths: { junior: "/tmp/stale-worktree" },
+      cwd: "/tmp/stale-cwd",
+    });
+  });
+
+  it("preserves durable worktree affinity when a repo-less utility idle-resumes", async () => {
+    const idleHandle = createIdleOpencodeHandle("ses-onboard", 12345);
+    const retryHandle = createCompletingOpencodeHandle("ses-onboard", 67890);
+    const handles = [idleHandle, retryHandle];
+    mockSpawnFn = mock(() => handles.shift()!);
+    manager = createTestManager(store, cloneConfig({
+      runner: { provider: "opencode" },
+      opencode: {
+        ...testConfig.opencode,
+        continuityEnabled: true,
+      },
+      session: {
+        ...testConfig.session,
+        idleTimeoutMs: 5,
+        maxIdleInterrupts: 1,
+      },
+    }));
+
+    const existing = createSession("thread-1", "C123");
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/durable-worktree";
+    existing.worktreePaths = { junior: "/tmp/durable-worktree" };
+    existing.cwd = "/tmp/durable-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "check membership state" }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+
+    expect(mockSpawnFn.mock.calls[1]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+      cwd: null,
+    });
+    expect(await store.get("thread-1")).toMatchObject({
+      targetRepo: "junior",
+      worktreePath: "/tmp/durable-worktree",
+      worktreePaths: { junior: "/tmp/durable-worktree" },
+      cwd: "/tmp/durable-cwd",
+      idleInterruptCount: 1,
+    });
+
+    retryHandle._complete("resumed", "ses-onboard");
+  });
+
+  it("fails closed when Codex app-server cannot enforce MCP-only isolation", async () => {
+    manager = createTestManager(store, cloneConfig({
+      runner: { provider: "codex-app-server" },
+    }));
+    const errors = mock((_session: ThreadSession, _error: string | null) => {});
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "check membership state" }),
+      "onboard-member",
+    );
+    await waitFor(() => errors.mock.calls.length === 1);
+
+    expect(mockSpawnFn).not.toHaveBeenCalled();
+    expect(errors.mock.calls[0]![1]).toContain(
+      "cannot enforce MCP-only tool isolation",
+    );
+  });
+
+  it("does not provision or inherit worktrees for the repo-less onboarding agent", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-onboard-member",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/junior", "GrowthX-Club/frontend"],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-onboard-member",
+        runId: "run-onboard-member",
+        targetAgent: "onboard-member",
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: () => "/tmp/should-not-be-created",
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-onboard-member";
+    existing.activePipelineKind = "product";
+    existing.targetRepo = "junior";
+    existing.worktreePath = "/tmp/stale-worktree";
+    existing.worktreePaths = { junior: "/tmp/stale-worktree" };
+    existing.cwd = "/tmp/stale-cwd";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "check the member state using read-only MongoDB",
+        pipelineInvocation: {
+          runId: "run-onboard-member",
+          assignmentId: "assignment-onboard-member",
+          dispatchKey: "dispatch-onboard-member",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "onboard-member",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    const runSession = mockSpawnFn.mock.calls[0]![0];
+    expect(runSession.targetRepo).toBeNull();
+    expect(runSession.worktreePath).toBeNull();
+    expect(runSession.worktreePaths).toEqual({});
+    expect(runSession.cwd).toBeNull();
+    // Repo-less routing is invocation-local: do not erase worktrees that a
+    // later build/review assignment on the same pipeline still needs.
+    expect(await store.get("thread-1")).toMatchObject({
+      targetRepo: "junior",
+      worktreePath: "/tmp/stale-worktree",
+      worktreePaths: { junior: "/tmp/stale-worktree" },
+      cwd: "/tmp/stale-cwd",
+    });
   });
 
   it("coalesces concurrent fan-out setup for the same pipeline worktree", async () => {
@@ -1187,6 +1457,112 @@ describe("SessionManager", () => {
     expect(session!.pendingMessages.length).toBe(1);
     expect(session!.pendingMessages[0].text).toBe("Second message");
     expect(onBuffered).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses an interrupted response and replays the complete short burst after exit", async () => {
+    const first = createMockHandle();
+    const replacement = createMockHandle();
+    first.kill = mock((signal) => {
+      expect(signal).toBe("SIGINT");
+      first._complete("stale response", "session-before-interrupt");
+    });
+    const handles = [first, replacement];
+    mockSpawnFn = mock(() => handles.shift()!);
+    manager = createTestManager(
+      store,
+      cloneConfig({
+        session: {
+          ...testConfig.session,
+          shortFollowupInterruptEnabled: true,
+          shortFollowupMaxLength: 240,
+        },
+      }),
+    );
+    const responses: string[] = [];
+    manager.onResponse = (_session, response) => responses.push(response);
+
+    await manager.handleMessage(makeEvent({ text: "First instruction" }));
+    await manager.handleMessage(
+      makeEvent({ text: "small correction", ts: "1234567890.223456" }),
+    );
+
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+    expect(first.kill).toHaveBeenCalledTimes(1);
+    expect(responses).toEqual([]);
+    const replacementPrompt = mockSpawnFn.mock.calls[1]?.[1] as string;
+    expect(replacementPrompt).toContain("First instruction");
+    expect(replacementPrompt).toContain("small correction");
+
+    replacement._complete("fresh consolidated response", "session-after-interrupt");
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual(["fresh consolidated response"]);
+    const settled = await store.get("thread-1");
+    expect(settled?.status).toBe("idle");
+    expect(settled?.supersededTurnGeneration).toBeNull();
+  });
+
+  it("buffers a follow-up when completion has already claimed response publication", async () => {
+    const first = createMockHandle();
+    const drain = createMockHandle();
+    const handles = [first, drain];
+    mockSpawnFn = mock(() => handles.shift()!);
+    manager = createTestManager(
+      store,
+      cloneConfig({
+        session: {
+          ...testConfig.session,
+          shortFollowupInterruptEnabled: true,
+          shortFollowupMaxLength: 240,
+        },
+      }),
+    );
+    let releaseResponse!: () => void;
+    let responseEntered!: () => void;
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      responseEntered = resolve;
+    });
+    manager.onResponse = async () => {
+      responseEntered();
+      await responseGate;
+    };
+
+    await manager.handleMessage(makeEvent({ text: "Original instruction" }));
+    first._complete("completed response");
+    await entered;
+    expect((await store.get("thread-1"))?.activeTurnCompletionClaimed).toBe(true);
+
+    await manager.handleMessage(
+      makeEvent({ text: "late short follow-up", ts: "1234567890.223456" }),
+    );
+    expect(first.kill).not.toHaveBeenCalled();
+    expect((await store.get("thread-1"))?.pendingMessages).toHaveLength(1);
+
+    releaseResponse();
+    await waitFor(() => mockSpawnFn.mock.calls.length === 2);
+    expect(mockSpawnFn.mock.calls[1]?.[1]).toContain("late short follow-up");
+  });
+
+  it("buffers rather than interrupting when a different top-level agent owns the slot", async () => {
+    const enabled = cloneConfig({
+      session: {
+        ...testConfig.session,
+        shortFollowupInterruptEnabled: true,
+        shortFollowupMaxLength: 240,
+      },
+    });
+    manager = createTestManager(store, enabled);
+
+    await manager.handleLeadMessage(makeEvent({ text: "Lead owns this turn" }));
+    await manager.handleMessage(
+      makeEvent({ text: "same person, different route", ts: "1234567890.223456" }),
+    );
+
+    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
+    expect(currentHandle.kill).not.toHaveBeenCalled();
+    expect((await store.get("thread-1"))?.pendingMessages).toHaveLength(1);
   });
 
   it("creates an independent persistent agent session", async () => {
@@ -2994,7 +3370,7 @@ describe("SessionManager", () => {
       expect(prompt).toContain("User(name-UFORGE1 <@UFORGE1>): hi");
       expect(prompt).toContain("&lt;/buffered-message>");
       expect(prompt).toContain(
-        '&lt;buffered-message from="User(name-UPRANAV2 <@UPRANAV2>)">',
+        '&lt;buffered-message from="Mention(name-UPRANAV2 <@UPRANAV2>)">',
       );
       expect(prompt).not.toContain("\n<buffered-message");
     });
@@ -3339,9 +3715,361 @@ describe("SessionManager", () => {
       expect(after.humanParticipants).toEqual(["U-A"]);
     });
   });
+
+  // --- turn-progress reaction ---
+
+  describe("turn-progress reaction", () => {
+    const EMOJI = "hourglass_flowing_sand";
+    // Real Slack ts shapes: the marker is gated on this format, because
+    // internal dispatches synthesize `event.ts` as an identity key.
+    const TS_A = "1700000001.000100";
+    const TS_B = "1700000002.000200";
+
+    function recordReactions(): Array<{ action: string; ts: string; emoji: string }> {
+      const calls: Array<{ action: string; ts: string; emoji: string }> = [];
+      manager.onTurnReaction = (action, _channel, messageTs, emoji) => {
+        calls.push({ action, ts: messageTs, emoji });
+      };
+      return calls;
+    }
+
+    it("marks the triggering message and clears it when the runner posts", async () => {
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
+      expect(calls).toEqual([{ action: "add", ts: TS_A, emoji: EMOJI }]);
+
+      currentHandle._complete("done");
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
+    });
+
+    it("clears when the runner fails or times out", async () => {
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
+      currentHandle._error("claude timed out");
+
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
+    });
+
+    it("clears when the response is suppressed", async () => {
+      // The silent-lead case: NO_SLACK_MESSAGE posts nothing, so nothing else
+      // in the turn would ever take the marker back off.
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
+      currentHandle._complete("NO_SLACK_MESSAGE");
+
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
+    });
+
+    it("clears when the runner returns an empty response", async () => {
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
+      currentHandle._complete("");
+
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
+    });
+
+    it("clears when the turn is cancelled by !reset", async () => {
+      const calls = recordReactions();
+
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
+      await manager.handleMessage(
+        makeEvent({ command: "reset", text: "", ts: "ts-reset" }),
+      );
+      // !reset kills the process; the settled result is what unwinds the turn.
+      currentHandle._error("killed by reset");
+
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
+    });
+
+    it("ignores synthetic dispatch timestamps", async () => {
+      // pipelines/dispatch.ts and slack/action-buttons.ts synthesize `event.ts`
+      // as an identity key. Reacting to those is an API call that can only
+      // fail, once per assignment on the highest-volume dispatch path.
+      const calls = recordReactions();
+
+      await manager.handleAgentMessage(
+        makeEvent({ ts: "pipeline:run_x:asg_y:1700000000000" }),
+        "build",
+      );
+      await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+      currentHandle._complete("done");
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(calls).toEqual([]);
+    });
+
+    it("keeps the marker until the last turn on that message finishes", async () => {
+      // Ref-counting: a dispatched agent turn can share the triggering message
+      // with the top-level turn. The first to finish must not strip the other's
+      // marker.
+      const calls = recordReactions();
+      const topLevel = currentHandle;
+
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
+      const agent = createMockHandle();
+      mockSpawnFn = mock(() => agent);
+      await manager.handleAgentMessage(makeEvent({ ts: TS_A }), "build");
+      await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+      // One add for two overlapping turns.
+      expect(calls).toEqual([{ action: "add", ts: TS_A, emoji: EMOJI }]);
+
+      agent._complete("agent done");
+      await new Promise((r) => setTimeout(r, 5));
+      expect(calls).toHaveLength(1);
+
+      topLevel._complete("lead done");
+      await waitFor(() => calls.length === 2);
+      expect(calls[1]).toEqual({ action: "remove", ts: TS_A, emoji: EMOJI });
+    });
+
+    it("marks the newly drained message when a buffered turn follows", async () => {
+      const calls = recordReactions();
+      const first = currentHandle;
+
+      await manager.handleMessage(makeEvent({ ts: TS_A }));
+      const second = createMockHandle();
+      mockSpawnFn = mock(() => second);
+      await manager.handleMessage(makeEvent({ ts: TS_B }));
+
+      first._complete("done");
+      await waitFor(() => calls.length === 3);
+      expect(calls.slice(0, 3)).toEqual([
+        { action: "add", ts: TS_A, emoji: EMOJI },
+        { action: "remove", ts: TS_A, emoji: EMOJI },
+        { action: "add", ts: TS_B, emoji: EMOJI },
+      ]);
+
+      second._complete("done");
+      await waitFor(() => calls.length === 4);
+      expect(calls[3]).toEqual({ action: "remove", ts: TS_B, emoji: EMOJI });
+    });
+  });
 });
 
 describe("typed pipeline settlement", () => {
+  it("runs trusted skills statelessly without a worktree, inherited prompt, or direct Slack response", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-sentry-skill",
+      targetAgent: "skill:sentry-fetch",
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+      objective: "inspect the last hour",
+      idempotencyKey: "asg-sentry-skill-key",
+    }));
+    const seeded = createSession("thread-1", "C123");
+    seeded.systemPrompt = "large parent prompt that must not be inherited";
+    seeded.agentSessions["skill:sentry-fetch"] = {
+      agentName: "skill:sentry-fetch",
+      provider: "claude",
+      sessionId: "stale-skill-session",
+      sessionCwd: "/tmp/stale-worktree",
+      status: "idle",
+      pendingMessages: [],
+      lastActivity: Date.now(),
+      pid: null,
+    };
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const handles: MockHandle[] = [];
+    const spawnedSessions: ThreadSession[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawnedSessions.push(structuredClone(runSession));
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    const responses = mock((_session: ThreadSession, _response: string) => undefined);
+    manager.onResponse = responses;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "pipeline-internal",
+      text: "<pipeline-assignment>inspect the last hour</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:sentry-skill",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-sentry-skill",
+        dispatchKey: "sentry-skill",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "skill:sentry-fetch");
+    await waitFor(() => handles.length === 1);
+
+    expect(spawnedSessions[0]).toMatchObject({
+      sessionId: null,
+      sessionCwd: null,
+      systemPrompt: null,
+      cwd: null,
+      worktreePath: null,
+      activeSkill: {
+        name: "sentry-fetch",
+        execution: "stateless",
+      },
+      assignmentCapabilities: ["pipeline-artifact-write"],
+    });
+    expect(spawnedSessions[0]?.agentPermissions).toMatchObject({
+      intent: "read-only",
+      mcp: ["slack-bot"],
+    });
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-sentry-skill",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "evidence recorded",
+        evidenceRefs: [],
+        artifactRefs: ["sentry.md"],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "sentry-evidence-recorded",
+      },
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "sentry-evidence-recorded",
+    });
+    handles[0]!._complete(
+      "DONE: one issue found - see sentry.md",
+      "ephemeral-skill-session",
+    );
+
+    await waitFor(async () =>
+      (await sessionStore.get("thread-1"))
+        ?.agentSessions["skill:sentry-fetch"]?.status === "done"
+    );
+    const settled = await sessionStore.get("thread-1");
+    expect(settled?.agentSessions["skill:sentry-fetch"]?.sessionId).toBeNull();
+    expect(settled?.agentSessions["skill:sentry-fetch"]?.sessionCwd).toBeNull();
+    expect(responses).not.toHaveBeenCalled();
+  });
+
+  it("uses compiled assignment context without worker Slack history or recall", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-context-budget",
+      targetAgent: "build",
+      objective: "implement from scoped anchors",
+      idempotencyKey: "asg-context-budget-key",
+    }));
+    const handles: MockHandle[] = [];
+    const prompts: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, (_session, prompt) => {
+      prompts.push(prompt);
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    attachExistingPipelineWorktree(manager);
+    let threadHistoryReads = 0;
+    manager.slackApp = {
+      client: {
+        users: {
+          info: async ({ user }: { user: string }) => ({
+            user: { profile: { display_name: user } },
+          }),
+        },
+        conversations: {
+          info: async () => ({ channel: { name: "test" } }),
+          replies: async () => {
+            threadHistoryReads++;
+            return {
+              messages: [
+                { ts: "1", user: "U-A", text: "stale discovery discussion" },
+              ],
+            };
+          },
+        },
+      },
+    } as unknown as App;
+    let recallCalls = 0;
+    (manager as unknown as {
+      preRecall: (
+        message: string,
+        context: { repo: string | null; agent: string },
+      ) => Promise<string | null>;
+    }).preRecall = async () => {
+      recallCalls++;
+      return "<pre-recall>scoped lesson</pre-recall>";
+    };
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "pipeline-internal",
+      text: "<pipeline-assignment>scoped anchors</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:context-budget",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-context-budget",
+        dispatchKey: "context-budget",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+
+    expect(prompts[0]).toContain("<pipeline-assignment>");
+    expect(prompts[0]).not.toContain("<pre-recall>");
+    expect(prompts[0]).not.toContain("<thread-context>");
+    expect(threadHistoryReads).toBe(0);
+    expect(recallCalls).toBe(0);
+
+    handles[0]!._complete("", "context-budget-session", [], {
+      status: "incomplete",
+      reason: "max_turns",
+      retryable: true,
+    });
+    await waitFor(() => handles.length === 2);
+
+    expect(prompts[1]).not.toContain("<thread-context>");
+    expect(prompts[1]).not.toContain("<pre-recall>");
+    expect(threadHistoryReads).toBe(0);
+    expect(recallCalls).toBe(0);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-context-budget",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "context budget verified",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "context-budget-verified",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "context-budget-verified",
+    });
+    handles[1]!._complete("done", "context-budget-session");
+  });
+
   it("repairs an unavailable Claude session without consuming pipeline retries", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
@@ -3620,13 +4348,26 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
-    attachExistingPipelineWorktree(manager);
-    let releaseRecall!: () => void;
-    const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
-    let recallCalls = 0;
-    (manager as unknown as { preRecall: (message: string, context: { repo: string | null }) => Promise<string | null> }).preRecall = async () => {
-      recallCalls++;
-      if (recallCalls === 2) await recallGate;
+    const worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    let releaseSetup!: () => void;
+    const setupGate = new Promise<void>((resolve) => { releaseSetup = resolve; });
+    let worktreeChecks = 0;
+    manager.worktreeManager = {
+      getWorktreePath: () => worktreePath,
+      worktreeExists: mock(async () => {
+        worktreeChecks++;
+        if (worktreeChecks === 2) await setupGate;
+        return true;
+      }),
+      createWorktree: mock(async () => worktreePath),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+    (manager as unknown as {
+      preRecall: (
+        message: string,
+        context: { repo: string | null },
+      ) => Promise<string | null>;
+    }).preRecall = async () => {
       return null;
     };
 
@@ -3647,11 +4388,11 @@ describe("typed pipeline settlement", () => {
       reason: "max_turns",
       retryable: true,
     });
-    await waitFor(() => recallCalls === 2);
+    await waitFor(() => worktreeChecks === 2);
     await manager.handleMessage(
       makeEvent({ command: "reset", text: "build", ts: "reset-worker" }),
     );
-    releaseRecall();
+    releaseSetup();
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect((await sessionStore.get("thread-1"))?.agentSessions.build).toBeUndefined();
@@ -3677,13 +4418,26 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
-    attachExistingPipelineWorktree(manager);
-    let releaseRecall!: () => void;
-    const recallGate = new Promise<void>((resolve) => { releaseRecall = resolve; });
-    let recallCalls = 0;
-    (manager as unknown as { preRecall: (message: string, context: { repo: string | null }) => Promise<string | null> }).preRecall = async () => {
-      recallCalls++;
-      if (recallCalls === 2) await recallGate;
+    const worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    let releaseSetup!: () => void;
+    const setupGate = new Promise<void>((resolve) => { releaseSetup = resolve; });
+    let worktreeChecks = 0;
+    manager.worktreeManager = {
+      getWorktreePath: () => worktreePath,
+      worktreeExists: mock(async () => {
+        worktreeChecks++;
+        if (worktreeChecks === 2) await setupGate;
+        return true;
+      }),
+      createWorktree: mock(async () => worktreePath),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+    (manager as unknown as {
+      preRecall: (
+        message: string,
+        context: { repo: string | null },
+      ) => Promise<string | null>;
+    }).preRecall = async () => {
       return null;
     };
 
@@ -3704,11 +4458,11 @@ describe("typed pipeline settlement", () => {
       reason: "max_turns",
       retryable: true,
     });
-    await waitFor(() => recallCalls === 2);
+    await waitFor(() => worktreeChecks === 2);
     await manager.handleMessage(
       makeEvent({ command: "reset", text: "all", ts: "reset-lead" }),
     );
-    releaseRecall();
+    releaseSetup();
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(await sessionStore.get("thread-1")).toBeUndefined();
@@ -3807,6 +4561,320 @@ describe("typed pipeline settlement", () => {
       (await sessionStore.get("thread-1"))?.agentSessions.build
         ?.activePipelineInvocation,
     ).toBeNull();
+  });
+
+  it("publishes a withheld response after settlement recovery returns a sentinel", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-withheld-response",
+      targetAgent: "build",
+      idempotencyKey: "asg-withheld-response-key",
+    }));
+    const handles: MockHandle[] = [];
+    const prompts: string[] = [];
+    const responses: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, (_session, prompt) => {
+      prompts.push(prompt);
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.onResponse = (_session, response) => responses.push(response);
+    attachExistingPipelineWorktree(manager);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review the pull request",
+      dedupeKey: "pipeline-outbox:dispatch-withheld-response",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-withheld-response",
+        dispatchKey: "dispatch-withheld-response",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+
+    handles[0]!._complete(
+      "review: changes-requested — three warnings need attention",
+      "withheld-response-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    expect(responses).toEqual([]);
+    expect(prompts[1]).toContain("previous user-facing response was withheld");
+    expect(prompts[1]).toContain("has NOT been posted");
+    expect(
+      (await sessionStore.get("thread-1"))?.agentSessions.build
+        ?.activePipelineInvocation?.pendingUserResponse,
+    ).toBe("review: changes-requested — three warnings need attention");
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-withheld-response",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "review completed",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "withheld-response-complete",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "withheld-response-complete",
+    });
+    handles[1]!._complete(
+      "NO_SLACK_MESSAGE",
+      "withheld-response-session",
+    );
+
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual([
+      "review: changes-requested — three warnings need attention",
+    ]);
+    expect(
+      (await sessionStore.get("thread-1"))?.agentSessions.build
+        ?.activePipelineInvocation,
+    ).toBeNull();
+  });
+
+  it("prefers a newer recovery response over the withheld response", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-replaced-response",
+      targetAgent: "build",
+      idempotencyKey: "asg-replaced-response-key",
+    }));
+    const handles: MockHandle[] = [];
+    const responses: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.onResponse = (_session, response) => responses.push(response);
+    attachExistingPipelineWorktree(manager);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review the pull request",
+      dedupeKey: "pipeline-outbox:dispatch-replaced-response",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-replaced-response",
+        dispatchKey: "dispatch-replaced-response",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete(
+      "review: changes-requested — preliminary verdict",
+      "replaced-response-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-replaced-response",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "review completed",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "replaced-response-complete",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "replaced-response-complete",
+    });
+    handles[1]!._complete(
+      "review: changes-requested — final corrected verdict",
+      "replaced-response-session",
+    );
+
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual([
+      "review: changes-requested — final corrected verdict",
+    ]);
+  });
+
+  it("does not restore a withheld response after recovery posts directly to Slack", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-direct-slack-response",
+      targetAgent: "build",
+      idempotencyKey: "asg-direct-slack-response-key",
+    }));
+    const handles: MockHandle[] = [];
+    const responses: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.onResponse = (_session, response) => responses.push(response);
+    attachExistingPipelineWorktree(manager);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review the pull request",
+      dedupeKey: "pipeline-outbox:dispatch-direct-slack-response",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-direct-slack-response",
+        dispatchKey: "dispatch-direct-slack-response",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete(
+      "review: changes-requested — withheld verdict",
+      "direct-slack-response-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-direct-slack-response",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "review completed",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "direct-slack-response-complete",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "direct-slack-response-complete",
+    });
+    handles[1]!._complete(
+      "NO_SLACK_MESSAGE",
+      "direct-slack-response-session",
+      [{
+        type: "tool",
+        provider: "claude",
+        name: "mcp__slack-bot__slack_send_message",
+        input: { text: "review: changes-requested — posted directly" },
+      }],
+    );
+
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual(["NO_SLACK_MESSAGE"]);
+    expect(responses).not.toContain(
+      "review: changes-requested — withheld verdict",
+    );
+  });
+
+  it("keeps the withheld response when a settled recovery ends with partial output", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({
+      phase: "building",
+      repoRefs: ["junior"],
+    }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-partial-recovery-response",
+      targetAgent: "build",
+      idempotencyKey: "asg-partial-recovery-response-key",
+    }));
+    const handles: MockHandle[] = [];
+    const responses: string[] = [];
+    const manager = new SessionManager(sessionStore, testConfig, () => {
+      const handle = createMockHandle();
+      handles.push(handle);
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.onResponse = (_session, response) => responses.push(response);
+    attachExistingPipelineWorktree(manager);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review the pull request",
+      dedupeKey: "pipeline-outbox:dispatch-partial-recovery-response",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-partial-recovery-response",
+        dispatchKey: "dispatch-partial-recovery-response",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "build");
+    await waitFor(() => handles.length === 1);
+    handles[0]!._complete(
+      "review: changes-requested — complete withheld verdict",
+      "partial-recovery-response-session",
+    );
+    await waitFor(() => handles.length === 2);
+
+    const run = (await pipelineStore.getRun("run-1"))!;
+    await pipelineStore.recordOutcomeTransaction({
+      outcome: {
+        assignmentId: "asg-partial-recovery-response",
+        expectedRunVersion: run.stateVersion,
+        action: "complete",
+        status: "succeeded",
+        reason: "review completed",
+        evidenceRefs: [],
+        artifactRefs: [],
+        blockers: [],
+        checks: [],
+        progressFingerprint: "partial-recovery-response-complete",
+      },
+      toPhase: "aggregate-verification",
+      actorType: "system",
+      actorId: "test",
+      idempotencyKey: "partial-recovery-response-complete",
+    });
+    handles[1]!._complete(
+      "I recorded the outcome and was about to restate the verdict",
+      "partial-recovery-response-session",
+      [],
+      {
+        status: "incomplete",
+        reason: "max_turns",
+        retryable: true,
+        providerSubtype: "error_max_turns",
+        turns: 25,
+      },
+    );
+
+    await waitFor(() => responses.length === 1);
+    expect(responses).toEqual([
+      "review: changes-requested — complete withheld verdict",
+    ]);
   });
 
   it("posts one failure only after the bounded recovery budget is exhausted", async () => {

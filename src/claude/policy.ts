@@ -4,7 +4,7 @@ import {
   type AgentPermissions,
 } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
-import { hasCapability } from "../agents/capabilities.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 import {
   reviewInspectionCommandPatterns,
   worktreeInspectionCommandPatterns,
@@ -52,6 +52,12 @@ const READ_ONLY_DISALLOWED = [
 const NO_TOOLS_DISALLOWED = ["Edit", "Write", "NotebookEdit", "Bash"];
 
 /**
+ * Junior's durable assignment graph is the only fan-out mechanism. Provider
+ * subagents bypass assignment state, context compilation, and settlement.
+ */
+const PROVIDER_NATIVE_FANOUT_DISALLOWED = ["Agent"];
+
+/**
  * Database access is capability-scoped through the read-only MongoDB MCP.
  * Normal agents otherwise run Bash in bypassPermissions mode, so explicitly
  * block the credential-discovery and direct-client forms seen in production.
@@ -94,21 +100,27 @@ export function mapClaudeRunPolicy(options: {
     session.activeAgentName ?? session.agentType,
   );
   const declaredTools = permissions?.tools ?? [];
-  const agentName = session.activeAgentName ?? session.agentType;
   const capabilityTools = [
-    ...(hasCapability(agentName, "github-review-comment")
+    ...(subjectHasCapability(session, "github-review-comment")
+      ? ["Bash(gh *)"]
+      : []),
+    ...(subjectHasCapability(session, "github-review-comment")
       ? [GITHUB_POST_REVIEW_TOOL]
       : []),
-    ...(hasCapability(agentName, "pipeline-artifact-write")
+    ...(subjectHasCapability(session, "pipeline-artifact-write")
       ? [
           "mcp__slack-bot__pipeline_get_state",
           "mcp__slack-bot__pipeline_report_outcome",
+          "mcp__slack-bot__pipeline_write_artifact",
         ]
       : []),
-    ...(hasCapability(agentName, "dispatch")
-      ? ["mcp__slack-bot__agent_dispatch"]
+    ...(subjectHasCapability(session, "dispatch")
+      ? [
+          "mcp__slack-bot__agent_dispatch",
+          "mcp__slack-bot__skill_dispatch",
+        ]
       : []),
-    ...(hasCapability(agentName, "pipeline-run-start")
+    ...(subjectHasCapability(session, "pipeline-run-start")
       ? ["mcp__slack-bot__pipeline_start_run"]
       : []),
   ];
@@ -116,8 +128,24 @@ export function mapClaudeRunPolicy(options: {
     session.worktreePath,
     ...Object.values(session.worktreePaths ?? {}),
   ].filter((root): root is string => Boolean(root));
-  const mayInspect = hasCapability(agentName, "worktree-verify");
+  const mayInspect = subjectHasCapability(session, "worktree-verify");
   const hasRegisteredWorktreeCwd = worktreeRoots.includes(cwd);
+
+  if (intent === "mcp-only") {
+    return {
+      permissionMode: "default",
+      allowedTools: [...new Set([...declaredTools, ...capabilityTools])]
+        .filter((tool) => tool.startsWith("mcp__")),
+      disallowedTools: [
+        "Read",
+        "Glob",
+        "Grep",
+        ...NO_TOOLS_DISALLOWED,
+        ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+      ],
+      addDirs: [],
+    };
+  }
 
   if (intent === "read-only") {
     if (mayInspect) {
@@ -151,7 +179,10 @@ export function mapClaudeRunPolicy(options: {
             ...verificationTools,
           ]),
         ],
-        disallowedTools: [...READ_ONLY_DISALLOWED],
+        disallowedTools: [
+          ...READ_ONLY_DISALLOWED,
+          ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+        ],
         addDirs: hasRegisteredWorktreeCwd
           ? [...new Set([cwd, ...worktreeRoots])]
           : [],
@@ -167,7 +198,10 @@ export function mapClaudeRunPolicy(options: {
     return {
       permissionMode: capabilityTools.length > 0 ? "default" : "plan",
       allowedTools: [...new Set([...readOnlyDeclaredTools, ...capabilityTools])],
-      disallowedTools: [...READ_ONLY_DISALLOWED],
+      disallowedTools: [
+        ...READ_ONLY_DISALLOWED,
+        ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+      ],
       addDirs: [],
     };
   }
@@ -176,7 +210,10 @@ export function mapClaudeRunPolicy(options: {
     return {
       permissionMode: "plan",
       allowedTools: [],
-      disallowedTools: [...NO_TOOLS_DISALLOWED],
+      disallowedTools: [
+        ...NO_TOOLS_DISALLOWED,
+        ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+      ],
       addDirs: [],
     };
   }
@@ -202,7 +239,9 @@ export function mapClaudeRunPolicy(options: {
         ]),
       ],
       disallowedTools:
-        capabilityTools.length > 0 ? [...READ_ONLY_DISALLOWED] : [],
+        capabilityTools.length > 0
+          ? [...READ_ONLY_DISALLOWED, ...PROVIDER_NATIVE_FANOUT_DISALLOWED]
+          : [...PROVIDER_NATIVE_FANOUT_DISALLOWED],
       addDirs: [cwd],
     };
   }
@@ -212,7 +251,10 @@ export function mapClaudeRunPolicy(options: {
     return {
       permissionMode: config.permissionMode,
       allowedTools: declaredTools,
-      disallowedTools: [...DIRECT_DATABASE_ACCESS_DISALLOWED],
+      disallowedTools: [
+        ...DIRECT_DATABASE_ACCESS_DISALLOWED,
+        ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+      ],
       addDirs: [cwd],
     };
   }
@@ -224,7 +266,10 @@ export function mapClaudeRunPolicy(options: {
   return {
     permissionMode: "bypassPermissions",
     allowedTools: [],
-    disallowedTools: [...DIRECT_DATABASE_ACCESS_DISALLOWED],
+    disallowedTools: [
+      ...DIRECT_DATABASE_ACCESS_DISALLOWED,
+      ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+    ],
     addDirs: [cwd],
   };
 }

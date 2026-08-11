@@ -5,8 +5,13 @@ import {
   type DriverMode,
   type SessionVerbosity,
 } from "./session/types.ts";
+import { DEFAULT_DEDUP_THRESHOLD, resolveDedupThreshold } from "./memory/dedup.ts";
 import type { EmbeddingProviderKind } from "./memory/embedding/factory.ts";
 import type { WhatsAppConfig } from "./whatsapp/types.ts";
+import {
+  mergeConfiguredAndDiscoveredRepos,
+  parseRepoDiscoveryRoots,
+} from "./repos/discovery.ts";
 
 export interface RepoConfig {
   name: string;
@@ -110,6 +115,8 @@ export interface Config {
   codex: {
     mode: "app-server" | "cli";
     model: string | null;
+    /** Codex model reasoning effort. Defaults to "medium". */
+    reasoningEffort?: string;
     timeoutMs: number;
     sandbox: "read-only" | "workspace-write" | "danger-full-access";
     askForApproval: "untrusted" | "on-request" | "never";
@@ -140,6 +147,10 @@ export interface Config {
     idleTimeoutMs: number;
     /** Maximum SIGINT + resume attempts before letting the hard timeout kill the turn. */
     maxIdleInterrupts: number;
+    /** Enable short follow-up interruption (narrow interrupt + consolidate). Default false. */
+    shortFollowupInterruptEnabled: boolean;
+    /** Maximum character length for a message to be considered a "short" follow-up. */
+    shortFollowupMaxLength: number;
   };
   memory: {
     sqlitePath: string;
@@ -153,10 +164,17 @@ export interface Config {
      */
     embedProvider?: EmbeddingProviderKind;
     /**
-     * Pre-recall hook: before each runner turn, a cheap LLM extracts recall
-     * queries from the incoming message and injects matching claims into the
-     * prompt. Optional so existing Config test fixtures stay valid; `loadConfig`
-     * always populates it.
+     * Cosine at/above which a claim write MERGES into an existing claim instead
+     * of storing a near-duplicate twin. Set via `MEMORY_DEDUP_THRESHOLD`;
+     * defaults to 0.92 so retuning the gate is a config move, not a code move.
+     * Optional so existing Config test fixtures stay valid; `loadConfig` always
+     * populates it and the store falls back to the same default.
+     */
+    dedupThreshold?: number;
+    /**
+     * Pre-recall hook: before each runner turn, retrieve relevant claims and
+     * inject them into the prompt. Deterministic relevance filtering is the
+     * default hot path; optional synthesis is explicitly opt-in.
      */
     preRecall?: {
       enabled: boolean;
@@ -164,6 +182,8 @@ export interface Config {
       /** Override the pinned cheapest model for the chosen runner. */
       model?: string;
       timeoutMs: number;
+      /** Opt into the bounded synthesis subprocess. Defaults false. */
+      synthesisEnabled?: boolean;
     };
   };
   threadArchives: {
@@ -301,6 +321,7 @@ export function loadConfig(): Config {
     codex: {
       mode: parseCodexMode(optional("CODEX_MODE", "app-server")),
       model: process.env.CODEX_MODEL ?? null,
+      reasoningEffort: optional("CODEX_REASONING_EFFORT", "medium"),
       timeoutMs: Number(optional("CODEX_TIMEOUT_MS", "300000")),
       sandbox: parseCodexSandbox(optional("CODEX_SANDBOX", "workspace-write")),
       askForApproval: parseCodexApproval(optional("CODEX_ASK_FOR_APPROVAL", "never")),
@@ -318,14 +339,10 @@ export function loadConfig(): Config {
       isolatedHomePath:
         process.env.CODEX_ISOLATED_HOME_PATH?.trim() || "data/codex-home",
     },
-    repos: (JSON.parse(optional("REPOS", "[]")) as RepoConfig[]).map((r) => ({
-      ...r,
-      // Strip any trailing slashes so path-construction sites can do
-      // `${r.path}.junior-worktrees/...` without producing
-      // `<repo>//.junior-worktrees/...` (which collapses to a path INSIDE
-      // the repo and recreates the recursive-copy bug).
-      path: r.path.replace(/\/+$/, ""),
-    })),
+    repos: mergeConfiguredAndDiscoveredRepos(
+      JSON.parse(optional("REPOS", "[]")) as RepoConfig[],
+      parseRepoDiscoveryRoots(process.env.REPO_DISCOVERY_ROOTS),
+    ),
     session: {
       staleTimeoutMs: Number(optional("SESSION_STALE_TIMEOUT_MS", "86400000")),
       cleanupIntervalMs: Number(
@@ -339,10 +356,18 @@ export function loadConfig(): Config {
       ),
       idleTimeoutMs: Number(optional("SESSION_IDLE_TIMEOUT_MS", "300000")),
       maxIdleInterrupts: Number(optional("SESSION_MAX_IDLE_INTERRUPTS", "3")),
+      shortFollowupInterruptEnabled: parseBooleanEnv("SESSION_SHORT_FOLLOWUP_INTERRUPT_ENABLED", false),
+      shortFollowupMaxLength: parsePositiveIntEnv(
+        "SESSION_SHORT_FOLLOWUP_MAX_LENGTH",
+        optional("SESSION_SHORT_FOLLOWUP_MAX_LENGTH", "240"),
+      ),
     },
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
       embedProvider: parseEmbedProvider(optional("MEMORY_EMBED_PROVIDER", "local")),
+      dedupThreshold: resolveDedupThreshold(
+        optional("MEMORY_DEDUP_THRESHOLD", String(DEFAULT_DEDUP_THRESHOLD)),
+      ),
       preRecall: {
         // Default OFF: pre-recall spawns a subprocess on every Slack turn.
         // Operators must opt in after verifying timeout/kill behaviour.
@@ -350,6 +375,10 @@ export function loadConfig(): Config {
         runner: parsePreRecallRunner(optional("PRE_RECALL_RUNNER", "claude")),
         model: process.env.PRE_RECALL_MODEL || undefined,
         timeoutMs: Number(optional("PRE_RECALL_TIMEOUT_MS", "15000")),
+        synthesisEnabled: parseBooleanEnv(
+          "PRE_RECALL_SYNTHESIS_ENABLED",
+          false,
+        ),
       },
     },
     threadArchives: {

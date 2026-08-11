@@ -33,7 +33,7 @@ import {
   type CodexRunPolicy,
 } from "../codex-app-server/policy.ts";
 import type { OpenCodePermissionConfig } from "../opencode/config.ts";
-import { hasCapability } from "../agents/capabilities.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 import {
   GITHUB_POST_REVIEW_TOOL,
   GITHUB_READ_REVIEW_STATE_TOOL,
@@ -51,6 +51,7 @@ export interface PermissionSubject {
   worktreePath?: string | null;
   worktreePaths?: Record<string, string>;
   verificationPackageManager?: ThreadSession["verificationPackageManager"];
+  assignmentCapabilities?: ThreadSession["assignmentCapabilities"];
 }
 
 /**
@@ -71,11 +72,16 @@ export function resolveRunPermissionIntent(
  * Mutating Slack/memory/dispatch tools are NOT included.
  */
 export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
+  "mcp__mongodb__find": "allow",
+  "mcp__mongodb__list-collections": "allow",
+  "mcp__mongodb__collection-schema": "allow",
   "mcp__slack-bot__slack_read_thread": "allow",
   "mcp__slack-bot__slack_read_channel": "allow",
   "mcp__slack-bot__slack_search": "allow",
   "mcp__slack-bot__slack_search_users": "allow",
   "mcp__slack-bot__memory_recall": "allow",
+  "mcp__slack-bot__runbook_search": "allow",
+  "mcp__slack-bot__runbook_select": "allow",
   "mcp__slack-bot__register_worktree": "allow",
   "mcp__slack-bot__pipeline_get_state": "allow",
   [GITHUB_READ_REVIEW_STATE_TOOL]: "allow",
@@ -100,30 +106,51 @@ export function compileOpenCodePermission(options: {
 }): OpenCodePermissionConfig {
   const intent = resolveRunPermissionIntent(options.subject);
   const fallback = options.fallback ?? "allow";
-  const agentName =
-    options.subject.activeAgentName ?? options.subject.agentType;
   const capabilityPermissions: Record<string, string> = {
-    ...(hasCapability(agentName, "github-review-comment")
+    ...(subjectHasCapability(options.subject, "github-review-comment")
       ? { [GITHUB_POST_REVIEW_TOOL]: "allow" }
       : {}),
-    ...(hasCapability(agentName, "pipeline-artifact-write")
+    ...(subjectHasCapability(options.subject, "pipeline-artifact-write")
       ? {
           "mcp__slack-bot__pipeline_get_state": "allow",
           "mcp__slack-bot__pipeline_report_outcome": "allow",
+          "mcp__slack-bot__pipeline_write_artifact": "allow",
         }
       : {}),
-    ...(hasCapability(agentName, "dispatch")
-      ? { "mcp__slack-bot__agent_dispatch": "allow" }
+    ...(subjectHasCapability(options.subject, "mongodb-read")
+      ? {
+          "mcp__mongodb__find": "allow",
+          "mcp__mongodb__list-collections": "allow",
+          "mcp__mongodb__collection-schema": "allow",
+        }
       : {}),
-    ...(hasCapability(agentName, "pipeline-run-start")
+    ...(subjectHasCapability(options.subject, "dispatch")
+      ? {
+          "mcp__slack-bot__agent_dispatch": "allow",
+          "mcp__slack-bot__skill_dispatch": "allow",
+        }
+      : {}),
+    ...(subjectHasCapability(options.subject, "pipeline-run-start")
       ? { "mcp__slack-bot__pipeline_start_run": "allow" }
       : {}),
   };
+  const declaredBashPatterns = (options.subject.agentPermissions?.tools ?? [])
+    .map((tool) => /^Bash\((.+)\)$/.exec(tool)?.[1])
+    .filter((pattern): pattern is string => Boolean(pattern));
+  const declaredMcpPermissions = Object.fromEntries(
+    (options.subject.agentPermissions?.tools ?? [])
+      .filter((tool) => tool.startsWith("mcp__"))
+      .map((tool) => [tool, "allow"]),
+  );
   const worktreeRoots = [
     options.subject.worktreePath,
     ...Object.values(options.subject.worktreePaths ?? {}),
   ].filter((root): root is string => Boolean(root));
-  const mayInspect = hasCapability(agentName, "worktree-verify");
+  const mayInspect = subjectHasCapability(options.subject, "worktree-verify");
+  const mayUseGitHubCli = subjectHasCapability(
+    options.subject,
+    "github-review-comment",
+  );
   const hasRegisteredWorktreeCwd =
     Boolean(options.cwd) &&
     worktreeRoots.includes(options.cwd!);
@@ -142,6 +169,30 @@ export function compileOpenCodePermission(options: {
     };
   }
 
+  if (intent === "mcp-only") {
+    const declaredMcpPermissions = Object.fromEntries(
+      (options.subject.agentPermissions?.tools ?? [])
+        .filter((tool) => tool.startsWith("mcp__"))
+        .map((tool) => [tool, "allow"]),
+    );
+    return {
+      read: "deny",
+      glob: "deny",
+      grep: "deny",
+      list: "deny",
+      edit: "deny",
+      write: "deny",
+      bash: "deny",
+      task: "deny",
+      "*": "deny",
+      // OpenCode resolves permission patterns last-match-wins. The wildcard
+      // denial must precede the exact trusted MCP grants.
+      "mcp__*": "deny",
+      ...declaredMcpPermissions,
+      ...capabilityPermissions,
+    };
+  }
+
   if (intent === "read-only") {
     return {
       read: "allow",
@@ -150,26 +201,31 @@ export function compileOpenCodePermission(options: {
       list: "allow",
       edit: "deny",
       write: "deny",
-      bash: mayInspect
+      bash: mayInspect || declaredBashPatterns.length > 0
         ? Object.fromEntries([
             ["*", "deny"],
-            ...(hasRegisteredWorktreeCwd && options.subject.verificationPackageManager
-              ? worktreeVerificationCommandPatterns(
-                  options.subject.verificationPackageManager,
-                )
-              : hasRegisteredWorktreeCwd
-                ? worktreeInspectionCommandPatterns()
-                : reviewInspectionCommandPatterns()
+            ...declaredBashPatterns.map((pattern) => [pattern, "allow"]),
+            ...(mayInspect
+              ? hasRegisteredWorktreeCwd && options.subject.verificationPackageManager
+                ? worktreeVerificationCommandPatterns(
+                    options.subject.verificationPackageManager,
+                  )
+                : hasRegisteredWorktreeCwd
+                  ? worktreeInspectionCommandPatterns()
+                  : reviewInspectionCommandPatterns()
+              : []
             ).map(
               (pattern) => [pattern, "allow"],
             ),
+            ...(mayUseGitHubCli ? [["gh *", "allow"]] : []),
           ])
         : "deny",
       task: "deny",
       // Explicit read-safe MCP surface only — never blanket mcp__*.
-      ...READ_SAFE_MCP_PERMISSIONS,
-      ...capabilityPermissions,
       "mcp__*": "deny",
+      ...READ_SAFE_MCP_PERMISSIONS,
+      ...declaredMcpPermissions,
+      ...capabilityPermissions,
     };
   }
 
@@ -193,8 +249,12 @@ export function compileOpenCodePermission(options: {
     };
   }
 
-  // normal, utility, or unset — preserve operator-configured fallback.
-  return fallback;
+  // Normal, utility, or unset preserve the operator fallback except for
+  // provider-native fan-out. Junior's durable assignment graph owns all
+  // delegation so every OpenCode runtime denies Task.
+  return typeof fallback === "string"
+    ? { "*": fallback, task: "deny" }
+    : { ...fallback, task: "deny" };
 }
 
 /** Compile Claude run policy from session + config. */
@@ -291,6 +351,7 @@ export const CATALOG_ROLE_NAMES = [
   "frontend",
   "review",
   "reproducer",
+  "onboard-member",
 ] as const;
 
 /**

@@ -91,6 +91,8 @@ export function decideDefaultPromotion(input: {
     ...(request.additionalAssignments ?? []),
   ].map((assignment) => ({
     ...assignment,
+    skillRef: assignment.skillRef ?? null,
+    capabilityRefs: [...(assignment.capabilityRefs ?? [])],
     status: assignment.status ?? "pending",
     leaseOwner: assignment.leaseOwner ?? null,
     leaseExpiresAt: assignment.leaseExpiresAt ?? null,

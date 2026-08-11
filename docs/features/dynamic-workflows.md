@@ -1,6 +1,6 @@
 # Dynamic Workflows
 
-> **Current status (2026-07-21):** Shipped. The registry, SQLite state/run store, hot reload, scheduler, Slack commands, and localhost dashboard endpoint are live. Current definitions include `worklog`, `release-notes`, `memory-consolidation`, and `worktree-prune`; private overlays may add or override definitions.
+> **Current status (2026-07-21):** Shipped. The registry, SQLite state/run store, hot reload, scheduler, Slack commands, and localhost dashboard endpoint are live. Current definitions include `worklog`, `release-notes`, `memory-consolidation`, `memory-dedup-sweep`, and `worktree-prune`; private overlays may add or override definitions.
 
 ## Problem
 
@@ -223,6 +223,17 @@ bun run <runtime context junior.memoryCli> recall-claims --query "dashboard rout
 ```
 
 The CLI uses `MEMORY_DB_PATH` when set, otherwise `data/memory.db`. Because workflow runners execute from `/tmp/junior-utility`, the runtime context includes `junior.projectRoot` and `junior.memoryCli` absolute paths. Normal Junior runner sessions with MCP wiring can use `memory_recall`, `memory_add`, and `memory_consolidate` instead.
+
+## Memory Dedup Sweep Workflow
+
+`memory-dedup-sweep` is the second native (no-runner) workflow. It runs
+`runDedupSweep` in-process to cluster claim near-duplicates that predate the
+store's write guard and reports the plan. Like `migrate-v3.ts` it is **dry-run by
+default**: the scheduled run never mutates memory, because a merged-away claim is
+recoverable only from provenance. Committing is an explicit operator action —
+`bun run src/memory/cli.ts dedup-sweep --apply`, with the bot stopped so it does
+not contend for the WAL writer. See
+[claim-dedup-write-guard.md](claim-dedup-write-guard.md).
 
 ### Runner idle interrupt fallback
 

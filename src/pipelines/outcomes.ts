@@ -13,6 +13,10 @@ import {
   resolveHandoffTarget,
   type OrchestratorContext,
 } from "../agents/registry.ts";
+import {
+  resolveTrustedSkill,
+  skillRunnerAgentName,
+} from "../skills/registry.ts";
 import { log } from "../logger.ts";
 import type { PipelineStore } from "./store/interface.ts";
 import type {
@@ -41,6 +45,8 @@ export type ReportOutcomeInput = {
   outcome: AgentOutcome;
   /** Proposed phase advance. Omitted means keep current phase. */
   toPhase?: string;
+  /** Repository refs atomically bound when the transition commits. */
+  repoRefs?: string[];
   /** Optional event idempotency key for duplicate detection. */
   idempotencyKey?: string;
   auth: OutcomeAuthContext;
@@ -144,6 +150,9 @@ export function parseAgentOutcome(raw: unknown): AgentOutcome {
     const w = o.wait as Record<string, unknown>;
     outcome.wait = {
       conditionName: requiredString(w.conditionName, "wait.conditionName"),
+      ...(w.wakeAt == null
+        ? {}
+        : { wakeAt: requiredNumber(w.wakeAt, "wait.wakeAt") }),
       deadlineAt: requiredNumber(w.deadlineAt, "wait.deadlineAt"),
     };
   }
@@ -154,6 +163,7 @@ export function parseAgentOutcome(raw: unknown): AgentOutcome {
         n.parentAssignmentId == null
           ? null
           : requiredString(n.parentAssignmentId, "nextAssignment.parentAssignmentId"),
+      sourceSlackUserId: null,
       targetAgent: requiredString(n.targetAgent, "nextAssignment.targetAgent"),
       objective: requiredString(n.objective, "nextAssignment.objective"),
       contextRefs: stringArray(n.contextRefs ?? [], "nextAssignment.contextRefs"),
@@ -248,7 +258,8 @@ export async function reportOutcome(
       outcome.targetAgent ?? outcome.nextAssignment?.targetAgent ?? "";
     const source = assignment.targetAgent;
     const ctx = auth.orchestratorContext ?? orchestratorContextFor(run);
-    if (!canDispatch(source, target, ctx)) {
+    const trustedSkillDispatch = isTrustedSkillDispatch(outcome);
+    if (!trustedSkillDispatch && !canDispatch(source, target, ctx)) {
       const reason = `unauthorized handoff edge: ${source} → ${target}`;
       logRejectedOutcome(run.id, assignment.id, reason);
       return {
@@ -295,6 +306,7 @@ export async function reportOutcome(
       return reportOutcome(deps, {
         outcome: escalated,
         toPhase: "needs-human",
+        repoRefs: input.repoRefs,
         idempotencyKey:
           input.idempotencyKey ??
           `loop-escalate:${loopKey}:${assignment.id}`,
@@ -343,6 +355,7 @@ export async function reportOutcome(
   const receipt = await deps.store.recordOutcomeTransaction({
     outcome,
     toPhase: input.toPhase,
+    repoRefs: input.repoRefs,
     actorType: "agent",
     actorId: auth.agent,
     idempotencyKey: input.idempotencyKey,
@@ -365,6 +378,21 @@ export async function reportOutcome(
   return receipt;
 }
 
+function isTrustedSkillDispatch(outcome: AgentOutcome): boolean {
+  const next = outcome.nextAssignment;
+  if (!next?.skillRef) return false;
+  const skill = resolveTrustedSkill(next.skillRef);
+  if (!skill || next.targetAgent !== skillRunnerAgentName(skill.name)) {
+    return false;
+  }
+  const expected = [...skill.capabilities].sort();
+  const received = [...(next.capabilityRefs ?? [])].sort();
+  return (
+    expected.length === received.length &&
+    expected.every((capability, index) => capability === received[index])
+  );
+}
+
 function logRejectedOutcome(
   runId: string | null,
   assignmentId: string,
@@ -385,12 +413,15 @@ export async function requestHandoff(
     assignmentId: string;
     expectedRunVersion: number;
     targetAgent: string;
+    skillRef?: string | null;
+    capabilityRefs?: import("../agents/manifest.ts").AgentCapability[];
     objective: string;
     reason: string;
     progressFingerprint: string;
     evidenceRefs?: string[];
     artifactRefs?: string[];
     acceptanceCriteria?: string[];
+    repoRefs?: string[];
     mutationScope?: string[];
     contextRefs?: string[];
     dependsOn?: string[];
@@ -419,7 +450,10 @@ export async function requestHandoff(
     progressFingerprint: args.progressFingerprint,
     nextAssignment: {
       parentAssignmentId: args.assignmentId,
+      sourceSlackUserId: null,
       targetAgent: args.targetAgent,
+      skillRef: args.skillRef ?? null,
+      capabilityRefs: [...(args.capabilityRefs ?? [])],
       objective: args.objective,
       contextRefs: args.contextRefs ?? [],
       artifactRefs: args.artifactRefs ?? [],
@@ -437,6 +471,7 @@ export async function requestHandoff(
   return reportOutcome(deps, {
     outcome,
     toPhase: args.toPhase,
+    repoRefs: args.repoRefs,
     idempotencyKey: args.idempotencyKey,
     auth: args.auth,
   });

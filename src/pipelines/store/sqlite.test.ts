@@ -6,6 +6,7 @@ import { fakeClock } from "../../time/clock.ts";
 import { SqlitePipelineStore } from "./sqlite.ts";
 import {
   makeAssignmentCreate,
+  makeBugRun,
   makeDefaultPromotionInput,
   makeDefaultRun,
   makeProductRun,
@@ -77,13 +78,37 @@ describe("SqlitePipelineStore", () => {
 
   it("round-trips runs and assignments", async () => {
     await store.createRun(makeProductRun());
-    await store.createAssignment(makeAssignmentCreate());
+    await store.createAssignment(makeAssignmentCreate({
+      skillRef: "sentry-fetch",
+      capabilityRefs: ["pipeline-artifact-write"],
+    }));
     const run = await store.getRun("run-1");
     expect(run?.kind).toBe("product");
     expect(run?.threadId).toBe("T1");
     const asg = await store.getAssignment("asg-1");
     expect(asg?.targetAgent).toBe("build");
+    expect(asg?.skillRef).toBe("sentry-fetch");
+    expect(asg?.capabilityRefs).toEqual(["pipeline-artifact-write"]);
     expect((await store.getRunByThread("T1"))?.id).toBe("run-1");
+  });
+
+  it("lists every run newest-first with combinable kind and status filters", async () => {
+    await store.createRun(makeProductRun({ updatedAt: 1_000 }));
+    await store.createRun(makeBugRun({ updatedAt: 2_000, status: "waiting" }));
+    await store.createRun(makeDefaultRun({ updatedAt: 3_000 }));
+
+    expect((await store.listRuns()).map((run) => run.kind)).toEqual([
+      "default",
+      "bug",
+      "product",
+    ]);
+    expect(
+      (await store.listRuns({ kind: "bug", status: "waiting" }))
+        .map((run) => run.id),
+    ).toEqual(["bug-run-1"]);
+    expect(await store.listRuns({ kind: "product", status: "waiting" })).toEqual([]);
+    expect(await store.listRuns({ limit: 2 })).toHaveLength(2);
+    expect(await store.countOpenRuns()).toBe(3);
   });
 
   it("is idempotent on assignment idempotency keys", async () => {
@@ -380,6 +405,7 @@ describe("SqlitePipelineStore", () => {
         reason: "ready for review",
         nextAssignment: {
           parentAssignmentId: "asg-1",
+          sourceSlackUserId: null,
           targetAgent: "review",
           objective: "review PR",
           contextRefs: [],
@@ -395,12 +421,17 @@ describe("SqlitePipelineStore", () => {
         },
       }),
       toPhase: "reviewing",
+      repoRefs: ["example-frontend"],
       actorType: "agent",
       actorId: "build",
       idempotencyKey: "tx-1",
     });
     expect(receipt.status).toBe("accepted");
     expect(receipt.runVersion).toBe(1);
+    expect((await store.getRun("run-1"))?.repoRefs).toEqual([
+      "example-backend",
+      "example-frontend",
+    ]);
 
     const outcomes = await store.listOutcomes("asg-1");
     expect(outcomes).toHaveLength(1);

@@ -21,7 +21,8 @@ export type OrchestratorContext = "support" | "default";
 
 /** Restrictiveness rank — higher is more restrictive. */
 const INTENT_RESTRICTIVENESS: Record<CatalogPermissionIntent, number> = {
-  "no-tools": 4,
+  "no-tools": 5,
+  "mcp-only": 4,
   "read-only": 3,
   "human-gated": 2,
   utility: 1,

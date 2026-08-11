@@ -184,6 +184,7 @@ export async function createBugRun(
         runId,
         parentAssignmentId: null,
         sourceAgent: "system",
+        sourceSlackUserId: null,
         targetAgent,
         objective: input.objective,
         contextRefs: [`mode:${mode}`, `start:${input.startKind}`],
@@ -344,6 +345,7 @@ async function promoteDefaultToBug(
     runId: existing.id,
     parentAssignmentId: source.id,
     sourceAgent: source.targetAgent,
+    sourceSlackUserId: null,
     targetAgent,
     objective: input.objective,
     contextRefs: [`mode:${mode}`, `start:${input.startKind}`],
@@ -485,6 +487,8 @@ export async function reduceBugOutcome(
     actorType?: "agent" | "human" | "system";
     actorId: string;
     idempotencyKey?: string;
+    /** Repository refs atomically bound with an accepted transition. */
+    repoRefs?: string[];
     riskClass?: RiskClass;
   },
 ): Promise<TransitionReceipt & { mode?: BugMode; notes?: string[] }> {
@@ -624,6 +628,7 @@ export async function reduceBugOutcome(
   const receipt = await store.recordOutcomeTransaction({
     outcome: input.outcome,
     toPhase: suggested,
+    repoRefs: input.repoRefs,
     actorType: input.actorType ?? "agent",
     actorId: input.actorId,
     idempotencyKey: input.idempotencyKey,

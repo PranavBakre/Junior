@@ -38,6 +38,26 @@ export function hasCapability(
   return manifest.capabilities.includes(capability);
 }
 
+export interface CapabilitySubject {
+  activeAgentName?: string | null;
+  agentType?: string | null;
+  assignmentCapabilities?: readonly AgentCapability[];
+}
+
+/**
+ * Runtime capability check. Durable assignment capabilities are additive only
+ * after SessionManager validates them against a trusted skill definition.
+ */
+export function subjectHasCapability(
+  subject: CapabilitySubject,
+  capability: AgentCapability,
+): boolean {
+  return (
+    subject.assignmentCapabilities?.includes(capability) === true ||
+    hasCapability(subject.activeAgentName ?? subject.agentType, capability)
+  );
+}
+
 /**
  * Human-gated capabilities are never granted by the catalog.
  * Always returns false — callers must route through a human gate.
@@ -111,6 +131,19 @@ export function canEditProductCode(
   ) && canMutateWorkspace(agent);
 }
 
+/**
+ * Whether an agent must run inside a Junior-managed repository worktree.
+ * Unknown agents fail closed. Orchestrators, planners, and repo-less utility
+ * agents operate only against their explicitly granted control-plane tools.
+ */
+export function requiresManagedWorktree(
+  agent: string | AgentManifest | null | undefined,
+): boolean {
+  const manifest = manifestOf(agent);
+  if (!manifest) return true;
+  return !["orchestrator", "planner", "utility"].includes(manifest.role);
+}
+
 export function mutationPolicyOf(
   agent: string | AgentManifest | null | undefined,
 ): MutationPolicy | null {
@@ -128,6 +161,7 @@ export function isReadOnlyRole(
   if (!manifest) return false;
   return (
     manifest.mutationPolicy === "none" ||
+    manifest.permissionIntent === "mcp-only" ||
     manifest.permissionIntent === "read-only" ||
     manifest.permissionIntent === "no-tools"
   );

@@ -87,6 +87,25 @@ export class InMemoryPipelineStore implements PipelineStore {
     this.runsByThread.set(run.threadId, run.id);
   }
 
+  async listRuns(filter?: {
+    status?: PipelineRun["status"];
+    kind?: PipelineRun["kind"];
+    limit?: number;
+  }): Promise<PipelineRun[]> {
+    return [...this.runs.values()]
+      .filter((run) =>
+        (!filter?.status || run.status === filter.status) &&
+        (!filter?.kind || run.kind === filter.kind)
+      )
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, filter?.limit ?? 100)
+      .map(cloneRun);
+  }
+
+  async countOpenRuns(): Promise<number> {
+    return [...this.runs.values()].filter((run) => run.status !== "terminal").length;
+  }
+
   async createRunWithAssignment(input: {
     run: PipelineRun;
     assignment: AssignmentCreate;
@@ -134,7 +153,10 @@ export class InMemoryPipelineStore implements PipelineStore {
         runId: assignmentInput.runId,
         parentAssignmentId: assignmentInput.parentAssignmentId,
         sourceAgent: assignmentInput.sourceAgent,
+        sourceSlackUserId: assignmentInput.sourceSlackUserId,
         targetAgent: assignmentInput.targetAgent,
+        skillRef: assignmentInput.skillRef ?? null,
+        capabilityRefs: [...(assignmentInput.capabilityRefs ?? [])],
         status: assignmentInput.status ?? "pending",
         objective: assignmentInput.objective,
         contextRefs: [...assignmentInput.contextRefs],
@@ -217,7 +239,10 @@ export class InMemoryPipelineStore implements PipelineStore {
       runId: input.runId,
       parentAssignmentId: input.parentAssignmentId,
       sourceAgent: input.sourceAgent,
+      sourceSlackUserId: input.sourceSlackUserId,
       targetAgent: input.targetAgent,
+      skillRef: input.skillRef ?? null,
+      capabilityRefs: [...(input.capabilityRefs ?? [])],
       status: input.status ?? "pending",
       objective: input.objective,
       contextRefs: [...input.contextRefs],
@@ -819,6 +844,17 @@ export class InMemoryPipelineStore implements PipelineStore {
 
   async listOutcomes(assignmentId: string): Promise<StoredOutcome[]> {
     return (this.outcomes.get(assignmentId) ?? []).map((o) => ({ ...o }));
+  }
+
+  async listOutcomesForRun(runId: string): Promise<StoredOutcome[]> {
+    const assignmentIds = new Set(
+      [...this.assignments.values()]
+        .filter((assignment) => assignment.runId === runId)
+        .map((assignment) => assignment.id),
+    );
+    return [...this.outcomes.entries()]
+      .filter(([assignmentId]) => assignmentIds.has(assignmentId))
+      .flatMap(([, outcomes]) => outcomes.map((outcome) => ({ ...outcome })));
   }
 
   // -------------------------------------------------------------------------
@@ -1426,6 +1462,7 @@ function cloneRun(run: PipelineRun): PipelineRun {
 function cloneAssignment(a: Assignment): Assignment {
   return {
     ...a,
+    capabilityRefs: [...a.capabilityRefs],
     contextRefs: [...a.contextRefs],
     artifactRefs: [...a.artifactRefs],
     acceptanceCriteria: [...a.acceptanceCriteria],

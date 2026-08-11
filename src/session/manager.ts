@@ -1,4 +1,6 @@
 import type { App } from "@slack/bolt";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import type { Config, RepoConfig } from "../config.ts";
 import type { RunnerEvent, RunnerProvider, SpawnHandle, SpawnResult, SpawnRunnerFn } from "../runners/types.ts";
 import type {
@@ -15,6 +17,7 @@ import type {
 } from "./types.ts";
 import type { AgentRouter } from "../agents/router.ts";
 import { resolveAgentManifest } from "../agents/registry.ts";
+import { requiresManagedWorktree } from "../agents/capabilities.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import type { PipelineStore } from "../pipelines/store/interface.ts";
 import {
@@ -26,6 +29,7 @@ import {
   isImplementedRunnerProvider,
   isRunnerProvider,
 } from "./types.ts";
+import { evaluateBusyFollowup } from "./followup-policy.ts";
 import {
   runnerTimeoutMs,
   sessionProvider,
@@ -55,10 +59,19 @@ import {
   buildWorkspaceBlock,
   escapeBlockDelimiters,
   resolveSlackMentions,
+  resolveUserName,
   type WorkspaceContext,
 } from "../slack/thread-context.ts";
-import { isDuplicateSlackToolResponse } from "../slack/formatting.ts";
-import { DEFAULT_CONTEXT_PROFILE, type AgentContextProfile } from "../agents/loader.ts";
+import {
+  hasSlackSendMessageEvent,
+  isDuplicateSlackToolResponse,
+  prepareSlackResponse,
+} from "../slack/formatting.ts";
+import {
+  DEFAULT_CONTEXT_PROFILE,
+  resolveEffectivePermissionIntent,
+  type AgentContextProfile,
+} from "../agents/loader.ts";
 import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import { inferReviewRepo } from "../worktree/review-routing.ts";
@@ -81,17 +94,40 @@ import { productContextForAssignment } from "../pipelines/product/controller.ts"
 import { composeProductDispatchPrompt } from "../pipelines/product/context.ts";
 import { createDefaultRun } from "../pipelines/default/controller.ts";
 import { pumpOutbox } from "../pipelines/pump.ts";
+import {
+  resolveTrustedSkill,
+  skillRunnerAgentName,
+} from "../skills/registry.ts";
+
+/**
+ * Turn-progress marker. Distinct from the "eyes" acknowledgement the event
+ * layer adds on receipt: this one is cleared when the turn ends, so it means
+ * "still working", not "seen".
+ */
+const TURN_PROGRESS_EMOJI = "hourglass_flowing_sand";
+
+/**
+ * A real Slack message timestamp (`1700000000.123456`). Internal dispatches
+ * synthesize `event.ts` as an identity key — `pipeline:<run>:<assignment>:<ts>`
+ * (pipelines/dispatch.ts) and `<ts>:button:<actionId>` (slack/action-buttons.ts)
+ * — and reacting to those is an API call that can only fail.
+ */
+const SLACK_MESSAGE_TS = /^\d+\.\d+$/;
 
 export class SessionManager {
   private store: SessionStore;
   private config: Config;
   private handles = new Map<string, SpawnHandle>();
+  private activeTurnSideEffects = new Map<string, boolean>();
+  private supersededTurnGenerations = new Set<string>();
   private seenMessages = new Set<string>();
   private worktreeSetups = new Map<string, Promise<string>>();
   private spawnRunner: SpawnRunnerFn;
   private drivers: DriverMap;
   private memoryIngestor?: MemoryIngestor;
   private preRecall: PreRecallFn | null;
+  /** Ref-count per marked message; see markTurnProgress. */
+  private turnProgressRefs = new Map<string, number>();
 
   slackApp?: App;
   botUserId?: string;
@@ -119,6 +155,17 @@ export class SessionManager {
   onError?: (session: ThreadSession, error: string | null) => void;
   onCommandResponse?: (event: SlackMessageEvent, response: string) => void;
   onReaction?: (event: SlackMessageEvent, emoji: string) => void;
+  /**
+   * Add/remove the turn-progress marker on the message that started a turn.
+   * Separate from `onReaction` because that one only ever adds, and this
+   * signal is worthless unless it can be taken back off.
+   */
+  onTurnReaction?: (
+    action: "add" | "remove",
+    channel: string,
+    messageTs: string,
+    emoji: string,
+  ) => void;
   onClearThreadStatus?: (threadTs: string) => void;
 
   constructor(
@@ -563,13 +610,129 @@ export class SessionManager {
 
     await this.onAgentDispatched?.(session, agentName);
 
-    const outcome: { action: "buffer" | "run" } = { action: "run" };
+    const outcome: {
+      action: "buffer" | "run" | "interrupt";
+      handle?: SpawnHandle;
+      generation?: string;
+    } = { action: "run" };
+    const incomingAuthor = this.attributionUserId(event);
     session = await this.mutateSession(event.threadId, (s) => {
       if (s.status === "busy") {
-        s.pendingMessages.push({
-          ...this.toPendingMessage(event),
+        const activeAgent = s.activeAgentName ?? agentName;
+        const hk = this.handleKey(s.threadId, activeAgent);
+        const currentHandle = this.handles.get(hk);
+        const activeInput = s.activeTurnInput ?? null;
+        const pipelineControlled = Boolean(s.activePipelineKind);
+        const decision = evaluateBusyFollowup({
+          enabled: this.config.session.shortFollowupInterruptEnabled,
+          senderUserId: incomingAuthor,
+          activeTurnAuthor: s.activeTurnAuthor ?? null,
+          activeMessage: activeInput
+            ? {
+                text: activeInput.policyText ?? activeInput.text,
+                hasFiles: activeInput.hasFiles === true,
+                hasCommand: Boolean(activeInput.command),
+                hasPipelineMetadata:
+                  pipelineControlled && Boolean(activeInput.pipelineInvocation),
+                isInternal: activeInput.isInternal === true,
+              }
+            : null,
+          incomingMessage: {
+            text: event.conversationalText ?? event.text,
+            hasFiles: Boolean(event.files?.length),
+            hasCommand: Boolean(event.command),
+            hasPipelineMetadata:
+              pipelineControlled && Boolean(event.pipelineInvocation),
+            isInternal: Boolean(event.isSelfBot && !event.attributionUserId),
+          },
+          maxMessageLength: this.config.session.shortFollowupMaxLength,
+          maxWordCount: 40,
+          elapsedMs: Date.now() - (s.activeTurnStartedAt ?? 0),
+          maxElapsedMs: 20_000,
+          activeTurnHasSideEffects: this.activeTurnSideEffects.get(hk) === true,
+          activeTurnAlreadyInterrupted: s.activeTurnWasInterrupted === true,
+          activeTurnCompletionClaimed:
+            s.activeTurnCompletionClaimed === true,
+          sameAgentSlot: activeAgent === agentName,
+          ownsExactHandle: Boolean(
+            currentHandle && s.activeTurnGeneration &&
+              this.handles.get(hk) === currentHandle,
+          ),
+          providerSupportsInterruption:
+            currentHandle?.provider === "claude" && s.driverMode === "headless",
         });
-        outcome.action = "buffer";
+
+        if (decision.action === "interrupt") {
+          const generation = s.activeTurnGeneration!;
+          // Mark in memory before the durable write yields so a concurrently
+          // completing runner cannot publish its stale response.
+          this.supersededTurnGenerations.add(generation);
+          _log.info(
+            "session",
+            `short-followup.interrupt thread=${s.threadId} agent=${agentName} reason=${decision.reason}`,
+          );
+          s.pendingMessages.push(this.toPendingMessage(event));
+          s.activeTurnWasInterrupted = true;
+          s.supersededTurnGeneration = generation;
+          outcome.action = "interrupt";
+          outcome.handle = currentHandle;
+          outcome.generation = generation;
+        } else {
+          // Shadow-mode logging: when feature is disabled but would have been eligible
+          if (!this.config.session.shortFollowupInterruptEnabled) {
+            const shadowDecision = evaluateBusyFollowup({
+              enabled: true,
+              senderUserId: incomingAuthor,
+              activeTurnAuthor: s.activeTurnAuthor ?? null,
+              activeMessage: activeInput
+                ? {
+                    text: activeInput.policyText ?? activeInput.text,
+                    hasFiles: activeInput.hasFiles === true,
+                    hasCommand: Boolean(activeInput.command),
+                    hasPipelineMetadata:
+                      pipelineControlled && Boolean(activeInput.pipelineInvocation),
+                    isInternal: activeInput.isInternal === true,
+                  }
+                : null,
+              incomingMessage: {
+                text: event.conversationalText ?? event.text,
+                hasFiles: Boolean(event.files?.length),
+                hasCommand: Boolean(event.command),
+                hasPipelineMetadata:
+                  pipelineControlled && Boolean(event.pipelineInvocation),
+                isInternal: Boolean(event.isSelfBot && !event.attributionUserId),
+              },
+              maxMessageLength: this.config.session.shortFollowupMaxLength,
+              maxWordCount: 40,
+              elapsedMs: Date.now() - (s.activeTurnStartedAt ?? 0),
+              maxElapsedMs: 20_000,
+              activeTurnHasSideEffects: this.activeTurnSideEffects.get(hk) === true,
+              activeTurnAlreadyInterrupted: s.activeTurnWasInterrupted === true,
+              activeTurnCompletionClaimed:
+                s.activeTurnCompletionClaimed === true,
+              sameAgentSlot: activeAgent === agentName,
+              ownsExactHandle: Boolean(
+                currentHandle && s.activeTurnGeneration &&
+                  this.handles.get(hk) === currentHandle,
+              ),
+              providerSupportsInterruption:
+                currentHandle?.provider === "claude" && s.driverMode === "headless",
+            });
+            if (shadowDecision.action === "interrupt") {
+              _log.info(
+                "session",
+                `short-followup.shadow thread=${s.threadId} agent=${agentName} would-interrupt=true`,
+              );
+            }
+          } else {
+            _log.info(
+              "session",
+              `short-followup.buffer thread=${s.threadId} agent=${agentName} reason=${decision.reason}`,
+            );
+          }
+          s.pendingMessages.push(this.toPendingMessage(event));
+          outcome.action = "buffer";
+        }
         return;
       }
       s.status = "busy";
@@ -578,7 +741,19 @@ export class SessionManager {
       s.activeTopLevelMessageTs = event.ts;
       s.slackIdentity = identityForAgent(agentName);
       s.lastActivity = Date.now();
+      s.activeTurnAuthor = incomingAuthor;
+      s.activeTurnWasInterrupted = false;
+      s.activeTurnInput = this.toPendingMessage(event);
+      s.activeTurnStartedAt = Date.now();
+      s.activeTurnGeneration = crypto.randomUUID();
+      s.supersededTurnGeneration = null;
+      s.activeTurnCompletionClaimed = false;
       outcome.action = "run";
+    }).catch((err) => {
+      if (outcome.generation) {
+        this.supersededTurnGenerations.delete(outcome.generation);
+      }
+      throw err;
     });
     this.rememberSeenMessage(dedupeKey);
 
@@ -587,17 +762,27 @@ export class SessionManager {
       return;
     }
 
+    if (outcome.action === "interrupt") {
+      // SIGINT is supported here only for Claude headless turns. Keep the
+      // exact handle installed and let its normal settlement path start the
+      // consolidated replacement after the process has actually exited.
+      outcome.handle!.kill("SIGINT");
+      return;
+    }
+
+    const handleKey = this.handleKey(session.threadId, agentName);
     const reservation = createRunSetupReservation(
       sessionProvider(this.buildRunSession(session, agentName), this.config),
     );
-    this.handles.set(this.handleKey(session.threadId, agentName), reservation);
+    this.handles.set(handleKey, reservation);
+    this.activeTurnSideEffects.set(handleKey, false);
     this.runRunnerWithAgent(
       session,
       event.text,
       event.ts,
       event.files,
       agentName,
-      event.user,
+      incomingAuthor ?? undefined,
       reservation,
     );
   }
@@ -1326,6 +1511,19 @@ export class SessionManager {
       }
     };
     let runnerStarted = false;
+    // Between the message landing and the runner's first output the thread
+    // shows nothing — prompt composition, worktree setup and pre-recall all run
+    // first. Mark whichever message started this turn. Dispatched agent turns
+    // (`@junior reproducer …`) carry their own ts and are usually the longest,
+    // so they get the marker too; overlap with a top-level turn on the same
+    // message is what markTurnProgress ref-counts. Drains and continuations
+    // thread no ts through, so only a top-level turn can recover one from the
+    // session row.
+    const progressMessageTs =
+      latestTs ?? (isTopLevel ? session.activeTopLevelMessageTs ?? null : null);
+    if (progressMessageTs) {
+      this.markTurnProgress(session.channel, progressMessageTs, "add");
+    }
     try {
       assertRunOwnership();
       let agentSession = isTopLevel
@@ -1351,6 +1549,39 @@ export class SessionManager {
               pipelineInvocation.assignmentId,
             )
           : undefined;
+      const activeSkill = activePipelineAssignment?.skillRef
+        ? resolveTrustedSkill(activePipelineAssignment.skillRef)
+        : null;
+      if (activePipelineAssignment?.skillRef && !activeSkill) {
+        throw new Error(
+          `Pipeline assignment ${activePipelineAssignment.id} references unknown skill "${activePipelineAssignment.skillRef}"`,
+        );
+      }
+      if (activeSkill) {
+        const expectedTarget = skillRunnerAgentName(activeSkill.name);
+        if (
+          activePipelineAssignment?.targetAgent !== expectedTarget ||
+          agentName !== expectedTarget
+        ) {
+          throw new Error(
+            `Skill assignment ${activePipelineAssignment?.id} target mismatch: expected ${expectedTarget}`,
+          );
+        }
+        const expectedCapabilities = [...activeSkill.capabilities].sort();
+        const assignedCapabilities = [
+          ...(activePipelineAssignment?.capabilityRefs ?? []),
+        ].sort();
+        if (
+          expectedCapabilities.length !== assignedCapabilities.length ||
+          expectedCapabilities.some(
+            (capability, index) => capability !== assignedCapabilities[index],
+          )
+        ) {
+          throw new Error(
+            `Skill assignment ${activePipelineAssignment?.id} capability envelope does not match trusted registry`,
+          );
+        }
+      }
       assertRunOwnership();
 
       // An explicit PR URL is the strongest repo-affinity signal for review.
@@ -1364,7 +1595,25 @@ export class SessionManager {
           )
         : undefined;
 
-      if (activePipelineRun && pipelineInvocation) {
+      const pipelineRole = activeSkill
+        ? "utility"
+        : resolveAgentManifest(agentName)?.role;
+      if (pipelineRole === "utility") {
+        _log.info(
+          "manager",
+          `workspace.skip thread=${session.threadId} run=${activePipelineRun?.id ?? "-"} assignment=${pipelineInvocation?.assignmentId ?? "-"} agent=${agentName} reason=repo-less-agent`,
+        );
+        // Repo-less agents must not inherit the thread's prior repository
+        // affinity. Keep this invocation-only so another assignment in the
+        // same pipeline can still use the durable managed worktrees.
+        session = this.projectInvocationSession(session, pipelineRole);
+      }
+
+      if (
+        activePipelineRun &&
+        pipelineInvocation &&
+        pipelineRole !== "utility"
+      ) {
         // Durable repo refs, not a developer checkout or stale session cwd,
         // define the pipeline workspace. Provision every referenced repo so
         // fan-out agents can collaborate through the injected path map. Plain
@@ -1546,14 +1795,54 @@ export class SessionManager {
       // cwd fallback: only used when no worktree exists. With the always-worktree
       // policy above, this only fires for read-only/discussion threads with no
       // targetRepo — never inside the shared origin repo.
-      const targetRepoCwd: string | undefined = session.worktreePath
+      let targetRepoCwd: string | undefined = session.worktreePath
         ? undefined
         : targetRepo?.path;
 
       // Build after worktree routing/creation so provider policy and cwd see
       // the newly registered isolated checkout on this same turn.
-      let runSession = this.buildRunSession(session, agentName, agentIdentity);
+      const applyAssignmentEnvelope = (
+        candidate: ThreadSession,
+      ): ThreadSession => {
+        if (!activeSkill) {
+          candidate.activeSkill = null;
+          candidate.assignmentCapabilities = [];
+          return candidate;
+        }
+        candidate.activeSkill = {
+          name: activeSkill.name,
+          path: activeSkill.path,
+          execution: activeSkill.execution,
+        };
+        candidate.assignmentCapabilities = [...activeSkill.capabilities];
+        // Skill assignments are intentionally stateless. A provider session
+        // may be reused only for settlement retries within this invocation;
+        // never resume context from an earlier invocation.
+        candidate.sessionId = null;
+        candidate.sessionCwd = null;
+        candidate.systemPrompt = null;
+        return candidate;
+      };
+      let runSession = applyAssignmentEnvelope(
+        this.buildRunSession(session, agentName, agentIdentity),
+      );
       let provider = sessionProvider(runSession, this.config);
+      const permissionIntent = resolveEffectivePermissionIntent(
+        runSession.agentPermissions,
+        runSession.activeAgentName ?? runSession.agentType,
+      );
+      if (permissionIntent === "mcp-only") {
+        if (provider === "codex-app-server") {
+          throw new Error(
+            `Provider ${provider} cannot enforce MCP-only tool isolation for ${agentName}; use claude, opencode, or opencode-sdk`,
+          );
+        }
+        targetRepoCwd = resolve(
+          import.meta.dirname ?? ".",
+          `../../data/runtime-agents/${agentName}`,
+        );
+        mkdirSync(targetRepoCwd, { recursive: true });
+      }
       const invocationCwd = resolveRunnerCwd(runSession, targetRepoCwd);
       if (
         runSession.sessionId &&
@@ -1570,11 +1859,17 @@ export class SessionManager {
           agentName,
           staleSessionId,
         );
-        session = invalidation.session;
+        const durableSession = invalidation.session;
         agentSession = isTopLevel
           ? null
-          : this.getOrCreateAgentSession(session, agentName);
-        runSession = this.buildRunSession(session, agentName, agentIdentity);
+          : this.getOrCreateAgentSession(durableSession, agentName);
+        // Provider-session invalidation reloads the durable thread row. Reapply
+        // invocation-only isolation before resolving policy or agent
+        // definitions so a stale cwd cannot restore repository trust.
+        session = this.projectInvocationSession(durableSession, pipelineRole);
+        runSession = applyAssignmentEnvelope(
+          this.buildRunSession(session, agentName, agentIdentity),
+        );
         provider = sessionProvider(runSession, this.config);
         if (invalidation.invalidated) {
           _log.warn(
@@ -1601,8 +1896,26 @@ export class SessionManager {
         ? await this.agentRouter.resolveAgent(runSession)
         : null;
       assertRunOwnership();
-      const contextProfile: AgentContextProfile =
-        agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
+      const declaredContextProfile: AgentContextProfile = activeSkill
+        ? {
+            identity: false,
+            slack: false,
+            workspace: false,
+            threadHistory: false,
+            threadHistoryLimit: 1,
+            agentState: false,
+          }
+        : agentDefinition?.context ?? DEFAULT_CONTEXT_PROFILE;
+      // A typed worker assignment already carries the durable objective,
+      // acceptance criteria, evidence/artifact refs, and exact causal handoff.
+      // Replaying the Slack conversation beside that contract duplicates
+      // Junior's dispatch context and makes workers reinterpret stale
+      // discussion. Junior/lead and direct worker turns keep their declared
+      // thread-history profile.
+      const usesCompiledWorkerContext = Boolean(pipelineInvocation && !isTopLevel);
+      const contextProfile: AgentContextProfile = usesCompiledWorkerContext
+        ? { ...declaredContextProfile, threadHistory: false }
+        : declaredContextProfile;
 
       // Apply agent-declared model override to the session so the spawner
       // picks it up (session.model ?? config.defaultModel).
@@ -1627,7 +1940,15 @@ export class SessionManager {
           fresh.modelClaude = agentDefinition.modelClaude ?? null;
         });
       }
-      runSession.agentPermissions = agentDefinition?.permissions;
+      runSession.agentPermissions =
+        agentDefinition?.permissions ??
+        (activeSkill
+          ? {
+              intent: activeSkill.permissions.intent,
+              mcp: [...activeSkill.permissions.mcp],
+              tools: [...activeSkill.permissions.tools],
+            }
+          : undefined);
 
       // Build the prompt. When the provider will not resume a prior model
       // session, inject the preamble blocks the agent asked for. On resumed
@@ -1644,14 +1965,26 @@ export class SessionManager {
         // Human-sent bodies also get block delimiters escaped so a message
         // can't smuggle in a forged <buffered-message from=...> block that
         // the instruction would treat as authoritative.
-        const attributed = this.isAttributableSender(senderUserId)
-          ? `<@${senderUserId}>: ${escapeBlockDelimiters(prompt)}`
-          : prompt;
-        const readablePrompt = await resolveSlackMentions(
-          this.slackApp,
-          attributed,
-          this.botUserId,
-        );
+        let readablePrompt: string;
+        if (this.isAttributableSender(senderUserId)) {
+          const senderName = await resolveUserName(this.slackApp, senderUserId);
+          const authorPrefix = `User(${senderName} <@${senderUserId}>)`;
+          // Resolve inline mentions in the body with compact @Name format so
+          // they are visually distinct from the authoritative author prefix.
+          const bodyWithMentions = await resolveSlackMentions(
+            this.slackApp,
+            escapeBlockDelimiters(prompt),
+            this.botUserId,
+            { inline: true },
+          );
+          readablePrompt = `${authorPrefix}: ${bodyWithMentions}`;
+        } else {
+          readablePrompt = await resolveSlackMentions(
+            this.slackApp,
+            prompt,
+            this.botUserId,
+          );
+        }
         if (!latestTs) {
           // Drain / internal continuation turns: no preamble decision to make,
           // but buffered messages still carry `<@ID>:` prefixes to resolve.
@@ -1669,7 +2002,10 @@ export class SessionManager {
             cwd: invocationCwd,
           });
           const isFirstTurn = !resumes;
-          const needsThreadCatchup = !!session.needsThreadCatchup;
+          // Catch-up belongs to the next conversational Junior turn, not to a
+          // typed worker assignment whose prompt is already self-contained.
+          const needsThreadCatchup =
+            !!session.needsThreadCatchup && !usesCompiledWorkerContext;
           if (isFirstTurn || needsThreadCatchup) {
             const preambleProfile: AgentContextProfile = needsThreadCatchup
               ? {
@@ -1749,7 +2085,7 @@ export class SessionManager {
 
       // Compose agent system prompt. The explicit default agent receives the
       // same selected-common prompt path as named worker agents.
-      if (this.agentRouter) {
+      if (this.agentRouter && !activeSkill) {
         const composed =
           (await this.agentRouter.composeSystemPrompt(runSession)) ?? null;
         runSession.systemPrompt = this.withAgentIdentityPrompt(
@@ -1775,20 +2111,33 @@ export class SessionManager {
         }
       }
 
-      if (this.preRecall) {
+      let preRecallInjected = false;
+      // Centralize worker-assignment recall in Junior's compiled handoff.
+      // Direct/manual turns keep recall, while orchestrator settlement
+      // continuations reuse the same assignment and provider-native context.
+      const shouldPreRecall =
+        !usesCompiledWorkerContext &&
+        (!pipelineInvocation || pipelineInvocation.retryCount === 0);
+      if (this.preRecall && shouldPreRecall) {
         // Scope recall to the session's repo so another repo's conventions
         // can't inject into this session's prompt.
         const preRecallBlock = await this.preRecall(rawMessage, {
           repo: session.targetRepo,
+          agent: agentName,
         });
         assertRunOwnership();
         if (preRecallBlock) {
           prompt = `${preRecallBlock}\n\n${prompt}`;
+          preRecallInjected = true;
         }
       }
 
-      // We don't log the prompt to avoid spamming the logs. unless we are debugging it
-      // log.info("prompt", `thread=${session.threadId} cwd=${targetRepoCwd ?? session.worktreePath ?? "junior"}\n--- PROMPT START ---\n${prompt}\n--- PROMPT END ---`);
+      // Log structure and size, never prompt contents. This makes provider and
+      // pipeline token regressions diagnosable without leaking Slack/code text.
+      _log.info(
+        "prompt-context",
+        `thread=${session.threadId} agent=${agentName} provider=${provider} chars=${prompt.length} pipeline=${Boolean(pipelineInvocation)} threadHistory=${prompt.includes("<thread-context>")} preRecall=${preRecallInjected} workspace=${prompt.includes("<workspace>")}`,
+      );
 
       let rawHandle: SpawnHandle;
       if (provider === "claude") {
@@ -1888,6 +2237,9 @@ export class SessionManager {
 
       handle.onEvent((event: RunnerEvent) => {
         armIdleTimer();
+        if (event.type === "tool") {
+          this.activeTurnSideEffects.set(handleKey, true);
+        }
         if (event.type === "init") {
           if (isTopLevel) {
             session.sessionId = event.sessionId;
@@ -2008,19 +2360,30 @@ export class SessionManager {
           (isTopLevel ? session.sessionId : agentSession?.sessionId) &&
           session.idleInterruptCount < maxIdleInterrupts
         ) {
-          session.idleInterruptCount++;
+          const nextIdleInterruptCount = session.idleInterruptCount + 1;
+          const durableSession = await this.mutateSession(
+            session.threadId,
+            (fresh) => {
+              if (this.handles.get(handleKey) !== attemptHandle) {
+                throw new RunOwnershipChangedError();
+              }
+              fresh.idleInterruptCount = nextIdleInterruptCount;
+            },
+          );
+          session = this.projectInvocationSession(durableSession, pipelineRole);
           _log.warn(
             "session",
             `idle-resume attempt=${session.idleInterruptCount}/${maxIdleInterrupts} thread=${session.threadId} agent=${agentName} provider=${provider}`,
           );
-          await this.store.set(session.threadId, session);
 
           const continuePrompt = [
             `The previous turn was interrupted after ${this.config.session.idleTimeoutMs / 1000}s with no runner events.`,
             `Idle interrupt ${session.idleInterruptCount} of ${maxIdleInterrupts}.`,
             "Continue from the last completed step.",
           ].join("\n");
-          const retryRunSession = this.buildRunSession(session, agentName, agentIdentity);
+          const retryRunSession = applyAssignmentEnvelope(
+            this.buildRunSession(session, agentName, agentIdentity),
+          );
           await this.attachReviewVerificationPolicy(retryRunSession, agentName);
           attemptedResumeId = retryRunSession.sessionId;
 
@@ -2070,6 +2433,9 @@ export class SessionManager {
           idleInterrupted = false;
           retryHandle.onEvent((event: RunnerEvent) => {
             armIdleTimer();
+            if (event.type === "tool") {
+              this.activeTurnSideEffects.set(handleKey, true);
+            }
             if (event.type === "init") {
               if (isTopLevel) {
                 session.sessionId = event.sessionId;
@@ -2100,15 +2466,42 @@ export class SessionManager {
           continue;
         }
 
-        const pipelineResolution = await this.resolvePipelineInvocation(
-          session,
-          agentName,
-          result,
-          attemptHandle,
-          invocationCwd,
+        const activeGeneration = isTopLevel
+          ? session.activeTurnGeneration ?? null
+          : null;
+        let supersededBeforeSettlement = Boolean(
+          activeGeneration &&
+            this.supersededTurnGenerations.has(activeGeneration),
         );
-        if (pipelineResolution === null) return;
-        result = pipelineResolution;
+        if (activeGeneration && !supersededBeforeSettlement) {
+          let completionClaimed = false;
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            if (this.handles.get(handleKey) !== attemptHandle) {
+              throw new RunOwnershipChangedError();
+            }
+            if (
+              fresh.activeTurnGeneration === activeGeneration &&
+              fresh.supersededTurnGeneration !== activeGeneration
+            ) {
+              // This mutation serializes completion publication against the
+              // follow-up mutation. Once claimed, later follow-ups buffer.
+              fresh.activeTurnCompletionClaimed = true;
+              completionClaimed = true;
+            }
+          });
+          supersededBeforeSettlement = !completionClaimed;
+        }
+        if (!supersededBeforeSettlement) {
+          const pipelineResolution = await this.resolvePipelineInvocation(
+            session,
+            agentName,
+            result,
+            attemptHandle,
+            invocationCwd,
+          );
+          if (pipelineResolution === null) return;
+          result = pipelineResolution;
+        }
 
         // Normal completion (or idle-interrupted but out of retries).
         const exhaustedRetries = idleInterrupted && session.idleInterruptCount >= maxIdleInterrupts;
@@ -2123,6 +2516,7 @@ export class SessionManager {
           agentName,
           attemptHandle,
           invocationCwd,
+          activeSkill?.execution === "stateless",
         );
       }
     } catch (err) {
@@ -2200,6 +2594,14 @@ export class SessionManager {
         this.buildRunSession(session, agentName, identityForAgent(agentName)),
         session.lastError?.message ?? "runner setup failed",
       );
+    } finally {
+      // One clear for every terminal path — response posted, spawn failure,
+      // timeout/hard kill, cancellation, and the suppressed-response case
+      // (NO_SLACK_MESSAGE, silent lead turn) that posts nothing at all and is
+      // therefore the easiest to leave marked forever.
+      if (progressMessageTs) {
+        this.markTurnProgress(session.channel, progressMessageTs, "remove");
+      }
     }
   }
 
@@ -2250,12 +2652,22 @@ export class SessionManager {
       outcomes.length > invocation.outcomeCountAtDispatch;
 
     if (durable) {
+      const currentResponseIsVisible =
+        prepareSlackResponse(result.response) !== null;
+      const currentTurnPostedToSlack =
+        hasSlackSendMessageEvent(result.events);
+      const response =
+        currentTurnPostedToSlack
+          ? result.response
+          : !result.error && currentResponseIsVisible
+            ? result.response
+            : invocation.pendingUserResponse ?? "";
       // The typed outcome is authoritative. A provider may hit its turn cap
       // immediately after committing it; that must not become a Slack error.
       return result.error
         ? {
             ...result,
-            response: "",
+            response,
             error: null,
             completion: {
               status: "success",
@@ -2265,7 +2677,7 @@ export class SessionManager {
               turns: result.completion?.turns,
             },
           }
-        : result;
+        : { ...result, response };
     }
 
     const sessionId = isTopLevel
@@ -2281,6 +2693,20 @@ export class SessionManager {
     ) {
       if (this.handles.get(handleKey) !== ownHandle) return null;
       const retryCount = invocation.retryCount + 1;
+      const currentResponseIsVisible =
+        prepareSlackResponse(result.response) !== null;
+      const currentTurnPostedToSlack =
+        hasSlackSendMessageEvent(result.events);
+      const duplicatesSlackToolPost =
+        currentResponseIsVisible &&
+        isDuplicateSlackToolResponse(result.response, result.events);
+      const pendingUserResponse =
+        duplicatesSlackToolPost ||
+        (!currentResponseIsVisible && currentTurnPostedToSlack)
+          ? null
+          : !result.error && currentResponseIsVisible
+            ? result.response
+            : invocation.pendingUserResponse ?? null;
       let continued: ThreadSession;
       try {
         continued = await this.mutateSession(fresh.threadId, (current) => {
@@ -2291,7 +2717,11 @@ export class SessionManager {
           if (!active || active.dispatchKey !== invocation.dispatchKey) {
             throw new Error("pipeline invocation ownership changed");
           }
-          owner.activePipelineInvocation = { ...active, retryCount };
+          owner.activePipelineInvocation = {
+            ...active,
+            retryCount,
+            pendingUserResponse,
+          };
           if (result.sessionId) {
             owner.sessionId = result.sessionId;
             owner.sessionCwd = invocationCwd;
@@ -2315,6 +2745,11 @@ export class SessionManager {
       const continuation = [
         "The pipeline assignment has not recorded a typed outcome yet.",
         `Recovery continuation ${retryCount} of ${maxRetries}. Resume this same session from durable state; do not repeat completed mutations.`,
+        ...(pendingUserResponse
+          ? [
+              "Your previous user-facing response was withheld and has NOT been posted. Junior will publish it after settlement unless you return a newer real response or explicitly post to Slack.",
+            ]
+          : []),
         "Finish any remaining work, then call pipeline_report_outcome for the active assignment before ending this invocation.",
       ].join("\n");
       _log.warn(
@@ -2615,6 +3050,7 @@ export class SessionManager {
     agentName: string,
     ownHandle?: SpawnHandle,
     invocationCwd?: string,
+    statelessSkillInvocation = false,
   ): Promise<void> {
     const isTopLevel = agentName === "lead" || agentName === "default";
     const agentIdentity = identityForAgent(agentName);
@@ -2636,19 +3072,39 @@ export class SessionManager {
     // clobber each other via a stale full-row write.
     const snapshot = await this.store.get(session.threadId);
     if (!snapshot || !stillOwnsRun()) return;
-    await this.captureRunnerMemory(snapshot.threadId, agentName, result);
-    if (!stillOwnsRun()) return;
+    const runGeneration = isTopLevel ? session.activeTurnGeneration ?? null : null;
+    if (
+      runGeneration &&
+      snapshot.activeTurnGeneration !== runGeneration &&
+      snapshot.supersededTurnGeneration !== runGeneration
+    ) {
+      return;
+    }
+    const runWasSuperseded = Boolean(
+      runGeneration &&
+        (this.supersededTurnGenerations.has(runGeneration) ||
+          snapshot.supersededTurnGeneration === runGeneration),
+    );
+    if (runWasSuperseded) {
+      _log.info(
+        "session",
+        `short-followup.suppress thread=${session.threadId} agent=${agentName} generation=${runGeneration}`,
+      );
+    } else if (!statelessSkillInvocation) {
+      await this.captureRunnerMemory(snapshot.threadId, agentName, result);
+      if (!stillOwnsRun()) return;
+    }
     let internalDispatchDirectives: AgentDirective[] = [];
     let pipelineGuardRetryReset = false;
 
-    if (result.error) {
+    if (result.error && !runWasSuperseded) {
       this.onError?.(
         this.buildRunSession(snapshot, agentName, agentIdentity),
         result.error,
       );
     }
 
-    if (!result.error && isTopLevel && result.response) {
+    if (!runWasSuperseded && !result.error && isTopLevel && result.response) {
       const supportChannels = new Set(
         Object.entries(this.config.channelDefaults)
           .filter(([, def]) => def.agentType === "lead")
@@ -2723,7 +3179,7 @@ export class SessionManager {
       pipelineGuardRetryReset = true;
     }
 
-    if (result.response) {
+    if (!runWasSuperseded && result.response && !statelessSkillInvocation) {
       internalDispatchDirectives = this.allowedInternalDirectivesForResponse(
         agentName,
         result.response,
@@ -2758,6 +3214,14 @@ export class SessionManager {
       if (!stillOwnsRun()) return;
       settled = await this.mutateSession(snapshot.threadId, (s) => {
         if (!stillOwnsRun()) throw new RunOwnershipChangedError();
+        if (
+          isTopLevel &&
+          runGeneration &&
+          s.activeTurnGeneration !== runGeneration &&
+          s.supersededTurnGeneration !== runGeneration
+        ) {
+          throw new RunOwnershipChangedError();
+        }
         if (pipelineGuardRetryReset) {
           s.pipelineGuardRetryCount = 0;
         }
@@ -2778,14 +3242,36 @@ export class SessionManager {
             };
           }
 
-          const pendingMessages = s.pendingMessages;
+          const supersededGenerationMatches = Boolean(
+            runGeneration && s.supersededTurnGeneration === runGeneration,
+          );
+          const pendingMessages =
+            supersededGenerationMatches && s.activeTurnInput
+              ? [s.activeTurnInput, ...s.pendingMessages]
+              : s.pendingMessages;
           if (pendingMessages.length > 0 && s.muted) {
             s.pendingMessages = [];
             s.activePipelineInvocation = null;
             s.status = "idle";
+            s.activeTurnAuthor = null;
+            s.activeTurnWasInterrupted = false;
+            s.activeTurnInput = null;
+            s.activeTurnStartedAt = null;
+            s.activeTurnGeneration = null;
+            s.supersededTurnGeneration = null;
+            s.activeTurnCompletionClaimed = false;
             settle.action = "muted-discard";
           } else if (pendingMessages.length > 0) {
-            const drained = this.takePendingBatch(pendingMessages);
+            const drained = supersededGenerationMatches
+              ? {
+                  messages: pendingMessages,
+                  remaining: [] as PendingMessage[],
+                  pipelineInvocation:
+                    [...pendingMessages].reverse().find((message) =>
+                      message.pipelineInvocation
+                    )?.pipelineInvocation ?? null,
+                }
+              : this.takePendingBatch(pendingMessages);
             s.activeTopLevelMessageTs =
               drained.messages[drained.messages.length - 1]?.ts ??
               s.activeTopLevelMessageTs ??
@@ -2793,11 +3279,35 @@ export class SessionManager {
             settle.drainPrompt = this.buildDrainPrompt(drained.messages);
             s.pendingMessages = drained.remaining;
             s.activePipelineInvocation = drained.pipelineInvocation;
+            if (supersededGenerationMatches) {
+              s.activeTurnInput = drained.messages[0] ?? null;
+              s.activeTurnStartedAt = Date.now();
+              s.activeTurnGeneration = crypto.randomUUID();
+              s.supersededTurnGeneration = null;
+              s.activeTurnCompletionClaimed = false;
+              // One automatic interruption per conversational burst.
+              s.activeTurnWasInterrupted = true;
+            } else {
+              s.activeTurnAuthor = null;
+              s.activeTurnWasInterrupted = false;
+              s.activeTurnInput = null;
+              s.activeTurnStartedAt = null;
+              s.activeTurnGeneration = crypto.randomUUID();
+              s.supersededTurnGeneration = null;
+              s.activeTurnCompletionClaimed = false;
+            }
             s.status = "draining";
             settle.action = "drain";
           } else {
             s.activePipelineInvocation = null;
             s.status = "idle";
+            s.activeTurnAuthor = null;
+            s.activeTurnWasInterrupted = false;
+            s.activeTurnInput = null;
+            s.activeTurnStartedAt = null;
+            s.activeTurnGeneration = null;
+            s.supersededTurnGeneration = null;
+            s.activeTurnCompletionClaimed = false;
             settle.action = "settle";
           }
         } else {
@@ -2807,6 +3317,10 @@ export class SessionManager {
             agentSession.sessionId = result.sessionId;
             agentSession.sessionCwd = invocationCwd ?? agentSession.sessionCwd ?? null;
             agentSession.provider = result.provider;
+          }
+          if (statelessSkillInvocation) {
+            agentSession.sessionId = null;
+            agentSession.sessionCwd = null;
           }
           if (result.error) {
             s.lastError = {
@@ -2876,6 +3390,10 @@ export class SessionManager {
       if (ownHandle && this.handles.get(handleKey) === ownHandle) {
         this.handles.delete(handleKey);
       }
+      this.activeTurnSideEffects.delete(handleKey);
+    }
+    if (runGeneration) {
+      this.supersededTurnGenerations.delete(runGeneration);
     }
     if (settle.action === "settle") {
       await this.onAgentSettled?.(settled, agentName, result.response ?? null);
@@ -3085,17 +3603,52 @@ export class SessionManager {
           .sort((a, b) => b.updatedAt - a.updatedAt)[0];
         if (!assignment) {
           const parent = [...assignments].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+          const parentOutcomes = parent
+            ? await this.pipelineStore.listOutcomes(parent.id)
+            : [];
+          const latestParentOutcome = parentOutcomes.at(-1);
           const assignmentId = crypto.randomUUID();
+          const humanObjective = event.text.trim() ||
+            "Continue from the latest human input";
+          const recoveryContext = parent
+            ? [
+                humanObjective,
+                "",
+                "<durable-human-gate-context>",
+                `parent_assignment_id: ${parent.id}`,
+                `parent_objective: ${parent.objective}`,
+                `context_refs: ${JSON.stringify(parent.contextRefs)}`,
+                `artifact_refs: ${JSON.stringify([
+                  ...parent.artifactRefs,
+                  ...(latestParentOutcome?.artifactRefs ?? []),
+                ])}`,
+                `latest_outcome_reason: ${latestParentOutcome?.reason ?? ""}`,
+                `latest_outcome_checks: ${JSON.stringify(
+                  latestParentOutcome?.checks ?? [],
+                )}`,
+                "</durable-human-gate-context>",
+              ].join("\n")
+            : humanObjective;
           assignment = await this.pipelineStore.createAssignmentWithOutbox({
             assignment: {
               id: assignmentId,
               runId: active.id,
               parentAssignmentId: parent?.id ?? null,
               sourceAgent: "human",
+              sourceSlackUserId: event.isSelfBot ? null : event.user,
               targetAgent: durableTarget,
-              objective: event.text.trim() || "Continue from the latest human input",
-              contextRefs: ["control-branch:human-input", `source-message:${event.ts}`],
-              artifactRefs: [],
+              objective: recoveryContext,
+              contextRefs: [
+                ...(parent?.contextRefs ?? []),
+                "control-branch:human-input",
+                `source-message:${event.ts}`,
+              ],
+              artifactRefs: [
+                ...new Set([
+                  ...(parent?.artifactRefs ?? []),
+                  ...(latestParentOutcome?.artifactRefs ?? []),
+                ]),
+              ],
               acceptanceCriteria: active.acceptanceCriteria,
               mutationScope:
                 durableTarget === "build" || durableTarget === "frontend"
@@ -3118,6 +3671,7 @@ export class SessionManager {
                 targetAgent: durableTarget,
                 prompt: event.text,
                 sourceMessageTs: event.ts,
+                sourceSlackUserId: event.isSelfBot ? null : event.user,
                 resumeReason: "human follow-up on active durable task",
               },
               idempotencyKey:
@@ -3135,6 +3689,7 @@ export class SessionManager {
               targetAgent: assignment.targetAgent,
               prompt: event.text,
               sourceMessageTs: event.ts,
+              sourceSlackUserId: event.isSelfBot ? null : event.user,
               resumeReason: "human follow-up on active durable task",
             },
             idempotencyKey:
@@ -3159,6 +3714,7 @@ export class SessionManager {
         messageTs: event.ts,
         targetAgent: durableTarget,
         sourceAgent: event.isSelfBot ? "system" : "human",
+        sourceSlackUserId: event.isSelfBot ? null : event.user,
         repoRefs: session.targetRepo ? [session.targetRepo] : [],
       },
     );
@@ -3209,6 +3765,25 @@ export class SessionManager {
   private idleResumeEnabled(provider: RunnerProvider): boolean {
     if (provider === "opencode") return this.config.opencode.continuityEnabled;
     return provider !== "opencode-sdk" && provider !== "codex-app-server";
+  }
+
+  /**
+   * Remove repository affinity from repo-less utility invocations without
+   * mutating the durable thread row. This projection must be applied after
+   * every store reload, including provider-session invalidation and retries.
+   */
+  private projectInvocationSession(
+    session: ThreadSession,
+    pipelineRole: string | undefined,
+  ): ThreadSession {
+    if (pipelineRole !== "utility") return session;
+    return {
+      ...session,
+      cwd: null,
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+    };
   }
 
   private buildRunSession(
@@ -3357,6 +3932,16 @@ export class SessionManager {
     );
   }
 
+  private attributionUserId(event: SlackMessageEvent): string | null {
+    if (this.isAttributableSender(event.attributionUserId)) {
+      return event.attributionUserId;
+    }
+    if (!event.isSelfBot && !event.botId && this.isAttributableSender(event.user)) {
+      return event.user;
+    }
+    return null;
+  }
+
   /**
    * Format buffered messages for a drain turn. Each message gets its own
    * <buffered-message> block so multi-author drains stay unambiguous: a flat
@@ -3380,10 +3965,13 @@ export class SessionManager {
 
   private toPendingMessage(event: SlackMessageEvent): PendingMessage {
     return {
-      user: event.user,
+      user: this.attributionUserId(event) ?? event.user,
       text: event.text,
+      policyText: event.conversationalText,
       ts: event.ts,
       command: event.command ?? undefined,
+      hasFiles: Boolean(event.files?.length),
+      isInternal: Boolean(event.isSelfBot && !event.attributionUserId),
       dedupeKey: event.dedupeKey,
       pipelineInvocation: event.pipelineInvocation,
     };
@@ -3420,14 +4008,45 @@ export class SessionManager {
   private handleKey(threadId: string, agentName: string): string {
     return `${threadId}:${agentName}`;
   }
+
+  /**
+   * Mark/unmark a Slack message as having a turn in flight. Ref-counted because
+   * overlapping turns can own the same message — a cold-start restart or a
+   * guard continuation starts its turn before the replaced one finishes tearing
+   * down, and a naive clear would strip the live turn's marker.
+   */
+  private markTurnProgress(
+    channel: string,
+    messageTs: string,
+    action: "add" | "remove",
+  ): void {
+    if (!this.onTurnReaction) return;
+    // Guarded centrally rather than at each caller: the dispatch layers use
+    // `event.ts` legitimately as a dedupe/identity key, and only this layer
+    // claims it is something Slack can react to. A caller-side fix would have
+    // to be repeated for every future dispatch path.
+    if (!SLACK_MESSAGE_TS.test(messageTs)) return;
+    const key = `${channel}:${messageTs}`;
+    const refs = this.turnProgressRefs.get(key) ?? 0;
+    if (action === "add") {
+      this.turnProgressRefs.set(key, refs + 1);
+      if (refs === 0) {
+        this.onTurnReaction("add", channel, messageTs, TURN_PROGRESS_EMOJI);
+      }
+      return;
+    }
+    if (refs === 0) return;
+    if (refs > 1) {
+      this.turnProgressRefs.set(key, refs - 1);
+      return;
+    }
+    this.turnProgressRefs.delete(key);
+    this.onTurnReaction("remove", channel, messageTs, TURN_PROGRESS_EMOJI);
+  }
 }
 
 function pipelineAgentRequiresWorktree(agentName: string): boolean {
-  const role = resolveAgentManifest(agentName)?.role;
-  // Unknown roles fail closed. Trusted orchestrators and planners can perform
-  // repo-less discovery/control-plane work; every execution/review role needs
-  // a target repository and a Junior-managed worktree.
-  return role !== "orchestrator" && role !== "planner";
+  return requiresManagedWorktree(agentName);
 }
 
 const defaultSpawnRunnerForRuntime: SpawnRunnerFn =

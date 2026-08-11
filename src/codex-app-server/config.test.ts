@@ -81,13 +81,30 @@ describe("buildCodexMcpConfig", () => {
       },
     });
   });
+
+  it("injects the read-only MongoDB proxy from a trusted agent capability", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "onboard-member";
+    session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toMatchObject({
+      mongodb: {
+        transport: "http",
+        url: expect.stringContaining(
+          "http://localhost:3456/mcp/mongodb?agent=onboard-member&channel=c&thread=t",
+        ),
+      },
+      "slack-bot": expect.any(Object),
+    });
+  });
 });
 
 describe("buildCodexConfigToml", () => {
   it("serializes minimal isolated Codex config", () => {
     expect(
       buildCodexConfigToml({
-        model: "gpt-5.5",
+        model: "gpt-5.6-sol",
+        reasoningEffort: "medium",
         approvalPolicy: "never",
         sandbox: "danger-full-access",
         mcp: {
@@ -99,14 +116,16 @@ describe("buildCodexConfigToml", () => {
         trustedProjectPath: "/repo",
       }),
     ).toContain('[projects."/repo"]\ntrust_level = "trusted"');
-    expect(
-      buildCodexConfigToml({
-        model: "gpt-5.5",
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-        mcp: null,
-      }),
-    ).toContain('sandbox_mode = "danger-full-access"');
+    const config = buildCodexConfigToml({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "medium",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      mcp: null,
+    });
+    expect(config).toContain('model_reasoning_effort = "medium"');
+    expect(config).toContain('sandbox_mode = "danger-full-access"');
+    expect(config).toContain("[features]\nmulti_agent = false");
   });
 });
 
@@ -160,6 +179,8 @@ function makeConfig(): Config {
       defaultVerbosity: "normal",
       idleTimeoutMs: 1,
       maxIdleInterrupts: 1,
+      shortFollowupInterruptEnabled: false,
+      shortFollowupMaxLength: 280,
     },
     memory: { sqlitePath: "data/memory.db" },
     threadArchives: { dir: "data/thread-archives" },

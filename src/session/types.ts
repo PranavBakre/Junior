@@ -1,8 +1,12 @@
 export interface PendingMessage {
   user: string;
   text: string;
+  /** Raw conversational text when `text` contains a control-plane envelope. */
+  policyText?: string;
   ts: string;
   command?: string;
+  hasFiles?: boolean;
+  isInternal?: boolean;
   dedupeKey?: string;
   pipelineInvocation?: PipelineInvocationRef;
 }
@@ -14,6 +18,18 @@ export interface PipelineInvocationRef {
   dispatchKey: string;
   outcomeCountAtDispatch: number;
   retryCount: number;
+  /**
+   * A completed user-facing response withheld while settlement recovery obtains
+   * the assignment's required durable outcome. Published exactly once after the
+   * outcome lands unless a later recovery turn replaces it or posts to Slack.
+   */
+  pendingUserResponse?: string | null;
+}
+
+export interface ActiveSkillInvocation {
+  name: string;
+  path: string;
+  execution: "stateless";
 }
 
 export type AgentSessionStatus = "idle" | "busy" | "done" | "failed";
@@ -117,6 +133,10 @@ export interface ThreadSession {
   agentType: string | null;
   systemPrompt: string | null;
   agentPermissions?: import("../agents/loader.ts").AgentPermissions;
+  /** Ephemeral, assignment-scoped skill selected by Junior's trusted registry. */
+  activeSkill?: ActiveSkillInvocation | null;
+  /** Trusted assignment capabilities used by provider policy/MCP compilers. */
+  assignmentCapabilities?: import("../agents/manifest.ts").AgentCapability[];
   activeAgentName?: string;
   slackIdentity?: AgentIdentity;
   status: SessionStatus;
@@ -200,6 +220,20 @@ export interface ThreadSession {
   topLevelTmuxAgent: string | null;
   /** Number of times this session's current turn has been idle-interrupted and resumed. */
   idleInterruptCount: number;
+  /** Slack user ID of the human who started the current busy turn. Cleared on settle. */
+  activeTurnAuthor?: string | null;
+  /** Whether the active turn has already been interrupt-consolidated. */
+  activeTurnWasInterrupted?: boolean;
+  /** Original input for the owned top-level turn, retained for safe replay. */
+  activeTurnInput?: PendingMessage | null;
+  /** Wall-clock start of the owned top-level turn. */
+  activeTurnStartedAt?: number | null;
+  /** Durable ownership generation for the active top-level turn. */
+  activeTurnGeneration?: string | null;
+  /** Generation whose response must be suppressed and replayed as a burst. */
+  supersededTurnGeneration?: string | null;
+  /** Completion won the publication race; later follow-ups must buffer. */
+  activeTurnCompletionClaimed?: boolean;
   /** Number of automatic lead-pipeline guard continuations attempted for the current turn. */
   pipelineGuardRetryCount?: number;
   /**
@@ -276,6 +310,13 @@ export function createSession(
     tmuxSessionName: null,
     topLevelTmuxAgent: null,
     idleInterruptCount: 0,
+    activeTurnAuthor: null,
+    activeTurnWasInterrupted: false,
+    activeTurnInput: null,
+    activeTurnStartedAt: null,
+    activeTurnGeneration: null,
+    supersededTurnGeneration: null,
+    activeTurnCompletionClaimed: false,
     pipelineGuardRetryCount: 0,
     stateVersion: 0,
     activePipelineRunId: null,

@@ -4,7 +4,7 @@ import {
   type AgentPermissions,
 } from "../agents/loader.ts";
 import type { ThreadSession } from "../session/types.ts";
-import { hasCapability } from "../agents/capabilities.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 
 export type CodexApprovalPolicy = "untrusted" | "on-request" | "never";
 export type CodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
@@ -41,33 +41,54 @@ export function mapCodexRunPolicy(options: {
     permissions,
     session.activeAgentName ?? session.agentType,
   );
-  const agentName = session.activeAgentName ?? session.agentType;
   const worktreeRoots = [
     session.worktreePath,
     ...Object.values(session.worktreePaths ?? {}),
   ].filter((root): root is string => Boolean(root));
+  const mayUseGitHubCli = subjectHasCapability(
+    session,
+    "github-review-comment",
+  );
+
+  if (intent === "mcp-only") {
+    return {
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      sandboxPolicy: { type: "readOnly" },
+      mcpAllowed: !session.cwd,
+    };
+  }
 
   if (intent === "read-only" || intent === "no-tools") {
     if (
       intent === "read-only" &&
-      hasCapability(agentName, "worktree-verify") &&
+      subjectHasCapability(session, "worktree-verify") &&
       worktreeRoots.includes(cwd) &&
       Boolean(session.verificationPackageManager)
     ) {
       return {
         // Tests need to write caches, coverage, and generated output. The cwd
         // and every additional writable root are Junior-managed worktrees.
-        // Network remains disabled, so commit/push/release stays unavailable.
+        // Review may use the GitHub CLI, so only that trusted role receives
+        // network access; product-code mutation remains sandboxed to managed
+        // worktrees.
         approvalPolicy: "never",
         sandbox: "workspace-write",
-        sandboxPolicy: workspaceWritePolicy(cwd, worktreeRoots),
+        sandboxPolicy: workspaceWritePolicy(
+          cwd,
+          worktreeRoots,
+          mayUseGitHubCli,
+        ),
         mcpAllowed: !session.cwd,
       };
     }
     return {
       approvalPolicy: "on-request",
       sandbox: "read-only",
-      sandboxPolicy: { type: "readOnly" },
+      sandboxPolicy: {
+        type: "readOnly",
+        ...(mayUseGitHubCli ? { networkAccess: true } : {}),
+      },
       mcpAllowed: intent !== "no-tools" && !session.cwd,
     };
   }
@@ -115,11 +136,12 @@ export function sandboxPolicyFor(
 function workspaceWritePolicy(
   cwd: string,
   additionalRoots: string[] = [],
+  networkAccess = false,
 ): CodexSandboxPolicy {
   return {
     type: "workspaceWrite",
     writableRoots: [...new Set([cwd, ...additionalRoots])],
-    networkAccess: false,
+    networkAccess,
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   };

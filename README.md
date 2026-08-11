@@ -49,7 +49,7 @@ While a runner is active, it can post to and read from Slack autonomously throug
 
 - Slack read/post/search/upload tools
 - `register_worktree` — let an agent claim a worktree path mid-turn
-- agent dispatch and definition search
+- durable agent/skill dispatch and definition search
 - memory recall/add/consolidation
 - pipeline start/state/assignment/outcome/check tools when pipeline mode is active
 - optional MongoDB and WhatsApp read tools
@@ -151,6 +151,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SLACK_BOT_TOKEN` | *(required)* | `xoxb-…` bot token |
 | `SLACK_APP_TOKEN` | *(required)* | `xapp-…` app token for Socket Mode |
 | `REPOS` | `[]` | JSON array of `RepoConfig` (see below) |
+| `REPO_DISCOVERY_ROOTS` | `[]` | JSON array of local directories whose immediate child Git checkouts Junior may use; explicit `REPOS` entries override discovered metadata |
 | `CHANNEL_DEFAULTS` | `{"C05557KKV37":{"agentType":"lead"}}` | Per-channel default agent type. Channels with `agentType:"lead"` go through the support router (multi-agent dispatcher) |
 | `SESSION_STORE` | `sqlite` | `sqlite` or `memory` |
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
@@ -171,6 +172,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `OPENCODE_MONGODB_MCP_ENABLED` | `true` | Include MongoDB MCP when configured |
 | `CODEX_MODE` | `app-server` | Codex transport: `app-server` or the isolated `cli` fallback |
 | `CODEX_MODEL` | *(unset)* | Override default Codex app-server model |
+| `CODEX_REASONING_EFFORT` | `medium` | Codex model reasoning effort |
 | `CODEX_TIMEOUT_MS` | `300000` | Per-turn Codex timeout before SIGINT |
 | `CODEX_SANDBOX` | `workspace-write` | Codex app-server sandbox. Set `danger-full-access` for YOLO-style full filesystem/network access. |
 | `CODEX_ASK_FOR_APPROVAL` | `never` | Codex app-server approval policy |
@@ -197,6 +199,19 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 ```
 
 See [`src/config.ts`](src/config.ts) for the full set including `worktreeSetupCommand`, `readyUrl`, verbosity, cleanup intervals, etc.
+
+To make every primary Git checkout under a local projects directory available
+without maintaining `REPOS` by hand:
+
+```bash
+REPO_DISCOVERY_ROOTS=["~/Projects"]
+```
+
+Discovery is intentionally scoped to the listed roots and only includes direct
+children with a real `.git` directory, an `origin` remote, and a locally-known
+`origin/main`, `origin/dev`, or `origin/master` base (or `origin/HEAD`). Linked
+worktrees and sibling `.junior-worktrees` directories are excluded. If a repo
+has an executable `scripts/setup-worktree.sh`, Junior uses it automatically.
 
 ---
 

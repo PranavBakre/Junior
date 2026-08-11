@@ -62,7 +62,9 @@ const app = createSlackApp(config);
 const store = createSessionStore(config);
 log.info("boot", `Session store: ${config.session.store}`);
 const actionStore = new SlackActionStore(resolve(config.session.sqlitePath));
-const memoryStore = createMemoryStore(config.memory.sqlitePath);
+const memoryStore = createMemoryStore(config.memory.sqlitePath, {
+  dedupThreshold: config.memory.dedupThreshold,
+});
 const memoryIngestor = new MemoryIngestor(memoryStore);
 let pipelineAudit: SlackAuditCallback | undefined;
 const sessionManager = new SessionManager(store, config);
@@ -91,6 +93,7 @@ const pipelineToolRuntime: PipelineToolRuntime = {
   productPipelineEnabled: config.pipeline?.productPipelineEnabled ?? false,
   bugPipelineEnabled: config.pipeline?.bugPipelineEnabled ?? false,
   workspaceRoot: process.cwd(),
+  repos: config.repos,
   onOutcomeCommitted: async () => {
     // Shadow/off never dispatch — only active mode pumps the outbox.
     if (pipelineRuntimeMode !== "active") return;
@@ -285,6 +288,14 @@ sessionManager.onClearThreadStatus = (threadTs) => {
 
 sessionManager.onReaction = (event, emoji) => {
   responder.addReaction(event.channel, event.ts, emoji);
+};
+
+sessionManager.onTurnReaction = (action, channel, messageTs, emoji) => {
+  if (action === "add") {
+    responder.addReaction(channel, messageTs, emoji);
+  } else {
+    responder.removeReaction(channel, messageTs, emoji);
+  }
 };
 
 sessionManager.onError = (session, error) => {
@@ -688,6 +699,7 @@ setInterval(() => {
         workflowRegistry,
         workflowStore,
         memoryStore,
+        pipelineStore,
       });
     } catch (err) {
       log.error(

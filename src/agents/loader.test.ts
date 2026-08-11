@@ -7,6 +7,7 @@ const agentsDir = path.resolve(
   import.meta.dir,
   "../../.claude/agents",
 );
+const agentsOrgDir = path.resolve(import.meta.dir, "../../agents-org");
 
 describe("loadAgentDefinition", () => {
   it("loads an existing .md file (build.md)", async () => {
@@ -32,7 +33,7 @@ describe("loadAgentDefinition", () => {
       "Backend engineer. Use for building features, fixing bugs, refactoring code.",
     );
     expect(def!.tools).toBe(
-      "Read, Edit, Write, Bash, Grep, Glob, Agent, mcp__slack-bot__memory_recall",
+      "Read, Edit, Write, Bash, Grep, Glob, mcp__slack-bot__memory_recall",
     );
     expect(def!.model).toBeNull();
     expect(def!.common).toEqual([
@@ -50,7 +51,6 @@ describe("loadAgentDefinition", () => {
         "Bash",
         "Grep",
         "Glob",
-        "Agent",
         "mcp__slack-bot__memory_recall",
       ],
     });
@@ -62,6 +62,18 @@ describe("loadAgentDefinition", () => {
     expect(def).not.toBeNull();
     expect(def!.permissions.mcp).toContain("slack-bot");
     expect(def!.permissions.mcp).toContain("mongodb");
+  });
+
+  it("loads onboard-member as repo-less with MCP-only MongoDB access", async () => {
+    const def = await loadAgentDefinition(
+      path.join(agentsOrgDir, "onboard-member.md"),
+    );
+
+    expect(def).not.toBeNull();
+    expect(def!.permissions.intent).toBe("mcp-only");
+    expect(def!.permissions.mcp).toContain("mongodb");
+    expect(def!.permissions.tools).toContain("mcp__mongodb__find");
+    expect(def!.context.workspace).toBe(false);
   });
 
   it("parses typed permission frontmatter", async () => {
@@ -299,7 +311,7 @@ body`;
       const content = `---
 name: claude-override
 description: Test
-model: gpt-5.5
+model: gpt-5.6-sol
 model.claude: sonnet
 ---
 
@@ -309,7 +321,7 @@ body`;
       try {
         const def = await loadAgentDefinition(tmpPath);
         expect(def).not.toBeNull();
-        expect(def!.model).toBe("gpt-5.5");
+        expect(def!.model).toBe("gpt-5.6-sol");
         expect(def!.modelClaude).toBe("sonnet");
       } finally {
         await fs.unlink(tmpPath).catch(() => {});
@@ -321,7 +333,7 @@ body`;
       const content = `---
 name: no-claude-override
 description: Test
-model: gpt-5.5
+model: gpt-5.6-sol
 ---
 
 body`;

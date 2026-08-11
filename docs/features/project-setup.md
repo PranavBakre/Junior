@@ -149,6 +149,7 @@ interface Config {
 | `OPENCODE_MONGODB_MCP_ENABLED` | no | `true` | includes the optional MongoDB MCP entry |
 | `CODEX_MODE` | no | `app-server` | `app-server` or `cli`; app-server is the implemented Codex provider path |
 | `CODEX_MODEL` | no | unset | Codex model override |
+| `CODEX_REASONING_EFFORT` | no | `medium` | Codex model reasoning effort |
 | `CODEX_TIMEOUT_MS` | no | `300000` | Codex turn timeout |
 | `CODEX_SANDBOX` | no | `workspace-write` | Codex sandbox policy |
 | `CODEX_ASK_FOR_APPROVAL` | no | `never` | Codex approval policy |
@@ -174,7 +175,8 @@ interface Config {
 | `HTTP_DASHBOARD_PORT` | no | unset | localhost dashboard; must be a positive integer 1–65535 or unset |
 | `MCP_PORT` | no | `3456` | internal Slack-bot MCP server |
 | `MEMORY_EMBED_PROVIDER` | no | `local` | `local` or deterministic `hashing` test provider |
-| `PRE_RECALL_ENABLED` | no | `false` | optional pre-recall query extraction before runner turns |
+| `PRE_RECALL_ENABLED` | no | `false` | optional deterministic memory pre-recall before runner turns |
+| `PRE_RECALL_SYNTHESIS_ENABLED` | no | `false` | opt into bounded model synthesis over recalled candidates |
 | `WHATSAPP_ENABLED` | no | `false` | enable read-only WhatsApp archive ingestion/tools |
 | `PIPELINE_RUNTIME_MODE` | no | `off` | `off`, `shadow`, or `active` |
 | `PRODUCT_PIPELINE_ENABLED` | no | `false` | typed product pipeline starts; requires active mode |

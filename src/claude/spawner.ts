@@ -22,6 +22,11 @@ import {
   slackMcpUrl,
   wantsMcp,
 } from "../runners/mcp-config.ts";
+import { resolveTrustedSkill } from "../skills/registry.ts";
+import {
+  prepareSkillRuntime,
+  skillInvocationPrompt,
+} from "../skills/runtime.ts";
 
 const MCP_CONFIG_DIR = resolve(import.meta.dirname ?? ".", "../../data/mcp-configs");
 
@@ -52,7 +57,27 @@ export function spawnClaude(
   const effectiveConfig = needsUserSettings()
     ? widenSettingSources(config)
     : config;
-  const args = buildClaudeArgs(session, prompt, effectiveConfig, runtime.cwd, mcpConfigPath);
+  const activeSkill = session.activeSkill
+    ? resolveTrustedSkill(session.activeSkill.name)
+    : null;
+  if (
+    session.activeSkill &&
+    (!activeSkill || activeSkill.path !== session.activeSkill.path)
+  ) {
+    throw new Error("active skill does not match Junior's trusted registry");
+  }
+  const skillRuntime = activeSkill ? prepareSkillRuntime(activeSkill) : null;
+  const effectivePrompt = activeSkill
+    ? skillInvocationPrompt("claude", activeSkill, prompt)
+    : prompt;
+  const args = buildClaudeArgs(
+    session,
+    effectivePrompt,
+    effectiveConfig,
+    runtime.cwd,
+    mcpConfigPath,
+    skillRuntime?.claudeAddDir,
+  );
 
   const proc = Bun.spawn(["claude", ...args], {
     cwd: runtime.cwd,

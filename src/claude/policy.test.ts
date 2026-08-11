@@ -49,6 +49,22 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.addDirs).toEqual([]);
   });
 
+  test("stateless skills receive an exact observability MCP tool without Bash", () => {
+    const session = sessionWith({
+      intent: "read-only",
+      mcp: ["slack-bot"],
+      tools: ["mcp__slack-bot__sentry_list"],
+    });
+    session.activeAgentName = "skill:sentry-fetch";
+    session.assignmentCapabilities = ["pipeline-artifact-write"];
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("mcp__slack-bot__sentry_list");
+    expect(policy.allowedTools.some((tool) => tool.startsWith("Bash"))).toBe(false);
+  });
+
   test("no-tools is the hardest lockdown", () => {
     const session = sessionWith({ intent: "no-tools", mcp: [], tools: ["Read"] });
 
@@ -60,6 +76,7 @@ describe("mapClaudeRunPolicy", () => {
       "Write",
       "NotebookEdit",
       "Bash",
+      "Agent",
     ]);
     expect(policy.allowedTools).toEqual([]);
     expect(policy.addDirs).toEqual([]);
@@ -79,7 +96,7 @@ describe("mapClaudeRunPolicy", () => {
     // round-trip (default mode) --allowedTools skips the permission prompt,
     // which would bypass the human gate this intent exists for.
     expect(policy.allowedTools).toEqual(["Read"]);
-    expect(policy.disallowedTools).toEqual([]);
+    expect(policy.disallowedTools).toEqual(["Agent"]);
     expect(policy.addDirs).toEqual(["/repo"]);
   });
 
@@ -117,7 +134,23 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.disallowedTools).toContain("Bash(*DB_STRING*)");
     expect(policy.disallowedTools).toContain("Bash(*.env*)");
     expect(policy.disallowedTools).toContain("Read(**/.env)");
+    expect(policy.disallowedTools).toContain("Agent");
     expect(policy.addDirs).toEqual(["/repo"]);
+  });
+
+  test("denies provider-native fan-out for orchestrators too", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "default";
+    session.agentPermissions = {
+      intent: "normal",
+      mcp: ["slack-bot"],
+      tools: ["Read", "Agent", "mcp__slack-bot__agent_dispatch"],
+    };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("bypassPermissions");
+    expect(policy.disallowedTools).toContain("Agent");
   });
 
   test("null/unset intent behaves like normal for non-restricted roles", () => {
@@ -144,6 +177,7 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.allowedTools).toContain(
       "mcp__slack-bot__github_post_review",
     );
+    expect(policy.allowedTools).toContain("Bash(gh *)");
     expect(policy.allowedTools).toContain("Bash(gh pr view *)");
     expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
   });
@@ -211,6 +245,7 @@ describe("mapClaudeRunPolicy", () => {
 
     expect(policy.permissionMode).toBe("default");
     expect(policy.allowedTools).toContain("Bash(gh pr view *)");
+    expect(policy.allowedTools).toContain("Bash(gh *)");
     expect(policy.allowedTools).not.toContain("Bash(git fetch *)");
     expect(policy.allowedTools).not.toContain("Bash(gh pr checkout *)");
     expect(policy.allowedTools).not.toContain("Bash(npm test *)");
@@ -230,8 +265,8 @@ describe("mapClaudeRunPolicy", () => {
 
     expect(policy.permissionMode).toBe("default");
     expect(policy.allowedTools).toContain("Bash(git blame *)");
+    expect(policy.allowedTools).toContain("Bash(gh *)");
     expect(policy.allowedTools).toContain("Bash(gh pr list *)");
-    expect(policy.allowedTools.some((tool) => tool.startsWith("Bash(gh api"))).toBe(false);
     expect(policy.allowedTools).not.toContain("Bash(gh pr checkout *)");
     expect(policy.allowedTools).not.toContain("Bash(npm test *)");
   });
@@ -262,7 +297,9 @@ describe("mapClaudeRunPolicy", () => {
       "Read",
       "mcp__slack-bot__pipeline_get_state",
       "mcp__slack-bot__pipeline_report_outcome",
+      "mcp__slack-bot__pipeline_write_artifact",
       "mcp__slack-bot__agent_dispatch",
+      "mcp__slack-bot__skill_dispatch",
     ]);
     expect(policy.disallowedTools).toContain("Write");
     expect(policy.disallowedTools).toContain("Bash(rm *)");

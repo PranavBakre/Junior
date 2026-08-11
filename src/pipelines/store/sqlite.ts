@@ -80,7 +80,10 @@ type AssignmentRow = {
   run_id: string;
   parent_assignment_id: string | null;
   source_agent: string;
+  source_slack_user_id: string | null;
   target_agent: string;
+  skill_ref: string | null;
+  capability_refs_json: string;
   status: string;
   objective: string;
   context_refs_json: string;
@@ -312,6 +315,18 @@ export class SqlitePipelineStore implements PipelineStore {
       CREATE INDEX IF NOT EXISTS idx_pipeline_runs_thread
       ON pipeline_runs (thread_id)
     `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_runs_updated
+      ON pipeline_runs (updated_at DESC)
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status_updated
+      ON pipeline_runs (status, updated_at DESC)
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_pipeline_runs_kind_status_updated
+      ON pipeline_runs (kind, status, updated_at DESC)
+    `);
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS pipeline_attempts (
@@ -375,6 +390,8 @@ export class SqlitePipelineStore implements PipelineStore {
         parent_assignment_id TEXT,
         source_agent TEXT NOT NULL,
         target_agent TEXT NOT NULL,
+        skill_ref TEXT,
+        capability_refs_json TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL,
         objective TEXT NOT NULL,
         context_refs_json TEXT NOT NULL DEFAULT '[]',
@@ -398,6 +415,21 @@ export class SqlitePipelineStore implements PipelineStore {
       CREATE INDEX IF NOT EXISTS idx_pipeline_assignments_run
       ON pipeline_assignments (run_id)
     `);
+
+    const assignmentColumns = this.db
+      .query<{ name: string }, []>("PRAGMA table_info(pipeline_assignments)")
+      .all();
+    if (!assignmentColumns.some((column) => column.name === "source_slack_user_id")) {
+      this.db.run(`ALTER TABLE pipeline_assignments ADD COLUMN source_slack_user_id TEXT`);
+    }
+    if (!assignmentColumns.some((column) => column.name === "skill_ref")) {
+      this.db.run(`ALTER TABLE pipeline_assignments ADD COLUMN skill_ref TEXT`);
+    }
+    if (!assignmentColumns.some((column) => column.name === "capability_refs_json")) {
+      this.db.run(
+        `ALTER TABLE pipeline_assignments ADD COLUMN capability_refs_json TEXT NOT NULL DEFAULT '[]'`,
+      );
+    }
 
     this.db.run(`
       CREATE TABLE IF NOT EXISTS pipeline_outcomes (
@@ -913,7 +945,10 @@ export class SqlitePipelineStore implements PipelineStore {
         runId: assignmentInput.runId,
         parentAssignmentId: assignmentInput.parentAssignmentId,
         sourceAgent: assignmentInput.sourceAgent,
+        sourceSlackUserId: assignmentInput.sourceSlackUserId,
         targetAgent: assignmentInput.targetAgent,
+        skillRef: assignmentInput.skillRef ?? null,
+        capabilityRefs: [...(assignmentInput.capabilityRefs ?? [])],
         status: assignmentInput.status ?? "pending",
         objective: assignmentInput.objective,
         contextRefs: [...assignmentInput.contextRefs],
@@ -1009,7 +1044,10 @@ export class SqlitePipelineStore implements PipelineStore {
       runId: input.runId,
       parentAssignmentId: input.parentAssignmentId,
       sourceAgent: input.sourceAgent,
+      sourceSlackUserId: input.sourceSlackUserId,
       targetAgent: input.targetAgent,
+      skillRef: input.skillRef ?? null,
+      capabilityRefs: [...(input.capabilityRefs ?? [])],
       status: input.status ?? "pending",
       objective: input.objective,
       contextRefs: [...input.contextRefs],
@@ -1046,6 +1084,8 @@ export class SqlitePipelineStore implements PipelineStore {
         ? assignmentFromRow(existing)
         : {
             ...input.assignment,
+            skillRef: input.assignment.skillRef ?? null,
+            capabilityRefs: [...(input.assignment.capabilityRefs ?? [])],
             status: input.assignment.status ?? ("pending" as const),
             leaseOwner: input.assignment.leaseOwner ?? null,
             leaseExpiresAt: input.assignment.leaseExpiresAt ?? null,
@@ -1190,6 +1230,7 @@ export class SqlitePipelineStore implements PipelineStore {
           `UPDATE pipeline_runs SET
             phase = ?,
             status = ?,
+            repo_refs_json = ?,
             state_version = ?,
             terminal_outcome = ?,
             terminal_reason = ?,
@@ -1202,6 +1243,7 @@ export class SqlitePipelineStore implements PipelineStore {
         .run(
           decision.updatedRun.phase,
           decision.updatedRun.status,
+          JSON.stringify(decision.updatedRun.repoRefs),
           decision.updatedRun.stateVersion,
           decision.updatedRun.terminalOutcome,
           decision.updatedRun.terminalReason,
@@ -1646,6 +1688,65 @@ export class SqlitePipelineStore implements PipelineStore {
     return result.changes;
   }
 
+  async listRuns(filter?: {
+    status?: PipelineRun["status"];
+    kind?: PipelineRun["kind"];
+    limit?: number;
+  }): Promise<PipelineRun[]> {
+    const limit = Math.max(1, Math.min(filter?.limit ?? 100, 500));
+    if (filter?.status && filter.kind) {
+      return this.db
+        .query<RunRow, [string, string, number]>(
+          `SELECT * FROM pipeline_runs
+           WHERE status = ? AND kind = ?
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(filter.status, filter.kind, limit)
+        .map(runFromRow);
+    }
+    if (filter?.status) {
+      return this.db
+        .query<RunRow, [string, number]>(
+          `SELECT * FROM pipeline_runs
+           WHERE status = ?
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(filter.status, limit)
+        .map(runFromRow);
+    }
+    if (filter?.kind) {
+      return this.db
+        .query<RunRow, [string, number]>(
+          `SELECT * FROM pipeline_runs
+           WHERE kind = ?
+           ORDER BY updated_at DESC
+           LIMIT ?`,
+        )
+        .all(filter.kind, limit)
+        .map(runFromRow);
+    }
+    return this.db
+      .query<RunRow, [number]>(
+        `SELECT * FROM pipeline_runs
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(limit)
+      .map(runFromRow);
+  }
+
+  async countOpenRuns(): Promise<number> {
+    return this.db
+      .query<{ count: number }, []>(
+        `SELECT COUNT(*) AS count
+         FROM pipeline_runs
+         WHERE status != 'terminal'`,
+      )
+      .get()!.count;
+  }
+
   async listTerminalRuns(filter?: {
     updatedBefore?: number;
   }): Promise<PipelineRun[]> {
@@ -1926,6 +2027,19 @@ export class SqlitePipelineStore implements PipelineStore {
          ORDER BY created_at ASC`,
       )
       .all(assignmentId)
+      .map(outcomeFromRow);
+  }
+
+  async listOutcomesForRun(runId: string): Promise<StoredOutcome[]> {
+    return this.db
+      .query<OutcomeRow, [string]>(
+        `SELECT o.*
+         FROM pipeline_outcomes o
+         INNER JOIN pipeline_assignments a ON a.id = o.assignment_id
+         WHERE a.run_id = ?
+         ORDER BY o.created_at ASC`,
+      )
+      .all(runId)
       .map(outcomeFromRow);
   }
 
@@ -2746,12 +2860,13 @@ export class SqlitePipelineStore implements PipelineStore {
     this.db
       .query(
         `INSERT INTO pipeline_assignments (
-          id, run_id, parent_assignment_id, source_agent, target_agent,
+          id, run_id, parent_assignment_id, source_agent, source_slack_user_id,
+          target_agent, skill_ref, capability_refs_json,
           status, objective, context_refs_json, artifact_refs_json,
           acceptance_json, mutation_scope_json, dependencies_json,
           attempt_number, attempt_id, candidate_revision_digest, deadline_at,
           lease_owner, lease_expires_at, idempotency_key, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(idempotency_key) DO NOTHING`,
       )
       .run(
@@ -2759,7 +2874,10 @@ export class SqlitePipelineStore implements PipelineStore {
         assignment.runId,
         assignment.parentAssignmentId,
         assignment.sourceAgent,
+        assignment.sourceSlackUserId,
         assignment.targetAgent,
+        assignment.skillRef,
+        JSON.stringify(assignment.capabilityRefs),
         assignment.status,
         assignment.objective,
         JSON.stringify(assignment.contextRefs),
@@ -2897,7 +3015,12 @@ function assignmentFromRow(row: AssignmentRow): Assignment {
     runId: row.run_id,
     parentAssignmentId: row.parent_assignment_id,
     sourceAgent: row.source_agent,
+    sourceSlackUserId: row.source_slack_user_id ?? null,
     targetAgent: row.target_agent,
+    skillRef: row.skill_ref ?? null,
+    capabilityRefs: parseJsonArray(
+      row.capability_refs_json,
+    ) as Assignment["capabilityRefs"],
     status: row.status as Assignment["status"],
     objective: row.objective,
     contextRefs: parseJsonArray(row.context_refs_json),

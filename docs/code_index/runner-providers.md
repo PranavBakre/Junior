@@ -23,9 +23,9 @@ and MCP wiring.
 | `spawnOpenCode(...)` | `spawner.ts` | Runs `opencode run --format json`, generates `OPENCODE_CONFIG_CONTENT`, parses events. |
 | `buildOpenCodeArgs(...)` | `args.ts` | Builds fresh/resume CLI args using `--session`, `--dir`, `--agent build`, and attachments; keeps the prompt before `--file` flags so OpenCode does not parse prompt text as file paths. |
 | `buildOpenCodeConfig(...)` | `config.ts` | Generates model, permissions, primary `agent.build`, MCP entries, and subagent entries. |
-| `loadOpenCodeSupportSubagents()` | `support-agents.ts` | Exposes standalone stateless support prompts as generated OpenCode subagents. |
+| `prepareSkillRuntime(...)` | `../skills/runtime.ts` | Creates an assignment-scoped OpenCode skill directory containing only the selected trusted skill. |
 | `buildOpenCodeAgentPrompt(...)` | `prompt.ts` | Wraps Junior core + active-agent prompt in the OpenCode provider baseline. |
-| `resolveOpenCodeModel(...)` | `model.ts` | Resolves session/config model to a valid `provider/model` OpenCode ref; runner-specific aliases (`gpt-5.5`, `opus`, ...) fall back to the config default or null (omit `--model`). |
+| `resolveOpenCodeModel(...)` | `model.ts` | Resolves session/config model to a valid `provider/model` OpenCode ref; runner-specific aliases (`gpt-5.6-sol`, `opus`, ...) fall back to the config default or null (omit `--model`). |
 | `createOpenCodeStreamParser()` / `createOpenCodeEventMapper()` | `parser.ts` | Converts OpenCode JSON events into normalized runner events; captures native `{"type":"error"}` events on `mapper.error`. |
 
 ## Current OpenCode Runtime Rules
@@ -35,11 +35,26 @@ and MCP wiring.
 - Slack MCP is included for every normal OpenCode run, including the initial
   lead run from Junior root. It is omitted only for explicit `session.cwd`
   utility runs.
-- Generated subagents include only stateless support fetchers:
-  `nr-research`, `sentry-fetch`, `vercel-status`. They are omitted for utility
-  `session.cwd` runs and use a constrained read/search/MCP permission surface.
-- Persistent workers (`reproducer`, `review`) are not generated as
-  OpenCode Task subagents; they are Slack-dispatched persistent sessions.
+- Slack runtime denies OpenCode `task` and registers no provider-native
+  subagents. Junior creates every worker through its durable assignment graph.
+- A `skill_dispatch` assignment sets `OPENCODE_CONFIG_DIR` to a generated
+  one-skill discovery root and instructs OpenCode to load it with the native
+  `skill` tool. The skill body is not copied into the agent prompt.
 - `opencode-sdk` is the separate OpenCode server/SDK provider. It uses the
   native session abort/attach path and is tested independently from the CLI
   adapter.
+
+### Assignment-scoped skills
+
+`src/skills/registry.ts` is the provider-neutral trust boundary. Dispatch
+persists `skillRef` plus exact `capabilityRefs`; `SessionManager` rejects unknown
+or widened envelopes, skips worktrees and resume continuity, and returns results
+through pipeline artifacts/outcomes rather than a direct Slack response.
+
+- Claude CLI receives a one-skill `.claude/skills` root through `--add-dir`.
+- OpenCode CLI receives a one-skill config root through
+  `OPENCODE_CONFIG_DIR` and loads it with the native skill tool.
+- Codex app-server receives a structured `type: "skill"` turn input.
+
+Provider MCP configuration is still compiled independently from the validated
+assignment capabilities.

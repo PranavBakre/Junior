@@ -47,6 +47,8 @@ export type DispatchAssignmentInput = {
   sourceMessageTs?: string;
   /** Synthetic user id recorded on the internal event. */
   userId?: string;
+  /** Raw human message, separate from the composed assignment envelope. */
+  conversationalText?: string;
   /** Shared idempotency / dedupe key for the synthetic Slack event. */
   dedupeKey?: string;
   pipelineInvocation?: PipelineInvocationRef;
@@ -156,7 +158,9 @@ export async function dispatchAssignment(
   const event: SlackMessageEvent = {
     threadId: run.threadId,
     channel: run.channelId,
-    user: input.userId ?? "pipeline-internal",
+    user: "pipeline-internal",
+    attributionUserId: input.userId,
+    conversationalText: input.conversationalText,
     text: prompt,
     ts: syntheticTs,
     command: null,

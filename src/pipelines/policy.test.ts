@@ -34,7 +34,10 @@ function assignment(overrides: Partial<Assignment> = {}): Assignment {
     runId: "run-1",
     parentAssignmentId: null,
     sourceAgent: "system",
+    sourceSlackUserId: null,
     targetAgent: "build",
+    skillRef: null,
+    capabilityRefs: [],
     status: "leased",
     objective: "implement feature",
     contextRefs: [],
@@ -167,6 +170,41 @@ describe("validateOutcome", () => {
     expect(ok).toEqual({ ok: true, receiptStatus: "waiting" });
   });
 
+  it("requires a scheduled wake between now and the final deadline", () => {
+    const run = productRun();
+    const activeAssignment = assignment();
+    const base = outcome({
+      action: "wait",
+      status: "blocked",
+      wait: {
+        conditionName: "new-member-channel-poll",
+        wakeAt: 2_000,
+        deadlineAt: 5_000,
+      },
+    });
+
+    expect(validateOutcome({
+      run,
+      assignment: activeAssignment,
+      outcome: base,
+      recentFingerprints: [],
+      now: 1_000,
+    }).ok).toBe(true);
+    expect(validateOutcome({
+      run,
+      assignment: activeAssignment,
+      outcome: {
+        ...base,
+        wait: { ...base.wait!, wakeAt: 6_000 },
+      },
+      recentFingerprints: [],
+      now: 1_000,
+    })).toMatchObject({
+      ok: false,
+      reason: "wait.wakeAt must not be after wait.deadlineAt",
+    });
+  });
+
   it("detects fingerprint repeats without new evidence", () => {
     const result = validateOutcome({
       run: productRun(),
@@ -215,6 +253,7 @@ describe("validateOutcome", () => {
         targetAgent: "review",
         nextAssignment: {
           parentAssignmentId: "asg-1",
+          sourceSlackUserId: null,
           targetAgent: "review",
           objective: "review changes",
           contextRefs: [],

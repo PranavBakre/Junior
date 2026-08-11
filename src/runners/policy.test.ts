@@ -35,6 +35,47 @@ const codexConfig = {
 };
 
 describe("compileOpenCodePermission", () => {
+  it("compiles a stateless skill's assignment capabilities without catalog identity", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "skill:sentry-fetch",
+        assignmentCapabilities: ["pipeline-artifact-write"],
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, string>;
+
+    expect(permission["mcp__slack-bot__pipeline_get_state"]).toBe("allow");
+    expect(permission["mcp__slack-bot__pipeline_write_artifact"]).toBe("allow");
+    expect(permission["mcp__slack-bot__pipeline_report_outcome"]).toBe("allow");
+    expect(permission["mcp__slack-bot__agent_dispatch"]).not.toBe("allow");
+    expect(permission.edit).toBe("deny");
+    expect(permission.write).toBe("deny");
+    expect(Object.keys(permission).indexOf("mcp__*")).toBeLessThan(
+      Object.keys(permission).indexOf(
+        "mcp__slack-bot__pipeline_write_artifact",
+      ),
+    );
+  });
+
+  it("allows only the trusted observability MCP tool for a stateless skill", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "skill:sentry-fetch",
+        assignmentCapabilities: ["pipeline-artifact-write"],
+        agentPermissions: {
+          intent: "read-only",
+          mcp: ["slack-bot"],
+          tools: ["mcp__slack-bot__sentry_list"],
+        },
+      },
+    }) as Record<string, unknown>;
+
+    expect(permission.bash).toBe("deny");
+    expect(permission["mcp__slack-bot__sentry_list"]).toBe("allow");
+    expect(permission.read).toBe("allow");
+    expect(permission.write).toBe("deny");
+  });
+
   it("allows only non-mutating inspection for reviewers without a worktree", () => {
     const permission = compileOpenCodePermission({
       subject: {
@@ -51,6 +92,7 @@ describe("compileOpenCodePermission", () => {
     });
     expect((permission as Record<string, unknown>).bash).toMatchObject({
       "*": "deny",
+      "gh *": "allow",
       "gh pr view *": "allow",
       "git blame *": "allow",
     });
@@ -75,6 +117,7 @@ describe("compileOpenCodePermission", () => {
     expect(permission.write).toBe("deny");
     expect(permission.bash).toMatchObject({
       "*": "deny",
+      "gh *": "allow",
       "npm test *": "allow",
       "git fetch *": "allow",
     });
@@ -96,14 +139,10 @@ describe("compileOpenCodePermission", () => {
 
     expect(permission.bash).toMatchObject({
       "*": "deny",
+      "gh *": "allow",
       "git blame *": "allow",
       "gh pr list *": "allow",
     });
-    expect(
-      Object.keys(permission.bash as Record<string, string>).some((pattern) =>
-        pattern.startsWith("gh api")
-      ),
-    ).toBe(false);
     expect(permission.bash).not.toMatchObject({ "npm test *": "allow" });
   });
 
@@ -120,6 +159,7 @@ describe("compileOpenCodePermission", () => {
 
     expect(permission.bash).toMatchObject({
       "*": "deny",
+      "gh *": "allow",
       "gh pr view *": "allow",
       "git blame *": "allow",
     });
@@ -159,6 +199,26 @@ describe("compileOpenCodePermission", () => {
     expect(permission["mcp__*"]).toBe("deny");
   });
 
+  it("allows only read operations on MongoDB for the onboarding agent", () => {
+    const permission = compileOpenCodePermission({
+      subject: {
+        activeAgentName: "onboard-member",
+        agentPermissions: { intent: "read-only", mcp: [], tools: [] },
+      },
+    }) as Record<string, string>;
+
+    expect(permission["mcp__mongodb__find"]).toBe("allow");
+    expect(permission["mcp__mongodb__list-collections"]).toBe("allow");
+    expect(permission["mcp__mongodb__collection-schema"]).toBe("allow");
+    expect(permission["mcp__mongodb__update-one"]).not.toBe("allow");
+    expect(permission["mcp__slack-bot__pipeline_write_artifact"]).toBe("allow");
+    expect(permission["mcp__*"]).toBe("deny");
+    expect(permission.read).toBe("deny");
+    expect(permission.glob).toBe("deny");
+    expect(permission.grep).toBe("deny");
+    expect(permission.bash).toBe("deny");
+  });
+
   it("asks on mutating tools for human-gated roles", () => {
     const permission = compileOpenCodePermission({
       subject: {
@@ -174,7 +234,7 @@ describe("compileOpenCodePermission", () => {
     });
   });
 
-  it("uses fallback for normal builders", () => {
+  it("preserves the fallback but denies provider-native Task for normal builders", () => {
     expect(
       compileOpenCodePermission({
         subject: {
@@ -183,7 +243,19 @@ describe("compileOpenCodePermission", () => {
         },
         fallback: "allow",
       }),
-    ).toBe("allow");
+    ).toEqual({ "*": "allow", task: "deny" });
+  });
+
+  it("denies provider-native Task for orchestrators", () => {
+    expect(
+      compileOpenCodePermission({
+        subject: {
+          activeAgentName: "default",
+          agentPermissions: { intent: "normal", mcp: [], tools: [] },
+        },
+        fallback: { "*": "allow", edit: "ask" },
+      }),
+    ).toEqual({ "*": "allow", edit: "ask", task: "deny" });
   });
 
   it("hard-denies everything for no-tools", () => {
@@ -225,6 +297,19 @@ describe("provider permission compilation matrix", () => {
       expect(row.openCode).toMatchObject({ edit: "deny", write: "deny" });
     }
 
+    const onboarding = byName.get("onboard-member")!;
+    expect(onboarding.intent).toBe("mcp-only");
+    expect(onboarding.claudePermissionMode).toBe("default");
+    expect(onboarding.codexSandbox).toBe("read-only");
+    expect(onboarding.openCode).toMatchObject({
+      read: "deny",
+      glob: "deny",
+      grep: "deny",
+      bash: "deny",
+      "mcp__*": "deny",
+      "mcp__slack-bot__pipeline_write_artifact": "allow",
+    });
+
     // PM / architect: human-gated. Codex gets a read-only jail — with
     // workspace-write + on-request, ordinary edits never trigger an approval,
     // so the gate would be advisory. Mutations must be explicit escalations.
@@ -243,7 +328,7 @@ describe("provider permission compilation matrix", () => {
       expect(row.claudePermissionMode).toBe("bypassPermissions");
       // Uses configured codex sandbox (workspace-write default).
       expect(row.codexSandbox).toBe("workspace-write");
-      expect(row.openCode).toBe("allow");
+      expect(row.openCode).toEqual({ "*": "allow", task: "deny" });
     }
   });
 

@@ -14,6 +14,8 @@ export type CreateDefaultRunInput = {
   messageTs: string;
   targetAgent: string;
   sourceAgent?: string | "human" | "system";
+  /** Original human Slack user ID for prompt attribution. */
+  sourceSlackUserId?: string | null;
   repoRefs?: string[];
   acceptanceCriteria?: string[];
   runId?: string;
@@ -78,6 +80,7 @@ export async function createDefaultRun(
       runId,
       parentAssignmentId: null,
       sourceAgent: input.sourceAgent ?? "human",
+      sourceSlackUserId: input.sourceSlackUserId ?? null,
       targetAgent: input.targetAgent,
       objective: input.objective,
       contextRefs: [`source-message:${input.messageTs}`],
@@ -122,6 +125,7 @@ export async function createDefaultRun(
         assignmentId,
         targetAgent: input.targetAgent,
         sourceMessageTs: input.messageTs,
+        sourceSlackUserId: input.sourceSlackUserId ?? null,
       },
       idempotencyKey: `default-dispatch:${assignmentKey}`,
     }],
