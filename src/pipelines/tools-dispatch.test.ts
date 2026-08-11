@@ -278,7 +278,7 @@ describe("durable agent_dispatch", () => {
     };
     await sessions.set(THREAD, session);
 
-    const result = body(await pipelineDispatchAgent({
+    const runtime: PipelineToolRuntime = {
       store,
       sessionStore: sessions,
       runtimeMode: "active",
@@ -287,8 +287,10 @@ describe("durable agent_dispatch", () => {
         name: "gx-backend",
         path: "/tmp/gx-backend",
         defaultBase: "origin/main",
+        githubRepo: "GrowthX-Club/gx-backend",
       }],
-    }, {
+    };
+    const context = {
       agent: "default",
       channel: CHANNEL,
       threadId: THREAD,
@@ -296,7 +298,21 @@ describe("durable agent_dispatch", () => {
       assignmentId: recovery.id,
       dispatchKey: "human-recovery-dispatch",
       signed: true,
-    }, {
+    } as const;
+
+    const wrongOwner = body(await pipelineDispatchAgent(runtime, context, {
+      target_agent: "build",
+      objective: "Implement the scoped change in gx-backend",
+      mode: "handoff",
+      reason: "The user supplied the missing repository",
+      idempotency_key: "recover-with-wrong-owner",
+      repo_refs: ["attacker/gx-backend"],
+    }));
+    expect(wrongOwner.ok).toBe(false);
+    expect(wrongOwner.reason).toContain("attacker/gx-backend");
+    expect((await store.getRun(started.run.id))?.repoRefs).toEqual([]);
+
+    const result = body(await pipelineDispatchAgent(runtime, context, {
       target_agent: "build",
       objective: "Implement the scoped change in gx-backend",
       mode: "handoff",

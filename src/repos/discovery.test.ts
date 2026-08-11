@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { RepoConfig } from "../config.ts";
 import {
   discoverLocalRepos,
+  githubRepoFromRemote,
   mergeConfiguredAndDiscoveredRepos,
   parseRepoDiscoveryRoots,
 } from "./discovery.ts";
@@ -26,6 +27,14 @@ afterEach(() => {
 });
 
 describe("local repository discovery", () => {
+  it("normalizes GitHub HTTPS and SSH remotes to owner/repo", () => {
+    expect(githubRepoFromRemote("https://github.com/GrowthX-Club/junior.git"))
+      .toBe("GrowthX-Club/junior");
+    expect(githubRepoFromRemote("git@github.com:PranavBakre/Junior.git"))
+      .toBe("PranavBakre/Junior");
+    expect(githubRepoFromRemote("/tmp/local-repo")).toBeNull();
+  });
+
   it("discovers primary checkouts with origin and derives setup metadata", () => {
     const root = makeTempRoot();
     const repoPath = makeRepo(root, "product-repo", { setupScript: true });

@@ -37,6 +37,7 @@ interface RepoConfig {
   name: string;                       // "app-backend"
   path: string;                       // "/Users/.../projects/app-backend"
   defaultBase: string;                // "origin/main"
+  githubRepo?: string;                // exact "owner/repo" for PR URL routing
   // Optional — bug-pipeline / dev-server fields:
   worktreeSetupCommand?: string;      // target-repo command, resolved relative to `path`, receiving branch/--path/--base
   devCommand?: string;                // e.g. "pnpm dev", "npm run dev" — split on whitespace, no shell

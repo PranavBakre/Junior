@@ -45,6 +45,36 @@ describe("SqlitePipelineStore", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("expands run repository refs atomically and idempotently", async () => {
+    await store.createRun(makeDefaultRun({ repoRefs: ["GrowthX-Club/junior"] }));
+    const expanded = await store.expandRunRepoRefs("default-run-1", [
+      "GrowthX-Club/frontend",
+      "growthx-club/JUNIOR",
+    ]);
+    expect(expanded.repoRefs).toEqual([
+      "GrowthX-Club/junior",
+      "GrowthX-Club/frontend",
+    ]);
+    expect(expanded.stateVersion).toBe(0);
+    clock.set(2_000);
+    const replay = await store.expandRunRepoRefs("default-run-1", [
+      "GrowthX-Club/frontend",
+    ]);
+    expect(replay.stateVersion).toBe(0);
+    expect(replay.updatedAt).toBe(1_000);
+
+    await store.createRun(makeDefaultRun({
+      id: "terminal-run",
+      threadId: "T-terminal",
+      status: "terminal",
+      phase: "completed",
+      terminalOutcome: "completed",
+    }));
+    await expect(
+      store.expandRunRepoRefs("terminal-run", ["GrowthX-Club/backend"]),
+    ).rejects.toThrow(/terminal run/);
+  });
+
   it("promotes a default run in place atomically and replays idempotently", async () => {
     await store.createRun(makeDefaultRun());
     await store.createAssignment(makeAssignmentCreate({
