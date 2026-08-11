@@ -2127,8 +2127,9 @@ const MAX_SOURCE_CONTEXT_CHARS = 4_000;
  *  1. KEYED — `entityRefs` are fetched by path from the profile store, verbatim,
  *     with no embedding. The interlocutor/workspace is ground truth.
  *  2. HYBRID — `query` is embedded in QUERY mode, then `recallClaims` filters
- *     by repo/kind/tag (the WHERE) and fuses vector with exact-token ranks. The
- *     store never embeds — we embed at this boundary.
+ *     by repo/kind/tag (the WHERE). Explicit exact anchors activate fusion with
+ *     exact-token ranks; ordinary prose remains vector-ordered. The store never
+ *     embeds — we embed at this boundary.
  */
 export async function recallMemory(
   args: RecallMemoryArgs,

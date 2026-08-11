@@ -687,9 +687,10 @@ export class SqliteMemoryStore implements MemoryStore {
 
   /**
    * Hybrid recall over the filtered claim corpus. Vector and exact-token ranks
-   * are computed independently, then fused with reciprocal-rank fusion. This
-   * method never embeds — the caller provides both the original query text and
-   * its pre-computed vector at the boundary.
+   * are computed independently; explicit exact anchors activate reciprocal-rank
+   * fusion while ordinary conceptual prose keeps vector ordering. This method
+   * never embeds — the caller provides both the original query text and its
+   * pre-computed vector at the boundary.
    */
   async recallClaims(options: ClaimRecallOptions): Promise<ClaimRecallResult[]> {
     const limit = options.limit ?? 5;

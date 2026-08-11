@@ -226,8 +226,9 @@ export interface ClaimRecallOptions {
   queryVector?: Float32Array;
   /**
    * Original natural-language query for the lexical retrieval channel. When
-   * supplied with queryVector, recall fuses the independent vector and lexical
-   * ranks. When supplied alone, recall is lexical-only.
+   * supplied with queryVector, an explicit exact anchor activates fusion of the
+   * independent vector and lexical ranks. When supplied alone, recall is
+   * lexical-only.
    */
   queryText?: string;
   /** Optional raw-channel floors applied before `limit` slices the result set. */
