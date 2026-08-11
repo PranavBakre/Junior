@@ -1,15 +1,15 @@
 # Junior Memory System — Entity Profiles & Episodic Memory (v3)
 
-> **Status: SHIPPED.** This is the live memory system and supersedes [memory-lesson-store.md](memory-lesson-store.md) (v2) and the whole legacy associative stack ([associative-memory.md](associative-memory.md), [memory-ingestion-rule-learning.md](memory-ingestion-rule-learning.md), [memory-system-overhaul.md](memory-system-overhaul.md) — all retired, kept only as historical evidence records). The cutover is complete: `migrate-v3.ts` folded the old `lesson`/`memory_fact` rows into claims and the condemned tables (`memory_event`, `edge`, `mention`, `memory_search_doc`, `candidate_rule`, `memory_fts`) were dropped; the legacy associative `recall()`/`consolidate()`, the rule-learning layer, and the `src/memory/eval/` harness are gone. **Recall is cosine-only — there is no FTS channel.** v3 keeps the v2 curated/embedded core and **generalizes the subject of memory**: Junior captures episodic experience (including affect), and consolidates it into a heterogeneous set of **derivations** (person/repo profiles, lessons, situation-patterns, facts). Every structural choice here was constrained by **why the original `memory_event` system failed** (§2).
+> **Status: SHIPPED.** This is the live memory system and supersedes [memory-lesson-store.md](memory-lesson-store.md) (v2) and the whole legacy associative stack ([associative-memory.md](associative-memory.md), [memory-ingestion-rule-learning.md](memory-ingestion-rule-learning.md), [memory-system-overhaul.md](memory-system-overhaul.md) — all retired, kept only as historical evidence records). The cutover is complete: `migrate-v3.ts` folded the old `lesson`/`memory_fact` rows into claims and the condemned tables (`memory_event`, `edge`, `mention`, `memory_search_doc`, `candidate_rule`, `memory_fts`) were dropped. Recall now fuses **vector similarity with an in-process exact-token channel** over the same filtered SQLite rows; this is not the condemned legacy `memory_fts` index. Claims may retain source file, heading, and parent-section text so a precise atomic hit can expand into useful context.
 >
-> Where this design doc and the shipped code diverge, sections below are annotated **(shipped: …)**. The most consequential divergence: §8/§11/§12 describe an FTS∥vector merge that was *not* built — production recall is pure cosine over the embedded claim store.
+> Where this design doc and the shipped code diverge, sections below are annotated **(shipped: …)**. Production uses exact-token coverage plus reciprocal-rank fusion, not a separately synchronized FTS index.
 
 ## 1. TL;DR
 
 - **Capture** raw turns as **source records / episodes** — provenance and evidence, *not* recallable memory. Episodes carry **affect** (emotion, intensity, valence, trigger, Junior's response, salience) and are **multi-subject**.
 - **Consolidate** (offline) reads episodes and builds/updates **derivations** — a heterogeneous set, not just one kind: **profiles** (person, repo, project, situation) and the keyless long tail (**lessons, facts, atomic claims**).
-- **Recall** (hot path) returns the **consolidated derivation** — never the raw episode stream.
-- **Two retrieval modes decide everything downstream:** **keyed** memory (profiles, fetched by `entity_ref` from context — no vector) and **semantic** memory (lessons/facts/claims, reached only by cosine — embedded per atomic claim).
+- **Recall** (hot path) returns the **consolidated derivation** — never the raw episode stream. Automatic pre-recall is narrower still: durable guidance only (lessons, preferences, decisions, typed procedures), not contextual facts.
+- **Two memory retrieval modes decide everything downstream:** **keyed** memory (profiles, fetched by `entity_ref` from context — no vector) and **hybrid guidance** (lessons/preferences/decisions/procedures, scoped by trusted tags and ranked by vector similarity plus lexical evidence). Source-backed context such as Slack belongs in a separate archive search surface.
 - **Storage follows retrieval mode:** profiles → **markdown files** (keyed, human-inspectable); claims/lessons → **SQLite rows** with text + embedding co-located; episodes → **SQLite raw log**.
 - **Embed locally** (`onnx-community/harrier-oss-v1-270m-ONNX`, pure-TS in Bun): affective memory must not leave for a remote API.
 - **Affect is record-and-inform, not behavior-shaping** (decided). Profiles are **Junior-internal, never surfaced verbatim** (decided).
@@ -55,7 +55,7 @@ So episodes are *read-by-the-consolidator* but *not-returned-by-recall*. Reading
                                  │
                                  ▼
    HOT-PATH RECALL:  context ─(entity key)─▶ profiles        (keyed, no vector)
-                     query   ─(filters)─▶ scope ─(cosine)─▶  lessons/claims/...
+                     query   ─(filters)─▶ scope ─(vector ∥ lexical)─▶ claims
 ```
 
 **Profiles are one derivation among several — do not hardcode "person", and do not assume every derivation is a profile.** The split that matters is **how you reach it** (§4.1), not whether it's a "profile."
@@ -64,9 +64,9 @@ So episodes are *read-by-the-consolidator* but *not-returned-by-recall*. Reading
 
 | | **Keyed** | **Semantic** |
 |---|---|---|
-| Kinds | person / repo / project / situation **profiles** | **lessons, facts, atomic claims** |
-| Reached by | a deterministic key from context (`entity_ref` — the interlocutor / cwd in front of you) | similarity only — there is no key |
-| Needs a vector? | **No** — fetching by key is a primary-key lookup | **Yes** — cosine is the only way in |
+| Kinds | person / repo / project / situation **profiles** | **lessons, preferences, decisions, procedures**; other claims remain explicit/on-demand |
+| Reached by | a deterministic key from context (`entity_ref` — the interlocutor / cwd in front of you) | fused vector similarity and exact-token evidence |
+| Needs a vector? | **No** — fetching by key is a primary-key lookup | Normally yes; lexical evidence also recovers exact identifiers and wording |
 | Granularity | a document (multi-facet sketch) | one atomic claim per unit |
 
 Two rules fall out (see [[embed-atomic-claims-not-documents-keyed-vs-semantic]]):
@@ -120,7 +120,11 @@ data/
 |---|---|---|---|
 | episode / source record | by id, bulk-scan | **SQLite** (raw log) | no |
 | **profile** (person/repo/…) | **keyed** (`entity_ref` from context) | **markdown file** | no |
-| **lesson / fact / claim** | **semantic** (cosine) | **SQLite row** | yes |
+| **guidance claim** | **hybrid** (vector + lexical after SQL/tag scope) | **SQLite row** | yes |
+
+Raw Slack history is not a fourth memory kind. It lives in the isolated
+[`slack-archive.db`](slack-archive.md), is searched on demand with source
+coordinates and thread expansion, and never competes in automatic pre-recall.
 
 - **Profiles → markdown files.** Keyed and human-inspected/corrected — "show me what Junior thinks of me, let me fix it," with git history of how a judgment evolved. The filesystem alone suffices (convention path `profiles/people/<entity>.md` + folder glob to list); a SQLite `entity_ref → path` index is optional convenience. **No embedding column.**
 - **Lessons/claims → SQLite rows** with text and embedding **co-located** (`{id, text, embedding, tags, weight}`). A markdown file for something you only reach by cosine is ceremony — you never navigate to it by path, and it's an atomic claim, not a browsable document.
@@ -134,7 +138,7 @@ data/
 
 ```markdown
 ---
-kind: profile/person          # or profile/repo, profile/situation
+kind: profile/person          # or profile/repo, profile/project, profile/situation
 entity_ref: pranav:person
 role: principal / architect
 comms_style: terse, pushes back hard
@@ -148,6 +152,7 @@ Pranav is the principal… <prose sketch>
 
 - **person**: `role`, `comms_style`, `values[]`, `triggers[]`, `praises[]`, `preferences[]`, `relationship_trajectory`, `sentiment_trend`.
 - **repo**: `conventions[]`, `gotchas[]`, `merge_flow`, `owners[]`, `stack`, `hot_paths[]`. (Repos are first-class memory subjects — the existing-setup parity v2 lacked.)
+- **project**: `goals[]`, `constraints[]`, `decisions[]`, `owners[]`, `status`, `next_steps[]`.
 - **situation**: `pattern`, `signals[]`, `recommended_action`.
 
 **Lesson / fact / claim** (SQLite row — semantic, embedded):
@@ -155,21 +160,25 @@ Pranav is the principal… <prose sketch>
 ```sql
 claim (
   id         TEXT PRIMARY KEY REFERENCES memory_node(id),
-  kind       TEXT,            -- lesson | fact | situation-claim
+  kind       TEXT,            -- lesson | fact | preference | decision | situation-claim
   text       TEXT NOT NULL,   -- ONE atomic claim (authoritative)
   retrieval_text TEXT,        -- rebuildable situation/question projection
   embedding  BLOB,            -- Float32 LE; derived from retrieval_text || text
   embed_model TEXT, dim INT,  -- invalidate/rebuild on model change
   repo TEXT, tags TEXT,       -- filter columns
   source_episode TEXT,        -- provenance (a field)
+  source_path TEXT,           -- originating file/document
+  source_heading TEXT,        -- parent section heading
+  source_text TEXT,           -- parent section for contextual expansion
   helpful_count INT, unhelpful_count INT, weight REAL DEFAULT 1.0,
   created_at INT, last_used_at INT, active INT DEFAULT 1
 )
 ```
 
 `text` is authoritative. `retrieval_text` and the embedding are derived and
-rebuildable; this lets retrieval expose a lesson's `applies_when` cue without an
-LLM rewriting the stored rule.
+rebuildable. Lexical scoring considers those fields plus source provenance.
+Recall returns the atomic `text` and a `contextText` expanded from `source_text`
+when available.
 
 ### 6.2 Vector storage — stay on SQLite (the ladder)
 
@@ -183,7 +192,7 @@ A dedicated vector store is premature infrastructure here, and it violates CLAUD
 
 | Rung | When | What |
 |---|---|---|
-| **1 — brute-force cosine** *(now)* | up to ~tens of thousands | `embedding` BLOB + cosine in TS, after the `WHERE` filter. Zero new infra, exact. |
+| **1 — brute-force hybrid** *(now)* | up to ~tens of thousands | cosine plus exact-token coverage in TS after the `WHERE` filter; normalized reciprocal-rank fusion. Zero new infra. |
 | **2 — `sqlite-vec`** *(gated)* | scan *measurably* exceeds budget | loadable SQLite extension (in-process, one file, **no service**, exact KNN); `bun:sqlite` loads it via `loadExtension`. |
 | **3 — ANN / vector DB** *(probably never)* | 100k+ vectors with measured latency pain | not this workload. |
 
@@ -195,7 +204,7 @@ The only "switch" candidate that adds no service is **LanceDB** (embedded, nativ
 
 The migration was mostly **deletion + one backfill**, not a lift-and-shift of the 90 MB DB. Carrying the audit-condemned piles forward *is* the failure (§2). Categorize, then:
 
-1. **Drop the condemned (don't migrate):** `memory_event` (14,243; 96% never recalled), `edge` (42,876), `mention`, `memory_search_doc`, `candidate_rule`, **and `memory_fts`** (recall is cosine-only — FTS was not carried into v3). Back up first.
+1. **Drop the condemned (don't migrate):** `memory_event` (14,243; 96% never recalled), `edge` (42,876), `mention`, `memory_search_doc`, `candidate_rule`, **and `memory_fts`** (the synchronized FTS index was not carried into v3; conditional exact-token scoring runs in process over claim rows). Back up first.
 2. **Keep the spine:** `memory_source_record`, `memory_node`, `recall_log`.
 3. **`lesson` + `memory_fact` → `claim` (the one real backfill):** copy `title/body → text`, tags, weight; **batch-embed offline** (harrier-270) to populate `embedding`; **proximity-dedup-merge** in the same pass (the 818 accrued without dedup → near-duplicates; expect collapse to fewer distinct claims). Routing-decision telemetry is excluded (never becomes a claim).
 4. **Profiles + episodes: nothing to migrate** — net-new from future turns.
@@ -232,6 +241,8 @@ A **rare high-salience episode** (a major conflict/praise) may be individually p
 
 **Prompt context — profiles and identity.** Two things make profile derivation possible at all. (1) The prompt shows the **existing profile corpus** — keyed fetches for entity refs the records literally mention, plus the rest of the (small) corpus via `ProfileStore.list()`, most recently updated first, capped at 20 — because plain Slack evidence never contains a literal `<slug>:person` token, and a profile the model can't see is a profile it can never update. (2) A **"Who is who" identity map**: `referencedSlackUserIds` collects the batch's Slack ids (`actor_id` + `<@U…>` mentions) and an injected `PeopleResolver` (production: `createSlackPeopleResolver`, `users.info` behind the shared per-process name cache) resolves them to display names, rendered as `U03… = Pranav Bakre` plus name-annotated `from=` lines. The prompt instructs the model to reuse the exact `entity_ref` of a shown profile for the same person, never a second slug. Resolution is best-effort: unresolved ids are dropped, a resolver failure degrades to raw ids, and a missing resolver (e.g. token-less CLI run) just omits the map.
 
+**Cumulative profile phases.** Person, repository, and situation profiles do not rely on the once-consumed thread batch to reveal a recurring pattern. People use rolling per-actor Slack history; repositories group historical records by normalized repo labels (known `.worktrees` container suffixes and `<known-base>-…-pr` worktree labels collapse to the base repo); situations use a rolling cross-thread human Slack window and must cite repeated evidence. `consolidate-v3 --profiles-all` rebuilds all three historical subjects, while `--subjects-all` limits the backfill to repositories and situations; `--subject-repos` retries selected raw labels. The localhost operator dashboard lists every profile kind through a read-only endpoint that never bumps `last_used_at`.
+
 ### 7.1 Last-used & decay (the forgetting driver)
 
 Every unit carries a `last_used_at` so the system can identify memory that should **fade**. The semantics differ by kind, but the discipline is shared:
@@ -246,14 +257,12 @@ Every unit carries a `last_used_at` so the system can identify memory that shoul
 Recall runs **two channels** and merges:
 
 1. **Keyed fetch.** The interlocutor and workspace are *ground truth*: in a thread with Pranav, in `gx-backend` → read `profiles/people/pranav.md` and `profiles/repos/gx-backend.md` **directly by path**. No LLM phrasing, no cosine.
-2. **Semantic search** over the claim store: embed the query → **filters scope** (`WHERE repo/kind/recency`) → **cosine ranks** within scope. (See [[junior-memory-filters-scope-vectors-rank]].)
-3. **Return** the keyed profiles + claims above the relevance floor, ordered by
-   raw cosine. `weight` remains value metadata and is only the fallback ranking
-   when no query vector exists. Never the raw episode stream.
+2. **Hybrid claim search** over one claim store: embed the query → **filters scope** (`WHERE repo/kind/recency`) → independently score cosine and deterministic exact-token coverage. Ordinary conceptual prose stays cosine-ordered; reciprocal-rank fusion is enabled only when the query contains an explicit exact anchor such as an identifier, path, URL, flag, issue number, or quotation. (See [[junior-memory-filters-scope-vectors-rank]].)
+3. **Apply raw-channel eligibility before the result limit** (`cosine >= 0.55 OR lexical >= 0.75` by default), then return keyed profiles plus the surviving claims. `weight` remains value metadata and is only the fallback ranking when no query vector exists. Never return the raw episode stream.
 
-**Filters are the `WHERE`, cosine is the `ORDER BY` — and profiles skip both, fetched by key.** Keyed retrieval is the extreme of "filters scope": the context narrows to exactly one row.
+**Filters are the `WHERE`; vector similarity is the normal `ORDER BY`; explicit exact anchors may activate hybrid RRF — and profiles skip all three, fetched by key.** Keyed retrieval is the extreme of "filters scope": the context narrows to exactly one row.
 
-> **Shipped (cosine-only — divergence from the original §8 design).** The FTS identifier escape-hatch was *not* built; `memory_fts` is gone and there is no lexical channel. `recallClaims` pre-filters by `repo`/`kind`/`sinceMs` (the SQL `WHERE`) and orders vector recall by raw cosine. The caller embeds at the boundary (`recallClaims` never embeds); with no query vector it ranks by `weight` alone. `recallMemory` runs one recall per requested claim kind or fact subtype, preserves `factKind`, merges/de-dupes, applies a 0.55 raw-cosine floor, records the final returned ids in `recall_log`, and can reserve procedure slots for automatic pre-recall. Semantic queries should describe the complete situation and desired action; repo/tags remain structured filters.
+> **Shipped (conditional hybrid).** The synchronized `memory_fts` index is gone. Instead, `recallClaims` computes exact-token coverage in process over the same filtered claim rows and activates normalized reciprocal-rank fusion only for queries with explicit exact anchors. This preserves semantic ordering for ordinary prose while letting exact identifiers rescue weak vector hits. The caller embeds at the boundary (`recallClaims` never embeds); with no query vector it ranks by `weight` alone. `recallMemory` runs one recall per requested claim kind or fact subtype, preserves `factKind`, merges/de-dupes, applies raw-channel eligibility before each store limit, records the final returned ids in `recall_log`, and can reserve procedure slots for automatic pre-recall. Optional source context is bounded (`source_path` 2,048 chars, `source_heading` 512, `source_text` 12,000); changing authoritative claim text clears omitted old source context so contradictory evidence cannot survive the replacement.
 
 ## 9. Governance & affect policy (decided)
 
@@ -288,18 +297,18 @@ Recall runs **two channels** and merges:
 
 **Carried:** source records as raw evidence; provenance as a field; dedup-on-write; helpful/unhelpful feedback weighting (the `helpful_count`/`unhelpful_count`/`weight` columns); "universal rules inject, don't retrieve."
 
-**New in v3:** episodes with affect; the keyed/semantic split as the organizing axis; profiles (person/repo/situation) as keyed markdown derivations beside the embedded claim tail; markdown-as-source-of-truth for keyed memory; the local-first embedding mandate for affective data.
+**New in v3:** episodes with affect; the keyed/semantic split as the organizing axis; profiles (person/repo/project/situation) as keyed markdown derivations beside the embedded claim tail; typed semantic preferences and decisions; markdown-as-source-of-truth for keyed memory; the local-first embedding mandate for affective data.
 
-**Deleted:** event-as-memory promotion, the edge graph + spreading activation, any O(N²) similarity-edge builder, RRF-as-a-recall-play, and (shipped) **the FTS keyword channel, the candidate-rule learning layer, and the `src/memory/eval/` harness** — recall is cosine-only and the eval-replay gate ran during migration, then the harness was removed. The whole-profile embedding was dropped before v1 (profiles are keyed, not embedded).
+**Deleted:** event-as-memory promotion, the edge graph + spreading activation, any O(N²) similarity-edge builder, always-on RRF-as-a-recall-play, and (shipped) **the synchronized FTS keyword index, the candidate-rule learning layer, and the `src/memory/eval/` harness**. A small in-process exact-token channel over the same claim rows remains as an explicit-anchor escape hatch; the eval-replay gate ran during migration, then the harness was removed. The whole-profile embedding was dropped before v1 (profiles are keyed, not embedded).
 
 ## 12. Phasing (each behind the eval gate)
 
 Phasing as originally planned, annotated with what shipped:
 
 - **P0 — done:** `recall_log` + eval harness + routing-log prune (v2 Phase 0). *(The eval harness has since been removed — it served its purpose gating the migration.)*
-- **P1 — shipped:** `episode` table; `profiles/` markdown files; `claim` table; the offline consolidation engine (`consolidateSession` + `runConsolidationSweep` + `claude -p` runner) builds person/repo/situation profiles (keyed dedup) and atomic claims (cosine proximity dedup); the legacy event flood is gone.
+- **P1 — shipped:** `episode` table; `profiles/` markdown files; `claim` table; the offline consolidation engine (`consolidateSession` + `runConsolidationSweep` + runner) builds person/repo/project/situation profiles (keyed dedup) and typed atomic claims (cosine proximity dedup); the legacy event flood is gone. Person profiles use a separate rolling cross-thread view for active users, because consuming isolated threads once cannot reveal recurring behavior across sessions.
 - **P2 — partial:** keyed profile fetch by context is shipped (`memory_recall` with `entity_refs`). The helpful/unhelpful feedback *columns* exist (`helpful_count`/`unhelpful_count`/`weight`) but the production feedback loop that writes them is not yet wired.
-- **P3 — shipped (cosine-only):** harrier-270-ONNX provider (last-token pooling, q8); the claim store is embedded; recall is **cosine over the embedded corpus**. The planned FTS ∥ vector merge was **dropped** — there is no lexical channel.
+- **P3 — shipped (conditional hybrid):** harrier-270-ONNX provider (last-token pooling, q8); ordinary semantic recall is cosine over the embedded corpus. Explicit exact anchors activate an in-process exact-token channel and RRF over the same filtered claim rows. The planned synchronized FTS index was dropped.
 - **P4 — affect record-and-inform:** episodes capture affect today; surfacing it into Junior's live context is not yet wired.
 - **P5 — scale infra** (sqlite-vec, then ANN) only when measured latency demands. Not built — rung 1 (brute-force cosine) is the current and sufficient implementation.
 

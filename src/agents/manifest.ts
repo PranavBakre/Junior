@@ -1,24 +1,18 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+  parseAgentFrontmatter,
+  parseFrontmatterCsv,
+} from "./frontmatter.ts";
+
 /**
- * Trusted agent catalog — operational metadata source of truth.
+ * Trusted agent catalog compiled from operational frontmatter.
  *
- * Agent definitions contain two classes of data:
- * 1. Trusted operational metadata (this module): lifecycle, capabilities,
- *    mutation policy, handoff graph, and provider permission intent.
- * 2. Prompt content (`.claude/agents/*.md` and overlays): role instructions,
- *    conventions, examples.
- *
- * Only Junior (this catalog) and `agents-org` may define or widen operational
- * metadata. Target repositories may supplement prompt content but must not
- * grant themselves new tools, identities, mutation authority, or handoff edges.
- *
- * Load order for operational fields:
- *   1. This static catalog (Junior) — sole authority for listed roles
- *   2. agents-org may register additional identities / optional agents but
- *      cannot widen capabilities of catalog agents
- *   3. Target-repo `.claude/agents/*.md` — prompt content only; operational
- *      overrides are stripped / clamped by the registry
- *
- * @see docs/features/agent-product-debugging-pipeline-implementation-plan.md Phase 3
+ * The Markdown file is the single declaration for an agent. TypeScript owns
+ * the schema, validation, and enforcement only. Operational fields are read
+ * exclusively from Junior's `.claude/agents` directory and the `agents-org`
+ * overlay; target-repository definitions remain prompt-only and cannot widen
+ * runtime authority.
  */
 
 /** Matches `AgentPermissionIntent` in loader.ts — kept local to avoid cycles. */
@@ -116,198 +110,342 @@ export interface AgentManifest {
   trustSource: "junior" | "agents-org";
 }
 
-const ORCHESTRATOR_HANDOFF: HandoffPolicy = {
-  // Orchestrators may dispatch every registered operational worker + human.
-  mayDelegateTo: [
-    "pm",
-    "architect",
-    "build",
-    "frontend",
-    "review",
-    "reproducer",
-    "onboard-member",
-    "human",
-  ],
-  mayReturnTo: [],
-  maxParallel: 4,
-};
-
-const PLANNER_CAPABILITIES: readonly AgentCapability[] = [
-  "repo-read",
-  "pipeline-artifact-write",
-  "dispatch",
-];
-
-const BUILDER_CAPABILITIES: readonly AgentCapability[] = [
+const LIFECYCLES = new Set<AgentLifecycle>(["persistent", "stateless"]);
+const ROLES = new Set<AgentRole>([
+  "orchestrator",
+  "planner",
+  "builder",
+  "reviewer",
+  "reproducer",
+  "utility",
+]);
+const MUTATION_POLICIES = new Set<MutationPolicy>([
+  "none",
+  "workspace",
+  "human-gated",
+  "external",
+]);
+const PERMISSION_INTENTS = new Set<CatalogPermissionIntent>([
+  "mcp-only",
+  "read-only",
+  "normal",
+  "human-gated",
+  "utility",
+  "no-tools",
+]);
+const CAPABILITIES = new Set<AgentCapability>([
   "repo-read",
   "repo-write",
-  "worktree-mutate",
+  "github-review-read",
+  "github-review-comment",
+  "browser-read",
+  "mongodb-read",
   "pipeline-artifact-write",
+  "pipeline-run-start",
+  "worktree-verify",
+  "worktree-mutate",
   "dispatch",
-];
+  "orchestrate",
+]);
 
 /**
- * Static trusted catalog for operational roles.
- * Product roles (pm, architect, build, frontend) are dispatchable internally
- * without a public Slack identity entry in AGENT_IDENTITIES.
+ * MCP-only runs deny every tool by default and exact-grant declarations. Keep
+ * the compiler's allowlist equally explicit so a trusted-definition typo
+ * cannot turn a read-only utility into a production writer.
  */
-export const TRUSTED_AGENT_CATALOG: readonly AgentManifest[] = [
-  {
-    name: "default",
-    aliases: ["junior"],
-    lifecycle: "persistent",
-    role: "orchestrator",
-    capabilities: [
-      "repo-read",
-      "repo-write",
-      "worktree-mutate",
-      "pipeline-artifact-write",
-      "pipeline-run-start",
-      "dispatch",
-      "orchestrate",
-      "github-review-read",
-    ],
-    mutationPolicy: "workspace",
-    permissionIntent: "normal",
-    handoffPolicy: ORCHESTRATOR_HANDOFF,
-    trustSource: "junior",
-  },
-  {
-    name: "lead",
-    lifecycle: "persistent",
-    role: "orchestrator",
-    capabilities: [
-      "repo-read",
-      "repo-write",
-      "worktree-mutate",
-      "pipeline-artifact-write",
-      "pipeline-run-start",
-      "dispatch",
-      "orchestrate",
-      "github-review-read",
-    ],
-    mutationPolicy: "workspace",
-    permissionIntent: "normal",
-    handoffPolicy: ORCHESTRATOR_HANDOFF,
-    trustSource: "junior",
-  },
-  {
-    name: "pm",
-    lifecycle: "persistent",
-    role: "planner",
-    capabilities: PLANNER_CAPABILITIES,
-    // Repository read + pipeline-scoped artifact writes; no product-code push.
-    mutationPolicy: "human-gated",
-    permissionIntent: "human-gated",
+const MCP_ONLY_READ_TOOLS = new Set([
+  "mcp__slack-bot__slack_read_thread",
+  "mcp__slack-bot__slack_read_channel",
+  "mcp__slack-bot__slack_search",
+  "mcp__slack-bot__slack_search_users",
+  "mcp__slack-bot__memory_recall",
+  "mcp__slack-bot__runbook_search",
+  "mcp__slack-bot__runbook_select",
+]);
+
+const MCP_ONLY_CAPABILITY_TOOLS: Partial<
+  Record<AgentCapability, readonly string[]>
+> = {
+  "mongodb-read": [
+    "mcp__mongodb__find",
+    "mcp__mongodb__list-collections",
+    "mcp__mongodb__collection-schema",
+  ],
+  "pipeline-artifact-write": [
+    "mcp__slack-bot__pipeline_get_state",
+    "mcp__slack-bot__pipeline_write_artifact",
+    "mcp__slack-bot__pipeline_report_outcome",
+  ],
+  "pipeline-run-start": ["mcp__slack-bot__pipeline_start_run"],
+  "github-review-read": ["mcp__slack-bot__github_read_pr_review_state"],
+  "github-review-comment": ["mcp__slack-bot__github_post_review"],
+  dispatch: [
+    "mcp__slack-bot__agent_dispatch",
+    "mcp__slack-bot__skill_dispatch",
+  ],
+};
+
+interface CatalogEntry {
+  manifest: AgentManifest;
+  tools: readonly string[];
+  sourcePath: string;
+}
+
+export interface TrustedCatalogOptions {
+  publicAgentsDir: string;
+  orgAgentsDir: string;
+}
+
+function required(
+  frontmatter: Record<string, string>,
+  key: string,
+  sourcePath: string,
+): string {
+  const value = frontmatter[key]?.trim();
+  if (!value) throw new Error(`${sourcePath}: missing required '${key}' frontmatter`);
+  return value;
+}
+
+function enumValue<T extends string>(
+  frontmatter: Record<string, string>,
+  key: string,
+  allowed: ReadonlySet<T>,
+  sourcePath: string,
+): T {
+  const value = required(frontmatter, key, sourcePath);
+  if (!allowed.has(value as T)) {
+    throw new Error(`${sourcePath}: invalid '${key}' value '${value}'`);
+  }
+  return value as T;
+}
+
+function nonNegativeInt(
+  frontmatter: Record<string, string>,
+  key: string,
+  sourcePath: string,
+): number {
+  const raw = required(frontmatter, key, sourcePath);
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${sourcePath}: '${key}' must be a non-negative integer`);
+  }
+  return value;
+}
+
+function parseCatalogEntry(
+  sourcePath: string,
+  trustSource: AgentManifest["trustSource"],
+): CatalogEntry[] {
+  const content = readFileSync(sourcePath, "utf8");
+  const { frontmatter } = parseAgentFrontmatter(content);
+  if (frontmatter["operational.enabled"] !== "true") return [];
+
+  const name = required(frontmatter, "name", sourcePath);
+  const capabilities = parseFrontmatterCsv(
+    required(frontmatter, "operational.capabilities", sourcePath),
+  ).map((capability) => {
+    if (!CAPABILITIES.has(capability as AgentCapability)) {
+      throw new Error(`${sourcePath}: unknown capability '${capability}'`);
+    }
+    return capability as AgentCapability;
+  });
+  const permissionIntent = enumValue(
+    frontmatter,
+    "permissions.intent",
+    PERMISSION_INTENTS,
+    sourcePath,
+  );
+  const tools = parseFrontmatterCsv(frontmatter.tools);
+  if (permissionIntent === "mcp-only") {
+    const capabilityTools = new Set(
+      capabilities.flatMap(
+        (capability) => MCP_ONLY_CAPABILITY_TOOLS[capability] ?? [],
+      ),
+    );
+    const unsafeTool = tools.find(
+      (tool) =>
+        !MCP_ONLY_READ_TOOLS.has(tool) && !capabilityTools.has(tool),
+    );
+    if (unsafeTool) {
+      throw new Error(
+        `${sourcePath}: mcp-only agent '${name}' cannot safely request '${unsafeTool}'`,
+      );
+    }
+  }
+  if (
+    capabilities.includes("mongodb-read") &&
+    !tools.some((tool) => tool.startsWith("mcp__mongodb__"))
+  ) {
+    throw new Error(
+      `${sourcePath}: agent '${name}' declares mongodb-read without a MongoDB tool`,
+    );
+  }
+  if (
+    (capabilities.includes("repo-write") ||
+      capabilities.includes("worktree-mutate")) &&
+    enumValue(
+      frontmatter,
+      "operational.mutationPolicy",
+      MUTATION_POLICIES,
+      sourcePath,
+    ) !== "workspace"
+  ) {
+    throw new Error(
+      `${sourcePath}: agent '${name}' has write capabilities without workspace mutation policy`,
+    );
+  }
+
+  const base: AgentManifest = {
+    name,
+    aliases: parseFrontmatterCsv(frontmatter["operational.aliases"]),
+    lifecycle: enumValue(
+      frontmatter,
+      "operational.lifecycle",
+      LIFECYCLES,
+      sourcePath,
+    ),
+    role: enumValue(frontmatter, "operational.role", ROLES, sourcePath),
+    capabilities,
+    mutationPolicy: enumValue(
+      frontmatter,
+      "operational.mutationPolicy",
+      MUTATION_POLICIES,
+      sourcePath,
+    ),
+    permissionIntent,
     handoffPolicy: {
-      mayDelegateTo: ["architect", "build", "frontend", "orchestrator", "human"],
-      mayReturnTo: ["orchestrator"],
-      maxParallel: 1,
+      mayDelegateTo: parseFrontmatterCsv(
+        frontmatter["operational.mayDelegateTo"],
+      ),
+      mayReturnTo: parseFrontmatterCsv(frontmatter["operational.mayReturnTo"]),
+      maxParallel: nonNegativeInt(
+        frontmatter,
+        "operational.maxParallel",
+        sourcePath,
+      ),
     },
-    trustSource: "junior",
-  },
-  {
-    name: "architect",
-    lifecycle: "persistent",
-    role: "planner",
-    capabilities: PLANNER_CAPABILITIES,
-    mutationPolicy: "human-gated",
-    permissionIntent: "human-gated",
-    handoffPolicy: {
-      mayDelegateTo: ["build", "frontend", "orchestrator", "human"],
-      mayReturnTo: ["pm", "orchestrator"],
-      maxParallel: 2,
-    },
-    trustSource: "junior",
-  },
-  {
-    name: "build",
-    lifecycle: "persistent",
-    role: "builder",
-    capabilities: BUILDER_CAPABILITIES,
-    // Ordinary workspace work inside registered worktrees — not merge/prod.
-    mutationPolicy: "workspace",
-    permissionIntent: "normal",
-    handoffPolicy: {
-      // build ↔ frontend; build → review | orchestrator; any → human
-      mayDelegateTo: ["frontend", "review", "orchestrator", "human"],
-      mayReturnTo: ["frontend", "review", "orchestrator", "pm", "architect"],
-      maxParallel: 1,
-    },
-    trustSource: "junior",
-  },
-  {
-    name: "frontend",
-    lifecycle: "persistent",
-    role: "builder",
-    capabilities: BUILDER_CAPABILITIES,
-    mutationPolicy: "workspace",
-    permissionIntent: "normal",
-    handoffPolicy: {
-      mayDelegateTo: ["build", "review", "orchestrator", "human"],
-      mayReturnTo: ["build", "review", "orchestrator", "pm", "architect"],
-      maxParallel: 1,
-    },
-    trustSource: "junior",
-  },
-  {
-    name: "review",
-    lifecycle: "persistent",
-    role: "reviewer",
-    capabilities: [
-      "repo-read",
-      "github-review-read",
-      "github-review-comment",
-      "pipeline-artifact-write",
-      "worktree-verify",
-      "dispatch",
-    ],
-    // No product-code edits or push.
-    mutationPolicy: "none",
-    permissionIntent: "read-only",
-    handoffPolicy: {
-      mayDelegateTo: ["build", "frontend", "orchestrator", "human"],
-      mayReturnTo: ["build", "frontend", "orchestrator"],
-      maxParallel: 1,
-    },
-    trustSource: "junior",
-  },
-  {
-    name: "reproducer",
-    lifecycle: "persistent",
-    role: "reproducer",
-    capabilities: [
-      "repo-read",
-      "browser-read",
-      "pipeline-artifact-write",
-      "dispatch",
-    ],
-    // Browser/read-only product access + pipeline artifacts; no product-code edits.
-    mutationPolicy: "none",
-    permissionIntent: "read-only",
-    handoffPolicy: {
-      mayDelegateTo: ["build", "frontend", "review", "orchestrator", "human"],
-      mayReturnTo: ["orchestrator"],
-      maxParallel: 1,
-    },
-    trustSource: "junior",
-  },
-  {
-    name: "onboard-member",
-    lifecycle: "persistent",
-    role: "utility",
-    capabilities: [
-      "mongodb-read",
-      "pipeline-artifact-write",
-    ],
-    // Production discovery only. Execution remains independently human-gated.
-    mutationPolicy: "none",
-    permissionIntent: "mcp-only",
-    handoffPolicy: {
-      mayDelegateTo: ["orchestrator", "human"],
-      mayReturnTo: ["orchestrator"],
-      maxParallel: 0,
-    },
-    trustSource: "agents-org",
-  },
-] as const;
+    trustSource,
+  };
+
+  const entries: CatalogEntry[] = [{ manifest: base, tools, sourcePath }];
+  for (const variant of parseFrontmatterCsv(frontmatter["operational.variants"])) {
+    entries.push({
+      manifest: { ...base, name: variant, aliases: [] },
+      tools,
+      sourcePath,
+    });
+  }
+  return entries;
+}
+
+function readCatalogDirectory(
+  dirPath: string,
+  trustSource: AgentManifest["trustSource"],
+  optional = false,
+): CatalogEntry[] {
+  let files: string[];
+  try {
+    files = readdirSync(dirPath)
+      .filter((entry) => entry.endsWith(".md"))
+      .sort();
+  } catch (error) {
+    if (optional) return [];
+    throw new Error(
+      `Cannot load trusted agent definitions from ${dirPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return files.flatMap((file) =>
+    parseCatalogEntry(resolve(dirPath, file), trustSource),
+  );
+}
+
+export function loadTrustedAgentCatalog(
+  options: TrustedCatalogOptions,
+): readonly AgentManifest[] {
+  // Git creates an empty directory for an uninitialized submodule. That is an
+  // absent optional overlay, not a mounted-but-incomplete one.
+  const orgDirectoryPresent = existsSync(options.orgAgentsDir) &&
+    readdirSync(options.orgAgentsDir).length > 0;
+  const entries = [
+    ...readCatalogDirectory(options.publicAgentsDir, "junior"),
+    ...readCatalogDirectory(options.orgAgentsDir, "agents-org", true),
+  ];
+  const names = new Map<string, CatalogEntry>();
+  const aliases = new Map<string, string>();
+
+  for (const entry of entries) {
+    const { manifest, sourcePath } = entry;
+    const prior = names.get(manifest.name);
+    const aliasOwner = aliases.get(manifest.name);
+    if (prior || aliasOwner) {
+      throw new Error(
+        prior
+          ? `Duplicate trusted agent '${manifest.name}' in ${prior.sourcePath} and ${sourcePath}`
+          : `${sourcePath}: agent name '${manifest.name}' conflicts with alias owned by '${aliasOwner}'`,
+      );
+    }
+    names.set(manifest.name, entry);
+    for (const alias of manifest.aliases ?? []) {
+      if (names.has(alias) || aliases.has(alias)) {
+        throw new Error(`${sourcePath}: duplicate agent alias '${alias}'`);
+      }
+      aliases.set(alias, manifest.name);
+    }
+  }
+
+  if (!names.has("default")) {
+    throw new Error("Trusted agent catalog must define the default orchestrator");
+  }
+  for (const entry of entries) {
+    for (const target of [
+      ...entry.manifest.handoffPolicy.mayDelegateTo,
+      ...entry.manifest.handoffPolicy.mayReturnTo,
+    ]) {
+      if (
+        target !== "human" &&
+        target !== "orchestrator" &&
+        !names.has(target) &&
+        !aliases.has(target)
+      ) {
+        // The private overlay is optional for public Junior installations.
+        // When it is mounted, however, every cross-reference must resolve so
+        // an incomplete private definition fails at startup rather than later
+        // during dispatch.
+        if (!orgDirectoryPresent && entry.manifest.trustSource === "junior") {
+          continue;
+        }
+        throw new Error(
+          `${entry.sourcePath}: agent '${entry.manifest.name}' references unknown handoff target '${target}'`,
+        );
+      }
+    }
+  }
+
+  return Object.freeze(entries.map((entry) => Object.freeze(entry.manifest)));
+}
+
+function resolveTrustedRepositoryRoot(): string {
+  // Source execution lives at src/agents; bundled execution lives at dist.
+  // Never fall back to process.cwd(): a runner may be launched from a target
+  // repository, which must not become an operational metadata trust root.
+  const candidates = [
+    resolve(import.meta.dir, "../.."),
+    resolve(import.meta.dir, ".."),
+  ];
+  const root = candidates.find((candidate) =>
+    existsSync(resolve(candidate, ".claude/agents/default.md")),
+  );
+  if (!root) {
+    throw new Error(
+      `Cannot locate Junior's trusted .claude/agents directory from ${import.meta.dir}`,
+    );
+  }
+  return root;
+}
+
+const repositoryRoot = resolveTrustedRepositoryRoot();
+
+export const TRUSTED_AGENT_CATALOG = loadTrustedAgentCatalog({
+  publicAgentsDir: resolve(repositoryRoot, ".claude/agents"),
+  orgAgentsDir: resolve(repositoryRoot, "agents-org"),
+});

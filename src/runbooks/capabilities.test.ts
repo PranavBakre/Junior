@@ -1,14 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import {
   CAPABILITY_BUNDLES,
   isCapabilitySubset,
   isValidCapabilityBundle,
   listCapabilityBundles,
 } from "./capabilities.ts";
-import {
-  AGENT_IDENTITIES,
-  registerAgentIdentity,
-} from "../support/agents.ts";
 
 describe("capability bundles", () => {
   describe("isValidCapabilityBundle", () => {
@@ -82,35 +78,26 @@ describe("capability bundles", () => {
       });
     });
 
-    describe("overlay-only agent (no catalog entry)", () => {
-      beforeEach(() => {
-        registerAgentIdentity("overlay-only-test", {
-          username: "Overlay Test",
-          iconEmoji: ":test_tube:",
-        });
-      });
-
-      afterEach(() => {
-        delete AGENT_IDENTITIES["overlay-only-test"];
-      });
-
-      it("validates bundle names only, no capability check", () => {
+    describe("agent without a trusted manifest", () => {
+      it("fails closed even when every bundle name is valid", () => {
         const result = isCapabilitySubset(
           ["mongo.read", "migration.execute"],
           "overlay-only-test",
         );
-        expect(result.ok).toBe(true);
-        expect(result.violations).toEqual([]);
+        expect(result.ok).toBe(false);
+        expect(result.violations).toEqual([
+          'owner agent "overlay-only-test" has no trusted operational manifest',
+        ]);
       });
 
-      it("unknown bundle still reported for overlay-only agent", () => {
+      it("reports the missing trust boundary before bundle evaluation", () => {
         const result = isCapabilitySubset(
           ["mongo.read", "bogus.cap"],
           "overlay-only-test",
         );
         expect(result.ok).toBe(false);
         expect(result.violations.length).toBe(1);
-        expect(result.violations[0]).toContain('unknown capability bundle "bogus.cap"');
+        expect(result.violations[0]).toContain("no trusted operational manifest");
       });
     });
 

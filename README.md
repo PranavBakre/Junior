@@ -63,7 +63,7 @@ This is what enables agents to talk back to other agents (or to the human) withi
 Junior keeps a long-term memory in `data/memory.db` (separate from the session DB) so it accumulates knowledge across threads. The design and rationale live in [`docs/features/memory-system-v3.md`](docs/features/memory-system-v3.md); the shipped shape:
 
 - **Capture (hot path).** Slack messages, routing decisions, and runner outputs are appended as raw **source records** by `MemoryIngestor` — cheap provenance, not yet recallable.
-- **Consolidate (offline).** A `claude -p` pass reads the unconsolidated source records and derives durable memory: **episodes** (affect-tagged raw log), keyed entity **profiles** (person/repo/situation, stored as markdown under `data/profiles/`, gitignored), and atomic **claims** (lessons/facts) embedded for semantic recall. Run it via the `consolidate-v3` CLI, the `memory-consolidation` workflow, or the `memory_consolidate` MCP tool — all share `runConsolidationSweep`.
+- **Consolidate (offline).** The scheduled runner first builds cumulative person profiles from each active user's rolling cross-thread history, then consumes unconsolidated thread evidence into durable memory: **episodes** (affect-tagged raw log), keyed entity **profiles** (person/repo/project/situation, stored as markdown under `data/profiles/`, gitignored), and atomic **claims** (lesson/fact/preference/decision/situation-pattern) embedded for semantic recall. Run it via the `consolidate-v3` CLI, the `memory-consolidation` workflow, or the `memory_consolidate` MCP tool — all share `runConsolidationSweep`.
 - **Recall (two surfaces).** `memory_recall` fetches keyed profiles verbatim by `entity_ref` and cosine-ranks the atomic claim store against a locally embedded query. Recall is **cosine-only** — there is no FTS channel. Optional pre-recall is off by default and must be enabled explicitly.
 - **Local embeddings.** Claims and queries are embedded in-process with `onnx-community/harrier-oss-v1-270m-ONNX` (640-dim, last-token pooling), co-located with the text in SQLite as a Float32 BLOB. Nothing leaves for a remote API.
 - **Decay.** Claims/episodes/profiles track `last_used_at`; an offline pass archives stale **and** low-value claims (`active = 0`, never hard-deleted). `memoryHealth` reports the fade candidates.
@@ -180,6 +180,9 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `CODEX_ISOLATED_HOME_PATH` | `data/codex-home` | Junior-owned Codex home with generated config and symlinked auth |
 | `PRE_RECALL_ENABLED` | `false` | Run the optional cheap-model recall query extractor before runner turns |
 | `WHATSAPP_ENABLED` | `false` | Enable the read-only WhatsApp archive and MCP tools |
+| `SLACK_ARCHIVE_ENABLED` | `false` | Capture all live Slack message events into the separate read-only archive |
+| `SLACK_ARCHIVE_DB_PATH` | `data/slack-archive.db` | Slack archive SQLite path |
+| `SLACK_ARCHIVE_APPROVED_CHANNEL_IDS` | *(unset)* | Additional non-public channel IDs approved for archive capture and use |
 | `PIPELINE_RUNTIME_MODE` | `off` | Durable pipeline mode: `off`, `shadow`, or `active` |
 | `BUG_PIPELINE_ENABLED` / `PRODUCT_PIPELINE_ENABLED` | `false` | Enable typed bug/product starts; requires `PIPELINE_RUNTIME_MODE=active` |
 | `GITHUB_RECONCILE_ENABLED` | `false` | Enable outbound PR/resource reconciliation |

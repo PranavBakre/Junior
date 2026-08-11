@@ -149,6 +149,66 @@ describe("WorkflowScheduler", () => {
     release();
     await expect(first).resolves.toEqual({ summary: "ok", runId: "run-1" });
   });
+
+  it("tracks every active run for concurrency parallel workflows", async () => {
+    const definition = { ...workflowDefinition(), concurrency: "parallel" as const };
+    const store = new InMemoryWorkflowStore();
+    const registry = {
+      get: (name: string) => name === definition.name ? definition : undefined,
+      snapshot: () => ({ definitions: new Map([[definition.name, definition]]), errors: [] }),
+      onEvent: () => undefined,
+    } as unknown as WorkflowRegistry;
+    const releases: Array<() => void> = [];
+    const blockers = [0, 1].map(() => new Promise<void>((resolve) => releases.push(resolve)));
+    let runs = 0;
+    let signalBothStarted: () => void = () => undefined;
+    const bothStarted = new Promise<void>((resolve) => {
+      signalBothStarted = resolve;
+    });
+    const executor = {
+      run: async () => {
+        const runNumber = ++runs;
+        if (runs === 2) signalBothStarted();
+        await blockers[runNumber - 1];
+        return {
+          summary: "ok",
+          run: {
+            id: `run-${runNumber}`,
+            workflowName: definition.name,
+            workflowVersionHash: definition.versionHash,
+            sourcePath: definition.sourcePath,
+            reason: "manual",
+            actorSlackUserId: "U123ABC",
+            status: "success",
+            startedAt: runNumber,
+            finishedAt: runNumber + 1,
+            artifactPath: `data/workflow-runs/worklog/run-${runNumber}.md`,
+            providerSessionId: null,
+            slackChannel: null,
+            slackThreadTs: null,
+            error: null,
+          },
+        };
+      },
+    } as unknown as WorkflowExecutor;
+    const { WorkflowScheduler } = await import("./scheduler.ts");
+    const scheduler = new WorkflowScheduler({ registry, store, executor });
+
+    const first = scheduler.runNow({ name: definition.name, reason: "manual" });
+    const second = scheduler.runNow({ name: definition.name, reason: "manual" });
+    await bothStarted;
+
+    expect(runs).toBe(2);
+    expect(scheduler.isRunning(definition.name)).toBe(true);
+
+    releases[1]();
+    await second;
+    expect(scheduler.isRunning(definition.name)).toBe(true);
+
+    releases[0]();
+    await first;
+    expect(scheduler.isRunning(definition.name)).toBe(false);
+  });
 });
 
 function workflowDefinition(): WorkflowDefinition {

@@ -47,6 +47,10 @@ const ENV_KEYS = [
   "SESSION_SHORT_FOLLOWUP_INTERRUPT_ENABLED",
   "SESSION_SHORT_FOLLOWUP_MAX_LENGTH",
   "MEMORY_DB_PATH",
+  "SLACK_ARCHIVE_ENABLED",
+  "SLACK_ARCHIVE_DB_PATH",
+  "SLACK_ARCHIVE_EXPORT_PATH",
+  "SLACK_ARCHIVE_APPROVED_CHANNEL_IDS",
   "PRE_RECALL_ENABLED",
   "PRE_RECALL_SYNTHESIS_ENABLED",
   "CHANNEL_DEFAULTS",
@@ -145,6 +149,25 @@ describe("loadConfig runner providers", () => {
     const config = loadConfig();
 
     expect(config.memory.sqlitePath).toBe("data/test-memory.db");
+  });
+
+  it("defaults Slack archive off and parses its paths when enabled", () => {
+    expect(loadConfig().slackArchive).toEqual({
+      enabled: false,
+      dbPath: "data/slack-archive.db",
+      exportPath: null,
+      approvedChannelIds: [],
+    });
+    process.env.SLACK_ARCHIVE_ENABLED = "true";
+    process.env.SLACK_ARCHIVE_DB_PATH = "data/test-slack-archive.db";
+    process.env.SLACK_ARCHIVE_EXPORT_PATH = "/tmp/slack-export.zip";
+    process.env.SLACK_ARCHIVE_APPROVED_CHANNEL_IDS = "G_PRIVATE, C_APPROVED, G_PRIVATE";
+    expect(loadConfig().slackArchive).toEqual({
+      enabled: true,
+      dbPath: "data/test-slack-archive.db",
+      exportPath: "/tmp/slack-export.zip",
+      approvedChannelIds: ["G_PRIVATE", "C_APPROVED"],
+    });
   });
 
   it("opts into pre-recall synthesis explicitly", () => {

@@ -17,6 +17,8 @@ export interface RepoConfig {
   name: string;
   path: string;
   defaultBase: string;
+  /** Exact GitHub `owner/repo` identity used to authorize PR URL routing. */
+  githubRepo?: string;
   /**
    * Optional. When set, Junior delegates worktree creation to this script via
    * `<repo.path>/<command> <branch> --path <abs> [--base <ref>]`. The script
@@ -208,6 +210,15 @@ export interface Config {
    * on `?.enabled`.
    */
   whatsapp?: WhatsAppConfig;
+  /** Passive Slack history archive, separate from consolidation memory. */
+  slackArchive?: {
+    enabled: boolean;
+    dbPath: string;
+    /** Optional operator-supplied Slack export ZIP used by the import CLI. */
+    exportPath: string | null;
+    /** Non-public Slack channel IDs explicitly approved for capture and retrieval. */
+    approvedChannelIds: string[];
+  };
   /**
    * Durable ProductRun/BugRun control plane. Default `off` — substrate is
    * present but live routing does not create pipeline rows. `shadow` records
@@ -398,6 +409,17 @@ export function loadConfig(): Config {
       authDir: optional("WHATSAPP_AUTH_DIR", "data/whatsapp-auth"),
       // Unset = ingest every group the account is in.
       groupPattern: process.env.WHATSAPP_GROUP_PATTERN?.trim() || null,
+    },
+    slackArchive: {
+      enabled: parseBooleanEnv("SLACK_ARCHIVE_ENABLED", false),
+      dbPath: optional("SLACK_ARCHIVE_DB_PATH", "data/slack-archive.db"),
+      exportPath: process.env.SLACK_ARCHIVE_EXPORT_PATH?.trim() || null,
+      approvedChannelIds: [...new Set(
+        (process.env.SLACK_ARCHIVE_APPROVED_CHANNEL_IDS ?? "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean),
+      )],
     },
     pipeline: parsePipelineConfig(),
     github: parseGitHubConfig(),

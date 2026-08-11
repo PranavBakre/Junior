@@ -74,7 +74,10 @@ import {
 } from "../agents/loader.ts";
 import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
-import { inferReviewRepo } from "../worktree/review-routing.ts";
+import {
+  inferReviewRepo,
+  reviewRepoRefs,
+} from "../worktree/review-routing.ts";
 import {
   inferPipelinePrimaryRepo,
   resolvePipelineRepos,
@@ -968,8 +971,8 @@ export class SessionManager {
   /**
    * Like `isAdmin` but WITHOUT the open-mode fallback: true only when the user
    * is explicitly listed (env var or admins table). Sensitive gates — the
-   * WhatsApp archive — use this so an unconfigured admin roster fails closed
-   * instead of promoting every workspace user.
+   * organization-wide message archives — use this so an unconfigured admin
+   * roster fails closed instead of promoting every workspace user.
    */
   async isExplicitAdmin(userId: string): Promise<boolean> {
     const envAdmin = this.config.adminSlackUserId;
@@ -2124,6 +2127,13 @@ export class SessionManager {
         const preRecallBlock = await this.preRecall(rawMessage, {
           repo: session.targetRepo,
           agent: agentName,
+          // Agent identity is trusted routing context, not a keyword guessed
+          // from the user's message. Specialist-tagged guidance gets the first
+          // pass; pre-recall falls back to untagged guidance when this is empty.
+          trustedTags:
+            agentName === "default" || agentName === "lead"
+              ? undefined
+              : [agentName],
         });
         assertRunOwnership();
         if (preRecallBlock) {
@@ -3589,10 +3599,19 @@ export class SessionManager {
       agentName === "default" && session.agentType && session.agentType !== "lead"
         ? session.agentType
         : agentName;
+    const explicitReviewRepoRefs = durableTarget === "review"
+      ? reviewRepoRefs(event.text)
+      : [];
     const activeId = session.activeRunId ?? session.activePipelineRunId;
     if (activeId) {
-      const active = await this.pipelineStore.getRun(activeId);
+      let active = await this.pipelineStore.getRun(activeId);
       if (active && active.status !== "terminal") {
+        if (explicitReviewRepoRefs.length > 0) {
+          active = await this.pipelineStore.expandRunRepoRefs(
+            active.id,
+            explicitReviewRepoRefs,
+          );
+        }
         const assignments = await this.pipelineStore.listAssignments(active.id);
         let assignment = assignments
           .filter((candidate) =>
@@ -3705,6 +3724,11 @@ export class SessionManager {
       }
     }
 
+    const repoRefs = explicitReviewRepoRefs.length > 0
+      ? explicitReviewRepoRefs
+      : session.targetRepo
+        ? [session.targetRepo]
+        : [];
     const started = await createDefaultRun(
       { store: this.pipelineStore },
       {
@@ -3715,7 +3739,7 @@ export class SessionManager {
         targetAgent: durableTarget,
         sourceAgent: event.isSelfBot ? "system" : "human",
         sourceSlackUserId: event.isSelfBot ? null : event.user,
-        repoRefs: session.targetRepo ? [session.targetRepo] : [],
+        repoRefs,
       },
     );
     await this.mutateSession(event.threadId, (current) => {

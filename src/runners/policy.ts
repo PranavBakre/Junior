@@ -4,7 +4,7 @@
  * Resolves an agent's effective permission intent from (in order):
  *   1. Explicit session/frontmatter `permissions.intent` when it does not
  *      widen the trusted catalog ceiling
- *   2. Trusted agent catalog (`src/agents/manifest.ts`)
+ *   2. Trusted agent catalog compiled from agent Markdown frontmatter
  *   3. null → provider "normal" defaults
  *
  * Compiles that intent into Claude / OpenCode / Codex policy surfaces via
@@ -342,17 +342,9 @@ export function buildPermissionMatrix(options: {
 }
 
 /** Catalog role names expected to resolve consistently across providers. */
-export const CATALOG_ROLE_NAMES = [
-  "default",
-  "lead",
-  "pm",
-  "architect",
-  "build",
-  "frontend",
-  "review",
-  "reproducer",
-  "onboard-member",
-] as const;
+export const CATALOG_ROLE_NAMES = Object.freeze(
+  listCatalogAgents().map((manifest) => manifest.name),
+);
 
 /**
  * Assert a target-repo style override cannot widen catalog intent.

@@ -5,7 +5,7 @@
  * `default` elsewhere. Target-repo definitions cannot widen trusted
  * operational fields (permission intent, capabilities, handoff edges).
  *
- * @see src/agents/manifest.ts for load-order and trust boundaries
+ * @see src/agents/manifest.ts for trusted-frontmatter compilation and trust boundaries
  */
 
 import { log } from "../logger.ts";
@@ -52,7 +52,8 @@ export function canonicalAgentName(name: string): string | null {
 
 /**
  * Resolve a trusted agent manifest by name or alias.
- * Does not consult target-repo or agents-org prompt files.
+ * Resolves the catalog compiled from Junior and agents-org frontmatter. It
+ * never consults target-repository prompt overrides.
  */
 export function resolveAgentManifest(name: string): AgentManifest | null {
   const canonical = canonicalAgentName(name);

@@ -3,7 +3,24 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SqliteMemoryStore } from "./sqlite.ts";
+import { queryHasExactLexicalAnchor, SqliteMemoryStore } from "./sqlite.ts";
+
+describe("queryHasExactLexicalAnchor", () => {
+  it("recognizes identifiers, paths, URLs, flags, issue numbers, and quotations", () => {
+    expect(queryHasExactLexicalAnchor("Where is GX_DEPLOY_TOKEN configured?")).toBe(true);
+    expect(queryHasExactLexicalAnchor("open src/memory/sqlite.ts")).toBe(true);
+    expect(queryHasExactLexicalAnchor("check https://example.com/a")).toBe(true);
+    expect(queryHasExactLexicalAnchor("run --dry-run first")).toBe(true);
+    expect(queryHasExactLexicalAnchor("review #123")).toBe(true);
+    expect(queryHasExactLexicalAnchor('find "database is locked"')).toBe(true);
+  });
+
+  it("keeps ordinary conceptual prose on vector ordering", () => {
+    expect(queryHasExactLexicalAnchor(
+      "The overnight thing has gone quiet and I cannot tell whether patience is safer",
+    )).toBe(false);
+  });
+});
 
 describe("SqliteMemoryStore", () => {
   let tmpDir: string;
@@ -68,6 +85,42 @@ describe("SqliteMemoryStore", () => {
     }
   });
 
+  it("widens an existing claim kind CHECK without losing rows", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-claim-kind-retrofit-"));
+    const dbPath = join(dir, "old.db");
+    const raw = new Database(dbPath);
+    raw.run(`CREATE TABLE claim (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'situation-claim')),
+      text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT,
+      dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT,
+      helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0,
+      weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER,
+      active INTEGER DEFAULT 1
+    )`);
+    raw.run("INSERT INTO claim (id, kind, text, created_at) VALUES ('old', 'fact', 'kept', 1)");
+    raw.close();
+
+    const migrated = new SqliteMemoryStore(dbPath);
+    try {
+      const db = (migrated as unknown as { db: Database }).db;
+      const sql = (db.query("SELECT sql FROM sqlite_master WHERE name='claim'").get() as { sql: string }).sql;
+      expect(sql).toContain("'preference'");
+      expect(sql).toContain("'decision'");
+      expect((db.query("SELECT text FROM claim WHERE id='old'").get() as { text: string }).text).toBe("kept");
+      await migrated.upsertClaim({
+        id: "pref",
+        kind: "preference",
+        text: "Prefer concise answers.",
+        embedding: new Float32Array([1, 0]),
+        createdAt: 2,
+      });
+    } finally {
+      migrated.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does NOT create the condemned legacy tables (memory v3 cutover)", () => {
     const db = (store as unknown as { db: Database }).db;
     const exists = (name: string): boolean =>
@@ -106,6 +159,7 @@ describe("SqliteMemoryStore", () => {
         .map((row) => row.name),
     );
     expect(names.has("claim")).toBe(true);
+    expect(names.has("claim_embedding")).toBe(true);
     expect(names.has("episode")).toBe(true);
   });
 
@@ -239,6 +293,220 @@ describe("SqliteMemoryStore", () => {
     expect(results.map((r) => r.id)).toEqual(["claim-aligned", "claim-orthogonal"]);
     expect(results[0].cosine).toBeCloseTo(1, 5);
     expect(results[1].cosine).toBeCloseTo(0, 5);
+  });
+
+  it("fuses lexical and vector ranks so an exact identifier can rescue a weak vector hit", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "exact-identifier",
+      kind: "fact",
+      text: "Set GX_DEPLOY_TOKEN before publishing the site",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "semantic-distractor",
+      kind: "fact",
+      text: "Unrelated release guidance",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      queryText: "Where is GX_DEPLOY_TOKEN configured?",
+      limit: 2,
+      recordUsage: false,
+    });
+
+    expect(results[0].id).toBe("exact-identifier");
+    expect(results[0].cosine).toBeCloseTo(0, 5);
+    expect(results[0].lexicalScore).toBeGreaterThanOrEqual(0.75);
+  });
+
+  it("applies raw-channel eligibility before the fused result limit", async () => {
+    const now = Date.now();
+    for (let index = 0; index < 5; index += 1) {
+      await store.upsertClaim({
+        id: `dual-ineligible-${index}`,
+        kind: "fact",
+        text: `deploy release now distractor ${index}`,
+        embedding: new Float32Array([0.5, 0.866, 0, 0]),
+        createdAt: now + index,
+        skipDedup: true,
+      });
+    }
+    await store.upsertClaim({
+      id: "exact-eligible",
+      kind: "fact",
+      text: "Configure GX_ONLY_TOKEN before deploy release now",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: now + 10,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      queryText: "GX_ONLY_TOKEN deploy release now",
+      minCosine: 0.55,
+      minLexicalScore: 0.75,
+      limit: 5,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id)).toEqual(["exact-eligible"]);
+  });
+
+  it("does not let ordinary lexical overlap displace the best semantic paraphrase", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "semantic-answer",
+      kind: "lesson",
+      text: "Verify process liveness and durable progress before intervention",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "word-overlap-distractor",
+      kind: "lesson",
+      text: "Quiet patience is useful during a safer database migration",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      queryText: "The overnight thing has gone quiet and I cannot tell whether patience is safer",
+      limit: 2,
+      recordUsage: false,
+    });
+
+    expect(results[0]?.id).toBe("semantic-answer");
+    expect(results[1]?.lexicalScore).toBeGreaterThan(0);
+  });
+
+  it("scores a claim by its best retrieval embedding without returning duplicates", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "multi-cue",
+      kind: "lesson",
+      text: "Authoritative lesson",
+      retrievalText: "first cue",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      retrievalEmbeddings: [
+        { text: "first cue", embedding: new Float32Array([1, 0, 0, 0]) },
+        { text: "second cue", embedding: new Float32Array([0, 1, 0, 0]) },
+        { text: "third cue", embedding: new Float32Array([0, 0, 1, 0]) },
+      ],
+      createdAt: now,
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "single-cue",
+      kind: "lesson",
+      text: "Distractor",
+      embedding: new Float32Array([0.6, 0.4, 0, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([0, 1, 0, 0]),
+      limit: 5,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id)).toEqual(["multi-cue", "single-cue"]);
+    expect(results[0]?.cosine).toBeCloseTo(1, 5);
+  });
+
+  it("rejects malformed alternate retrieval embeddings", async () => {
+    await expect(store.upsertClaim({
+      id: "bad-variants",
+      kind: "lesson",
+      text: "A bounded lesson",
+      embedding: new Float32Array([1, 0]),
+      retrievalEmbeddings: [
+        { text: "wrong dimension", embedding: new Float32Array([1, 0, 0]) },
+      ],
+      createdAt: Date.now(),
+    })).rejects.toThrow("dimensions must match");
+  });
+
+  it("round-trips source provenance and lets parent-section text participate in lexical recall", async () => {
+    await store.upsertClaim({
+      id: "source-expanded",
+      kind: "fact",
+      text: "The release credential lives in the deployment secret store",
+      sourcePath: "memory/deployment.md",
+      sourceHeading: "Production publishing",
+      sourceText: "For production publishing, export SITE_RELEASE_KEY from the deployment secret store.",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: Date.now(),
+      skipDedup: true,
+    });
+
+    const [result] = await store.recallClaims({
+      queryVector: new Float32Array([1, 0, 0, 0]),
+      queryText: "SITE_RELEASE_KEY",
+      limit: 1,
+      recordUsage: false,
+    });
+
+    expect(result.id).toBe("source-expanded");
+    expect(result.lexicalScore).toBe(1);
+    expect(result.sourcePath).toBe("memory/deployment.md");
+    expect(result.sourceHeading).toBe("Production publishing");
+    expect(result.sourceText).toContain("export SITE_RELEASE_KEY");
+  });
+
+  it("clears stale source context when authoritative claim text changes", async () => {
+    await store.upsertClaim({
+      id: "source-replacement",
+      kind: "fact",
+      text: "Old release rule",
+      sourcePath: "memory/old.md",
+      sourceHeading: "Old publishing",
+      sourceText: "Use OLD_RELEASE_TOKEN.",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: Date.now(),
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "source-replacement",
+      kind: "fact",
+      text: "New release rule",
+      embedding: new Float32Array([0, 1, 0, 0]),
+      createdAt: Date.now(),
+      skipDedup: true,
+    });
+
+    const [result] = await store.recallClaims({
+      queryVector: new Float32Array([0, 1, 0, 0]),
+      limit: 1,
+      recordUsage: false,
+    });
+    expect(result).toMatchObject({
+      text: "New release rule",
+      sourcePath: null,
+      sourceHeading: null,
+      sourceText: null,
+    });
+  });
+
+  it("rejects oversized source-context fields at the store boundary", async () => {
+    await expect(store.upsertClaim({
+      id: "oversized-source",
+      kind: "fact",
+      text: "Bound source context",
+      sourceText: "x".repeat(12_001),
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: Date.now(),
+    })).rejects.toThrow("sourceText exceeds 12000 characters");
   });
 
   it("ranks vector recall by cosine before historical weight", async () => {
@@ -387,6 +655,119 @@ describe("SqliteMemoryStore", () => {
       limit: 5,
     });
     expect(byKindTagRecency.map((r) => r.id)).toEqual(["c-new-x"]);
+  });
+
+  it("pre-filters to guidance before top-k hybrid ranking", async () => {
+    const now = Date.now();
+    await store.upsertClaim({
+      id: "contextual-top-hit",
+      kind: "fact",
+      text: "deploy production",
+      embedding: new Float32Array([1, 0]),
+      createdAt: now,
+      skipDedup: true,
+    });
+    await store.upsertClaim({
+      id: "guidance-lower-hit",
+      kind: "lesson",
+      text: "deployment guidance",
+      embedding: new Float32Array([0.8, 0.2]),
+      createdAt: now,
+      skipDedup: true,
+    });
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0]),
+      queryText: "deploy production",
+      filters: { guidanceOnly: true },
+      limit: 1,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id)).toEqual(["guidance-lower-hit"]);
+  });
+
+  it("guidance includes durable claim kinds and legacy procedures only", async () => {
+    const now = Date.now();
+    for (const [id, kind] of [
+      ["lesson", "lesson"],
+      ["preference", "preference"],
+      ["decision", "decision"],
+      ["situation", "situation-claim"],
+      ["untyped-fact", "fact"],
+    ] as const) {
+      await store.upsertClaim({
+        id,
+        kind,
+        text: id,
+        embedding: new Float32Array([1, 0]),
+        createdAt: now,
+        skipDedup: true,
+      });
+    }
+    for (const factKind of ["procedure", "curated_fact", "routing_memory"] as const) {
+      const id = `${factKind}-fact`;
+      await store.upsertFact({ id, kind: factKind, body: id, createdAt: now });
+      await store.upsertClaim({
+        id,
+        kind: "fact",
+        text: id,
+        embedding: new Float32Array([1, 0]),
+        createdAt: now,
+        skipDedup: true,
+      });
+    }
+
+    const results = await store.recallClaims({
+      queryVector: new Float32Array([1, 0]),
+      filters: { guidanceOnly: true },
+      limit: 20,
+      recordUsage: false,
+    });
+
+    expect(results.map((result) => result.id).sort()).toEqual([
+      "decision",
+      "lesson",
+      "preference",
+      "procedure-fact",
+    ]);
+  });
+
+  it("requires all tags only when tagMatch is all", async () => {
+    const now = Date.now();
+    for (const [id, tags] of [
+      ["both", ["team-a", "project-x"]],
+      ["team-only", ["team-a"]],
+      ["project-only", ["project-x"]],
+    ] as const) {
+      await store.upsertClaim({
+        id,
+        kind: "lesson",
+        text: id,
+        tags: [...tags],
+        embedding: new Float32Array([1, 0]),
+        createdAt: now,
+        skipDedup: true,
+      });
+    }
+
+    const any = await store.recallClaims({
+      filters: { tags: ["team-a", "project-x"] },
+      limit: 10,
+      recordUsage: false,
+    });
+    const all = await store.recallClaims({
+      filters: { tags: ["team-a", "project-x"], tagMatch: "all" },
+      limit: 10,
+      recordUsage: false,
+    });
+
+    expect(any.map((result) => result.id).sort()).toEqual([
+      "both",
+      "project-only",
+      "team-only",
+    ]);
+    expect(all.map((result) => result.id)).toEqual(["both"]);
   });
 
   it("appends an episode plus its backing source record", async () => {

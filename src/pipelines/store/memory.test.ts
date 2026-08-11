@@ -27,6 +27,38 @@ function baseOutcome(overrides: Partial<AgentOutcome> = {}): AgentOutcome {
 }
 
 describe("InMemoryPipelineStore", () => {
+  it("expands run repository refs atomically and idempotently", async () => {
+    const clock = fakeClock(2_000);
+    const store = new InMemoryPipelineStore(clock);
+    await store.createRun(makeDefaultRun({ repoRefs: ["GrowthX-Club/junior"] }));
+    const expanded = await store.expandRunRepoRefs("default-run-1", [
+      "GrowthX-Club/frontend",
+      "growthx-club/JUNIOR",
+    ]);
+    expect(expanded.repoRefs).toEqual([
+      "GrowthX-Club/junior",
+      "GrowthX-Club/frontend",
+    ]);
+    expect(expanded.stateVersion).toBe(0);
+    clock.set(3_000);
+    const replay = await store.expandRunRepoRefs("default-run-1", [
+      "GrowthX-Club/frontend",
+    ]);
+    expect(replay.stateVersion).toBe(0);
+    expect(replay.updatedAt).toBe(2_000);
+
+    await store.createRun(makeDefaultRun({
+      id: "terminal-run",
+      threadId: "T-terminal",
+      status: "terminal",
+      phase: "completed",
+      terminalOutcome: "completed",
+    }));
+    await expect(
+      store.expandRunRepoRefs("terminal-run", ["GrowthX-Club/backend"]),
+    ).rejects.toThrow(/terminal run/);
+  });
+
   it("round-trips a trusted skill capability envelope", async () => {
     const store = new InMemoryPipelineStore(fakeClock(2_000));
     await store.createRun(makeProductRun());

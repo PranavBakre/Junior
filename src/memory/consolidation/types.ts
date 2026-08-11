@@ -147,8 +147,8 @@ export const consolidationOutputSchema = {
         additionalProperties: true,
         required: ["kind", "entity_ref"],
         properties: {
-          kind: { type: "string", enum: ["person", "repo", "situation"] },
-          entity_ref: { type: "string", pattern: "^.+:(person|repo|situation)$" },
+          kind: { type: "string", enum: ["person", "repo", "project", "situation"] },
+          entity_ref: { type: "string", pattern: "^.+:(person|repo|project|situation)$" },
           evidence: { type: "array", items: { type: "string" } },
           body: { type: "string" },
         },
@@ -161,7 +161,7 @@ export const consolidationOutputSchema = {
         additionalProperties: false,
         required: ["kind", "text"],
         properties: {
-          kind: { type: "string", enum: ["lesson", "fact", "situation-claim"] },
+          kind: { type: "string", enum: ["lesson", "fact", "preference", "decision", "situation-claim"] },
           text: { type: "string" },
           repo: { type: "string" },
           tags: { type: "array", items: { type: "string" } },

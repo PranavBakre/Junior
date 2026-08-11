@@ -5,7 +5,7 @@ import {
   registerAgentIdentity,
 } from "../support/agents.ts";
 import { CatalogStore } from "./catalog-store.ts";
-import { clearRegistryForTests } from "./registry.ts";
+import { clearRegistryForTests, listRunbooks } from "./registry.ts";
 import { bootstrapRunbookRuntime } from "./runtime.ts";
 import { selectRunbook } from "./selector.ts";
 
@@ -75,5 +75,26 @@ describe("runbook runtime cold start", () => {
 
     expect(result.deactivated).toBe(1);
     expect(store.getCatalogEntry("runbook", "removed-runbook")?.enabled).toBe(false);
+  });
+
+  it("removes a previously loaded definition when its pinned source disappears", async () => {
+    await bootstrapRunbookRuntime(store, {
+      sources: [{ path: FIXTURE_DIR, origin: "private" }],
+      privateCommitSha: "private-commit",
+    });
+
+    const result = await bootstrapRunbookRuntime(store, { sources: [] });
+
+    expect(result).toEqual({
+      loaded: 0,
+      errors: 0,
+      activated: 0,
+      deactivated: 1,
+    });
+    expect(store.getCatalogEntry("runbook", "transfer-ai-roadmaps")?.enabled)
+      .toBe(false);
+    expect(listRunbooks()).toEqual([]);
+    expect(selectRunbook("transfer all AI roadmaps between users", {}).selected)
+      .toBe(false);
   });
 });

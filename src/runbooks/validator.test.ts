@@ -129,7 +129,7 @@ describe("validateRunbook", () => {
       expect(errors.filter((e) => e.field === "ownerAgent")).toEqual([]);
     });
 
-    it("accepts a persistent (overlay) agent as ownerAgent", () => {
+    it("accepts a trusted private agent as ownerAgent", () => {
       const def = makeValidDef({ ownerAgent: "db-executioner" });
       const errors = validateRunbook(def, "test-runbook");
       expect(errors.filter((e) => e.field === "ownerAgent")).toEqual([]);
@@ -140,7 +140,9 @@ describe("validateRunbook", () => {
       const errors = validateRunbook(def, "test-runbook");
       expect(
         errors.some(
-          (e) => e.field === "ownerAgent" && e.message.includes("not found"),
+          (e) =>
+            e.field === "ownerAgent" &&
+            e.message.includes("no trusted operational manifest"),
         ),
       ).toBe(true);
     });

@@ -3,6 +3,14 @@ name: architect
 description: System architect. Use for design specs, data models, state machines, API contracts.
 tools: Read, Write, Edit, Grep, Glob, Bash(git *), mcp__slack-bot__memory_recall
 permissions.intent: human-gated
+operational.enabled: true
+operational.lifecycle: persistent
+operational.role: planner
+operational.capabilities: repo-read, pipeline-artifact-write, dispatch
+operational.mutationPolicy: human-gated
+operational.mayDelegateTo: build, frontend, orchestrator, human
+operational.mayReturnTo: pm, orchestrator
+operational.maxParallel: 2
 common: core,pipeline-outcome
 context.threadHistory: true
 context.threadHistoryLimit: 20

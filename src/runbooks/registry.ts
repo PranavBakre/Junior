@@ -21,6 +21,7 @@ export async function reloadRunbookRegistry(options?: {
 }> {
   let loaded = 0;
   let errors = 0;
+  const nextRegistry = new Map<string, RunbookDefinition>();
 
   for (const dir of options?.sources ?? [
     { path: PRIVATE_RUNBOOKS_DIR, origin: "private" as const },
@@ -35,12 +36,20 @@ export async function reloadRunbookRegistry(options?: {
       });
 
       if (result.ok) {
-        registry.set(result.definition.name, result.definition);
+        nextRegistry.set(result.definition.name, result.definition);
         loaded++;
       } else {
-        // Last-known-good: don't replace a valid entry with a broken reload
+        // Preserve last-known-good only while the same pinned source file is
+        // still present. Definitions removed from all roots must disappear.
         const expectedName = file.replace(/\.runbook\.md$/, "");
-        if (!registry.has(expectedName)) {
+        const prior = registry.get(expectedName);
+        if (
+          !nextRegistry.has(expectedName) &&
+          prior?.filePath === filePath &&
+          prior.origin === dir.origin
+        ) {
+          nextRegistry.set(expectedName, prior);
+        } else if (!nextRegistry.has(expectedName)) {
           log.warn(
             "runbooks",
             `failed to load ${filePath}: ${result.errors.map((e) => e.message).join("; ")}`,
@@ -49,6 +58,11 @@ export async function reloadRunbookRegistry(options?: {
         errors++;
       }
     }
+  }
+
+  registry.clear();
+  for (const [name, definition] of nextRegistry) {
+    registry.set(name, definition);
   }
 
   log.info("runbooks", `registry reload: ${loaded} loaded, ${errors} errors`);
@@ -129,33 +143,7 @@ export async function loadRunbookRegistryFromDir(
   dirPath: string,
   origin: "private" | "public",
 ): Promise<{ loaded: number; errors: number }> {
-  let loaded = 0;
-  let errors = 0;
-  const files = await runbookFiles(dirPath);
-
-  for (const file of files) {
-    const filePath = `${dirPath}/${file}`;
-    const result = await loadRunbookDefinition(filePath, {
-      origin,
-      filenameForValidation: file.replace(/\.runbook\.md$/, ""),
-    });
-
-    if (result.ok) {
-      registry.set(result.definition.name, result.definition);
-      loaded++;
-    } else {
-      const expectedName = file.replace(/\.runbook\.md$/, "");
-      if (!registry.has(expectedName)) {
-        log.warn(
-          "runbooks",
-          `failed to load ${filePath}: ${result.errors.map((e) => e.message).join("; ")}`,
-        );
-      }
-      errors++;
-    }
-  }
-
-  return { loaded, errors };
+  return reloadRunbookRegistry({ sources: [{ path: dirPath, origin }] });
 }
 
 async function runbookFiles(dirPath: string): Promise<string[]> {
