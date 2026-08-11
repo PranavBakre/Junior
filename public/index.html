@@ -2258,8 +2258,7 @@ function renderWorkflows() {
   let html = items.map((w) => {
     const state = w.state || {};
     const schedulerStatus = state.status || (w.enabled ? "active" : "stopped");
-    const displayStatus = w.displayStatus ||
-      ((w.runs || [])[0]?.status === "running" ? "running" : schedulerStatus);
+    const displayStatus = w.displayStatus ?? schedulerStatus;
     // runs are newest-first from API; reverse for oldest → newest dots
     const runs = (w.runs || []).slice().reverse();
     const dots = runs.map((r) =>

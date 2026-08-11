@@ -1,10 +1,12 @@
 import type { WorkflowRegistry } from "../../workflows/registry.ts";
+import type { WorkflowScheduler } from "../../workflows/scheduler.ts";
 import type { WorkflowStore } from "../../workflows/store.ts";
-import type { WorkflowDefinition, WorkflowRun } from "../../workflows/types.ts";
+import type { WorkflowDefinition, WorkflowRun, WorkflowRuntimeStatus } from "../../workflows/types.ts";
 
 export async function handleWorkflows(
   registry: WorkflowRegistry,
   store: WorkflowStore,
+  scheduler: Pick<WorkflowScheduler, "isRunning">,
 ): Promise<Response> {
   const definitions = registry.all();
   const states = await store.listStates();
@@ -17,7 +19,11 @@ export async function handleWorkflows(
         ...projectDefinition(definition),
         state,
         runs,
-        displayStatus: workflowDisplayStatus(definition.enabled, state?.status, runs),
+        displayStatus: workflowDisplayStatus(
+          definition.enabled,
+          state?.status,
+          scheduler.isRunning(definition.name),
+        ),
       };
     }),
   );
@@ -30,10 +36,10 @@ export async function handleWorkflows(
 
 export function workflowDisplayStatus(
   enabled: boolean,
-  schedulerStatus: "active" | "stopped" | "invalid" | undefined,
-  runs: Array<Pick<WorkflowRun, "status">>,
-): WorkflowRun["status"] | "active" | "stopped" | "invalid" {
-  if (runs[0]?.status === "running") return "running";
+  schedulerStatus: WorkflowRuntimeStatus | undefined,
+  isRunning: boolean,
+): WorkflowRun["status"] | WorkflowRuntimeStatus {
+  if (isRunning) return "running";
   return schedulerStatus ?? (enabled ? "active" : "stopped");
 }
 

@@ -697,6 +697,7 @@ setInterval(() => {
         devServerQueue,
         repos: config.repos,
         workflowRegistry,
+        workflowScheduler,
         workflowStore,
         memoryStore,
         pipelineStore,

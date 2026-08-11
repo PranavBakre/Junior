@@ -13,6 +13,7 @@ import type { SessionStore } from "../session/store/interface.ts";
 import type { DevServerManager } from "../lifecycle/dev-server.ts";
 import type { DevServerQueue } from "../lifecycle/dev-server-queue.ts";
 import type { WorkflowRegistry } from "../workflows/registry.ts";
+import type { WorkflowScheduler } from "../workflows/scheduler.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
 import type { MemoryStore } from "../memory/store.ts";
 import type { PipelineStore } from "../pipelines/store/interface.ts";
@@ -35,6 +36,7 @@ export interface HttpServerDeps {
   devServerQueue: DevServerQueue;
   repos: RepoConfig[];
   workflowRegistry: WorkflowRegistry;
+  workflowScheduler: WorkflowScheduler;
   workflowStore: WorkflowStore;
   memoryStore?: MemoryStore;
   pipelineStore: PipelineStore;
@@ -48,6 +50,7 @@ export function startHttpServer(deps: HttpServerDeps): void {
     devServerQueue,
     repos,
     workflowRegistry,
+    workflowScheduler,
     workflowStore,
     memoryStore,
     pipelineStore,
@@ -124,7 +127,11 @@ export function startHttpServer(deps: HttpServerDeps): void {
         } else if (url.pathname === "/api/dev-server") {
           return await handleDevServers(devServerManager, devServerQueue, repos);
         } else if (url.pathname === "/api/workflows") {
-          return await handleWorkflows(workflowRegistry, workflowStore);
+          return await handleWorkflows(
+            workflowRegistry,
+            workflowStore,
+            workflowScheduler,
+          );
         } else if (url.pathname === "/api/pipelines") {
           return await handlePipelines(pipelineStore, url.searchParams);
         } else if (url.pathname.startsWith("/api/pipelines/")) {

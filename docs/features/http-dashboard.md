@@ -42,6 +42,7 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 | `GET /api/sessions` | Sessions sorted by `lastActivity` desc, with filtered projection and a reshaped `agents[]` array per session |
 | `GET /api/sessions/:threadId` | Full `ThreadSession` for one thread (no projection — for the detail view) |
 | `GET /api/dev-server` | Per-repo `{ running, pid, branch, startedAt, lastUsedAt, idleMsRemaining, holder, waiters }` plus top-level `idleTtlMs` |
+| `GET /api/workflows` | Definitions, persisted scheduler state, five recent runs, registry errors, and a live `displayStatus` from scheduler activity |
 | `GET /api/logs?date=YYYY-MM-DD&tail=N&tag=&level=` | Parsed entries from `logs/<date>.log` |
 | `GET /api/memory` | List of `docs/**/*.md` paths |
 | `GET /api/memory/:path` | Contents of one doc file |
@@ -97,6 +98,9 @@ HTTP_DASHBOARD_PORT=4567  # positive integer 1-65535. Unset = disabled.
 - **`SessionStore` ([session-persistence.md](session-persistence.md), [session-management.md](session-management.md)).** All session reads go through the interface — sqlite in production, in-memory in dev/tests. `/api/health` and `/api/sessions` call `getAll()`; `/api/sessions/:id` calls `get(threadId)`. `agentSessions` is flattened into `agents[]` so the UI can render multi-agent threads without knowing the storage shape.
 - **`DevServerManager` ([process-lifecycle.md](process-lifecycle.md)).** `/api/dev-server` calls `manager.status()` for live `DevServerState` and `manager.getIdleTtlMs()` for the configured TTL (no hard-coded 20 min in the route — single source of truth).
 - **`DevServerQueue`.** `queue.readQueueDepth(repo)` supplies `{ holder, waiters }` so the dashboard can show "you're 3rd in line" parity with `!devserver status`.
+- **`WorkflowScheduler`.** `/api/workflows` uses the scheduler's process-local
+  active-run count for `displayStatus`. Persisted run history remains historical
+  evidence and is not treated as a liveness signal after restart.
 - **`logs/<date>.log`.** Written by `src/logger.ts`. The route is read-only and parses the same line format the logger emits (`<iso> [LEVEL] [tag] message`).
 - **`docs/`.** Read-only doc browser, scoped to the project's `docs/` directory.
 

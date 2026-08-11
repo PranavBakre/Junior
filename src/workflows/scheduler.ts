@@ -25,7 +25,7 @@ export class WorkflowScheduler {
   private executor: WorkflowExecutor;
   private now: () => Date;
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
-  private running = new Set<string>();
+  private activeRunCounts = new Map<string, number>();
 
   constructor(options: WorkflowSchedulerOptions) {
     this.registry = options.registry;
@@ -126,6 +126,10 @@ export class WorkflowScheduler {
   async shutdown(): Promise<void> {
     this.stop();
     await this.executor.terminateActiveRuns();
+  }
+
+  isRunning(name: string): boolean {
+    return (this.activeRunCounts.get(name) ?? 0) > 0;
   }
 
   private async schedule(definition: WorkflowDefinition): Promise<void> {
@@ -249,16 +253,16 @@ export class WorkflowScheduler {
   }
 
   private tryClaimRun(definition: WorkflowDefinition): boolean {
-    if (definition.concurrency === "parallel") return true;
-    if (this.running.has(definition.name)) return false;
-    this.running.add(definition.name);
+    const activeRuns = this.activeRunCounts.get(definition.name) ?? 0;
+    if (definition.concurrency === "skip" && activeRuns > 0) return false;
+    this.activeRunCounts.set(definition.name, activeRuns + 1);
     return true;
   }
 
   private releaseRun(definition: WorkflowDefinition): void {
-    if (definition.concurrency === "skip") {
-      this.running.delete(definition.name);
-    }
+    const activeRuns = this.activeRunCounts.get(definition.name) ?? 0;
+    if (activeRuns <= 1) this.activeRunCounts.delete(definition.name);
+    else this.activeRunCounts.set(definition.name, activeRuns - 1);
   }
 }
 
