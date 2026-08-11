@@ -22,9 +22,10 @@ export interface ArchiveSyncStore {
   setCheckpoint(channelId: string, ts: string): void | Promise<void>;
   upsertMessage(message: SlackArchiveMessageInput): unknown | Promise<unknown>;
   upsertConversation?(conversation: SlackArchiveConversation): void | Promise<void>;
-  getThreadLatestTimestamps?(
+  getThreadSyncState?(
     channelId: string,
-  ): Map<string, string> | Promise<Map<string, string>>;
+  ): Map<string, { latestTs: string; hasRoot: boolean }> |
+    Promise<Map<string, { latestTs: string; hasRoot: boolean }>>;
 }
 
 interface SlackCursorMetadata {
@@ -208,8 +209,8 @@ export class SlackArchiveSync {
     // without `oldest`, but call conversations.replies only when Slack's
     // latest_reply is newer than the locally archived thread. This repairs the
     // first or a later missed reply without an N+1 request for every old root.
-    if (checkpoint && this.options.store.getThreadLatestTimestamps) {
-      const localLatest = await this.options.store.getThreadLatestTimestamps(conversation.id);
+    if (checkpoint && this.options.store.getThreadSyncState) {
+      const localThreads = await this.options.store.getThreadSyncState(conversation.id);
       let repairCursor: string | undefined;
       do {
         const result = await this.options.client.conversations.history({
@@ -223,10 +224,11 @@ export class SlackArchiveSync {
           // Older versions could advance the channel checkpoint with a reply
           // timestamp. If that skipped a root entirely, the full metadata scan
           // is also the recovery path even when the root has no replies.
-          if (!localLatest.has(root.ts)) byTimestamp.set(root.ts, root);
+          const localThread = localThreads.get(root.ts);
+          if (!localThread?.hasRoot) byTimestamp.set(root.ts, root);
           const remoteLatest = root.latest_reply;
           if (!remoteLatest && (root.reply_count ?? 0) === 0) continue;
-          const archivedLatest = localLatest.get(root.ts) ?? root.ts;
+          const archivedLatest = localThread?.latestTs ?? root.ts;
           if (remoteLatest && compareSlackTs(remoteLatest, archivedLatest) <= 0) continue;
           repairedRoots.add(root.ts);
           for (const reply of await this.fetchReplies(conversation.id, root.ts)) {

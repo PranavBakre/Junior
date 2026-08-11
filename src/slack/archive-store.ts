@@ -333,16 +333,22 @@ export class SlackArchiveStore {
       .map((row) => row.channel_id);
   }
 
-  getThreadLatestTimestamps(channelId: string): Map<string, string> {
+  getThreadSyncState(
+    channelId: string,
+  ): Map<string, { latestTs: string; hasRoot: boolean }> {
     const rows = this.db
-      .query<{ thread_ts: string; ts: string }, [string]>(`
-        SELECT thread_ts, max(ts) AS ts
+      .query<{ thread_ts: string; latest_ts: string; has_root: number }, [string]>(`
+        SELECT thread_ts, max(ts) AS latest_ts,
+               max(CASE WHEN ts = thread_ts THEN 1 ELSE 0 END) AS has_root
         FROM slack_archive_message
         WHERE channel_id = ?
         GROUP BY thread_ts
       `)
       .all(channelId);
-    return new Map(rows.map((row) => [row.thread_ts, row.ts]));
+    return new Map(rows.map((row) => [row.thread_ts, {
+      latestTs: row.latest_ts,
+      hasRoot: row.has_root === 1,
+    }]));
   }
 
   countMessagesPendingEmbedding(): { pending: number; emptyText: number } {

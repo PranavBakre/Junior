@@ -28,15 +28,20 @@ class MemoryStore implements ArchiveSyncStore {
     this.conversations.push(conversation);
   }
 
-  getThreadLatestTimestamps(channelId: string): Map<string, string> {
-    const latest = new Map<string, string>();
+  getThreadSyncState(
+    channelId: string,
+  ): Map<string, { latestTs: string; hasRoot: boolean }> {
+    const state = new Map<string, { latestTs: string; hasRoot: boolean }>();
     for (const message of this.messages.values()) {
       if (message.channelId !== channelId) continue;
       const threadTs = message.threadTs ?? message.ts;
-      const current = latest.get(threadTs);
-      if (!current || message.ts > current) latest.set(threadTs, message.ts);
+      const current = state.get(threadTs);
+      state.set(threadTs, {
+        latestTs: !current || message.ts > current.latestTs ? message.ts : current.latestTs,
+        hasRoot: current?.hasRoot === true || message.ts === threadTs,
+      });
     }
-    return latest;
+    return state;
   }
 }
 
@@ -261,6 +266,32 @@ describe("SlackArchiveSync", () => {
     });
     await new SlackArchiveSync({ client, store }).sync();
     expect(store.messages.get("C1:200.000001")?.text).toBe("skipped root");
+  });
+
+  it("recovers a missing root when a later reply was already captured live", async () => {
+    const store = new MemoryStore();
+    store.checkpoints.set("C1", "300.000001");
+    store.upsertMessage({
+      channelId: "C1",
+      ts: "250.000001",
+      threadTs: "200.000001",
+      text: "captured reply",
+    });
+    const client = fakeClient({
+      history: async (args) => args.oldest
+        ? { ok: true, messages: [] }
+        : {
+            ok: true,
+            messages: [{
+              ts: "200.000001",
+              text: "missing root",
+              reply_count: 1,
+              latest_reply: "250.000001",
+            }],
+          },
+    });
+    await new SlackArchiveSync({ client, store }).sync();
+    expect(store.messages.get("C1:200.000001")?.text).toBe("missing root");
   });
 
   it("skips non-public conversations unless explicitly approved", async () => {
