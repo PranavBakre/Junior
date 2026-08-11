@@ -470,6 +470,7 @@ export class AgentDispatcher {
         runId: run.id,
         parentAssignmentId: sourceAssignment.id,
         sourceAgent: "human",
+        sourceSlackUserId: event.user,
         targetAgent: caller,
         objective: directives
           .map((directive) =>

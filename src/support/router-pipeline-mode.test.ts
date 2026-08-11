@@ -565,6 +565,7 @@ describe("AgentDispatcher pipeline mode soft integration", () => {
     );
     expect(control).toMatchObject({
       sourceAgent: "human",
+      sourceSlackUserId: "U123",
       targetAgent: "default",
       status: "completed",
       parentAssignmentId: "asg-waiting",
