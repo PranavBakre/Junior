@@ -38,9 +38,12 @@ import { WorkflowExecutor } from "./workflows/executor.ts";
 import { WorkflowRegistry } from "./workflows/registry.ts";
 import { WorkflowScheduler } from "./workflows/scheduler.ts";
 import { createMemoryStore } from "./memory/factory.ts";
+import { createProfileStore } from "./memory/profiles/factory.ts";
 import { MemoryIngestor } from "./memory/ingestion.ts";
 import { startWhatsApp, type WhatsAppHandle } from "./whatsapp/index.ts";
 import { setWhatsAppHandle } from "./mcp/whatsapp-tools.ts";
+import { SlackArchiveStore } from "./slack/archive-store.ts";
+import { setSlackArchiveStore } from "./mcp/slack-archive-tools.ts";
 import {
   InMemoryWorkflowStore,
   SqliteWorkflowStore,
@@ -65,6 +68,7 @@ const actionStore = new SlackActionStore(resolve(config.session.sqlitePath));
 const memoryStore = createMemoryStore(config.memory.sqlitePath, {
   dedupThreshold: config.memory.dedupThreshold,
 });
+const profileStore = createProfileStore();
 const memoryIngestor = new MemoryIngestor(memoryStore);
 let pipelineAudit: SlackAuditCallback | undefined;
 const sessionManager = new SessionManager(store, config);
@@ -129,6 +133,7 @@ startMcpServer(
   sessionManager,
   actionStore,
   pipelineToolRuntime,
+  config.slackArchive?.approvedChannelIds,
 );
 sessionManager.agentRouter = agentRouter;
 sessionManager.worktreeManager = worktreeManager;
@@ -332,6 +337,7 @@ registerAgentActionButtons(app, actionStore, sessionManager, worktreeManager, {
 // WhatsApp ingestion handle — populated in the async bootstrap when enabled,
 // torn down here on shutdown.
 let whatsappHandle: WhatsAppHandle | null = null;
+let slackArchiveStore: SlackArchiveStore | null = null;
 
 setupGracefulShutdown(sessionManager, devServerManager, async () => {
   await workflowScheduler.shutdown();
@@ -345,6 +351,11 @@ setupGracefulShutdown(sessionManager, devServerManager, async () => {
     // the "not enabled" answer instead of a closed-database throw.
     setWhatsAppHandle(null);
     await whatsappHandle.stop();
+  }
+  if (slackArchiveStore) {
+    setSlackArchiveStore(null);
+    slackArchiveStore.close();
+    slackArchiveStore = null;
   }
 });
 
@@ -652,6 +663,23 @@ setInterval(() => {
     }
   }
 
+  // Passive Slack history is isolated from memory consolidation. Live events
+  // are appended before routing guards; operators backfill exports separately.
+  if (config.slackArchive?.enabled) {
+    try {
+      slackArchiveStore = new SlackArchiveStore(resolve(config.slackArchive.dbPath));
+      setSlackArchiveStore(slackArchiveStore);
+      log.info("boot", `Slack archive enabled: ${resolve(config.slackArchive.dbPath)}`);
+    } catch (err) {
+      slackArchiveStore = null;
+      setSlackArchiveStore(null);
+      log.error(
+        "boot",
+        `Slack archive failed to start: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   await app.start();
 
   // Resolve bot identity before registering event handlers
@@ -681,7 +709,9 @@ setInterval(() => {
     // Universal dispatch: AgentDispatcher decides whether to dispatch a persistent
     // agent (any channel) or fall through to the single-session manager.
     await supportRouter.handleMessage(event);
-  }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels);
+  }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels, (message) => {
+    slackArchiveStore?.upsertMessage(message);
+  }, new Set(config.slackArchive?.approvedChannelIds ?? []));
 
   if (config.http.enabled) {
     // Bun.serve throws synchronously on port conflict (EADDRINUSE) and a few
@@ -700,6 +730,7 @@ setInterval(() => {
         workflowScheduler,
         workflowStore,
         memoryStore,
+        profileStore,
         pipelineStore,
       });
     } catch (err) {

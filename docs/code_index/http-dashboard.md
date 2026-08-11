@@ -16,6 +16,7 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 | `handleDevServers(manager, queue, repos)` | `routes/dev-server.ts` | `GET /api/dev-server` — per-repo state, idle TTL remaining, queue depth |
 | `handleWorkflows(registry, store, scheduler)` | `routes/workflows.ts` | `GET /api/workflows` — definitions, persisted state, recent runs, registry errors, and live scheduler-derived display status |
 | `handleLogs(searchParams)` | `routes/logs.ts` | `GET /api/logs?date=YYYY-MM-DD` — parses daily log file (strict date regex prevents path traversal) |
+| `handleProfiles(store, params)` | `routes/profiles.ts` | `GET /api/profiles` — read-only profile list/filter; never bumps `last_used_at` |
 | `handleMemoryList()` | `routes/memory.ts` | `GET /api/memory` — list files under `docs/` |
 | `handleMemoryRead(filePath)` | `routes/memory.ts` | `GET /api/memory/:path` — read a doc file (path-traversal guarded) |
 | `handleMemoryRecall(store, params)` | `routes/memory.ts` | `GET /api/memory/recall` — semantic claim recall without recording dashboard usage |
@@ -32,6 +33,7 @@ GET /api/sessions/<id>      → handleSessionDetail
 GET /api/dev-server         → handleDevServers
 GET /api/workflows          → handleWorkflows
 GET /api/logs?date=...      → handleLogs
+GET /api/profiles[?kind=…]  → handleProfiles
 GET /api/memory             → handleMemoryList
 GET /api/memory/<path>      → handleMemoryRead
 GET /api/memory/recall      → handleMemoryRecall (503 if unavailable)

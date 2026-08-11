@@ -128,6 +128,7 @@ Install and authenticate the tools required by the provider and agents you enabl
 3. **Trust the build, not the LSP.** When editor diagnostics fire but `bun run typecheck` is green, the LSP is reading stale context. Verify against the build before refactoring code that wasn't broken.
 4. **Code tracing is inference, not evidence — execute to verify.** Pure mock-runs prove the shape of intermediate values; only an integration test proves behavior. Match verification scope to the claim.
 5. **Categorize before bulk action.** "Dirty," "globally," "missing" each name several distinct cases. Classify per-item (junk / extractable / mergeable / real-work) before picking the operation.
+6. **Delegate by complexity, not reflex.** Handle simple, sequential work directly. Spawn sub-agents only when the task has genuinely independent parallel work, requires a specialized execution boundary, or is large enough that delegation clearly buys latency, expertise, or isolation. Do not delegate routine status checks, small diagnostics, or single-file edits; coordination overhead must earn its cost.
 
 ## Project Structure
 

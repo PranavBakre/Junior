@@ -62,7 +62,23 @@ export interface MemoryFactInput {
 
 // --- memory v3: claims (semantic, embedded) + episodes (raw affect log) ---
 
-export type ClaimKind = "lesson" | "fact" | "situation-claim";
+/**
+ * Semantic derivations are typed by what the memory means, not merely by where
+ * it came from. Keeping preferences and decisions distinct lets
+ * recall ask for the right durable context instead of treating every memory as
+ * a generic fact.
+ */
+export type ClaimKind =
+  | "lesson"
+  | "fact"
+  | "preference"
+  | "decision"
+  | "situation-claim";
+
+/** Hard write/read bounds for optional source-context metadata. */
+export const MAX_CLAIM_SOURCE_PATH_CHARS = 2_048;
+export const MAX_CLAIM_SOURCE_HEADING_CHARS = 512;
+export const MAX_CLAIM_SOURCE_TEXT_CHARS = 12_000;
 
 /**
  * Options for the consolidation engine's read of raw source records that have
@@ -74,6 +90,16 @@ export interface UnconsolidatedSourceRecordOptions {
   /** Only return records for this thread. */
   threadId?: string;
   /** Cap the number of records returned (the oldest N). */
+  limit?: number;
+}
+
+/** Read-only source-record lookup used by cumulative derivation builders. */
+export interface SourceRecordQueryOptions {
+  kind?: MemorySourceKind;
+  actorId?: string;
+  actorKind?: MemorySourceRecord["actorKind"];
+  repoName?: string;
+  /** Newest N matching records are returned in chronological order. */
   limit?: number;
 }
 
@@ -90,11 +116,27 @@ export interface ClaimInput {
   retrievalText?: string | null;
   /** Pre-computed embedding. Stored as a Float32 LE BLOB. */
   embedding?: Float32Array | null;
+  /**
+   * Alternate retrieval projections for the same atomic claim. Recall scores
+   * the claim by the best cosine across these vectors, while still returning
+   * the authoritative `text` once. The primary `embedding` remains the
+   * canonical authoritative-text vector for near-duplicate detection.
+   */
+  retrievalEmbeddings?: Array<{
+    text: string;
+    embedding: Float32Array;
+  }>;
   embedModel?: string | null;
   dim?: number | null;
   repo?: string | null;
   tags?: string[];
   sourceEpisode?: string | null;
+  /** File or durable document this claim was extracted from. */
+  sourcePath?: string | null;
+  /** Heading of the parent section containing the atomic claim. */
+  sourceHeading?: string | null;
+  /** Parent-section text used to expand an atomic hit with local context. */
+  sourceText?: string | null;
   helpfulCount?: number;
   unhelpfulCount?: number;
   weight?: number;
@@ -162,7 +204,16 @@ export interface ClaimRecallFilters {
    * preserves subtype-aware retrieval without duplicating their embeddings.
    */
   factKind?: MemoryFactInput["kind"];
+  /**
+   * Internal hot-path scope for durable operational guidance. Includes lessons,
+   * preferences, decisions, and legacy procedure facts; excludes contextual or
+   * untyped facts, curated/routing facts, and situation claims. Applied by the
+   * store before either retrieval channel is ranked.
+   */
+  guidanceOnly?: boolean;
   tags?: string[];
+  /** Match any requested tag by default, or require every tag for trusted scopes. */
+  tagMatch?: "any" | "all";
   /** Absolute epoch-ms lower bound: only claims with created_at >= sinceMs. */
   sinceMs?: number;
 }
@@ -170,9 +221,19 @@ export interface ClaimRecallFilters {
 export interface ClaimRecallOptions {
   /**
    * PRE-COMPUTED query embedding. recallClaims NEVER embeds — embedding happens
-   * at the boundary (the caller). When absent, recall falls back to FTS-only.
+   * at the boundary (the caller). When absent, recall falls back to lexical-only.
    */
   queryVector?: Float32Array;
+  /**
+   * Original natural-language query for the lexical retrieval channel. When
+   * supplied with queryVector, an explicit exact anchor activates fusion of the
+   * independent vector and lexical ranks. When supplied alone, recall is
+   * lexical-only.
+   */
+  queryText?: string;
+  /** Optional raw-channel floors applied before `limit` slices the result set. */
+  minCosine?: number;
+  minLexicalScore?: number;
   filters?: ClaimRecallFilters;
   limit?: number;
   /**
@@ -198,7 +259,12 @@ export interface ClaimRecallResult {
   score: number;
   /** Cosine against queryVector, or null when no queryVector / no embedding. */
   cosine: number | null;
+  /** Exact-token/phrase coverage in [0, 1], or null without queryText. */
+  lexicalScore: number | null;
   sourceEpisode: string | null;
+  sourcePath: string | null;
+  sourceHeading: string | null;
+  sourceText: string | null;
   helpfulCount: number;
   unhelpfulCount: number;
   createdAt: number;

@@ -31,6 +31,7 @@ const DEFAULT_ROOT = "data/profiles";
 const KIND_FOLDER: Record<ProfileKind, string> = {
   person: "people",
   repo: "repos",
+  project: "projects",
   situation: "situations",
 };
 
@@ -42,6 +43,7 @@ interface FieldSpec {
 // Ordered to match the §6.1 field lists so the rendered file reads naturally.
 const PROFILE_FIELDS: Record<ProfileKind, FieldSpec[]> = {
   person: [
+    { key: "slack_user_id", type: "scalar" },
     { key: "role", type: "scalar" },
     { key: "comms_style", type: "scalar" },
     { key: "values", type: "array" },
@@ -58,6 +60,14 @@ const PROFILE_FIELDS: Record<ProfileKind, FieldSpec[]> = {
     { key: "owners", type: "array" },
     { key: "stack", type: "scalar" },
     { key: "hot_paths", type: "array" },
+  ],
+  project: [
+    { key: "goals", type: "array" },
+    { key: "constraints", type: "array" },
+    { key: "decisions", type: "array" },
+    { key: "owners", type: "array" },
+    { key: "status", type: "scalar" },
+    { key: "next_steps", type: "array" },
   ],
   situation: [
     { key: "pattern", type: "scalar" },

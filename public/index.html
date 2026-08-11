@@ -765,6 +765,31 @@
   .claim-row .tags span { cursor: pointer; }
   .claim-row .tags span:hover { color: var(--accent); }
 
+  /* ---------- profiles ---------- */
+  .profile-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: calc(10 * var(--baseline-font)); margin-bottom: calc(16 * var(--baseline-font)); }
+  .profile-stat { padding: calc(14 * var(--baseline-font)); border: 1px solid var(--border); border-radius: calc(10 * var(--baseline-font)); background: var(--surface); }
+  .profile-stat .n { display: block; font-family: Gilroy-Bold, var(--font-sans); font-size: calc(24 * var(--baseline-font)); line-height: 1.2; }
+  .profile-stat .k { font-family: var(--font-mono); font-size: calc(9 * var(--baseline-font)); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-muted); }
+  .profiles-layout { display: grid; grid-template-columns: minmax(calc(260 * var(--baseline-font)), .8fr) minmax(0, 1.5fr); gap: calc(14 * var(--baseline-font)); min-height: calc(520 * var(--baseline-font)); }
+  .profile-list { max-height: calc(68vh); overflow-y: auto; overscroll-behavior: contain; }
+  .profile-row { width: 100%; display: block; padding: calc(13 * var(--baseline-font)) calc(15 * var(--baseline-font)); border: 0; border-bottom: 1px solid var(--border-subtle); background: transparent; color: var(--fg); text-align: left; cursor: pointer; transition: background .15s ease-in-out; }
+  .profile-row:last-child { border-bottom: 0; }
+  .profile-row:hover { background: var(--bg-hover); }
+  .profile-row.on { background: rgba(0,100,255,.1); box-shadow: inset 2px 0 var(--accent); }
+  .profile-row .title { font-family: Gilroy-SemiBold, var(--font-sans); font-size: calc(14 * var(--baseline-font)); }
+  .profile-row .meta { display: flex; align-items: center; gap: calc(8 * var(--baseline-font)); margin-top: calc(5 * var(--baseline-font)); font-family: var(--font-mono); font-size: calc(9.5 * var(--baseline-font)); color: var(--fg-muted); }
+  .profile-kind { display: inline-flex; padding: calc(2 * var(--baseline-font)) calc(7 * var(--baseline-font)); border: 1px solid var(--border-subtle); border-radius: calc(99 * var(--baseline-font)); color: #82acff; text-transform: uppercase; letter-spacing: .08em; }
+  .profile-detail { padding: calc(22 * var(--baseline-font)) calc(24 * var(--baseline-font)); max-height: calc(68vh); overflow-y: auto; overscroll-behavior: contain; }
+  .profile-detail h3 { margin: 0; font-family: Gilroy-Bold, var(--font-sans); font-size: calc(20 * var(--baseline-font)); }
+  .profile-detail .ref { margin-top: calc(4 * var(--baseline-font)); font-family: var(--font-mono); font-size: calc(10 * var(--baseline-font)); color: var(--fg-muted); }
+  .profile-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: calc(10 * var(--baseline-font)); margin: calc(20 * var(--baseline-font)) 0; }
+  .profile-field { padding: calc(12 * var(--baseline-font)); border: 1px solid var(--border-subtle); border-radius: calc(8 * var(--baseline-font)); background: rgba(255,255,255,.025); }
+  .profile-field .label { margin-bottom: calc(6 * var(--baseline-font)); font-family: var(--font-mono); font-size: calc(9 * var(--baseline-font)); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-muted); }
+  .profile-field .value { font-size: calc(12.5 * var(--baseline-font)); line-height: 1.45; white-space: pre-wrap; }
+  .profile-body { padding-top: calc(18 * var(--baseline-font)); border-top: 1px solid var(--border-subtle); }
+  .profile-body p, .profile-body li { color: var(--fg-dim); font-size: calc(13 * var(--baseline-font)); }
+  .profile-evidence { margin-top: calc(18 * var(--baseline-font)); font-family: var(--font-mono); font-size: calc(9.5 * var(--baseline-font)); color: var(--fg-faint); }
+
   /* ---------- docs ---------- */
   .docs-layout { display: grid; grid-template-columns: 280px 1fr; gap: 14px; min-height: 500px; }
   @media (max-width: 900px) { .docs-layout { grid-template-columns: 1fr; } }
@@ -1088,7 +1113,7 @@
     .brand, .side-foot, nav::before { display: none; }
     nav {
       display: grid;
-      grid-template-columns: repeat(8, 1fr);
+      grid-template-columns: repeat(9, 1fr);
       gap: calc(2 * var(--baseline-font));
     }
     nav a {
@@ -1126,6 +1151,10 @@
     }
     input.search { width: 100%; }
     .two-col, .docs-layout { grid-template-columns: 1fr; }
+    .profile-stats { grid-template-columns: repeat(2, 1fr); }
+    .profiles-layout { grid-template-columns: 1fr; }
+    .profile-list, .profile-detail { max-height: none; }
+    .profile-fields { grid-template-columns: 1fr; }
     .th-row {
       grid-template-columns: 1fr auto;
       gap: calc(8 * var(--baseline-font));
@@ -1240,6 +1269,7 @@
       <a href="#devservers" data-view="devservers"><span class="ico">▶</span>Dev Servers<span class="count" id="nav-ds" style="display:none"></span></a>
       <a href="#workflows" data-view="workflows"><span class="ico">↻</span>Workflows<span class="count" id="nav-wf" style="display:none"></span></a>
       <a href="#pipelines" data-view="pipelines"><span class="ico">◇</span>Pipelines<span class="count hot" id="nav-pipelines" style="display:none"></span></a>
+      <a href="#profiles" data-view="profiles"><span class="ico">◎</span>Profiles<span class="count" id="nav-profiles" style="display:none"></span></a>
       <a href="#memory" data-view="memory"><span class="ico">✦</span>Memory</a>
       <a href="#docs" data-view="docs"><span class="ico">¶</span>Docs</a>
     </nav>
@@ -1400,9 +1430,24 @@
       </div>
     </section>
 
+    <!-- ================= PROFILES ================= -->
+    <section class="view" id="view-profiles">
+      <div class="view-head" data-index="07">
+        <h2>Profiles</h2>
+        <span class="sub">grounded working context · inspection does not affect recall freshness</span>
+        <span class="right"><input class="search" id="profile-search" placeholder="filter profiles…" autocomplete="off" /></span>
+      </div>
+      <div class="profile-stats" id="profile-stats"></div>
+      <div class="chips" id="profile-kinds" style="margin-bottom: calc(14 * var(--baseline-font))"></div>
+      <div class="profiles-layout">
+        <div class="panel profile-list" id="profile-list"><div class="empty">loading profiles…</div></div>
+        <div class="panel profile-detail" id="profile-detail"><div class="empty">select a profile</div></div>
+      </div>
+    </section>
+
     <!-- ================= MEMORY ================= -->
     <section class="view" id="view-memory">
-      <div class="view-head" data-index="07">
+      <div class="view-head" data-index="08">
         <h2>Memory</h2>
         <span class="sub">3D projection — local neighbourhoods are meaningful, global distances are not</span>
         <span class="right">
@@ -1455,7 +1500,7 @@
 
     <!-- ================= DOCS ================= -->
     <section class="view" id="view-docs">
-      <div class="view-head" data-index="08">
+      <div class="view-head" data-index="09">
         <h2>Docs</h2>
         <span class="sub">read-only browser over docs/**/*.md</span>
       </div>
@@ -1596,6 +1641,11 @@ let follow = true;
 let actBuckets = null; // length-24 or null to hide
 let docsLoaded = false;
 let galaxyLoaded = false;
+let profilesLoaded = false;
+let profiles = [];
+let profileKind = "all";
+let profileQuery = "";
+let selectedProfileRef = null;
 let drawerThreadId = null;
 
 /* =================== navigation =================== */
@@ -1613,6 +1663,7 @@ function show(view) {
     invalidatePipeline();
   }
   if (view === "memory") { resizeGalaxy(); if (!galaxyLoaded) loadGalaxy(false); }
+  if (view === "profiles" && !profilesLoaded) loadProfiles();
   if (view === "docs" && !docsLoaded) loadDocsTree();
   if (view === "logs") fetchLogs();
 }
@@ -3995,6 +4046,106 @@ for (const container of [$("claim-list"), $("mem-detail")]) {
 
 if (window.ResizeObserver) new ResizeObserver(resizeGalaxy).observe($("galaxy-wrap"));
 requestAnimationFrame(galaxyFrame);
+
+/* =================== profiles =================== */
+const PROFILE_KINDS = ["person", "repo", "project", "situation"];
+
+async function loadProfiles() {
+  const res = await safeFetch("/api/profiles");
+  profilesLoaded = true;
+  if (!res.ok) {
+    $("profile-list").innerHTML = '<div class="empty">Failed to load profiles.</div>';
+    $("profile-detail").innerHTML = '<div class="empty">Profile store unavailable.</div>';
+    return;
+  }
+  profiles = res.data.profiles || [];
+  const counts = res.data.counts || {};
+  const total = profiles.length;
+  setNavCount("nav-profiles", total, "");
+  $("profile-stats").innerHTML = PROFILE_KINDS.map((kind) =>
+    '<div class="profile-stat"><span class="n">' + esc(counts[kind] || 0) + '</span><span class="k">' + esc(kind) + '</span></div>'
+  ).join("");
+  renderProfileKinds(counts);
+  renderProfiles();
+}
+
+function renderProfileKinds(counts = null) {
+  const totals = counts || Object.fromEntries(PROFILE_KINDS.map((kind) => [kind, profiles.filter((p) => p.kind === kind).length]));
+  $("profile-kinds").innerHTML = ["all", ...PROFILE_KINDS].map((kind) => {
+    const count = kind === "all" ? profiles.length : totals[kind] || 0;
+    return '<span class="chip' + (profileKind === kind ? " on" : "") + '" data-profile-kind="' + kind + '">' + kind + ' · ' + count + '</span>';
+  }).join("");
+}
+
+function filteredProfiles() {
+  return profiles.filter((profile) => {
+    if (profileKind !== "all" && profile.kind !== profileKind) return false;
+    if (!profileQuery) return true;
+    return JSON.stringify(profile).toLowerCase().includes(profileQuery);
+  });
+}
+
+function profileTitle(profile) {
+  return String(profile.entity_ref || "unknown").split(":")[0].replaceAll("-", " ")
+    .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function renderProfiles() {
+  const visible = filteredProfiles();
+  if (!visible.length) {
+    $("profile-list").innerHTML = '<div class="empty">No profiles match this filter.</div>';
+    $("profile-detail").innerHTML = '<div class="empty">Nothing selected.</div>';
+    selectedProfileRef = null;
+    return;
+  }
+  if (!visible.some((profile) => profile.entity_ref === selectedProfileRef)) {
+    selectedProfileRef = visible[0].entity_ref;
+  }
+  $("profile-list").innerHTML = visible.map((profile) =>
+    '<button class="profile-row' + (profile.entity_ref === selectedProfileRef ? " on" : "") + '" type="button" data-profile-ref="' + esc(profile.entity_ref) + '">' +
+      '<span class="title">' + esc(profileTitle(profile)) + '</span>' +
+      '<span class="meta"><span class="profile-kind">' + esc(profile.kind) + '</span><span>updated ' + esc(profile.updated_at || "—") + '</span><span>' + esc((profile.evidence || []).length) + ' sources</span></span>' +
+    '</button>'
+  ).join("");
+  renderProfileDetail(visible.find((profile) => profile.entity_ref === selectedProfileRef));
+}
+
+function renderProfileDetail(profile) {
+  if (!profile) {
+    $("profile-detail").innerHTML = '<div class="empty">Select a profile.</div>';
+    return;
+  }
+  const hidden = new Set(["kind", "entity_ref", "body", "evidence", "updated_at", "last_used_at"]);
+  const fields = Object.entries(profile).filter(([key, value]) =>
+    !hidden.has(key) && value != null && (!Array.isArray(value) || value.length > 0) && value !== ""
+  );
+  $("profile-detail").innerHTML =
+    '<div><span class="profile-kind">' + esc(profile.kind) + '</span><h3>' + esc(profileTitle(profile)) + '</h3><div class="ref">' + esc(profile.entity_ref) + ' · updated ' + esc(profile.updated_at || "—") + '</div></div>' +
+    (fields.length ? '<div class="profile-fields">' + fields.map(([key, value]) =>
+      '<div class="profile-field"><div class="label">' + esc(key.replaceAll("_", " ")) + '</div><div class="value">' + esc(Array.isArray(value) ? value.join("\n") : value) + '</div></div>'
+    ).join("") + '</div>' : '') +
+    '<div class="profile-body">' + (profile.body ? renderMarkdown(profile.body) : '<span class="faint">No narrative sketch.</span>') + '</div>' +
+    '<div class="profile-evidence">evidence · ' + esc((profile.evidence || []).length) + ' source record(s)' +
+      (profile.last_used_at ? ' · recalled ' + esc(ago(profile.last_used_at)) + ' ago' : ' · never recalled') + '</div>';
+}
+
+$("profile-kinds").addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-profile-kind]");
+  if (!chip) return;
+  profileKind = chip.dataset.profileKind;
+  renderProfileKinds();
+  renderProfiles();
+});
+$("profile-search").addEventListener("input", (event) => {
+  profileQuery = event.target.value.trim().toLowerCase();
+  renderProfiles();
+});
+$("profile-list").addEventListener("click", (event) => {
+  const row = event.target.closest("[data-profile-ref]");
+  if (!row) return;
+  selectedProfileRef = row.dataset.profileRef;
+  renderProfiles();
+});
 
 /* =================== docs =================== */
 async function loadDocsTree() {

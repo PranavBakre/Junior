@@ -19,6 +19,7 @@ src/http/
     ├── sessions.ts        -- list + per-thread detail
     ├── dev-server.ts      -- DevServerManager + DevServerQueue state
     ├── logs.ts            -- tail logs/<date>.log with tag/level filters
+    ├── profiles.ts        -- read-only person/repo/project/situation browser
     └── memory.ts          -- docs browser + claim recall + galaxy projection
 ```
 
@@ -29,6 +30,7 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 ## Security posture
 
 - **Loopback-only.** Binds `127.0.0.1` — never reachable off-host without an explicit SSH tunnel. This is the entire threat model; there is intentionally no auth layer behind it.
+- **Profiles are private operator data.** `/api/profiles` can include derived context about real people. It is available only inside the same loopback-only console and must not be exposed through a public bind or permissive CORS.
 - **Same-origin.** Dashboard HTML is served by the same Bun process. No CORS headers — adding `Access-Control-Allow-Origin: *` would only let arbitrary websites the operator visits read this server's data.
 - **Path-traversal rejection at the input layer.** `/api/logs?date=` accepts only `YYYY-MM-DD` (strict regex); `/api/memory/<path>` rejects `..` and absolute paths and verifies the resolved path stays inside `docs/`. Reject early, don't sanitize after concatenation.
 - **Projection on `/api/sessions`.** Filesystem paths (`worktreePath`, `cwd`), PIDs (`pid`), prompt-engineering details (`systemPrompt`), and `slackIdentity` are stripped before serialization. `pendingMessages` is reduced to a length count — message bodies never leave the box.
@@ -44,6 +46,7 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 | `GET /api/dev-server` | Per-repo `{ running, pid, branch, startedAt, lastUsedAt, idleMsRemaining, holder, waiters }` plus top-level `idleTtlMs` |
 | `GET /api/workflows` | Definitions, persisted scheduler state, five recent runs, registry errors, and a live `displayStatus` from scheduler activity |
 | `GET /api/logs?date=YYYY-MM-DD&tail=N&tag=&level=` | Parsed entries from `logs/<date>.log` |
+| `GET /api/profiles[?kind=person|repo|project|situation]` | Derived profiles plus per-kind counts; inspection does not bump recall usage |
 | `GET /api/memory` | List of `docs/**/*.md` paths |
 | `GET /api/memory/:path` | Contents of one doc file |
 | `GET /api/memory/recall?query=&tags=&kinds=&repo=&limit=` | Cosine-ranked claims; the route embeds the query, recall never records dashboard usage |

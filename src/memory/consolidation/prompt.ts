@@ -49,13 +49,17 @@ Emit a derivation ONLY when it is durable and reusable beyond this thread:
   0..1, actor, subjects) only for those notable moments. Each episode MUST cite
   the sourceRecordId it derives from.
 - profiles: UPDATE an existing profile in place (same entity_ref) when you have
-  learned something new and stable about a person, repo, or situation. Do NOT
+  learned something new and stable about a person, repo, project, or situation. Do NOT
   restate what the shown profile already says. Do NOT create a profile for a
-  one-off. entity_ref is "<slug>:person" | "<slug>:repo" | "<slug>:situation".
+  one-off. entity_ref is "<slug>:person" | "<slug>:repo" | "<slug>:project" | "<slug>:situation".
   Use the "Who is who" map to attribute evidence to people. When a mapped person
   matches an existing profile shown below, reuse that profile's EXACT entity_ref
   — never invent a second slug for the same person.
-- claims: ONE ATOMIC fact/lesson per claim — never a paragraph bundling several.
+- claims: ONE ATOMIC memory per claim. Use lesson for a generalized learning,
+  fact for stable objective context, preference for a person's/team's durable
+  taste, decision for a choice that should govern later work, fact tagged as a
+  procedure for repeatable operational steps, and situation-claim for a contextual pattern.
+  Never bundle several memories into one claim.
   Skip anything already covered by the existing claims shown below.
 
 Return strictly JSON matching the schema: { "episodes": [...], "profiles": [...],
