@@ -204,7 +204,7 @@ The only "switch" candidate that adds no service is **LanceDB** (embedded, nativ
 
 The migration was mostly **deletion + one backfill**, not a lift-and-shift of the 90 MB DB. Carrying the audit-condemned piles forward *is* the failure (§2). Categorize, then:
 
-1. **Drop the condemned (don't migrate):** `memory_event` (14,243; 96% never recalled), `edge` (42,876), `mention`, `memory_search_doc`, `candidate_rule`, **and `memory_fts`** (recall is cosine-only — FTS was not carried into v3). Back up first.
+1. **Drop the condemned (don't migrate):** `memory_event` (14,243; 96% never recalled), `edge` (42,876), `mention`, `memory_search_doc`, `candidate_rule`, **and `memory_fts`** (the synchronized FTS index was not carried into v3; conditional exact-token scoring runs in process over claim rows). Back up first.
 2. **Keep the spine:** `memory_source_record`, `memory_node`, `recall_log`.
 3. **`lesson` + `memory_fact` → `claim` (the one real backfill):** copy `title/body → text`, tags, weight; **batch-embed offline** (harrier-270) to populate `embedding`; **proximity-dedup-merge** in the same pass (the 818 accrued without dedup → near-duplicates; expect collapse to fewer distinct claims). Routing-decision telemetry is excluded (never becomes a claim).
 4. **Profiles + episodes: nothing to migrate** — net-new from future turns.
