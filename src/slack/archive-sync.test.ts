@@ -251,6 +251,18 @@ describe("SlackArchiveSync", () => {
     expect(store.checkpoints.get("C1")).toBe("200.000001");
   });
 
+  it("recovers a root skipped by a legacy reply-based checkpoint", async () => {
+    const store = new MemoryStore();
+    store.checkpoints.set("C1", "300.000001");
+    const client = fakeClient({
+      history: async (args) => args.oldest
+        ? { ok: true, messages: [] }
+        : { ok: true, messages: [{ ts: "200.000001", text: "skipped root" }] },
+    });
+    await new SlackArchiveSync({ client, store }).sync();
+    expect(store.messages.get("C1:200.000001")?.text).toBe("skipped root");
+  });
+
   it("skips non-public conversations unless explicitly approved", async () => {
     const store = new MemoryStore();
     const historyChannels: string[] = [];

@@ -220,6 +220,10 @@ export class SlackArchiveSync {
         assertSlackOk(result, "conversations.history(reply repair)");
         for (const root of result.messages ?? []) {
           if (!root.ts || repairedRoots.has(root.ts)) continue;
+          // Older versions could advance the channel checkpoint with a reply
+          // timestamp. If that skipped a root entirely, the full metadata scan
+          // is also the recovery path even when the root has no replies.
+          if (!localLatest.has(root.ts)) byTimestamp.set(root.ts, root);
           const remoteLatest = root.latest_reply;
           if (!remoteLatest && (root.reply_count ?? 0) === 0) continue;
           const archivedLatest = localLatest.get(root.ts) ?? root.ts;
