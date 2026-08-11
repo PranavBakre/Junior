@@ -105,7 +105,7 @@ describe("importSlackArchive", () => {
       metadata: { appId: "A1", botUsername: "Junior" },
       files: [{ id: "F1", name: "result.csv", mimetype: "text/csv" }],
     });
-    expect(store.checkpoints.get("C123")).toBe("5.000001");
+    expect(store.checkpoints.get("C123")).toBe("4.000001");
   });
 
   it("dry-runs the whole archive without writes or embeddings", async () => {

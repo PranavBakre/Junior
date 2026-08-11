@@ -157,7 +157,12 @@ export async function importSlackArchive(
           continue;
         }
         report.messagesValid += 1;
-        latestTs = !latestTs || compareSlackTs(message.ts, latestTs) > 0 ? message.ts : latestTs;
+        if (
+          message.threadTs === message.ts &&
+          (!latestTs || compareSlackTs(message.ts, latestTs) > 0)
+        ) {
+          latestTs = message.ts;
+        }
         if (!dryRun) canonical.push(message);
       }
       canonical.sort((left, right) => compareSlackTs(left.ts, right.ts));
