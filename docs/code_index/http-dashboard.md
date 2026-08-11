@@ -9,7 +9,7 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 | Symbol | File | Purpose |
 |---|---|---|
 | `startHttpServer(deps)` | `server.ts` | Bun.serve on 127.0.0.1:port; routes API + serves `public/index.html` |
-| `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore? }` |
+| `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore? }` |
 | `handleHealth(store, config, startedAt)` | `routes/health.ts` | `GET /api/health` — uptime, session counts, agent counts, repo list |
 | `handleSessions(store)` | `routes/sessions.ts` | `GET /api/sessions` — list (strips worktreePath, systemPrompt, cwd, pid, slackIdentity, pendingMessages flattened to count) |
 | `handleSessionDetail(store, threadId)` | `routes/sessions.ts` | `GET /api/sessions/:threadId` — full session JSON |
@@ -83,5 +83,5 @@ overlays on that single graph scene.
 
 ## Dependencies
 
-- **Uses**: `Bun.serve`, `SessionStore`, `DevServerManager`, `DevServerQueue`, `WorkflowRegistry`, `WorkflowScheduler`, `WorkflowStore`, optional `MemoryStore`, `RepoConfig`, `logger`
+- **Uses**: `Bun.serve`, `SessionStore`, `DevServerManager`, `DevServerQueue`, `WorkflowRegistry`, `WorkflowScheduler`, `WorkflowStore`, optional `MemoryStore` and `ProfileStore`, `RepoConfig`, `logger`
 - **Used by**: `src/index.ts` (gated on `config.http.enabled`)
