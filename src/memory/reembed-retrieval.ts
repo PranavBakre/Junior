@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { createEmbeddingProvider } from "./embedding/factory.ts";
+import { buildLessonRetrievalTexts } from "./retrieval-text.ts";
 import { SqliteMemoryStore, serializeEmbedding } from "./sqlite.ts";
 
 export interface RetrievalRewrite {
@@ -15,7 +16,7 @@ export interface RetrievalRewrite {
 
 export interface CorpusRow {
   id: string;
-  kind: "lesson" | "fact" | "situation-claim";
+  kind: "lesson" | "fact" | "preference" | "decision" | "situation-claim";
   text: string;
   retrieval_text: string | null;
   lesson_title: string | null;
@@ -29,6 +30,8 @@ interface CorpusEntry extends RetrievalRewrite {
   kind: CorpusRow["kind"];
   authoritativeText: string;
   previousRetrievalText: string;
+  lessonTitle: string | null;
+  appliesWhen: string | null;
 }
 
 export interface ComposerCheckpointMetadata {
@@ -210,6 +213,8 @@ function loadCorpus(db: Database): CorpusEntry[] {
     authoritativeText: row.text,
     previousRetrievalText: row.retrieval_text ?? row.text,
     retrievalText: deterministicRetrievalText(row),
+    lessonTitle: row.lesson_title,
+    appliesWhen: row.applies_when,
   }));
 }
 
@@ -457,26 +462,66 @@ async function main(): Promise<void> {
   // retrieval_text to an older claim table.
   new SqliteMemoryStore(dbPath).close();
   const provider = createEmbeddingProvider("local");
-  const texts = corpus.map((entry) => byId.get(entry.id)!);
-  const vectors = await provider.embed(texts, "document");
+  const textsByClaim = corpus.map((entry) => {
+    const primary = byId.get(entry.id)!;
+    if (entry.kind !== "lesson") return [primary];
+    const generated = buildLessonRetrievalTexts({
+      title: entry.lessonTitle ?? entry.authoritativeText,
+      body: entry.authoritativeText,
+      appliesWhen: entry.appliesWhen,
+    });
+    return [primary, generated[1], generated[2]];
+  });
+  const embeddingInputs = corpus.flatMap((entry, index) => [
+    entry.authoritativeText,
+    ...textsByClaim[index]!,
+  ]);
+  const vectors = await provider.embed(embeddingInputs, "document");
+  let vectorOffset = 0;
+  const vectorsByClaim = textsByClaim.map((texts) => {
+    const canonical = vectors[vectorOffset]!;
+    vectorOffset += 1;
+    const retrieval = vectors.slice(vectorOffset, vectorOffset + texts.length);
+    vectorOffset += texts.length;
+    return { canonical, retrieval };
+  });
   const db = new Database(dbPath);
   db.run("PRAGMA busy_timeout = 5000");
   try {
     const update = db.query(
       "UPDATE claim SET retrieval_text = ?, embedding = ?, embed_model = ?, dim = ? WHERE id = ? AND active = 1",
     );
+    const clearVariants = db.query("DELETE FROM claim_embedding WHERE claim_id = ?");
+    const insertVariant = db.query(
+      `INSERT INTO claim_embedding (
+         claim_id, variant, retrieval_text, embedding, embed_model, dim
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    );
     const transaction = db.transaction(() => {
       // Refuse stale reviewed output if any authoritative source changed while
       // vectors were being generated.
       validateRewrites(loadCorpus(db), rewrites);
       for (let index = 0; index < corpus.length; index++) {
+        const texts = textsByClaim[index]!;
+        const claimVectors = vectorsByClaim[index]!;
         update.run(
-          texts[index],
-          serializeEmbedding(vectors[index]!),
+          texts[0],
+          serializeEmbedding(claimVectors.canonical),
           provider.model,
           provider.dim,
           corpus[index]!.id,
         );
+        clearVariants.run(corpus[index]!.id);
+        texts.forEach((text, variant) => {
+          insertVariant.run(
+            corpus[index]!.id,
+            variant,
+            text,
+            serializeEmbedding(claimVectors.retrieval[variant]!),
+            provider.model,
+            provider.dim,
+          );
+        });
       }
     });
     transaction.immediate();

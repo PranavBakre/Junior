@@ -173,6 +173,36 @@ describe("MCP memory v3 tools", () => {
     }
   });
 
+  it("memory_recall expands an atomic claim to its source section", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const written = await addMemory(
+        {
+          text: "Use the deployment secret store for the release credential",
+          sourcePath: "memory/deployment.md",
+          sourceHeading: "Production publishing",
+          sourceText: "Before publishing, export SITE_RELEASE_KEY from the deployment secret store.",
+        },
+        deps,
+      );
+      const result = await recallMemory(
+        { query: "Where is SITE_RELEASE_KEY configured?", limit: 5 },
+        deps,
+      );
+
+      expect(result.claims).toContainEqual(
+        expect.objectContaining({
+          id: written.id,
+          contextText: expect.stringContaining("export SITE_RELEASE_KEY"),
+          sourcePath: "memory/deployment.md",
+          sourceHeading: "Production publishing",
+        }),
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("memory_recall preserves legacy OR tag filtering", async () => {
     const { deps, cleanup } = makeMemoryDeps();
     try {
@@ -345,6 +375,49 @@ describe("MCP memory v3 tools", () => {
       );
       expect(JSON.parse(row.returned_ids_json)).toEqual([relevant.id]);
       expect(row.result_count).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("applies relevance floors before each scoped store limit", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      deps.provider = {
+        model: "controlled",
+        dim: 2,
+        embed: async () => [new Float32Array([1, 0])],
+      };
+      for (let index = 0; index < 5; index += 1) {
+        await deps.store.upsertClaim({
+          id: `dual-ineligible-${index}`,
+          kind: "fact",
+          text: `deploy release now distractor ${index}`,
+          embedding: new Float32Array([0.5, 0.866]),
+          createdAt: index,
+          skipDedup: true,
+        });
+      }
+      await deps.store.upsertClaim({
+        id: "exact-eligible",
+        kind: "fact",
+        text: "Configure GX_ONLY_TOKEN before deploy release now",
+        embedding: new Float32Array([0, 1]),
+        createdAt: 10,
+        skipDedup: true,
+      });
+
+      const result = await recallMemory(
+        {
+          query: "GX_ONLY_TOKEN deploy release now",
+          limit: 5,
+          minCosine: 0.55,
+          minLexicalScore: 0.75,
+        },
+        deps,
+      );
+
+      expect(result.claims.map((claim) => claim.id)).toEqual(["exact-eligible"]);
     } finally {
       cleanup();
     }

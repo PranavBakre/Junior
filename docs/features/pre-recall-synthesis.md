@@ -65,6 +65,13 @@ Drop `extractRecallQueries`. Embed the raw message directly with the existing
 provider — milliseconds, no subprocess, no timeout. Optional cheap keyword
 expansion (repo name, thread agent) stays non-LLM.
 
+Lesson documents use three independent question+lesson projections. They are
+stored as separate vectors and a claim is scored by its best cosine, so an
+indirect query can match the closest phrasing without duplicating the lesson in
+results or averaging several cues into one diluted vector. Ordinary prose stays
+semantic-only; exact-token rank fusion is reserved for identifiers, paths,
+URLs, flags, issue numbers, and quotations.
+
 This is the piece where the earlier "just embed the message" suggestion was
 wrong *as a whole answer*: it gets retrieval right and drops curation. Curation
 moves to the next stage, where it belongs.
@@ -331,7 +338,7 @@ specific matters".
 
 Known limitation: a claim cited in `used` is marked used even if it did not
 really contribute, so a lying citation mildly refreshes that claim's decay
-clock. Bounded by the shortlist (≤ 12) and strictly better than the previous
+clock. Bounded by the shortlist (≤ 20) and strictly better than the previous
 behaviour of marking every retrieved candidate.
 
 **A malformed `notes` is a failure, not a rejection.** `{"notes":"one line"}`
@@ -433,9 +440,9 @@ attempt (`topcos=-`).
 
 ```
 PRE_RECALL_ENABLED=false        # unchanged; still opt-in
-PRE_RECALL_RUNNER=claude        # now used for synthesis, not extraction
-PRE_RECALL_MODEL=              # unchanged
-PRE_RECALL_TIMEOUT_MS=15000    # now the synthesis budget, with a real fallback
+PRE_RECALL_RUNNER=codex         # now used for synthesis, not extraction
+PRE_RECALL_MODEL=gpt-5.6-luna   # Codex uses medium reasoning effort
+PRE_RECALL_TIMEOUT_MS=30000     # bounded; failures use deterministic fallback
 ```
 
 ## Cut list (true v2)
