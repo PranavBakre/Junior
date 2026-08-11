@@ -208,8 +208,18 @@ const testConfig: Config = {
     isolatedHomePath: "data/codex-home",
   },
   repos: [
-    { name: "junior", path: "/tmp/junior", defaultBase: "main" },
-    { name: "frontend", path: "/tmp/frontend", defaultBase: "main" },
+    {
+      name: "junior",
+      path: "/tmp/junior",
+      defaultBase: "main",
+      githubRepo: "GrowthX-Club/junior",
+    },
+    {
+      name: "frontend",
+      path: "/tmp/frontend",
+      defaultBase: "main",
+      githubRepo: "GrowthX-Club/frontend",
+    },
   ],
   session: {
     staleTimeoutMs: 86400000,
@@ -415,9 +425,24 @@ describe("SessionManager", () => {
   it("binds every PR repository before dispatching a multi-repo review", async () => {
     const pipelineStore = new InMemoryPipelineStore();
     const reviewRepos = [
-      { name: "gx-client-next", path: "/tmp/client", defaultBase: "main" },
-      { name: "gx-backend", path: "/tmp/backend", defaultBase: "main" },
-      { name: "gx-community", path: "/tmp/community", defaultBase: "main" },
+      {
+        name: "gx-client-next",
+        path: "/tmp/client",
+        defaultBase: "main",
+        githubRepo: "GrowthX-Club/gx-client-next",
+      },
+      {
+        name: "gx-backend",
+        path: "/tmp/backend",
+        defaultBase: "main",
+        githubRepo: "GrowthX-Club/gx-backend",
+      },
+      {
+        name: "gx-community",
+        path: "/tmp/community",
+        defaultBase: "main",
+        githubRepo: "GrowthX-Club/gx-community",
+      },
     ];
     manager = createTestManager(store, cloneConfig({
       repos: reviewRepos,
@@ -452,11 +477,97 @@ describe("SessionManager", () => {
 
     const run = await pipelineStore.getRunByThread("thread-1");
     expect(run?.repoRefs).toEqual([
-      "gx-client-next",
-      "gx-backend",
-      "gx-community",
+      "GrowthX-Club/gx-client-next",
+      "GrowthX-Club/gx-backend",
+      "GrowthX-Club/gx-community",
     ]);
     expect(mockSpawnFn.mock.calls[0][0].worktreePaths).toEqual(paths);
+  });
+
+  it("fails closed when any review PR repository is not configured", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    manager = createTestManager(store, cloneConfig({
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+    const errors = mock((_session: ThreadSession, _error: string | null) => {});
+    manager.onError = errors;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: [
+        "review",
+        "https://github.com/GrowthX-Club/frontend/pull/127",
+        "https://github.com/GrowthX-Club/not-configured/pull/9",
+      ].join("\n"),
+    }), "review");
+    await waitFor(() => errors.mock.calls.length === 1);
+
+    const run = await pipelineStore.getRunByThread("thread-1");
+    expect(run?.repoRefs).toEqual([
+      "GrowthX-Club/frontend",
+      "GrowthX-Club/not-configured",
+    ]);
+    expect(errors.mock.calls[0]![1]).toContain("not-configured");
+    expect(mockSpawnFn).not.toHaveBeenCalled();
+  });
+
+  it("durably expands active review repo refs once before follow-up dispatch", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    manager = createTestManager(store, cloneConfig({
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+    const paths = {
+      frontend: "/tmp/frontend.worktree",
+      junior: "/tmp/junior.worktree",
+    };
+    manager.worktreeManager = {
+      createWorktree: mock(async (repoName: "frontend" | "junior") => paths[repoName]),
+      getWorktreePath: (repoName: "frontend" | "junior") => paths[repoName],
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "review https://github.com/GrowthX-Club/frontend/pull/127",
+      ts: "review-start",
+    }), "review");
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    const followupText = [
+      "also review",
+      "https://github.com/GrowthX-Club/frontend/pull/128",
+      "https://github.com/GrowthX-Club/junior/pull/162",
+    ].join("\n");
+    await manager.handleAgentMessage(makeEvent({
+      text: followupText,
+      ts: "review-followup-1",
+    }), "review");
+    const expanded = await pipelineStore.getRunByThread("thread-1");
+    expect(expanded?.repoRefs).toEqual([
+      "GrowthX-Club/frontend",
+      "GrowthX-Club/junior",
+    ]);
+    expect(expanded?.stateVersion).toBe(0);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: followupText,
+      ts: "review-followup-2",
+    }), "review");
+    expect((await pipelineStore.getRunByThread("thread-1"))?.stateVersion).toBe(0);
+    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
   });
 
   it("routes a CHANNEL_DEFAULTS lead through a default run owned by lead", async () => {

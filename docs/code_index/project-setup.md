@@ -32,7 +32,7 @@ Entry point, configuration, logging, persona loading, and boot sequence. The pro
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | Process timeout guard |
 | `CLAUDE_PERMISSION_MODE` | no | `bypassPermissions` | `--permission-mode` |
 | `CLAUDE_MODEL` | no | unset | Default `--model` |
-| `REPOS` | no | `[]` | JSON array of `RepoConfig`; trailing slashes stripped from `.path` |
+| `REPOS` | no | `[]` | JSON array of `RepoConfig`; trailing slashes are stripped from `.path`, and `githubRepo` is normalized/derived from the GitHub origin for exact PR routing |
 | `SESSION_STORE` | no | `sqlite` | `memory \| sqlite` |
 | `SESSION_DB_PATH` | no | `data/sessions.db` | SQLite path (parent dir auto-created) |
 | `SESSION_STALE_TIMEOUT_MS` | no | `86400000` | Stale-session deletion threshold |

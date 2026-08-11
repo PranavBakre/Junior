@@ -32,6 +32,12 @@ export interface PipelineStore {
   createRun(run: PipelineRun): Promise<void>;
   getRun(id: string): Promise<PipelineRun | undefined>;
   getRunByThread(threadId: string): Promise<PipelineRun | undefined>;
+  /**
+   * Atomically union durable repository refs; replaying the same refs is a no-op.
+   * This commutative workspace expansion does not advance the controller CAS
+   * version, so an assignment already running at that version can still settle.
+   */
+  expandRunRepoRefs(runId: string, repoRefs: string[]): Promise<PipelineRun>;
   /** Read-only dashboard projection, newest activity first. */
   listRuns(filter?: {
     status?: PipelineRun["status"];
