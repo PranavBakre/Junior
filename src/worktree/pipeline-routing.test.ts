@@ -10,11 +10,13 @@ const repos: RepoConfig[] = [
     name: "gx-backend",
     path: "/repos/gx-backend",
     defaultBase: "origin/main",
+    githubRepo: "GrowthX-Club/gx-backend",
   },
   {
     name: "gx-admin-client",
     path: "/repos/gx-admin-client",
     defaultBase: "origin/main",
+    githubRepo: "GrowthX-Club/gx-admin-client",
   },
 ];
 

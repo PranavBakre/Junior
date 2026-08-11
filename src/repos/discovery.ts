@@ -74,17 +74,20 @@ export function discoverLocalRepos(roots: string[]): RepoConfig[] {
 
       const canonicalPath = safeRealpath(path);
       if (!canonicalPath || seenPaths.has(canonicalPath)) continue;
-      if (!git(path, ["remote", "get-url", "origin"])) continue;
+      const originUrl = git(path, ["remote", "get-url", "origin"]);
+      if (!originUrl) continue;
 
       const defaultBase = detectDefaultBase(path);
       if (!defaultBase) continue;
 
       seenPaths.add(canonicalPath);
       const setupCommand = detectSetupCommand(path);
+      const githubRepo = githubRepoFromRemote(originUrl);
       discovered.push({
         name: basename(canonicalPath),
         path: canonicalPath,
         defaultBase,
+        ...(githubRepo ? { githubRepo } : {}),
         ...(setupCommand ? { worktreeSetupCommand: setupCommand } : {}),
       });
     }
@@ -107,6 +110,13 @@ export function mergeConfiguredAndDiscoveredRepos(
   const normalized = configured.map((repo) => ({
     ...repo,
     path: normalizePath(repo.path).replace(/\/+$/, ""),
+    ...(repo.githubRepo
+      ? { githubRepo: normalizeGitHubRepo(repo.githubRepo) }
+      : (() => {
+          const origin = git(normalizePath(repo.path), ["remote", "get-url", "origin"]);
+          const githubRepo = origin ? githubRepoFromRemote(origin) : null;
+          return githubRepo ? { githubRepo } : {};
+        })()),
   }));
   const configuredNames = new Set(
     normalized.map((repo) => repo.name.toLowerCase()),
@@ -168,6 +178,20 @@ function git(cwd: string, args: string[]): string | null {
   if (result.status !== 0) return null;
   const output = result.stdout.trim();
   return output || null;
+}
+
+/** Normalize GitHub HTTPS/SSH origin URLs to the durable `owner/repo` identity. */
+export function githubRepoFromRemote(remote: string): string | null {
+  const trimmed = remote.trim().replace(/\/+$/, "");
+  const match = trimmed.match(
+    /^(?:https?:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/\s:]+)\/([^/\s]+)$/i,
+  );
+  if (!match) return null;
+  return normalizeGitHubRepo(`${match[1]}/${match[2]}`);
+}
+
+function normalizeGitHubRepo(value: string): string {
+  return value.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
 }
 
 function normalizePath(path: string): string {

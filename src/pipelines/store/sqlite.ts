@@ -1030,6 +1030,35 @@ export class SqlitePipelineStore implements PipelineStore {
     return row ? runFromRow(row) : undefined;
   }
 
+  async expandRunRepoRefs(runId: string, repoRefs: string[]): Promise<PipelineRun> {
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .query<RunRow, [string]>("SELECT * FROM pipeline_runs WHERE id = ?")
+        .get(runId);
+      if (!row) throw new Error(`pipeline run not found: ${runId}`);
+
+      const run = runFromRow(row);
+      if (run.status === "terminal") {
+        throw new Error(`cannot expand repository refs on terminal run: ${runId}`);
+      }
+      const merged = uniqueStrings([...run.repoRefs, ...repoRefs]);
+      if (merged.length === run.repoRefs.length) return run;
+
+      const updatedAt = this.clock.now();
+      this.db.query(
+        `UPDATE pipeline_runs
+         SET repo_refs_json = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(JSON.stringify(merged), updatedAt, runId);
+      return {
+        ...run,
+        repoRefs: merged,
+        updatedAt,
+      };
+    });
+    return tx.immediate();
+  }
+
   async createAssignment(input: AssignmentCreate): Promise<Assignment> {
     const existing = this.db
       .query<AssignmentRow, [string]>(
@@ -1225,6 +1254,20 @@ export class SqlitePipelineStore implements PipelineStore {
     }
 
     const tx = this.db.transaction(() => {
+      // Repo-ref expansion deliberately does not advance stateVersion because
+      // doing so would invalidate the assignment currently producing this
+      // outcome. Preserve any expansion that committed after the decision's
+      // initial read by re-reading it after taking the write lock.
+      const latestRow = this.db
+        .query<RunRow, [string]>("SELECT * FROM pipeline_runs WHERE id = ?")
+        .get(run.id);
+      const latestRepoRefs = latestRow
+        ? runFromRow(latestRow).repoRefs
+        : decision.updatedRun.repoRefs;
+      const updatedRepoRefs = uniqueStrings([
+        ...latestRepoRefs,
+        ...decision.updatedRun.repoRefs,
+      ]);
       const cas = this.db
         .query(
           `UPDATE pipeline_runs SET
@@ -1243,7 +1286,7 @@ export class SqlitePipelineStore implements PipelineStore {
         .run(
           decision.updatedRun.phase,
           decision.updatedRun.status,
-          JSON.stringify(decision.updatedRun.repoRefs),
+          JSON.stringify(updatedRepoRefs),
           decision.updatedRun.stateVersion,
           decision.updatedRun.terminalOutcome,
           decision.updatedRun.terminalReason,
@@ -1360,7 +1403,7 @@ export class SqlitePipelineStore implements PipelineStore {
     });
 
     try {
-      tx();
+      tx.immediate();
       return decision.receipt;
     } catch (err) {
       if (err instanceof CasConflictError) {
@@ -3136,6 +3179,19 @@ function parseJsonArray(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    const key = normalized.toLowerCase();
+    if (!normalized || seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
 }
 
 function githubResourceFromRow(row: GitHubResourceRow): GitHubResource {

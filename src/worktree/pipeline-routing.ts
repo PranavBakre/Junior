@@ -21,7 +21,7 @@ export function resolvePipelineRepos(
   const seenUnresolved = new Set<string>();
 
   for (const ref of repoRefs) {
-    const matches = repos.filter((repo) => repoMatchesRef(repo.name, ref));
+    const matches = repos.filter((repo) => repoMatchesRef(repo, ref));
     if (matches.length !== 1) {
       if (!seenUnresolved.has(ref)) {
         seenUnresolved.add(ref);

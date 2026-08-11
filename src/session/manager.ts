@@ -74,7 +74,10 @@ import {
 } from "../agents/loader.ts";
 import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
-import { inferReviewRepo } from "../worktree/review-routing.ts";
+import {
+  inferReviewRepo,
+  reviewRepoRefs,
+} from "../worktree/review-routing.ts";
 import {
   inferPipelinePrimaryRepo,
   resolvePipelineRepos,
@@ -3596,10 +3599,19 @@ export class SessionManager {
       agentName === "default" && session.agentType && session.agentType !== "lead"
         ? session.agentType
         : agentName;
+    const explicitReviewRepoRefs = durableTarget === "review"
+      ? reviewRepoRefs(event.text)
+      : [];
     const activeId = session.activeRunId ?? session.activePipelineRunId;
     if (activeId) {
-      const active = await this.pipelineStore.getRun(activeId);
+      let active = await this.pipelineStore.getRun(activeId);
       if (active && active.status !== "terminal") {
+        if (explicitReviewRepoRefs.length > 0) {
+          active = await this.pipelineStore.expandRunRepoRefs(
+            active.id,
+            explicitReviewRepoRefs,
+          );
+        }
         const assignments = await this.pipelineStore.listAssignments(active.id);
         let assignment = assignments
           .filter((candidate) =>
@@ -3712,6 +3724,11 @@ export class SessionManager {
       }
     }
 
+    const repoRefs = explicitReviewRepoRefs.length > 0
+      ? explicitReviewRepoRefs
+      : session.targetRepo
+        ? [session.targetRepo]
+        : [];
     const started = await createDefaultRun(
       { store: this.pipelineStore },
       {
@@ -3722,7 +3739,7 @@ export class SessionManager {
         targetAgent: durableTarget,
         sourceAgent: event.isSelfBot ? "system" : "human",
         sourceSlackUserId: event.isSelfBot ? null : event.user,
-        repoRefs: session.targetRepo ? [session.targetRepo] : [],
+        repoRefs,
       },
     );
     await this.mutateSession(event.threadId, (current) => {
