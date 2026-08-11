@@ -479,6 +479,47 @@ describe("review verdict contract", () => {
         "review outcome is contradictory: status=succeeded, verdict=failed",
     });
   });
+
+  it("rejects a phase override that contradicts the typed verdict", async () => {
+    const store = new InMemoryPipelineStore(fakeClock(1_000));
+    await store.createRun(
+      makeProductRun({
+        id: "run-review-phase-contradiction",
+        phase: "reviewing",
+        ownerAgent: "default",
+      }),
+    );
+    const review = await store.createAssignment(
+      makeAssignmentCreate({
+        id: "asg-review-phase-contradiction",
+        runId: "run-review-phase-contradiction",
+        sourceAgent: "default",
+        targetAgent: "review",
+        status: "leased",
+        idempotencyKey: "asg-review-phase-contradiction",
+      }),
+    );
+
+    const receipt = await reduceProductOutcome(cfg(store), {
+      actorId: "review",
+      toPhase: "approved",
+      outcome: baseOutcome({
+        assignmentId: review.id,
+        status: "failed",
+        reason: "changes requested",
+        checks: [{ name: "review", status: "failed" }],
+      }),
+    });
+
+    expect(receipt).toMatchObject({
+      status: "rejected",
+      reason: "review phase contradicts the typed verdict check",
+    });
+    expect(await store.getRun("run-review-phase-contradiction")).toMatchObject({
+      phase: "reviewing",
+      stateVersion: 0,
+    });
+  });
 });
 
 describe("backend feature → ready-for-human-merge", () => {

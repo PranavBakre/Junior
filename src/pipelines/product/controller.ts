@@ -730,6 +730,54 @@ export async function reduceProductOutcome(
     };
   }
 
+  const typedReviewVerdict = inferReviewVerdict(input.outcome, run.phase);
+  if (run.phase === "reviewing" && assignment.targetAgent === "review") {
+    if (
+      input.outcome.action !== "complete" &&
+      input.reviewVerdict !== undefined &&
+      input.reviewVerdict !== null &&
+      input.reviewVerdict !== "comment"
+    ) {
+      return {
+        status: "rejected",
+        runVersion: run.stateVersion,
+        assignmentId: assignment.id,
+        reason: "review verdict must use action=complete",
+      };
+    }
+
+    if (input.outcome.action === "complete") {
+      if (
+        input.reviewVerdict !== undefined &&
+        input.reviewVerdict !== null &&
+        input.reviewVerdict !== typedReviewVerdict
+      ) {
+        return {
+          status: "rejected",
+          runVersion: run.stateVersion,
+          assignmentId: assignment.id,
+          reason: "review verdict override contradicts the typed verdict check",
+        };
+      }
+      const verdictPhase = typedReviewVerdict === "approved"
+        ? "approved"
+        : typedReviewVerdict === "changes_requested"
+          ? "fixing"
+          : null;
+      if (
+        input.toPhase !== undefined &&
+        input.toPhase !== verdictPhase
+      ) {
+        return {
+          status: "rejected",
+          runVersion: run.stateVersion,
+          assignmentId: assignment.id,
+          reason: "review phase contradicts the typed verdict check",
+        };
+      }
+    }
+  }
+
   if (
     run.phase === "reviewing" &&
     assignment.targetAgent === "review" &&
@@ -826,7 +874,7 @@ export async function reduceProductOutcome(
 
   const reviewVerdict =
     input.reviewVerdict ??
-    inferReviewVerdict(input.outcome, run.phase);
+    typedReviewVerdict;
   const devVerificationFailed = isDevVerificationRegression(input.outcome);
 
   let suggested: ProductPhase | undefined =
