@@ -2071,7 +2071,11 @@ export interface RecallMemoryArgs {
   /** Whether any or every requested tag must match; defaults to `any`. */
   tagMatch?: "any" | "all";
   kinds?: ClaimKind[];
-  /** Restrict fact claims to legacy semantic subtypes such as `procedure`. */
+  /**
+   * Restrict requested fact claims to legacy semantic subtypes such as
+   * `procedure`. Combined with `kinds`, these subtypes are recalled alongside
+   * non-fact kinds instead of replacing them.
+   */
   factKinds?: MemoryFactInput["kind"][];
   /**
    * Reserve up to this many slots for procedure memories while keeping the
@@ -2166,11 +2170,22 @@ export async function recallMemory(
   const scopes: Array<{
     kind?: ClaimKind;
     factKind?: MemoryFactInput["kind"];
-  }> = args.factKinds && args.factKinds.length > 0
-    ? args.factKinds.map((factKind) => ({ kind: "fact", factKind }))
-    : args.kinds && args.kinds.length > 0
-      ? args.kinds.map((kind) => ({ kind }))
-      : [{}];
+  }> = [];
+  const requestedKinds = args.kinds ?? [];
+  const requestedFactKinds = args.factKinds ?? [];
+  for (const kind of requestedKinds) {
+    // A supplied subtype list constrains the fact portion of a mixed request;
+    // it must not erase the accompanying lesson/decision/preference scopes.
+    if (kind !== "fact") scopes.push({ kind });
+  }
+  if (requestedFactKinds.length > 0) {
+    scopes.push(
+      ...requestedFactKinds.map((factKind) => ({ kind: "fact" as const, factKind })),
+    );
+  } else if (requestedKinds.includes("fact")) {
+    scopes.push({ kind: "fact" });
+  }
+  if (scopes.length === 0) scopes.push({});
 
   const seen = new Set<string>();
   const merged: ClaimRecallResult[] = [];
