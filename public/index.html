@@ -247,6 +247,20 @@
   }
   .drawer .close:hover { color: var(--fg); border-color: var(--accent); }
   .drawer h3 { margin: 0 0 2px; font-size: 16px; font-weight: 700; }
+  .slack-action {
+    display: inline-flex; align-items: center; gap: calc(8 * var(--baseline-font, 1px));
+    margin-top: calc(14 * var(--baseline-font, 1px));
+    padding: calc(9 * var(--baseline-font, 1px)) calc(12 * var(--baseline-font, 1px));
+    border-radius: calc(8 * var(--baseline-font, 1px));
+    color: #fff; background: var(--accent); text-decoration: none;
+    font-size: calc(12 * var(--baseline-font, 1px)); font-weight: 600;
+    transition: background 0.15s ease-in-out, transform 0.15s ease-in-out;
+  }
+  .slack-action:hover { background: #005be8; transform: translateY(-1px); }
+  .slack-action:focus-visible {
+    outline: calc(2 * var(--baseline-font, 1px)) solid #fff;
+    outline-offset: calc(2 * var(--baseline-font, 1px));
+  }
   .kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; font-size: 12.5px; margin: 14px 0; }
   .kv .k { color: var(--fg-faint); font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding-top: 1px; }
   .cmd-row {
@@ -2116,6 +2130,10 @@ async function openDrawer(threadId) {
   const agentsMap = t.agentSessions || {};
   const agents = Object.values(agentsMap);
   const pend = pendingCount(t.pendingMessages);
+  const slackAction = res.data.slackPermalink
+    ? '<a class="slack-action" href="' + esc(res.data.slackPermalink) +
+      '" target="_blank" rel="noopener noreferrer">Open thread in Slack <span aria-hidden="true">↗</span></a>'
+    : "";
 
   const agentHtml = agents.length
     ? agents.map((a) => {
@@ -2137,6 +2155,7 @@ async function openDrawer(threadId) {
     '<button class="close" type="button" id="drawer-close">esc</button>' +
     "<h3>" + esc(t.channel || "thread") + "</h3>" +
     '<div class="mono" style="font-size:11px;color:var(--accent)">' + esc(t.threadId) + "</div>" +
+    slackAction +
     '<div style="margin-top:10px">' + pill(t.status) +
     (pend ? ' <span class="apill">' + pend + " buffered</span>" : "") +
     (t.muted ? ' <span class="apill">muted</span>' : "") +

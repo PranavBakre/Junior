@@ -19,7 +19,11 @@ import type { MemoryStore } from "../memory/store.ts";
 import type { PipelineStore } from "../pipelines/store/interface.ts";
 import type { ProfileStore } from "../memory/profiles/store.ts";
 import { handleHealth } from "./routes/health.ts";
-import { handleSessions, handleSessionDetail } from "./routes/sessions.ts";
+import {
+  handleSessions,
+  handleSessionDetail,
+  type SlackPermalinkResolver,
+} from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryProjection, handleMemoryRead, handleMemoryRecall } from "./routes/memory.ts";
 import { handleDevServers } from "./routes/dev-server.ts";
@@ -43,6 +47,7 @@ export interface HttpServerDeps {
   memoryStore?: MemoryStore;
   profileStore?: ProfileStore;
   pipelineStore: PipelineStore;
+  resolveSlackPermalink?: SlackPermalinkResolver;
 }
 
 export function startHttpServer(deps: HttpServerDeps): void {
@@ -58,6 +63,7 @@ export function startHttpServer(deps: HttpServerDeps): void {
     memoryStore,
     profileStore,
     pipelineStore,
+    resolveSlackPermalink,
   } = deps;
 
   const server = Bun.serve({
@@ -127,7 +133,7 @@ export function startHttpServer(deps: HttpServerDeps): void {
           const threadId = decodeURIComponent(
             url.pathname.slice("/api/sessions/".length),
           );
-          return await handleSessionDetail(store, threadId);
+          return await handleSessionDetail(store, threadId, resolveSlackPermalink);
         } else if (url.pathname === "/api/dev-server") {
           return await handleDevServers(devServerManager, devServerQueue, repos);
         } else if (url.pathname === "/api/workflows") {

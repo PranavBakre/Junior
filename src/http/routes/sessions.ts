@@ -1,5 +1,10 @@
 import type { SessionStore } from "../../session/store/interface.ts";
 
+export type SlackPermalinkResolver = (
+  channel: string,
+  messageTs: string,
+) => Promise<string | null>;
+
 export async function handleSessions(store: SessionStore): Promise<Response> {
   const allSessions = await store.getAll();
   const sessions = [...allSessions.values()]
@@ -46,10 +51,22 @@ export async function handleSessions(store: SessionStore): Promise<Response> {
 export async function handleSessionDetail(
   store: SessionStore,
   threadId: string,
+  resolveSlackPermalink?: SlackPermalinkResolver,
 ): Promise<Response> {
   const session = await store.get(threadId);
   if (!session) {
     return Response.json({ error: "session not found" }, { status: 404 });
   }
-  return Response.json({ session });
+
+  let slackPermalink: string | null = null;
+  if (resolveSlackPermalink) {
+    try {
+      slackPermalink = await resolveSlackPermalink(session.channel, session.threadId);
+    } catch {
+      // Slack navigation is an enhancement to the read-only detail view. A
+      // transient Slack API failure must not make the session itself unreadable.
+    }
+  }
+
+  return Response.json({ session, slackPermalink });
 }

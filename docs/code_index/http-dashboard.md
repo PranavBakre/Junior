@@ -12,7 +12,7 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 | `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore? }` |
 | `handleHealth(store, config, startedAt)` | `routes/health.ts` | `GET /api/health` — uptime, session counts, agent counts, repo list |
 | `handleSessions(store)` | `routes/sessions.ts` | `GET /api/sessions` — list (strips worktreePath, systemPrompt, cwd, pid, slackIdentity, pendingMessages flattened to count) |
-| `handleSessionDetail(store, threadId)` | `routes/sessions.ts` | `GET /api/sessions/:threadId` — full session JSON |
+| `handleSessionDetail(store, threadId, resolveSlackPermalink?)` | `routes/sessions.ts` | `GET /api/sessions/:threadId` — full session JSON plus a best-effort Slack permalink |
 | `handleDevServers(manager, queue, repos)` | `routes/dev-server.ts` | `GET /api/dev-server` — per-repo state, idle TTL remaining, queue depth |
 | `handleWorkflows(registry, store, scheduler)` | `routes/workflows.ts` | `GET /api/workflows` — definitions, persisted state, recent runs, registry errors, and live scheduler-derived display status |
 | `handleLogs(searchParams)` | `routes/logs.ts` | `GET /api/logs?date=YYYY-MM-DD` — parses daily log file (strict date regex prevents path traversal) |

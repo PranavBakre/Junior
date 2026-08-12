@@ -755,6 +755,13 @@ setInterval(() => {
         memoryStore,
         profileStore,
         pipelineStore,
+        resolveSlackPermalink: async (channel, messageTs) => {
+          const result = await app.client.chat.getPermalink({
+            channel,
+            message_ts: messageTs,
+          });
+          return result.permalink ?? null;
+        },
       });
     } catch (err) {
       log.error(

@@ -42,7 +42,7 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 | `GET /` | `public/index.html` (dashboard UI) |
 | `GET /api/health` | `{ status, uptime, startedAt, sessions: {total,busy,idle,draining,errors}, agents: {total,busy}, repos[] }` |
 | `GET /api/sessions` | Sessions sorted by `lastActivity` desc, with filtered projection and a reshaped `agents[]` array per session |
-| `GET /api/sessions/:threadId` | Full `ThreadSession` for one thread (no projection — for the detail view) |
+| `GET /api/sessions/:threadId` | Full `ThreadSession` plus a best-effort Slack permalink for the detail view |
 | `GET /api/dev-server` | Per-repo `{ running, pid, branch, startedAt, lastUsedAt, idleMsRemaining, holder, waiters }` plus top-level `idleTtlMs` |
 | `GET /api/workflows` | Definitions, persisted scheduler state, five recent runs, registry errors, and a live `displayStatus` from scheduler activity |
 | `GET /api/logs?date=YYYY-MM-DD&tail=N&tag=&level=` | Parsed entries from `logs/<date>.log` |
@@ -98,7 +98,7 @@ HTTP_DASHBOARD_PORT=4567  # positive integer 1-65535. Unset = disabled.
 
 ## Integration points
 
-- **`SessionStore` ([session-persistence.md](session-persistence.md), [session-management.md](session-management.md)).** All session reads go through the interface — sqlite in production, in-memory in dev/tests. `/api/health` and `/api/sessions` call `getAll()`; `/api/sessions/:id` calls `get(threadId)`. `agentSessions` is flattened into `agents[]` so the UI can render multi-agent threads without knowing the storage shape.
+- **`SessionStore` ([session-persistence.md](session-persistence.md), [session-management.md](session-management.md)).** All session reads go through the interface — sqlite in production, in-memory in dev/tests. `/api/health` and `/api/sessions` call `getAll()`; `/api/sessions/:id` calls `get(threadId)`. The detail route resolves the thread's Slack permalink on demand; Slack API failures leave the session readable with a null link. `agentSessions` is flattened into `agents[]` so the UI can render multi-agent threads without knowing the storage shape.
 - **`DevServerManager` ([process-lifecycle.md](process-lifecycle.md)).** `/api/dev-server` calls `manager.status()` for live `DevServerState` and `manager.getIdleTtlMs()` for the configured TTL (no hard-coded 20 min in the route — single source of truth).
 - **`DevServerQueue`.** `queue.readQueueDepth(repo)` supplies `{ holder, waiters }` so the dashboard can show "you're 3rd in line" parity with `!devserver status`.
 - **`WorkflowScheduler`.** `/api/workflows` uses the scheduler's process-local
