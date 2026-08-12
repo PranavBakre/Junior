@@ -6,6 +6,7 @@ import type { RepoConfig } from "../config.ts";
 import type {
   WorkflowConcurrency,
   WorkflowDefinition,
+  WorkflowNativeHandler,
   WorkflowOutput,
   WorkflowPermissions,
   WorkflowRunnerConfig,
@@ -30,11 +31,23 @@ const SUPPORTED_TOOLS = new Set<WorkflowTool>([
   "git",
   "gh",
   "slack.post",
+  "slack.read",
+  "archive.write",
   "docs.write",
   "memory.read",
   "memory.write",
   "memory.evaluate",
 ]);
+const SUPPORTED_NATIVE_HANDLERS = new Set<WorkflowNativeHandler>([
+  "memory-consolidation",
+  "memory-dedup-sweep",
+  "slack-archive-maintenance",
+]);
+const NATIVE_HANDLER_TOOLS: Record<WorkflowNativeHandler, readonly WorkflowTool[]> = {
+  "memory-consolidation": ["docs.write", "memory.read", "memory.write", "memory.evaluate"],
+  "memory-dedup-sweep": ["docs.write", "memory.read", "memory.evaluate"],
+  "slack-archive-maintenance": ["docs.write", "slack.read", "archive.write"],
+};
 
 export async function loadWorkflowDefinition(
   options: LoadWorkflowDefinitionOptions,
@@ -97,6 +110,13 @@ export function validateWorkflowDefinition(options: {
   const runner = fm.runner == null
     ? undefined
     : parseRunner(objectRecord(fm.runner, "runner"));
+  const nativeHandler = fm.nativeHandler == null
+    ? undefined
+    : parseNativeHandler(stringValue(fm.nativeHandler, "nativeHandler"));
+  if (runner && nativeHandler) {
+    throw new Error("runner and nativeHandler are mutually exclusive");
+  }
+  if (nativeHandler) validateNativeHandlerPermissions(nativeHandler, permissions);
   const fallback = fm.fallback == null
     ? undefined
     : parseFallback(objectRecord(fm.fallback, "fallback"));
@@ -112,6 +132,7 @@ export function validateWorkflowDefinition(options: {
     ownerSlackUserIds,
     triggers,
     outputs,
+    nativeHandler,
     runner,
     permissions,
     fallback,
@@ -121,6 +142,26 @@ export function validateWorkflowDefinition(options: {
     sourcePath: options.path,
     sourceRoot: options.sourceRoot,
   };
+}
+
+function parseNativeHandler(value: string): WorkflowNativeHandler {
+  if (!SUPPORTED_NATIVE_HANDLERS.has(value as WorkflowNativeHandler)) {
+    throw new Error(`Unsupported nativeHandler: ${value}`);
+  }
+  return value as WorkflowNativeHandler;
+}
+
+function validateNativeHandlerPermissions(
+  handler: WorkflowNativeHandler,
+  permissions: WorkflowPermissions,
+): void {
+  const declared = new Set(permissions.tools);
+  const missing = NATIVE_HANDLER_TOOLS[handler].filter((tool) => !declared.has(tool));
+  if (missing.length > 0) {
+    throw new Error(
+      `nativeHandler ${handler} requires permissions: ${missing.join(", ")}`,
+    );
+  }
 }
 
 function parseFrontmatter(content: string, path: string): {

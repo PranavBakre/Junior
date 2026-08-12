@@ -92,6 +92,7 @@ describe("WorkflowExecutor", () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-memory-workflow-test-"));
     const definition = workflowDefinition(dir);
     definition.name = "memory-consolidation";
+    definition.nativeHandler = "memory-consolidation";
     definition.triggers = [{ type: "command", command: "memory-consolidation" }];
     definition.outputs = [{ type: "docs", path: join(dir, "memory-consolidation") }];
     definition.permissions.tools = ["docs.write", "memory.read", "memory.write", "memory.evaluate"];
@@ -152,6 +153,7 @@ describe("WorkflowExecutor", () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-dedup-workflow-test-"));
     const definition = workflowDefinition(dir);
     definition.name = "memory-dedup-sweep";
+    definition.nativeHandler = "memory-dedup-sweep";
     definition.triggers = [{ type: "command", command: "memory-dedup-sweep" }];
     definition.outputs = [{ type: "docs", path: join(dir, "memory-dedup-sweep") }];
     definition.permissions.tools = ["docs.write", "memory.read", "memory.evaluate"];
@@ -204,10 +206,59 @@ describe("WorkflowExecutor", () => {
     }
   });
 
+  it("runs Slack archive maintenance natively without spawning an agent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-slack-archive-workflow-test-"));
+    const definition = workflowDefinition(dir);
+    definition.name = "slack-archive-maintenance";
+    definition.nativeHandler = "slack-archive-maintenance";
+    definition.runner = undefined;
+    definition.outputs = [{ type: "docs", path: join(dir, "slack-archive-maintenance") }];
+    definition.permissions.tools = ["slack.read", "archive.write", "docs.write"];
+    const config = testConfig();
+    config.slackArchive = {
+      enabled: true,
+      dbPath: join(dir, "archive.db"),
+      exportPath: null,
+      approvedChannelIds: [],
+    };
+    const spawn = mock(() => {
+      throw new Error("runner should not be spawned for native archive maintenance");
+    });
+    const executor = new WorkflowExecutor({
+      config,
+      store: new InMemoryWorkflowStore(),
+      slackClient: {} as WebClient,
+      spawn: spawn as never,
+      slackArchiveMaintenance: async () => ({
+        channelsSynced: 12,
+        messagesSeen: 34,
+        embedded: 7,
+        staleSkipped: 0,
+        remaining: 0,
+        indexed: 770_565,
+        indexRebuilt: true,
+        dbPath: config.slackArchive!.dbPath,
+        indexPath: `${config.slackArchive!.dbPath}.usearch`,
+      }),
+      now: () => new Date("2026-08-16T03:17:00+05:30"),
+    });
+
+    try {
+      const result = await executor.run({ definition, reason: "schedule" });
+      expect(spawn).not.toHaveBeenCalled();
+      expect(result.summary).toContain("channels synced: 12");
+      expect(result.summary).toContain("messages embedded: 7");
+      expect(result.summary).toContain("ANN index rebuilt: yes");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not spawn a second inspection runner for memory-consolidation (sweep-only)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-memory-sweeponly-test-"));
     const definition = workflowDefinition(dir);
     definition.name = "memory-consolidation";
+    definition.nativeHandler = "memory-consolidation";
     definition.triggers = [{ type: "command", command: "memory-consolidation" }];
     definition.outputs = [{ type: "docs", path: join(dir, "memory-consolidation") }];
     definition.permissions.tools = ["docs.write", "memory.read", "memory.write", "memory.evaluate"];

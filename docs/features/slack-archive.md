@@ -52,13 +52,35 @@ checkpoints stay in the top-level-message timestamp domain; `SlackArchiveSync`
 also compares full root metadata with locally archived thread timestamps so it
 can repair missed replies on roots older than the history checkpoint.
 
+### Weekly maintenance
+
+`workflows/slack-archive-maintenance.workflow.md` runs every Sunday at 03:17
+Asia/Kolkata. Its explicit `nativeHandler: slack-archive-maintenance` binding
+executes typed application code directly; it does not invoke an agent or model.
+The native pass:
+
+1. queries Slack's Conversations API for all public channels and explicitly
+   approved non-public channels, joins visible public channels where needed,
+   and closes gaps for messages Junior never saw;
+2. resumes from per-channel checkpoints and repairs replies on older threads;
+3. embeds only new or edited non-empty messages;
+4. atomically rebuilds `data/slack-archive.db.usearch` only when vectors changed
+   or the index is absent; and
+5. records counts and index state in a workflow-run artifact.
+
+The workflow uses `concurrency: skip`, so a slow pass cannot overlap the next
+one. A failed index build leaves the previously published sidecar intact.
+The bot token requires `channels:join` in addition to `channels:read` and
+`channels:history`; after changing Slack OAuth scopes, reinstall the app so the
+new token grant takes effect.
+
 ## Retrieval and security
 
-`slack_archive_search` uses FTS lexical retrieval with optional channel, actor,
-actor-kind, and time filters. The store also supports caller-supplied vectors
-and reciprocal-rank fusion, but importing the full corpus does not generate
-embeddings by default. `slack_archive_thread` reads one exact channel/thread in
-chronological order.
+`slack_archive_search` embeds the query and combines ANN semantic retrieval with
+FTS lexical retrieval, plus optional channel, actor, actor-kind, and time
+filters. Imports do not generate embeddings immediately; the weekly native
+maintenance pass embeds pending rows and republishes the ANN sidecar.
+`slack_archive_thread` reads one exact channel/thread in chronological order.
 
 Both tools require a signed runner turn whose stored session channel is public
 or explicitly approved. Every requested or returned archive channel is checked
