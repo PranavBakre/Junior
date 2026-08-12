@@ -2,6 +2,7 @@
 name: memory-consolidation
 enabled: true
 description: Run the offline v3 consolidation sweep — turn unconsolidated source records into episodes, entity profiles, and semantic claims.
+nativeHandler: memory-consolidation
 ownerSlackUserIds: []
 triggers:
   - type: schedule

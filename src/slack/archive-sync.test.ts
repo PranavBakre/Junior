@@ -314,10 +314,34 @@ describe("SlackArchiveSync", () => {
     await new SlackArchiveSync({ client, store }).sync();
     expect(historyChannels).toEqual(["C1"]);
   });
+
+  it("joins visible public channels before reading their history", async () => {
+    const calls: string[] = [];
+    const client = fakeClient({
+      list: async () => ({
+        ok: true,
+        channels: [{ id: "C_PUBLIC", name: "general", is_channel: true, is_member: false }],
+        response_metadata: { next_cursor: "" },
+      }),
+      join: async ({ channel }) => {
+        calls.push(`join:${channel}`);
+        return { ok: true };
+      },
+      history: async ({ channel }) => {
+        calls.push(`history:${channel}`);
+        return { ok: true, messages: [], response_metadata: { next_cursor: "" } };
+      },
+    });
+
+    await new SlackArchiveSync({ client, store: new MemoryStore() }).sync();
+
+    expect(calls).toEqual(["join:C_PUBLIC", "history:C_PUBLIC"]);
+  });
 });
 
 function fakeClient(overrides: {
   list?: SlackArchiveClient["conversations"]["list"];
+  join?: SlackArchiveClient["conversations"]["join"];
   history?: SlackArchiveClient["conversations"]["history"];
   replies?: SlackArchiveClient["conversations"]["replies"];
 }): SlackArchiveClient {
@@ -327,6 +351,7 @@ function fakeClient(overrides: {
         ok: true,
         channels: [{ id: "C1", name: "general", is_channel: true }],
       })),
+      ...(overrides.join ? { join: overrides.join } : {}),
       history: overrides.history ?? (async () => ({ ok: true, messages: [] })),
       replies: overrides.replies ?? (async () => ({ ok: true, messages: [] })),
     },

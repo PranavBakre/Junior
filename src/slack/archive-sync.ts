@@ -39,6 +39,11 @@ export interface SlackConversationResult {
   response_metadata?: SlackCursorMetadata;
 }
 
+export interface SlackJoinResult {
+  ok?: boolean;
+  error?: string;
+}
+
 export interface SlackHistoryResult {
   ok?: boolean;
   error?: string;
@@ -54,6 +59,7 @@ export interface SlackConversation {
   is_group?: boolean;
   is_im?: boolean;
   is_mpim?: boolean;
+  is_member?: boolean;
 }
 
 export interface SlackMessageFile {
@@ -88,6 +94,7 @@ export interface SlackArchiveClient {
       limit: number;
       cursor?: string;
     }): Promise<SlackConversationResult>;
+    join?(args: { channel: string }): Promise<SlackJoinResult>;
     history(args: {
       channel: string;
       limit: number;
@@ -156,6 +163,17 @@ export class SlackArchiveSync {
           conversation.kind === "public_channel" ||
           this.options.approvedChannelIds?.has(conversation.id) === true
         ) {
+          if (conversation.kind === "public_channel" && channel.is_member === false) {
+            if (!this.options.client.conversations.join) {
+              throw new Error(
+                `conversations.join unavailable for public channel ${conversation.id}`,
+              );
+            }
+            const joined = await this.options.client.conversations.join({
+              channel: conversation.id,
+            });
+            assertSlackOk(joined, `conversations.join(${conversation.id})`);
+          }
           yield conversation;
         }
       }

@@ -34,6 +34,8 @@ const BUSY_TIMEOUT_MS = 5_000;
 const BUSY_RETRY_ATTEMPTS = 5;
 const BUSY_RETRY_BASE_DELAY_MS = 25;
 const FTS_ROWID_MIGRATION = "fts-rowid-v1";
+const EMBEDDING_CORPUS_REVISION = "embedding-corpus-revision";
+const EMBEDDING_INDEX_REVISION_PREFIX = "embedding-index-revision:";
 
 export interface SlackArchiveEmbeddingCandidate {
   channelId: string;
@@ -179,6 +181,12 @@ export class SlackArchiveStore {
           updated_at INTEGER NOT NULL
         )
       `);
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS slack_archive_metadata (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        )
+      `);
       migrateFtsRowids(this.db);
     });
   }
@@ -196,8 +204,13 @@ export class SlackArchiveStore {
   private writeMessage(input: SlackArchiveMessageInput): SlackArchiveWriteResult {
     const observedAt = input.observedAt ?? Date.now();
     const existing = this.db
-      .query<{ observed_at: number; ingest_source: string }, [string, string]>(
-        "SELECT observed_at, ingest_source FROM slack_archive_message WHERE channel_id = ? AND ts = ?",
+      .query<{
+        observed_at: number;
+        ingest_source: string;
+        text: string;
+        embedding: Uint8Array | null;
+      }, [string, string]>(
+        "SELECT observed_at, ingest_source, text, embedding FROM slack_archive_message WHERE channel_id = ? AND ts = ?",
       )
       .get(input.channelId, input.ts);
     const ingestSource = input.ingestSource ?? "backfill";
@@ -302,6 +315,13 @@ export class SlackArchiveStore {
       });
     } else {
       this.mutableVectorIndex?.remove(messageRow.rowid);
+    }
+    if (
+      (!existing && storedEmbedding) ||
+      (existing?.embedding && !storedEmbedding) ||
+      input.embedding != null
+    ) {
+      this.bumpEmbeddingCorpusRevision();
     }
     return existing ? "updated" : "inserted";
   }
@@ -446,8 +466,53 @@ export class SlackArchiveStore {
       return updated;
     });
     const updated = retrySqliteBusy(() => transaction(updates));
+    if (updated > 0) this.bumpEmbeddingCorpusRevision();
     for (const record of indexed) this.mutableVectorIndex?.upsert(record);
     return updated;
+  }
+
+  getEmbeddingCorpusRevision(): number {
+    return this.getMetadataInteger(EMBEDDING_CORPUS_REVISION) ?? 0;
+  }
+
+  getEmbeddingIndexRevision(dim: number): number | null {
+    return this.getMetadataInteger(`${EMBEDDING_INDEX_REVISION_PREFIX}${dim}`);
+  }
+
+  setEmbeddingIndexRevision(dim: number, revision: number): void {
+    this.setMetadataInteger(`${EMBEDDING_INDEX_REVISION_PREFIX}${dim}`, revision);
+  }
+
+  private bumpEmbeddingCorpusRevision(): void {
+    retrySqliteBusy(() => {
+      this.db.query(`
+        INSERT INTO slack_archive_metadata(key, value) VALUES (?, '1')
+        ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1
+      `).run(EMBEDDING_CORPUS_REVISION);
+    });
+  }
+
+  private getMetadataInteger(key: string): number | null {
+    const value = this.db
+      .query<{ value: string }, [string]>(
+        "SELECT value FROM slack_archive_metadata WHERE key = ?",
+      )
+      .get(key)?.value;
+    if (value === undefined) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  private setMetadataInteger(key: string, value: number): void {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`Invalid Slack archive metadata integer: ${value}`);
+    }
+    retrySqliteBusy(() => {
+      this.db.query(`
+        INSERT INTO slack_archive_metadata(key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(key, String(value));
+    });
   }
 
   upsertConversation(conversation: SlackArchiveConversation): void {

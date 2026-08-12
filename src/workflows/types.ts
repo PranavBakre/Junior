@@ -8,6 +8,10 @@ export type WorkflowRunReason = "schedule" | "command" | "event" | "manual";
 export type WorkflowRunStatus = "running" | "success" | "failed" | "skipped";
 export type WorkflowLastRunStatus = Exclude<WorkflowRunStatus, "running">;
 export type WorkflowConcurrency = "skip" | "parallel";
+export type WorkflowNativeHandler =
+  | "memory-consolidation"
+  | "memory-dedup-sweep"
+  | "slack-archive-maintenance";
 export type WorkflowRunnerProvider =
   | "default"
   | "opencode"
@@ -17,6 +21,8 @@ export type WorkflowTool =
   | "git"
   | "gh"
   | "slack.post"
+  | "slack.read"
+  | "archive.write"
   | "docs.write"
   | "memory.read"
   | "memory.write"
@@ -90,6 +96,8 @@ export interface WorkflowDefinition {
   ownerSlackUserIds: string[];
   triggers: WorkflowTrigger[];
   outputs: WorkflowOutput[];
+  /** Explicit deterministic implementation; mutually exclusive with runner. */
+  nativeHandler?: WorkflowNativeHandler;
   runner?: WorkflowRunnerConfig;
   permissions: WorkflowPermissions;
   fallback?: WorkflowFallback;

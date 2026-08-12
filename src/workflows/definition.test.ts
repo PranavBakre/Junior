@@ -140,6 +140,60 @@ describe("validateWorkflowDefinition", () => {
     expect(definition.ownerSlackUserIds).toEqual([]);
     expect(definition.permissions.repos).toBeUndefined();
   });
+
+  it("binds a supported native handler explicitly without an agent runner", () => {
+    const definition = validateWorkflowDefinition({
+      path: "workflows/slack-archive-maintenance.workflow.md",
+      sourceRoot: "public",
+      repos,
+      content: validContent(),
+      body: "Documentation only.",
+      frontmatter: {
+        name: "slack-archive-maintenance",
+        enabled: true,
+        nativeHandler: "slack-archive-maintenance",
+        ownerSlackUserIds: [],
+        triggers: [{ type: "schedule", cron: "17 3 * * 0", timezone: "Asia/Kolkata" }],
+        outputs: [{ type: "docs", path: "data/workflow-runs/slack-archive-maintenance" }],
+        permissions: { tools: ["slack.read", "archive.write", "docs.write"] },
+      },
+    });
+
+    expect(definition.nativeHandler).toBe("slack-archive-maintenance");
+    expect(definition.runner).toBeUndefined();
+  });
+
+  it("rejects unknown native handlers and native-handler plus runner ambiguity", () => {
+    const base = {
+      name: "worklog",
+      enabled: true,
+      ownerSlackUserIds: [],
+      triggers: [{ type: "command", command: "worklog" }],
+      outputs: [{ type: "docs", path: "data/workflow-runs/worklog" }],
+      permissions: { tools: ["docs.write"] },
+    };
+    const validate = (frontmatter: Record<string, unknown>) =>
+      validateWorkflowDefinition({
+        path: "workflows/worklog.workflow.md",
+        sourceRoot: "public",
+        repos,
+        content: validContent(),
+        body: "Documentation only.",
+        frontmatter,
+      });
+
+    expect(() => validate({ ...base, nativeHandler: "run-arbitrary-code" }))
+      .toThrow("Unsupported nativeHandler");
+    expect(() => validate({
+      ...base,
+      nativeHandler: "memory-dedup-sweep",
+      runner: { provider: "default", agentName: "default" },
+    })).toThrow("mutually exclusive");
+    expect(() => validate({
+      ...base,
+      nativeHandler: "slack-archive-maintenance",
+    })).toThrow("requires permissions: slack.read, archive.write");
+  });
 });
 
 function validContent(): string {

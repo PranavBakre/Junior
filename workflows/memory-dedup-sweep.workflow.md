@@ -2,6 +2,7 @@
 name: memory-dedup-sweep
 enabled: true
 description: Report claim near-duplicates that predate the write guard — cluster them, name the survivor, and archive nothing until an operator applies it.
+nativeHandler: memory-dedup-sweep
 ownerSlackUserIds: []
 triggers:
   - type: schedule

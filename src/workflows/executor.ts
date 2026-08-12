@@ -9,6 +9,7 @@ import { withTimeout } from "../lifecycle/timeout.ts";
 import { log } from "../logger.ts";
 import type {
   WorkflowDefinition,
+  WorkflowNativeHandler,
   WorkflowOutput,
   WorkflowRunnerConfig,
   WorkflowRun,
@@ -31,6 +32,11 @@ import { createProfileStore } from "../memory/profiles/factory.ts";
 import type { ProfileStore } from "../memory/profiles/store.ts";
 import type { EmbeddingProvider } from "../memory/embedding/types.ts";
 import type { ConsolidationInvoke } from "../memory/consolidation/types.ts";
+import {
+  formatSlackArchiveMaintenance,
+  runSlackArchiveMaintenance,
+  type SlackArchiveMaintenanceReport,
+} from "../slack/archive-maintenance.ts";
 
 export const WORKFLOW_UTILITY_CWD = "/tmp/junior-utility";
 const DEFAULT_MAX_IDLE_INTERRUPTS = 3;
@@ -54,6 +60,7 @@ export interface WorkflowExecutorOptions {
     invoke?: ConsolidationInvoke;
     resolvePeople?: PeopleResolver;
   };
+  slackArchiveMaintenance?: () => Promise<SlackArchiveMaintenanceReport>;
 }
 
 export interface WorkflowRunRequest {
@@ -75,6 +82,7 @@ export class WorkflowExecutor {
   private now: () => Date;
   private memoryStore?: MemoryStore;
   private consolidationDeps?: WorkflowExecutorOptions["consolidationDeps"];
+  private slackArchiveMaintenance?: WorkflowExecutorOptions["slackArchiveMaintenance"];
   private activeHandles = new Set<SpawnHandle>();
 
   constructor(options: WorkflowExecutorOptions) {
@@ -85,6 +93,7 @@ export class WorkflowExecutor {
     this.now = options.now ?? (() => new Date());
     this.memoryStore = options.memoryStore;
     this.consolidationDeps = options.consolidationDeps;
+    this.slackArchiveMaintenance = options.slackArchiveMaintenance;
   }
 
   async run(request: WorkflowRunRequest): Promise<WorkflowRunResult> {
@@ -111,18 +120,10 @@ export class WorkflowExecutor {
 
     let summary = "";
     try {
-      if (request.definition.name === "memory-consolidation" && this.memoryStore) {
-        // v3 sweep-only. The consolidation sweep IS the LLM pass — it spawns the
-        // runner per session to derive episodes/profiles/claims (memory v3 §7).
-        // A second inspection-agent pass on top would double the LLM cost and
-        // run a prompt still written for the retired deterministic consolidate().
-        // The sweep's own summary is the workflow artifact.
-        summary = await this.runMemoryConsolidation();
-      } else if (request.definition.name === "memory-dedup-sweep" && this.memoryStore) {
-        // Same reasoning as the consolidation branch: the sweep is the work, and
-        // it is fully deterministic — an agent pass on top would only paraphrase
-        // a report it cannot improve.
-        summary = await this.runMemoryDedupSweep();
+      if (request.definition.nativeHandler) {
+        const nativeResult = await this.runNativeHandler(request.definition.nativeHandler);
+        summary = nativeResult.summary;
+        run.status = nativeResult.status;
       } else if (request.definition.runner) {
         summary = await this.runWithRunner(
           request.definition,
@@ -139,7 +140,7 @@ export class WorkflowExecutor {
           `Workflow ${request.definition.name} ran.`;
       }
 
-      run.status = "success";
+      if (run.status === "running") run.status = "success";
       run.finishedAt = this.now().getTime();
       const body = renderArtifact({
         definition: request.definition,
@@ -410,6 +411,36 @@ export class WorkflowExecutor {
       threshold: this.config.memory.dedupThreshold,
     });
     return formatDedupSweep(report);
+  }
+
+  private async runNativeHandler(
+    handler: WorkflowNativeHandler,
+  ): Promise<{ summary: string; status: "success" | "skipped" }> {
+    const handlers: Record<WorkflowNativeHandler, () => Promise<string>> = {
+      "memory-consolidation": () => this.runMemoryConsolidation(),
+      "memory-dedup-sweep": () => this.runMemoryDedupSweep(),
+      "slack-archive-maintenance": () => this.runSlackArchiveMaintenance(),
+    };
+    if (handler === "slack-archive-maintenance" && !this.config.slackArchive?.enabled) {
+      return {
+        status: "skipped",
+        summary: "Skipped Slack archive maintenance: Slack archive is not enabled.",
+      };
+    }
+    return { status: "success", summary: await handlers[handler]() };
+  }
+
+  private async runSlackArchiveMaintenance(): Promise<string> {
+    if (!this.config.slackArchive?.enabled) throw new Error("Slack archive is not enabled");
+    if (!this.slackClient) throw new Error("Slack client not configured");
+    const report = this.slackArchiveMaintenance
+      ? await this.slackArchiveMaintenance()
+      : await runSlackArchiveMaintenance({
+          client: this.slackClient,
+          dbPath: this.config.slackArchive.dbPath,
+          approvedChannelIds: new Set(this.config.slackArchive.approvedChannelIds),
+        });
+    return formatSlackArchiveMaintenance(report);
   }
 
   private async postSlack(
