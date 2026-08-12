@@ -96,7 +96,7 @@ function fakeClient(
         channels: [{ id: "C_PUBLIC", name: "general", is_channel: true, is_member: true }],
         response_metadata: { next_cursor: "" },
       }),
-      history: async (args) => ({
+      history: async () => ({
         ok: true,
         messages: [{ ts: "100.000001", text: text(), user: "U1" }],
         response_metadata: { next_cursor: "" },
