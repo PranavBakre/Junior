@@ -989,13 +989,14 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         artifact_refs: z.array(z.string()).optional().describe("Durable artifact references inherited by the child assignment"),
         acceptance_criteria: z.array(z.string()).optional().describe("Acceptance criteria for the child assignment"),
         repo_refs: z.array(z.string().min(1).max(200)).max(20).optional().describe("Repositories to validate and atomically bind to the durable run before dispatch"),
+        workspace_mode: z.enum(["managed", "repo-less"]).optional().describe("Use repo-less only for a read-only MongoDB lookup that does not need repository files; managed is the default."),
         channel_id: z.string().optional().describe("Deprecated; authenticated channel is derived from signed context"),
         thread_ts: z.string().optional().describe("Deprecated; authenticated thread is derived from signed context"),
         user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
         trigger_ts: z.string().optional().describe("Slack message timestamp that caused the dispatch. Defaults to thread_ts."),
       },
     },
-    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, evidence_refs, artifact_refs, acceptance_criteria, repo_refs, channel_id, thread_ts, user_id, trigger_ts }) => {
+    async ({ agent_name, prompt, mode, reason, idempotency_key, to_phase, evidence_refs, artifact_refs, acceptance_criteria, repo_refs, workspace_mode, channel_id, thread_ts, user_id, trigger_ts }) => {
       if (!sessionManager) {
         return { content: [{ type: "text" as const, text: "Error: session manager not available" }] };
       }
@@ -1032,6 +1033,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           artifact_refs,
           acceptance_criteria,
           repo_refs,
+          workspace_mode,
         });
       }
       if (pipelineRuntime && session?.activeRunId) {

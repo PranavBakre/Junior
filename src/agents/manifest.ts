@@ -167,7 +167,10 @@ const MCP_ONLY_CAPABILITY_TOOLS: Partial<
   Record<AgentCapability, readonly string[]>
 > = {
   "mongodb-read": [
+    "mcp__mongodb__aggregate",
+    "mcp__mongodb__count",
     "mcp__mongodb__find",
+    "mcp__mongodb__list-databases",
     "mcp__mongodb__list-collections",
     "mcp__mongodb__collection-schema",
   ],

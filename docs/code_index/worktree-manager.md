@@ -8,7 +8,7 @@ Creates, removes, and inspects git worktrees in target repos for per-thread code
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `WorktreeManager(repos)` | `manager.ts` | Constructor — keeps `RepoConfig[]` |
+| `WorktreeManager(repos, options?)` | `manager.ts` | Constructor — keeps `RepoConfig[]`; options support deterministic disk-headroom tests. |
 | `createWorktree(repoName, threadId, baseRef?, branchOverride?)` | `manager.ts` | Creates worktree. `baseRef` defaults to `repo.defaultBase`. `branchOverride` defaults to `slack/<threadId>`. Returns absolute path. |
 | `removeWorktree(repoName, threadId)` | `manager.ts` | `git worktree remove --force` + `git branch -D` (queries actual branch name from the worktree first to handle `branchOverride`) |
 | `worktreeExists(repoName, threadId)` | `manager.ts` | Filesystem check via `node:fs/promises.stat` |
@@ -37,6 +37,8 @@ When `repo.worktreeSetupCommand` is set, Junior calls the script instead of runn
 ```
 
 The script owns `git fetch`, `git worktree add`, env copy, install, MCP migration. Junior always passes `--base` (defaults to `repo.defaultBase`) so worktrees are reproducible. When unset, Junior runs `git fetch origin --prune` then `git worktree add <path> -b <branch> <base>` inline.
+
+Before delegated setup, Junior requires 2 GiB of free space by default (`WORKTREE_SETUP_MIN_FREE_BYTES` overrides it). A script failure after `git worktree add` triggers rollback of the registered worktree and its branch, and stderr included in the surfaced error is capped.
 
 ## Key Concepts
 

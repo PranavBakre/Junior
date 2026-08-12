@@ -71,6 +71,8 @@ describe("MongoDB MCP read-only proxy", () => {
           },
         },
       });
+      expect(tools[0]?.inputSchema.properties).not.toHaveProperty("connectionId");
+      expect(tools[0]?.inputSchema.required).toEqual(["database", "collection"]);
 
       const filter = {
         status: { $in: ["active", "trial"] },
@@ -79,7 +81,6 @@ describe("MongoDB MCP read-only proxy", () => {
       const result = await client.callTool({
         name: "find",
         arguments: {
-          connectionId: "preconfigured",
           database: "app",
           collection: "members",
           filter,
@@ -95,6 +96,39 @@ describe("MongoDB MCP read-only proxy", () => {
           collection: "members",
           filter,
         },
+      }]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("overrides guessed connection IDs with the configured connection", async () => {
+    const calls: Array<{ name: string; arguments?: Record<string, unknown> }> = [];
+    const server = createMongoProxyServer(RUN_CONTEXT, async () => ({
+      client: {
+        async listTools() {
+          return { tools: [] };
+        },
+        async callTool(request: { name: string; arguments?: Record<string, unknown> }) {
+          calls.push(request);
+          return { content: [{ type: "text" as const, text: "ok" }] };
+        },
+      } as never,
+    }));
+    const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      await client.callTool({
+        name: "list-databases",
+        arguments: { connectionId: "growthx-prod" },
+      });
+      expect(calls).toEqual([{
+        name: "list-databases",
+        arguments: { connectionId: "preconfigured" },
       }]);
     } finally {
       await client.close();

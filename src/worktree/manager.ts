@@ -1,4 +1,13 @@
 import type { RepoConfig } from "../config.ts";
+import { statfs } from "node:fs/promises";
+
+const DEFAULT_SETUP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_COMMAND_ERROR_CHARS = 8_000;
+
+export interface WorktreeManagerOptions {
+  setupMinFreeBytes?: number;
+  availableBytes?: (path: string) => Promise<number>;
+}
 
 export interface WorktreeStatus {
   tracked: string[];
@@ -9,9 +18,21 @@ export interface WorktreeStatus {
 
 export class WorktreeManager {
   private repos: RepoConfig[];
+  private setupMinFreeBytes: number;
+  private availableBytes: (path: string) => Promise<number>;
 
-  constructor(repos: RepoConfig[]) {
+  constructor(repos: RepoConfig[], options: WorktreeManagerOptions = {}) {
     this.repos = repos;
+    const configuredMinimum = options.setupMinFreeBytes ?? Number(
+      process.env.WORKTREE_SETUP_MIN_FREE_BYTES ?? DEFAULT_SETUP_MIN_FREE_BYTES,
+    );
+    this.setupMinFreeBytes = Number.isFinite(configuredMinimum) && configuredMinimum >= 0
+      ? configuredMinimum
+      : DEFAULT_SETUP_MIN_FREE_BYTES;
+    this.availableBytes = options.availableBytes ?? (async (path) => {
+      const stats = await statfs(path);
+      return stats.bavail * stats.bsize;
+    });
   }
 
   /**
@@ -44,6 +65,7 @@ export class WorktreeManager {
     const branchName = branchOverride ?? `slack/${threadId}`;
 
     if (repo.worktreeSetupCommand) {
+      await this.assertSetupDiskCapacity(repo.path);
       // Delegate worktree creation to the repo's setup script. The script
       // owns `git fetch`, `git worktree add`, env-file copying, dependency
       // install, and MCP migration. Junior hands it the branch, the absolute
@@ -54,7 +76,22 @@ export class WorktreeManager {
         : `${repo.path}/${repo.worktreeSetupCommand}`;
       const base = baseRef ?? repo.defaultBase;
       const args = [setupCmd, branchName, "--path", worktreePath, "--base", base];
-      await this.runCommand(args, repo.path);
+      try {
+        await this.runCommand(args, repo.path);
+      } catch (err) {
+        const rollbackError = await this.rollbackFailedSetup(
+          repo.path,
+          worktreePath,
+          branchName,
+        );
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          rollbackError
+            ? `${message}\nworktree rollback also failed: ${rollbackError}`
+            : message,
+          { cause: err },
+        );
+      }
     } else {
       // No setup hook configured — Junior creates the worktree inline. Fetch
       // fresh first so the base ref is up to date, then `git worktree add`.
@@ -259,8 +296,45 @@ export class WorktreeManager {
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
       const stderr = await new Response(proc.stderr).text();
-      throw new Error(`command ${args[0]} failed: ${stderr.trim()}`);
+      const detail = stderr.trim();
+      const bounded = detail.length > MAX_COMMAND_ERROR_CHARS
+        ? `${detail.slice(0, MAX_COMMAND_ERROR_CHARS)}\n… output truncated`
+        : detail;
+      throw new Error(`command ${args[0]} failed: ${bounded}`);
     }
     return await new Response(proc.stdout).text();
+  }
+
+  private async assertSetupDiskCapacity(path: string): Promise<void> {
+    const available = await this.availableBytes(path);
+    if (available >= this.setupMinFreeBytes) return;
+    const availableMiB = Math.floor(available / 1024 / 1024);
+    const requiredMiB = Math.ceil(this.setupMinFreeBytes / 1024 / 1024);
+    throw new Error(
+      `worktree setup refused: ${availableMiB} MiB free, ${requiredMiB} MiB required; free disk space before retrying`,
+    );
+  }
+
+  private async rollbackFailedSetup(
+    repoPath: string,
+    worktreePath: string,
+    branchName: string,
+  ): Promise<string | null> {
+    try {
+      if (!await this.worktreeExistsAtPath(worktreePath)) return null;
+      await this.runGit(["worktree", "remove", worktreePath, "--force"], repoPath);
+      await this.tryRunGit(["branch", "-D", branchName], repoPath);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  private async worktreeExistsAtPath(path: string): Promise<boolean> {
+    try {
+      return (await this.runGit(["rev-parse", "--is-inside-work-tree"], path)).trim() === "true";
+    } catch {
+      return false;
+    }
   }
 }

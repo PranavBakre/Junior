@@ -92,8 +92,10 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
 - MongoDB MCP uses `MDB_MCP_CONNECTION_STRING` from the process environment.
   `.env.example` includes a placeholder; real values belong only in local
   `.env` or secret managers. Junior exposes a shared read-only HTTP proxy at
-  `/mcp/mongodb`, backed by one wrapped `mongodb-mcp-server@latest --readOnly`
-  stdio child. Runner adapters inject that proxy only when the active agent
+  `/mcp/mongodb`, backed by one wrapped `mongodb-mcp-server@2.1.0 --readOnly`
+  stdio child. Mongo MCP v2 registers the environment connection as
+  `preconfigured`; the proxy removes `connectionId` from exposed schemas and
+  injects that ID itself so agents cannot select or guess connections. Runner adapters inject that proxy only when the active agent
   declares `permissions.mcp: mongodb` or lists `mcp__mongodb__*` tools.
   Disable with `OPENCODE_MONGODB_MCP_ENABLED=false` /
   `CODEX_MONGODB_MCP_ENABLED=false`.
@@ -117,6 +119,11 @@ mutation when a worktree-backed target has no effective repository. A
 human-input recovery assignment can retry an escalated run with corrected
 `repo_refs`; default runs resume to `working`, while typed runs require an
 explicit legal `to_phase`.
+
+For a bounded MongoDB read, a target with the `mongodb-read` capability may be
+dispatched with `workspace_mode: "repo-less"`. That assignment receives only
+the MongoDB capability envelope, an empty mutation scope, and no target-repo
+worktree; code or migration work continues to require managed mode.
 
 ### WhatsApp tools
 

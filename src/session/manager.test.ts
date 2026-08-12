@@ -4119,6 +4119,71 @@ describe("typed pipeline settlement", () => {
     expect(responses).not.toHaveBeenCalled();
   });
 
+  it("runs repo-less Mongo assignments with a narrowed capability envelope", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ repoRefs: ["junior"] }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-mongo-read",
+      targetAgent: "db-executioner",
+      capabilityRefs: ["mongodb-read"],
+      contextRefs: ["workspace-mode:repo-less"],
+      mutationScope: [],
+      objective: "read a member roadmap",
+      idempotencyKey: "asg-mongo-read-key",
+    }));
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/stale-worktree";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawnedSessions: ThreadSession[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawnedSessions.push(structuredClone(runSession));
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "pipeline-internal",
+      text: "<pipeline-assignment>read a member roadmap</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:mongo-read",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-mongo-read",
+        dispatchKey: "mongo-read",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "db-executioner");
+    await waitFor(() => spawnedSessions.length === 1);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(spawnedSessions[0]).toMatchObject({
+      worktreePath: null,
+      targetRepo: null,
+      assignmentCapabilities: ["mongodb-read"],
+      agentPermissions: {
+        intent: "mcp-only",
+        mcp: ["mongodb"],
+      },
+    });
+    expect(spawnedSessions[0]?.agentPermissions?.tools).toEqual([
+      "mcp__mongodb__aggregate",
+      "mcp__mongodb__collection-schema",
+      "mcp__mongodb__count",
+      "mcp__mongodb__find",
+      "mcp__mongodb__list-collections",
+      "mcp__mongodb__list-databases",
+    ]);
+  });
+
   it("uses compiled assignment context without worker Slack history or recall", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));

@@ -9,6 +9,7 @@ import {
   canEditProductCode,
   canWritePipelineArtifacts,
   checkCapability,
+  hasCapability,
   isReadOnlyRole,
   requiresManagedWorktree,
 } from "../agents/capabilities.ts";
@@ -718,6 +719,7 @@ export async function pipelineDispatchAgent(
     artifact_refs?: string[];
     acceptance_criteria?: string[];
     repo_refs?: string[];
+    workspace_mode?: "managed" | "repo-less";
   },
 ): Promise<ToolTextResult> {
   const disabled = requireActive(runtime);
@@ -768,6 +770,16 @@ export async function pipelineDispatchAgent(
       true,
     );
   }
+  const repoLessAssignment = args.workspace_mode === "repo-less";
+  if (repoLessAssignment && !hasCapability(target, "mongodb-read")) {
+    return textResult(
+      {
+        ok: false,
+        reason: `agent "${target}" cannot use repo-less workspace mode without the mongodb-read capability`,
+      },
+      true,
+    );
+  }
   const requestedRepoRefs = (args.repo_refs ?? [])
     .map((ref) => ref.trim())
     .filter(Boolean);
@@ -789,7 +801,7 @@ export async function pipelineDispatchAgent(
       );
     }
   }
-  const targetRequiresWorktree = requiresManagedWorktree(target);
+  const targetRequiresWorktree = !repoLessAssignment && requiresManagedWorktree(target);
   if (targetRequiresWorktree && effectiveRepoRefs.length === 0) {
     return textResult(
       {
@@ -818,7 +830,9 @@ export async function pipelineDispatchAgent(
       true,
     );
   }
-  const mutationScope = canEditProductCode(target)
+  const mutationScope = repoLessAssignment
+    ? []
+    : canEditProductCode(target)
     ? ["worktree-code"]
     : canWritePipelineArtifacts(target)
       ? ["pipeline-artifact"]
@@ -856,6 +870,7 @@ export async function pipelineDispatchAgent(
     (args.mode === "delegate" ? `delegated-branch:${source.id}` : undefined);
   const contextRefs = [
     `dispatch-mode:${args.mode}`,
+    ...(repoLessAssignment ? ["workspace-mode:repo-less"] : []),
     ...(delegatedBranch ? [delegatedBranch] : []),
   ];
   const nextIdempotencyKey = `${stableKey}:next`;
@@ -879,6 +894,7 @@ export async function pipelineDispatchAgent(
       contextRefs,
       artifactRefs: args.artifact_refs ?? [],
       acceptanceCriteria: args.acceptance_criteria ?? run.acceptanceCriteria,
+      capabilityRefs: repoLessAssignment ? ["mongodb-read"] : [],
       mutationScope,
       dependsOn: [],
       attempt: source.attempt,
@@ -913,6 +929,7 @@ export async function pipelineDispatchAgent(
           evidenceRefs: dispatchOutcome.evidenceRefs,
           artifactRefs: dispatchOutcome.artifactRefs,
           acceptanceCriteria: args.acceptance_criteria ?? run.acceptanceCriteria,
+          capabilityRefs: repoLessAssignment ? ["mongodb-read"] : [],
           repoRefs: effectiveRepoRefs,
           mutationScope,
           contextRefs,

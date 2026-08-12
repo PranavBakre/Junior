@@ -1694,7 +1694,9 @@ function resumeCmd(provider, sessionId, cwd) {
   if (!sessionId) return null;
   const r = provider === "claude"
     ? "claude --resume " + sessionId
-    : "opencode --session " + sessionId;
+    : provider === "codex" || provider === "codex-app-server"
+      ? "codex resume " + sessionId
+      : "opencode --session " + sessionId;
   return cwd ? "cd " + cwd + " && " + r : r;
 }
 function cmdRow(cmd) {

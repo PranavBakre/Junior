@@ -14,6 +14,8 @@ import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 
 const MONGODB_PROXY_IDLE_TTL_MS = Number(process.env.MONGODB_MCP_PROXY_IDLE_TTL_MS ?? "600000");
 const MONGODB_PROXY_REQUEST_TIMEOUT_MS = Number(process.env.MONGODB_MCP_PROXY_REQUEST_TIMEOUT_MS ?? "120000");
+const MONGODB_PRECONFIGURED_CONNECTION_ID = "preconfigured";
+const MONGODB_MCP_PACKAGE = "mongodb-mcp-server@2.1.0";
 const MONGODB_TOOL_NAMES = [
   "aggregate",
   "collection-schema",
@@ -69,7 +71,9 @@ export function createMongoProxyServer(
     armIdleTimer();
     const { tools } = await client.listTools();
     return {
-      tools: tools.filter((tool) => isAllowedMongoTool(tool.name)),
+      tools: tools
+        .filter((tool) => isAllowedMongoTool(tool.name))
+        .map(hideMongoConnectionId),
     };
   });
 
@@ -86,7 +90,16 @@ export function createMongoProxyServer(
       const { client } = await backendProvider();
       armIdleTimer();
       return await client.callTool(
-        { name, arguments: args },
+        {
+          name,
+          arguments: {
+            ...(args ?? {}),
+            // mongodb-mcp-server v2 registers an env-configured URI under
+            // this fixed ID. Keep that upstream implementation detail out of
+            // prompts and refuse agent-supplied connection selection.
+            connectionId: MONGODB_PRECONFIGURED_CONNECTION_ID,
+          },
+        },
         undefined,
         { timeout: MONGODB_PROXY_REQUEST_TIMEOUT_MS },
       ) as CallToolResult;
@@ -98,6 +111,27 @@ export function createMongoProxyServer(
   });
 
   return server;
+}
+
+function hideMongoConnectionId<T extends { inputSchema: Record<string, unknown> }>(
+  tool: T,
+): T {
+  const schema = tool.inputSchema;
+  const properties = schema.properties && typeof schema.properties === "object"
+    ? { ...(schema.properties as Record<string, unknown>) }
+    : undefined;
+  if (properties) delete properties.connectionId;
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((name) => name !== "connectionId")
+    : schema.required;
+  return {
+    ...tool,
+    inputSchema: {
+      ...schema,
+      ...(properties ? { properties } : {}),
+      ...(required ? { required } : {}),
+    },
+  };
 }
 
 export async function closeMongoMcpBackend(): Promise<void> {
@@ -132,12 +166,15 @@ function getMongoBackend(): Promise<MongoBackend> {
 }
 
 async function startMongoBackend(): Promise<MongoBackend> {
+  if (!process.env.MDB_MCP_CONNECTION_STRING?.trim()) {
+    throw new Error("MDB_MCP_CONNECTION_STRING is not configured");
+  }
   const transport = new StdioClientTransport({
     command: resolve(
       import.meta.dirname ?? ".",
       "../../bin/junior-mcp-stdio-wrapper.js",
     ),
-    args: ["--", "npx", "-y", "mongodb-mcp-server@latest", "--readOnly"],
+    args: ["--", "npx", "-y", MONGODB_MCP_PACKAGE, "--readOnly"],
     env: {
       ...process.env,
       MDB_MCP_CONNECTION_STRING: process.env.MDB_MCP_CONNECTION_STRING ?? "",

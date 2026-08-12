@@ -172,6 +172,61 @@ describe("durable agent_dispatch", () => {
     expect(await store.listAssignments(started.run.id)).toHaveLength(1);
   });
 
+  it("dispatches a MongoDB-only assignment without provisioning a repository", async () => {
+    const store = new InMemoryPipelineStore();
+    const sessions = new InMemorySessionStore();
+    const started = await createDefaultRun(
+      { store },
+      {
+        channelId: CHANNEL,
+        threadId: THREAD,
+        objective: "look up a member roadmap",
+        messageTs: "1700000000.105",
+        targetAgent: "default",
+      },
+    );
+    const session = createSession(THREAD, CHANNEL);
+    session.activePipelineInvocation = {
+      runId: started.run.id,
+      assignmentId: started.assignment.id,
+      dispatchKey: "repo-less-mongo",
+      outcomeCountAtDispatch: 0,
+      retryCount: 0,
+    };
+    await sessions.set(THREAD, session);
+
+    const result = body(await pipelineDispatchAgent({
+      store,
+      sessionStore: sessions,
+      runtimeMode: "active",
+      githubTrackingEnabled: false,
+    }, {
+      agent: "default",
+      channel: CHANNEL,
+      threadId: THREAD,
+      runId: started.run.id,
+      assignmentId: started.assignment.id,
+      dispatchKey: "repo-less-mongo",
+      signed: true,
+    }, {
+      target_agent: "db-executioner",
+      objective: "Read the member roadmap from MongoDB",
+      mode: "delegate",
+      reason: "The answer requires a production read",
+      idempotency_key: "member-roadmap-read",
+      workspace_mode: "repo-less",
+    }));
+
+    expect(result.ok).toBe(true);
+    expect(await store.getRun(started.run.id)).toMatchObject({ repoRefs: [] });
+    expect(await store.getAssignment(result.targetAssignmentId as string)).toMatchObject({
+      targetAgent: "db-executioner",
+      capabilityRefs: ["mongodb-read"],
+      mutationScope: [],
+      contextRefs: expect.arrayContaining(["workspace-mode:repo-less"]),
+    });
+  });
+
   it("dispatches the repo-less onboarding agent without repository refs", async () => {
     const store = new InMemoryPipelineStore();
     const sessions = new InMemorySessionStore();

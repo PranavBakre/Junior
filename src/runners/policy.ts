@@ -72,7 +72,10 @@ export function resolveRunPermissionIntent(
  * Mutating Slack/memory/dispatch tools are NOT included.
  */
 export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
+  "mcp__mongodb__aggregate": "allow",
+  "mcp__mongodb__count": "allow",
   "mcp__mongodb__find": "allow",
+  "mcp__mongodb__list-databases": "allow",
   "mcp__mongodb__list-collections": "allow",
   "mcp__mongodb__collection-schema": "allow",
   "mcp__slack-bot__slack_read_thread": "allow",
@@ -119,7 +122,10 @@ export function compileOpenCodePermission(options: {
       : {}),
     ...(subjectHasCapability(options.subject, "mongodb-read")
       ? {
+          "mcp__mongodb__aggregate": "allow",
+          "mcp__mongodb__count": "allow",
           "mcp__mongodb__find": "allow",
+          "mcp__mongodb__list-databases": "allow",
           "mcp__mongodb__list-collections": "allow",
           "mcp__mongodb__collection-schema": "allow",
         }

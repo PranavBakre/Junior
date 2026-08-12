@@ -34,6 +34,7 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 - **Same-origin.** Dashboard HTML is served by the same Bun process. No CORS headers — adding `Access-Control-Allow-Origin: *` would only let arbitrary websites the operator visits read this server's data.
 - **Path-traversal rejection at the input layer.** `/api/logs?date=` accepts only `YYYY-MM-DD` (strict regex); `/api/memory/<path>` rejects `..` and absolute paths and verifies the resolved path stays inside `docs/`. Reject early, don't sanitize after concatenation.
 - **Projection on `/api/sessions`.** Filesystem paths (`worktreePath`, `cwd`), PIDs (`pid`), prompt-engineering details (`systemPrompt`), and `slackIdentity` are stripped before serialization. `pendingMessages` is reduced to a length count — message bodies never leave the box.
+- **Provider-aware resume commands.** Session and agent cards use the CLI that owns the session: `claude --resume`, `opencode --session`, or `codex resume`. Codex app-server IDs are never presented as OpenCode commands.
 
 ## Endpoints
 

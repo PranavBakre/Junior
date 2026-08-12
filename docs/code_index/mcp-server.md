@@ -12,7 +12,7 @@ operations using the bot token and signed run context.
 |---|---|---|
 | `startMcpServer(deps)` | `slack-server.ts` | Starts HTTP server on `MCP_PORT` (default 3456), binding `127.0.0.1` and best-effort `::1`. Optional dependencies wire stores and pipeline services. |
 | `registerTools(server)` (internal) | `slack-server.ts` | Registers Slack, worktree, and agent-registry tools on a fresh `McpServer` per request. |
-| `handleMongoMcpRequest(req, res)` | `mongodb-proxy.ts` | Serves `/mcp/mongodb` as a stateless HTTP MCP proxy to one shared read-only MongoDB stdio backend. |
+| `handleMongoMcpRequest(req, res)` | `mongodb-proxy.ts` | Serves `/mcp/mongodb` as a stateless HTTP MCP proxy to one shared read-only MongoDB stdio backend; hides upstream connection selection and injects the environment-backed `preconfigured` ID. |
 | `closeMongoMcpBackend()` | `mongodb-proxy.ts` | Closes the shared backend immediately; also used by the idle TTL. |
 | `searchAgentDefinitions(options)` | `slack-server.ts` | Reads public/private agent markdown files and returns matching definitions plus dispatch registration state. |
 
@@ -30,7 +30,7 @@ operations using the bot token and signed run context.
 | `agent_search` | Junior internal | — | `query`, `include_public`, `include_private`, `limit` |
 | `reload_agent_registry` | Junior internal | — | — |
 | `slack_send_dm` | Slack Web API | `user_id`, `text` | identity fields |
-| `agent_dispatch` | Junior internal | agent, prompt, thread context | synthetic user/timestamp |
+| `agent_dispatch` | Junior internal | agent, prompt, thread context | repo refs, `workspace_mode: repo-less` for Mongo-only reads, synthetic user/timestamp |
 | `memory_recall` / `memory_add` / `memory_consolidate` | Memory v3 | tool-specific | filters/options; `fact_kinds` exposes procedure/routing/curated-fact subtypes |
 | `runbook_select` | Runbooks + Memory v3 | `request` | Select reviewed runbook; on miss perform procedure-memory recall |
 | `github_read_pr_review_state` / `github_post_review` | Fixed GitHub API surface | review-specific | inline comments |

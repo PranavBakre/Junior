@@ -136,6 +136,26 @@ git worktree add "$ABS_TARGET" -b "$BRANCH" origin/main
     `#!/usr/bin/env bash\necho "permission denied" >&2\nexit 1\n`,
   );
   chmodSync(failScript, 0o755);
+
+  const partialFailScript = join(repoRoot, "partial-fail-setup.sh");
+  writeFileSync(
+    partialFailScript,
+    `#!/usr/bin/env bash
+set -e
+BRANCH="$1"
+shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --path) ABS_TARGET="$2"; shift 2 ;;
+    --base) BASE_REF="$2"; shift 2 ;;
+  esac
+done
+git worktree add "$ABS_TARGET" -b "$BRANCH" "$BASE_REF"
+echo "no space left on device" >&2
+exit 1
+`,
+  );
+  chmodSync(partialFailScript, 0o755);
 });
 
 afterAll(() => {
@@ -324,6 +344,41 @@ describe("WorktreeManager.createWorktree", () => {
     expect(existsSync(wm.getWorktreePath("fail-flow", "fail-thread"))).toBe(
       false,
     );
+  });
+
+  it("refuses dependency-heavy setup when disk headroom is too low", async () => {
+    const wm = new WorktreeManager([{
+      name: "low-disk-flow",
+      path: repoRoot,
+      defaultBase: "origin/main",
+      worktreeSetupCommand: "fake-setup.sh",
+    }], {
+      setupMinFreeBytes: 2_000,
+      availableBytes: async () => 1_000,
+    });
+
+    await expect(wm.createWorktree("low-disk-flow", "low-disk-thread"))
+      .rejects.toThrow(/1000 MiB required|free disk space/);
+    expect(existsSync(wm.getWorktreePath("low-disk-flow", "low-disk-thread"))).toBe(false);
+  });
+
+  it("rolls back a worktree when delegated setup fails after creation", async () => {
+    const wm = new WorktreeManager([{
+      name: "partial-fail-flow",
+      path: repoRoot,
+      defaultBase: "origin/main",
+      worktreeSetupCommand: "partial-fail-setup.sh",
+    }], { setupMinFreeBytes: 0 });
+
+    await expect(wm.createWorktree("partial-fail-flow", "partial-fail-thread"))
+      .rejects.toThrow(/no space left on device/);
+    expect(existsSync(wm.getWorktreePath("partial-fail-flow", "partial-fail-thread"))).toBe(false);
+    const branchProc = Bun.spawn(
+      ["git", "branch", "--list", "slack/partial-fail-thread"],
+      { cwd: repoRoot, stdout: "pipe" },
+    );
+    await branchProc.exited;
+    expect((await new Response(branchProc.stdout).text()).trim()).toBe("");
   });
 
   it("forwards baseRef as the worktree's starting point (inline path)", async () => {

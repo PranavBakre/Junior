@@ -21,6 +21,7 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 | `handleMemoryRead(filePath)` | `routes/memory.ts` | `GET /api/memory/:path` — read a doc file (path-traversal guarded) |
 | `handleMemoryRecall(store, params)` | `routes/memory.ts` | `GET /api/memory/recall` — semantic claim recall without recording dashboard usage |
 | `handleMemoryProjection(store, params?)` | `routes/memory.ts` | `GET /api/memory/projection` — 3D PCA + spread + KNN projection for the memory galaxy; memoised per claim set, `?refresh=1` rebuilds |
+| `resumeCmd(provider, sessionId, cwd)` | `public/index.html` | Renders provider-correct Claude, OpenCode, or Codex resume commands on session cards. |
 | `projectClaims(claims, k?, spread?)` | `projection.ts` | PCA to 3D (power iteration + deflation) → separation relaxation → cosine KNN edges |
 
 ## Routes

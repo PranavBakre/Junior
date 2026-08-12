@@ -1555,6 +1555,8 @@ export class SessionManager {
       const activeSkill = activePipelineAssignment?.skillRef
         ? resolveTrustedSkill(activePipelineAssignment.skillRef)
         : null;
+      const repoLessAssignment =
+        activePipelineAssignment?.contextRefs.includes("workspace-mode:repo-less") === true;
       if (activePipelineAssignment?.skillRef && !activeSkill) {
         throw new Error(
           `Pipeline assignment ${activePipelineAssignment.id} references unknown skill "${activePipelineAssignment.skillRef}"`,
@@ -1598,7 +1600,7 @@ export class SessionManager {
           )
         : undefined;
 
-      const pipelineRole = activeSkill
+      const pipelineRole = activeSkill || repoLessAssignment
         ? "utility"
         : resolveAgentManifest(agentName)?.role;
       if (pipelineRole === "utility") {
@@ -1807,17 +1809,35 @@ export class SessionManager {
       const applyAssignmentEnvelope = (
         candidate: ThreadSession,
       ): ThreadSession => {
-        if (!activeSkill) {
+        if (!activeSkill && !repoLessAssignment) {
           candidate.activeSkill = null;
           candidate.assignmentCapabilities = [];
           return candidate;
         }
-        candidate.activeSkill = {
-          name: activeSkill.name,
-          path: activeSkill.path,
-          execution: activeSkill.execution,
-        };
-        candidate.assignmentCapabilities = [...activeSkill.capabilities];
+        candidate.activeSkill = activeSkill
+          ? {
+              name: activeSkill.name,
+              path: activeSkill.path,
+              execution: activeSkill.execution,
+            }
+          : null;
+        candidate.assignmentCapabilities = [
+          ...(activeSkill?.capabilities ?? activePipelineAssignment?.capabilityRefs ?? []),
+        ];
+        if (repoLessAssignment) {
+          candidate.agentPermissions = {
+            intent: "mcp-only",
+            mcp: ["mongodb"],
+            tools: [
+              "mcp__mongodb__aggregate",
+              "mcp__mongodb__collection-schema",
+              "mcp__mongodb__count",
+              "mcp__mongodb__find",
+              "mcp__mongodb__list-collections",
+              "mcp__mongodb__list-databases",
+            ],
+          };
+        }
         // Skill assignments are intentionally stateless. A provider session
         // may be reused only for settlement retries within this invocation;
         // never resume context from an earlier invocation.
@@ -1830,6 +1850,14 @@ export class SessionManager {
         this.buildRunSession(session, agentName, agentIdentity),
       );
       let provider = sessionProvider(runSession, this.config);
+      if (repoLessAssignment && provider === "codex-app-server") {
+        // Codex cannot enforce MCP-only isolation. Its read-only sandbox still
+        // prevents workspace mutation while preserving the Mongo MCP tools.
+        runSession.agentPermissions = {
+          ...(runSession.agentPermissions ?? { mcp: [], tools: [] }),
+          intent: "read-only",
+        };
+      }
       const permissionIntent = resolveEffectivePermissionIntent(
         runSession.agentPermissions,
         runSession.activeAgentName ?? runSession.agentType,
@@ -1943,15 +1971,17 @@ export class SessionManager {
           fresh.modelClaude = agentDefinition.modelClaude ?? null;
         });
       }
-      runSession.agentPermissions =
-        agentDefinition?.permissions ??
-        (activeSkill
-          ? {
-              intent: activeSkill.permissions.intent,
-              mcp: [...activeSkill.permissions.mcp],
-              tools: [...activeSkill.permissions.tools],
-            }
-          : undefined);
+      if (!repoLessAssignment) {
+        runSession.agentPermissions =
+          agentDefinition?.permissions ??
+          (activeSkill
+            ? {
+                intent: activeSkill.permissions.intent,
+                mcp: [...activeSkill.permissions.mcp],
+                tools: [...activeSkill.permissions.tools],
+              }
+            : undefined);
+      }
 
       // Build the prompt. When the provider will not resume a prior model
       // session, inject the preamble blocks the agent asked for. On resumed
