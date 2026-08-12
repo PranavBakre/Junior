@@ -69,7 +69,11 @@ The native pass:
 5. records counts and index state in a workflow-run artifact.
 
 The workflow uses `concurrency: skip`, so a slow pass cannot overlap the next
-one. A failed index build leaves the previously published sidecar intact.
+one. When `SLACK_ARCHIVE_ENABLED=false`, its run is recorded as skipped rather
+than failed, preserving the optional-subsystem boundary. A durable corpus
+revision changes when embeddings are added or removed; the matching indexed
+revision advances only after atomic sidecar publication, so edits to empty text
+remove stale vectors and failed builds remain pending for the next run.
 The bot token requires `channels:join` in addition to `channels:read` and
 `channels:history`; after changing Slack OAuth scopes, reinstall the app so the
 new token grant takes effect.

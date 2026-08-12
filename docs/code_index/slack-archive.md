@@ -2,7 +2,7 @@
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `SlackArchiveStore` | `src/slack/archive-store.ts` | Standalone SQLite schema, idempotent upserts, FTS/vector hybrid search, thread reads, conversations, checkpoints |
+| `SlackArchiveStore` | `src/slack/archive-store.ts` | Standalone SQLite schema, idempotent upserts, FTS/vector hybrid search, thread reads, conversations, checkpoints, corpus/index revisions |
 | archive types | `src/slack/archive-types.ts` | Canonical messages, files, filters, results, checkpoints |
 | `canonicalizeLiveSlackMessage` | `src/slack/events.ts` | Normalizes live message/edit/delete events before routing guards |
 | `importSlackArchive` | `src/slack/archive-import.ts` | Streams standard Slack export members without extracting the ZIP |
