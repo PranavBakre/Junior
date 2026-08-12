@@ -50,11 +50,18 @@ describe("SlackArchiveStore", () => {
   });
 
   test("preserves a vector on replay but invalidates it on a text edit", () => {
+    expect(store.getEmbeddingCorpusRevision()).toBe(0);
     store.upsertMessage(message());
+    expect(store.getEmbeddingCorpusRevision()).toBe(1);
     store.upsertMessage(message({ embedding: null, observedAt: 101 }));
+    expect(store.getEmbeddingCorpusRevision()).toBe(1);
     expect([...store.getMessage("C1", "1700000000.000100")!.embedding!]).toEqual([1, 0]);
     store.upsertMessage(message({ text: "edited body", embedding: null, observedAt: 102 }));
     expect(store.getMessage("C1", "1700000000.000100")?.embedding).toBeNull();
+    expect(store.getEmbeddingCorpusRevision()).toBe(2);
+    expect(store.getEmbeddingIndexRevision(2)).toBeNull();
+    store.setEmbeddingIndexRevision(2, 2);
+    expect(store.getEmbeddingIndexRevision(2)).toBe(2);
   });
 
   test("searches FTS5 with channel, actor, and time filters", () => {

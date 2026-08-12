@@ -121,7 +121,9 @@ export class WorkflowExecutor {
     let summary = "";
     try {
       if (request.definition.nativeHandler) {
-        summary = await this.runNativeHandler(request.definition.nativeHandler);
+        const nativeResult = await this.runNativeHandler(request.definition.nativeHandler);
+        summary = nativeResult.summary;
+        run.status = nativeResult.status;
       } else if (request.definition.runner) {
         summary = await this.runWithRunner(
           request.definition,
@@ -138,7 +140,7 @@ export class WorkflowExecutor {
           `Workflow ${request.definition.name} ran.`;
       }
 
-      run.status = "success";
+      if (run.status === "running") run.status = "success";
       run.finishedAt = this.now().getTime();
       const body = renderArtifact({
         definition: request.definition,
@@ -411,19 +413,25 @@ export class WorkflowExecutor {
     return formatDedupSweep(report);
   }
 
-  private async runNativeHandler(handler: WorkflowNativeHandler): Promise<string> {
+  private async runNativeHandler(
+    handler: WorkflowNativeHandler,
+  ): Promise<{ summary: string; status: "success" | "skipped" }> {
     const handlers: Record<WorkflowNativeHandler, () => Promise<string>> = {
       "memory-consolidation": () => this.runMemoryConsolidation(),
       "memory-dedup-sweep": () => this.runMemoryDedupSweep(),
       "slack-archive-maintenance": () => this.runSlackArchiveMaintenance(),
     };
-    return handlers[handler]();
+    if (handler === "slack-archive-maintenance" && !this.config.slackArchive?.enabled) {
+      return {
+        status: "skipped",
+        summary: "Skipped Slack archive maintenance: Slack archive is not enabled.",
+      };
+    }
+    return { status: "success", summary: await handlers[handler]() };
   }
 
   private async runSlackArchiveMaintenance(): Promise<string> {
-    if (!this.config.slackArchive?.enabled) {
-      throw new Error("Slack archive is not enabled");
-    }
+    if (!this.config.slackArchive?.enabled) throw new Error("Slack archive is not enabled");
     if (!this.slackClient) throw new Error("Slack client not configured");
     const report = this.slackArchiveMaintenance
       ? await this.slackArchiveMaintenance()

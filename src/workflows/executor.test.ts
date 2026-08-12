@@ -254,6 +254,33 @@ describe("WorkflowExecutor", () => {
     }
   });
 
+  it("records disabled Slack archive maintenance as skipped instead of failed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-slack-archive-disabled-test-"));
+    const definition = workflowDefinition(dir);
+    definition.name = "slack-archive-maintenance";
+    definition.nativeHandler = "slack-archive-maintenance";
+    definition.runner = undefined;
+    definition.outputs = [{ type: "docs", path: join(dir, "slack-archive-maintenance") }];
+    definition.permissions.tools = ["slack.read", "archive.write", "docs.write"];
+    const store = new InMemoryWorkflowStore();
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store,
+      slackClient: {} as WebClient,
+      now: () => new Date("2026-08-16T03:17:00+05:30"),
+    });
+
+    try {
+      const result = await executor.run({ definition, reason: "schedule" });
+      expect(result.run.status).toBe("skipped");
+      expect(result.summary).toContain("Slack archive is not enabled");
+      expect((await store.getRun(result.run.id))?.status).toBe("skipped");
+      expect(readFileSync(result.run.artifactPath, "utf8")).toContain("Status: skipped");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("does not spawn a second inspection runner for memory-consolidation (sweep-only)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-memory-sweeponly-test-"));
     const definition = workflowDefinition(dir);

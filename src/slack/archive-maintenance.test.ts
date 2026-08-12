@@ -48,9 +48,47 @@ describe("runSlackArchiveMaintenance", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("republishes the index when an edit removes an embedding", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-slack-maintenance-remove-"));
+    const dbPath = join(root, "archive.db");
+    const indexPath = `${dbPath}.usearch`;
+    let text = "A searchable message";
+    const client = fakeClient(() => text);
+
+    try {
+      await runSlackArchiveMaintenance({
+        client,
+        dbPath,
+        indexPath,
+        dimensions: 4,
+        embedder: new HashingEmbeddingProvider(4),
+      });
+      expect(new SlackArchiveVectorIndex(4, { path: indexPath, load: true }).size).toBe(1);
+
+      text = "";
+      // Backfill observations use wall-clock time for last-write-wins ordering.
+      await Bun.sleep(2);
+      const second = await runSlackArchiveMaintenance({
+        client,
+        dbPath,
+        indexPath,
+        dimensions: 4,
+        embedder: new HashingEmbeddingProvider(4),
+      });
+      expect(second.embedded).toBe(0);
+      expect(second.indexRebuilt).toBe(true);
+      expect(second.indexed).toBe(0);
+      expect(new SlackArchiveVectorIndex(4, { path: indexPath, load: true }).size).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
-function fakeClient(): SlackArchiveClient {
+function fakeClient(
+  text: () => string = () => "A calm rollout needs a rollback checkpoint",
+): SlackArchiveClient {
   return {
     conversations: {
       list: async () => ({
@@ -60,9 +98,7 @@ function fakeClient(): SlackArchiveClient {
       }),
       history: async (args) => ({
         ok: true,
-        messages: args.oldest
-          ? [{ ts: "100.000001", text: "A calm rollout needs a rollback checkpoint", user: "U1" }]
-          : [{ ts: "100.000001", text: "A calm rollout needs a rollback checkpoint", user: "U1" }],
+        messages: [{ ts: "100.000001", text: text(), user: "U1" }],
         response_metadata: { next_cursor: "" },
       }),
       replies: async () => ({ ok: true, messages: [], response_metadata: { next_cursor: "" } }),

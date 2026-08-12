@@ -53,7 +53,12 @@ export async function runSlackArchiveMaintenance(
       batchSize: options.embedBatchSize ?? 100,
     });
 
-    const shouldRebuildIndex = embeddings.embedded > 0 || !existsSync(indexPath);
+    // The corpus revision changes for both vector additions and removals. The
+    // indexed revision is recorded only after atomic sidecar publication, so a
+    // crash or concurrent write safely leaves another rebuild pending.
+    const corpusRevision = store.getEmbeddingCorpusRevision();
+    const indexedRevision = store.getEmbeddingIndexRevision(dimensions);
+    const shouldRebuildIndex = corpusRevision !== indexedRevision || !existsSync(indexPath);
     const indexed = shouldRebuildIndex
       ? buildSlackArchiveVectorIndex({
           store,
@@ -62,6 +67,7 @@ export async function runSlackArchiveMaintenance(
           batchSize: options.indexBatchSize ?? 1_000,
         }).indexed
       : store.countEmbeddedMessages(dimensions);
+    if (shouldRebuildIndex) store.setEmbeddingIndexRevision(dimensions, corpusRevision);
 
     return {
       channelsSynced: synced.channels,
