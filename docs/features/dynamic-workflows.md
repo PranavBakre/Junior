@@ -66,7 +66,7 @@ permissions:
 runner:
   provider: default
   agentName: lead
-  timeoutMs: 300000
+  timeoutMs: 1200000
   idleTimeoutMs: 300000
   maxIdleInterrupts: 3
 concurrency: skip

@@ -23,7 +23,7 @@ permissions:
 runner:
   provider: default
   agentName: default
-  timeoutMs: 300000
+  timeoutMs: 1200000
 concurrency: skip
 ---
 
