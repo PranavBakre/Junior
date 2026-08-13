@@ -79,14 +79,21 @@ describe("provider parity — catalog permissions", () => {
     const names = listCatalogAgents().map((m) => m.name).sort();
     expect(names).toEqual(
       [
+        "admin-account",
         "architect",
+        "aws-uploader",
         "build",
         "db-executioner",
         "default",
+        "feature-metrics",
         "frontend",
+        "github-access",
         "lead",
         "onboard-member",
+        "onboarding",
+        "oogway",
         "pm",
+        "pnd-populator",
         "reproducer",
         "review",
       ].sort(),
@@ -175,16 +182,15 @@ describe("provider parity — handoff graph vs canDispatch", () => {
   });
 
   it("orchestrators may fan out to every registered worker", () => {
-    const workers = [
-      "pm",
-      "architect",
-      "build",
-      "frontend",
-      "review",
-      "reproducer",
-      "onboard-member",
-      "db-executioner",
-    ];
+    // Derived from the catalog, not hardcoded: registering an agent flips its
+    // dispatch to fail-closed (see canDispatch's catalog-target branch), so a
+    // new definition that nobody adds to an orchestrator's mayDelegateTo is
+    // silently undispatchable. A hardcoded roster here stays green through
+    // exactly that regression.
+    const workers = listCatalogAgents()
+      .filter((manifest) => manifest.role !== "orchestrator")
+      .map((manifest) => manifest.name);
+    expect(workers.length).toBeGreaterThan(0);
     for (const orch of ["default", "lead", "junior"] as const) {
       for (const worker of workers) {
         expect(canDispatch(orch, worker)).toBe(true);

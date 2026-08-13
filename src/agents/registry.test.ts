@@ -29,14 +29,21 @@ describe("trusted agent catalog", () => {
     const names = listCatalogAgents().map((m) => m.name).sort();
     expect(names).toEqual(
       [
+        "admin-account",
         "architect",
+        "aws-uploader",
         "build",
         "db-executioner",
         "default",
+        "feature-metrics",
         "frontend",
+        "github-access",
         "lead",
         "onboard-member",
+        "onboarding",
+        "oogway",
         "pm",
+        "pnd-populator",
         "reproducer",
         "review",
       ].sort(),
