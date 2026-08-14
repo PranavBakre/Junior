@@ -50,9 +50,24 @@ describe("WorkflowExecutor", () => {
       },
     } as unknown as WebClient;
     const definition = workflowDefinition(dir);
+    const config = testConfig();
+    config.repos = [
+      {
+        name: "widgets-alias",
+        path: "/repo/canonical-widgets",
+        defaultBase: "main",
+        githubRepo: "Acme/Widgets",
+      },
+      {
+        name: "widgets-fork",
+        path: "/repo/fork-widgets",
+        defaultBase: "main",
+        githubRepo: "Other/Widgets",
+      },
+    ];
     const store = new InMemoryWorkflowStore();
     const executor = new WorkflowExecutor({
-      config: testConfig(),
+      config,
       store,
       slackClient,
       spawn,
@@ -65,7 +80,11 @@ describe("WorkflowExecutor", () => {
         reason: "event",
         triggerContext: {
           source: "github.pr.merged",
-          pullRequests: [{ repo: "junior", branch: "agent/test" }],
+          pullRequests: [{
+            owner: "acme",
+            repo: "widgets",
+            branch: "agent/test",
+          }],
         },
       });
 
@@ -73,7 +92,10 @@ describe("WorkflowExecutor", () => {
       expect(captured.session?.cwd).toBe(WORKFLOW_UTILITY_CWD);
       expect(captured.session?.agentType).toBe("default");
       expect(captured.prompt).toContain("Collect my PR and commit activity");
-      expect(captured.prompt).toContain("\"path\": \"/repo/junior\"");
+      expect(captured.prompt).toContain("\"path\": \"/repo/canonical-widgets\"");
+      expect(captured.prompt).toContain("\"githubRepo\": \"Acme/Widgets\"");
+      expect(captured.prompt).not.toContain("/repo/fork-widgets");
+      expect(captured.prompt).not.toContain("Other/Widgets");
       expect(captured.prompt).toContain("\"slack.post\"");
       expect(captured.prompt).toContain("\"source\": \"github.pr.merged\"");
       expect(posts).toEqual([

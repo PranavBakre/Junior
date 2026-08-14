@@ -35,4 +35,7 @@ only those exact worktrees and retains every normal prune safety gate. The
 workflow runs asynchronously so a long cleanup cannot block GitHub polling;
 its dispatcher coalesces newly merged branches and retries an overlap skip, so
 the workflow's `concurrency: skip` policy prevents overlap without losing a
-merge-triggered cleanup.
+merge-triggered cleanup. Thrown runs are requeued with bounded exponential
+backoff. Repo selection is enforced by an exact case-insensitive comparison of
+the event's `owner/repo` with configured `RepoConfig.githubRepo`; local aliases
+and same-named forks cannot satisfy the match.

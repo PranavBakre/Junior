@@ -36,7 +36,9 @@ Use the runtime context as the source of truth for repositories and their absolu
 
 When `run.triggerContext.source` is `github.pr.merged`, limit the run to the
 listed `pullRequests`: inspect only the matching repo and worktree branch for
-each entry. Verify the worktree HEAD matches the supplied `headSha` before
+each entry. Match the event's `owner/repo` only against `repo.githubRepo`,
+case-insensitively; never infer a match from the local repo name, path,
+basename, or head SHA. Verify the worktree HEAD matches the supplied `headSha` before
 removal. If the branch has no registered local worktree, report that compactly
 and do not broaden the event-triggered run into a full sweep. Scheduled and
 manually triggered runs without this context continue to inspect every repo.

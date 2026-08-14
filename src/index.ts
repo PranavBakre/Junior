@@ -212,6 +212,12 @@ const mergePruneDispatcher = new MergePruneDispatcher({
       `merge-triggered worktree-prune failed: ${err instanceof Error ? err.message : String(err)}`,
     );
   },
+  onExhausted: (target, err) => {
+    log.error(
+      "github",
+      `merge-triggered worktree-prune exhausted ${target.owner}/${target.repo}#${target.number}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  },
 });
 const workflowController = new WorkflowController({
   registry: workflowRegistry,

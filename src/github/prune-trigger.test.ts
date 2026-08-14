@@ -131,6 +131,42 @@ describe("MergePruneDispatcher", () => {
 
     expect(runs[1]).toEqual(runs[0]);
   });
+
+  it("retries thrown runs with bounded backoff before exhausting the target", async () => {
+    const retries: Array<{ callback: () => void; delayMs: number }> = [];
+    const exhausted: MergedPullRequestPruneTarget[] = [];
+    let runs = 0;
+    const dispatcher = new MergePruneDispatcher({
+      run: async () => {
+        runs += 1;
+        throw new Error("workflow store temporarily unavailable");
+      },
+      retryDelayMs: 100,
+      maxAttempts: 3,
+      scheduleRetry: (callback, delayMs) => {
+        retries.push({ callback, delayMs });
+      },
+      onExhausted: (target) => exhausted.push(target),
+    });
+
+    dispatcher.enqueue([result([event("github.pr.merged")])]);
+    await waitFor(() => retries.length === 1);
+    expect(retries[0]?.delayMs).toBe(100);
+
+    retries[0]?.callback();
+    await waitFor(() => retries.length === 2);
+    expect(retries[1]?.delayMs).toBe(200);
+
+    retries[1]?.callback();
+    await waitFor(() => exhausted.length === 1);
+    expect(runs).toBe(3);
+    expect(exhausted[0]).toMatchObject({
+      owner: "acme",
+      repo: "widgets",
+      number: 42,
+    });
+    expect(retries).toHaveLength(2);
+  });
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {
