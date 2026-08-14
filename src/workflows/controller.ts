@@ -42,11 +42,11 @@ export class WorkflowController {
       return true;
     }
 
-    const commandName = customCommandName(event);
-    if (commandName) {
-      const definition = this.findByCommand(commandName);
+    const custom = customCommand(event);
+    if (custom) {
+      const definition = this.findByCommand(custom.name);
       if (!definition) return false;
-      await this.runFromHumanTrigger(event, definition, "command");
+      await this.runFromHumanTrigger(event, definition, "command", custom.instructions);
       return true;
     }
 
@@ -59,13 +59,14 @@ export class WorkflowController {
   }
 
   private async handleWorkflowCommand(event: SlackMessageEvent): Promise<void> {
-    const [action = "", name = ""] = event.text.trim().split(/\s+/, 2);
+    const [action = "", name = "", ...rest] = event.text.trim().split(/\s+/);
+    const runInstructions = rest.join(" ").trim() || null;
     if (!action || action === "help") {
       await this.reply(event, [
         "*Workflow commands:*",
         "`!workflows` — list workflows",
         "`!workflow show <name>` — show workflow status",
-        "`!workflow run <name>` — run once",
+        "`!workflow run <name> [instructions]` — run once, optionally scoped",
         "`!workflow stop <name>` — stop scheduled and event runs",
         "`!workflow start <name>` — resume a stopped workflow",
         "`!workflow logs <name>` — show recent runs",
@@ -105,7 +106,7 @@ export class WorkflowController {
         return;
       case "run":
         if (!definition) return;
-        await this.runFromHumanTrigger(event, definition, "manual");
+        await this.runFromHumanTrigger(event, definition, "manual", runInstructions);
         return;
       case "stop":
         if (!definition || !(await this.canManage(event.user, definition))) {
@@ -136,6 +137,7 @@ export class WorkflowController {
     event: SlackMessageEvent,
     definition: WorkflowDefinition,
     reason: WorkflowRunReason,
+    instructions?: string | null,
   ): Promise<void> {
     if (!(await this.canManage(event.user, definition))) {
       await this.react(event, "x");
@@ -146,6 +148,7 @@ export class WorkflowController {
         name: definition.name,
         reason,
         actorSlackUserId: event.user,
+        instructions,
       });
       await this.reply(
         event,
@@ -254,10 +257,20 @@ export class WorkflowController {
   }
 }
 
-function customCommandName(event: SlackMessageEvent): string | null {
+/**
+ * Parse `!<workflow-command> [free-text scoping]`. Anything after the command
+ * word is passed to the run as operator instructions, so a one-off variation
+ * ("only merged branches from widgets") re-runs the workflow instead of becoming an
+ * agent dispatch.
+ */
+function customCommand(
+  event: SlackMessageEvent,
+): { name: string; instructions: string | null } | null {
   if (event.command) return null;
-  const match = event.text.match(/^!([a-z0-9][a-z0-9-]*)(?:\s|$)/);
-  return match?.[1] ?? null;
+  const match = event.text.match(/^!([a-z0-9][a-z0-9-]*)(?:\s+([\s\S]*))?$/);
+  if (!match?.[1]) return null;
+  const instructions = match[2]?.trim();
+  return { name: match[1], instructions: instructions ? instructions : null };
 }
 
 function slackEventMatches(

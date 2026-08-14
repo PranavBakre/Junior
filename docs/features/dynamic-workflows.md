@@ -107,6 +107,8 @@ triggers:
 
 Command triggers must not collide with built-in Junior commands. Unknown `!<command>` messages are left intact by the Slack parser, so the workflow controller can match dynamic command triggers before normal agent dispatch.
 
+**Operator instructions.** Text after the command word is passed to the run as free-text scoping — `!worktree-prune only merged branches from widgets`, or `!workflow run worktree-prune only merged branches from widgets`. It is normalized, bounded to 500 characters, injected after the workflow prompt with explicit framing that it may narrow the run but never relax a safety rule, verification step, or approval gate, and recorded in the run artifact (`Operator instructions:`). Scheduled runs never carry any. Native-handler workflows reject operator instructions because their deterministic handlers cannot apply free-text scope. This exists so a one-off variation on an agent-run maintenance workflow re-runs the workflow rather than becoming a repo-bound agent dispatch, which would provision a worktree in the repo being maintained.
+
 Output schema:
 
 ```yaml
@@ -189,7 +191,7 @@ Read commands:
 
 Owner/admin commands:
 
-- `!workflow run <name>`
+- `!workflow run <name> [instructions]`
 - `!workflow stop <name>`
 - `!workflow start <name>`
 - Custom workflow commands, for example `!worklog`

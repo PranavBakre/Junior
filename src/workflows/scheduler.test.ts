@@ -50,9 +50,14 @@ describe("WorkflowScheduler", () => {
       onEvent: () => undefined,
     } as unknown as WorkflowRegistry;
     let receivedContext: Record<string, unknown> | null | undefined;
+    let receivedInstructions: string | null | undefined;
     const executor = {
-      run: async (request: { triggerContext?: Record<string, unknown> | null }) => {
+      run: async (request: {
+        triggerContext?: Record<string, unknown> | null;
+        instructions?: string | null;
+      }) => {
         receivedContext = request.triggerContext;
+        receivedInstructions = request.instructions;
         return {
           summary: "ok",
           run: {
@@ -85,9 +90,11 @@ describe("WorkflowScheduler", () => {
       name: definition.name,
       reason: "event",
       triggerContext,
+      instructions: "only the reviewed target",
     });
 
     expect(receivedContext).toEqual(triggerContext);
+    expect(receivedInstructions).toBe("only the reviewed target");
   });
 
   it("blocks stopped command triggers but allows manual runs", async () => {

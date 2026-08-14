@@ -61,6 +61,7 @@ export class WorkflowScheduler {
     reason: WorkflowRunReason;
     actorSlackUserId?: string | null;
     triggerContext?: Record<string, unknown> | null;
+    instructions?: string | null;
   }): Promise<{ summary: string; runId: string }> {
     const definition = this.registry.get(options.name);
     if (!definition) throw new Error(`Unknown workflow: ${options.name}`);
@@ -84,6 +85,7 @@ export class WorkflowScheduler {
         reason: options.reason,
         actorSlackUserId: options.actorSlackUserId ?? null,
         triggerContext: options.triggerContext ?? null,
+        instructions: options.instructions ?? null,
       });
       await this.schedule(definition);
       return { summary: result.summary, runId: result.run.id };

@@ -1,8 +1,19 @@
 import type { RepoConfig } from "../config.ts";
 import { statfs } from "node:fs/promises";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { basename, join } from "node:path";
 
 const DEFAULT_SETUP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
-const MAX_COMMAND_ERROR_CHARS = 8_000;
+// Keep the outward error below Slack's long-error withholding threshold. The
+// complete stdout/stderr transcript remains available in the restricted log.
+const MAX_COMMAND_STREAM_CHARS = 110;
+const SETUP_LOG_DIR = join(import.meta.dir, "..", "..", "logs", "worktree-setup");
 
 export interface WorktreeManagerOptions {
   setupMinFreeBytes?: number;
@@ -287,22 +298,108 @@ export class WorktreeManager {
    * The first element is the command; remaining elements are args.
    * Throws on non-zero exit.
    */
-  private async runCommand(args: string[], cwd: string): Promise<string> {
+  private async runCommand(args: string[], cwd: string): Promise<void> {
     const proc = Bun.spawn(args, {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
     });
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      const detail = stderr.trim();
-      const bounded = detail.length > MAX_COMMAND_ERROR_CHARS
-        ? `${detail.slice(0, MAX_COMMAND_ERROR_CHARS)}\n… output truncated`
-        : detail;
-      throw new Error(`command ${args[0]} failed: ${bounded}`);
+    // Stream both pipes concurrently. Keeping only bounded tails prevents a
+    // runaway installer from either filling an OS pipe or filling Junior's
+    // heap; the complete output is written incrementally to a restricted log.
+    const commandLog = this.openCommandLog(args, cwd);
+    let stdout = "";
+    let stderr = "";
+    let exitCode: number;
+    try {
+      [stdout, stderr, exitCode] = await Promise.all([
+        this.drainCommandOutput(proc.stdout, "stdout", commandLog?.fd ?? null),
+        this.drainCommandOutput(proc.stderr, "stderr", commandLog?.fd ?? null),
+        proc.exited,
+      ]);
+    } finally {
+      if (commandLog) {
+        try {
+          closeSync(commandLog.fd);
+        } catch {
+          // The process result remains authoritative if transcript close fails.
+        }
+      }
     }
-    return await new Response(proc.stdout).text();
+    if (exitCode !== 0) {
+      const bounded = [
+        ["stdout", stdout],
+        ["stderr", stderr],
+      ].flatMap(([label, value]) => {
+        if (!value) return [];
+        return [`${label}: ${value}`];
+      }).join("\n");
+      const pointer = commandLog ? ` (full output: ${commandLog.path})` : "";
+      const suffix = bounded ? `: ${bounded}` : "";
+      throw new Error(`command ${args[0]} failed with exit ${exitCode}${pointer}${suffix}`);
+    }
+    if (commandLog) {
+      try {
+        unlinkSync(commandLog.path);
+      } catch {
+        // A successful setup must not fail because its temporary transcript
+        // could not be removed.
+      }
+    }
+  }
+
+  private openCommandLog(
+    args: string[],
+    cwd: string,
+  ): { path: string; fd: number } | null {
+    try {
+      mkdirSync(SETUP_LOG_DIR, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const label = (args[1] ?? basename(args[0] ?? "command"))
+        .replace(/[^a-zA-Z0-9.-]/g, "-")
+        .slice(0, 60);
+      const path = join(SETUP_LOG_DIR, `${stamp}-${label}.log`);
+      const fd = openSync(path, "wx", 0o600);
+      writeSync(fd, `$ ${args.join(" ")}\n(cwd: ${cwd})\n`);
+      return { path, fd };
+    } catch {
+      return null;
+    }
+  }
+
+  private async drainCommandOutput(
+    stream: ReadableStream<Uint8Array>,
+    label: "stdout" | "stderr",
+    logFd: number | null,
+  ): Promise<string> {
+    const decoder = new TextDecoder();
+    const reader = stream.getReader();
+    let tail = "";
+    const consume = (text: string): void => {
+      if (!text) return;
+      tail = `${tail}${text}`.slice(-MAX_COMMAND_STREAM_CHARS);
+      if (logFd !== null) {
+        try {
+          writeSync(logFd, text);
+        } catch {
+          // Keep draining even when the diagnostic filesystem is unavailable.
+        }
+      }
+    };
+    if (logFd !== null) {
+      try {
+        writeSync(logFd, `\n--- ${label} ---\n`);
+      } catch {
+        // Keep draining without a transcript.
+      }
+    }
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      consume(decoder.decode(value, { stream: true }));
+    }
+    consume(decoder.decode());
+    return tail.trim();
   }
 
   private async assertSetupDiskCapacity(path: string): Promise<void> {
