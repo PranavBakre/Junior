@@ -1,11 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   backupDatabase,
+  addMissingLessonVariants,
   bindComposerRewrites,
   composerCheckpointMetadata,
   deterministicRetrievalText,
@@ -14,6 +15,8 @@ import {
   validComposerCheckpoint,
   type CorpusRow,
 } from "./reembed-retrieval.ts";
+import { HashingEmbeddingProvider } from "./embedding/hashing.ts";
+import type { EmbeddingProvider } from "./embedding/types.ts";
 
 function lessonRow(overrides: Partial<CorpusRow> = {}): CorpusRow {
   return {
@@ -293,6 +296,116 @@ describe("retrieval corpus migration", () => {
         expect(columns).toEqual(["id", "kind", "text", "active"]);
       } finally {
         backup.close();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs missing and stale lesson variants without requiring a legacy lesson row", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-missing-variants-"));
+    const dbPath = join(root, "memory.db");
+    const workDir = join(root, "work");
+    const db = new Database(dbPath);
+    db.run("CREATE TABLE claim (id TEXT PRIMARY KEY, kind TEXT, text TEXT, active INTEGER)");
+    db.run("CREATE TABLE lesson (id TEXT PRIMARY KEY, title TEXT, body TEXT, applies_when TEXT)");
+    db.run("CREATE TABLE claim_embedding (claim_id TEXT, variant INTEGER, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, PRIMARY KEY (claim_id, variant))");
+    db.query("INSERT INTO claim VALUES (?, 'lesson', ?, 1)").run(
+      "claim-only",
+      "Use exact repository identity\nMatch owner and repository, not a local alias.",
+    );
+    db.query("INSERT INTO claim VALUES (?, 'lesson', ?, 1)").run(
+      "legacy-backed",
+      "Preserve work before pruning.",
+    );
+    db.query("INSERT INTO lesson VALUES (?, ?, ?, ?)").run(
+      "legacy-backed",
+      "Preserve work",
+      "Preserve work before pruning.",
+      "Removing a worktree",
+    );
+    db.query("INSERT INTO claim_embedding VALUES (?, 1, ?, ?, ?, ?)").run(
+      "legacy-backed",
+      "stale text",
+      new Uint8Array([0, 0, 0, 0]),
+      "old-model",
+      1,
+    );
+    db.close();
+
+    try {
+      const provider = new HashingEmbeddingProvider();
+      const first = await addMissingLessonVariants(dbPath, workDir, 2, provider);
+      expect(first.pending).toBe(4);
+      expect(first.published).toBe(4);
+      expect(existsSync(first.backupPath)).toBe(true);
+
+      const after = new Database(dbPath, { readonly: true });
+      try {
+        const rows = after.query<{
+          claim_id: string;
+          variant: number;
+          retrieval_text: string;
+          embed_model: string;
+          dim: number;
+        }, []>(
+          "SELECT claim_id, variant, retrieval_text, embed_model, dim FROM claim_embedding ORDER BY claim_id, variant",
+        ).all();
+        expect(rows).toHaveLength(4);
+        expect(rows.every((row) => row.embed_model === provider.model)).toBe(true);
+        expect(rows.every((row) => row.dim === provider.dim)).toBe(true);
+        expect(rows.find((row) => row.claim_id === "claim-only" && row.variant === 1)
+          ?.retrieval_text).toContain("Use exact repository identity");
+        expect(rows.find((row) => row.claim_id === "legacy-backed" && row.variant === 2)
+          ?.retrieval_text).toContain("Removing a worktree");
+      } finally {
+        after.close();
+      }
+
+      const second = await addMissingLessonVariants(dbPath, workDir, 2, provider);
+      expect(second.pending).toBe(0);
+      expect(second.published).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts variant publication when a lesson changes during embedding", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-variant-race-"));
+    const dbPath = join(root, "memory.db");
+    const db = new Database(dbPath);
+    db.run("CREATE TABLE claim (id TEXT PRIMARY KEY, kind TEXT, text TEXT, active INTEGER)");
+    db.run("CREATE TABLE lesson (id TEXT PRIMARY KEY, title TEXT, body TEXT, applies_when TEXT)");
+    db.run("CREATE TABLE claim_embedding (claim_id TEXT, variant INTEGER, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, PRIMARY KEY (claim_id, variant))");
+    db.query("INSERT INTO claim VALUES ('changing', 'lesson', 'Original lesson', 1)").run();
+    db.close();
+
+    const hashing = new HashingEmbeddingProvider();
+    let changed = false;
+    const provider: EmbeddingProvider = {
+      model: hashing.model,
+      dim: hashing.dim,
+      embed: async (texts, mode) => {
+        if (!changed) {
+          changed = true;
+          const writer = new Database(dbPath);
+          writer.query("UPDATE claim SET text = 'Changed lesson' WHERE id = 'changing'").run();
+          writer.close();
+        }
+        return hashing.embed(texts, mode);
+      },
+    };
+
+    try {
+      await expect(addMissingLessonVariants(dbPath, join(root, "work"), 2, provider))
+        .rejects.toThrow("Lesson changed while embedding: changing");
+      const after = new Database(dbPath, { readonly: true });
+      try {
+        expect(after.query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM claim_embedding",
+        ).get()?.count).toBe(0);
+      } finally {
+        after.close();
       }
     } finally {
       rmSync(root, { recursive: true, force: true });

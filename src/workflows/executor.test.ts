@@ -6,7 +6,11 @@ import type { WebClient } from "@slack/web-api";
 import type { Config } from "../config.ts";
 import type { SpawnHandle, SpawnRunnerFn } from "../runners/types.ts";
 import type { ThreadSession } from "../session/types.ts";
-import { WorkflowExecutor, WORKFLOW_UTILITY_CWD } from "./executor.ts";
+import {
+  normalizeInstructions,
+  WorkflowExecutor,
+  WORKFLOW_UTILITY_CWD,
+} from "./executor.ts";
 import { InMemoryWorkflowStore } from "./store.ts";
 import type { WorkflowDefinition } from "./types.ts";
 import { SqliteMemoryStore } from "../memory/sqlite.ts";
@@ -15,6 +19,13 @@ import { HashingEmbeddingProvider } from "../memory/embedding/hashing.ts";
 import type { ConsolidationInvoke, ConsolidationOutput } from "../memory/consolidation/types.ts";
 
 describe("WorkflowExecutor", () => {
+  it("normalizes and bounds operator instructions", () => {
+    expect(normalizeInstructions("  only   widgets  ")).toBe("only widgets");
+    const bounded = normalizeInstructions("x".repeat(600));
+    expect(bounded).toHaveLength(501);
+    expect(bounded?.endsWith("…")).toBe(true);
+  });
+
   it("runs workflow definitions through the configured runner from utility cwd", async () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-workflow-test-"));
     const posts: Array<Record<string, unknown>> = [];
@@ -112,6 +123,97 @@ describe("WorkflowExecutor", () => {
       );
       expect((await store.getRun(result.run.id))?.status).toBe("success");
       expect((await store.getRun(result.run.id))?.providerSessionId).toBe("ses-workflow");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes operator instructions into the prompt and artifact, subordinate to the workflow", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-instr-test-"));
+    const captured: { prompt?: string } = {};
+    const spawn: SpawnRunnerFn = (_session, prompt): SpawnHandle => {
+      captured.prompt = prompt;
+      return {
+        provider: "opencode",
+        result: Promise.resolve({
+          provider: "opencode",
+          sessionId: "ses-instr",
+          response: "Pruned merged widgets worktrees",
+          events: [],
+          exitCode: 0,
+          error: null,
+        }),
+        onEvent: () => undefined,
+        kill: () => undefined,
+        pid: null,
+      };
+    };
+    const definition = workflowDefinition(dir);
+    definition.outputs = [{ type: "docs", path: join(dir, "worklog") }];
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store: new InMemoryWorkflowStore(),
+      spawn,
+      now: () => new Date("2026-08-12T13:30:00.000Z"),
+    });
+
+    try {
+      const result = await executor.run({
+        definition,
+        reason: "command",
+        actorSlackUserId: "U123ABC",
+        instructions: "  only merged   branches from widgets  ",
+      });
+
+      // Whitespace-normalized, and framed as subordinate to the workflow.
+      expect(captured.prompt).toContain("Operator instructions for this run:");
+      expect(captured.prompt).toContain("only merged branches from widgets");
+      expect(captured.prompt).toContain("cannot relax, override, or");
+      // The workflow prompt still leads.
+      expect(captured.prompt?.indexOf("Collect my PR and commit activity"))
+        .toBeLessThan(captured.prompt?.indexOf("Operator instructions") ?? -1);
+      // The artifact is the durable record — the run row has no column for these.
+      expect(readFileSync(result.run.artifactPath, "utf8"))
+        .toContain("Operator instructions: only merged branches from widgets");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("omits the operator-instructions block for scheduled runs", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-sched-test-"));
+    const captured: { prompt?: string } = {};
+    const spawn: SpawnRunnerFn = (_session, prompt): SpawnHandle => {
+      captured.prompt = prompt;
+      return {
+        provider: "opencode",
+        result: Promise.resolve({
+          provider: "opencode",
+          sessionId: "ses-sched",
+          response: "done",
+          events: [],
+          exitCode: 0,
+          error: null,
+        }),
+        onEvent: () => undefined,
+        kill: () => undefined,
+        pid: null,
+      };
+    };
+    const definition = workflowDefinition(dir);
+    definition.outputs = [{ type: "docs", path: join(dir, "worklog") }];
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store: new InMemoryWorkflowStore(),
+      spawn,
+      now: () => new Date("2026-08-12T13:30:00.000Z"),
+    });
+
+    try {
+      const result = await executor.run({ definition, reason: "schedule" });
+      expect(captured.prompt).not.toContain("Operator instructions");
+      expect(readFileSync(result.run.artifactPath, "utf8"))
+        .not.toContain("Operator instructions");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

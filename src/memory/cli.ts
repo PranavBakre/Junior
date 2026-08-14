@@ -298,26 +298,55 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
         throw new Error(`--kind must be one of: lesson, fact, preference, decision, situation-claim. Got: ${kind}`);
       }
       if (!text) throw new Error("--text <text> is required");
-      const skipDedup = booleanOption(options, "skip-dedup") === true;
       const explicitEmbedding = floatListOption(options, "embedding");
+      const skipDedup = booleanOption(options, "skip-dedup") === true;
+      if (kind === "lesson" && explicitEmbedding && !skipDedup) {
+        throw new Error(
+          "add-claim --kind lesson cannot use --embedding because lesson retrieval variants would be missing; use add-lesson instead",
+        );
+      }
       let embedding: Float32Array | null = explicitEmbedding
         ? new Float32Array(explicitEmbedding)
         : null;
       let embedModel = stringOption(options, "embed-model");
+      let embedDim: number | undefined = embedding?.length;
+      let retrievalText: string | undefined;
+      let retrievalEmbeddings:
+        | Array<{ text: string; embedding: Float32Array }>
+        | undefined;
       // The store never embeds and rejects an unguardable, cosine-invisible row.
       // Embed here so `add-claim` stays usable without --embedding; --skip-dedup
       // is the explicit escape hatch for a verbatim restore write.
       if (!embedding && !skipDedup) {
         const claimEmbedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
-        [embedding] = await claimEmbedder.embed([text], "document");
+        if (kind === "lesson") {
+          const [firstLine = text, ...remainingLines] = text.split(/\r?\n/);
+          const lessonTexts = buildLessonRetrievalTexts({
+            title: firstLine.trim(),
+            body: remainingLines.join("\n").trim() || text,
+          });
+          const vectors = await claimEmbedder.embed([text, ...lessonTexts], "document");
+          embedding = vectors[0]!;
+          retrievalText = lessonTexts[0];
+          retrievalEmbeddings = lessonTexts.map((variantText, index) => ({
+            text: variantText,
+            embedding: vectors[index + 1]!,
+          }));
+        } else {
+          [embedding] = await claimEmbedder.embed([text], "document");
+        }
         embedModel = embedModel ?? claimEmbedder.model;
+        embedDim = claimEmbedder.dim;
       }
       const written = await store.upsertClaim({
         id,
         kind,
         text,
+        retrievalText,
         embedding,
+        retrievalEmbeddings,
         embedModel,
+        dim: embedDim,
         repo: stringOption(options, "repo"),
         tags: listOption(options, "tags"),
         sourceEpisode: stringOption(options, "source-episode"),

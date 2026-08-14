@@ -3,6 +3,8 @@ import {
   mkdtempSync,
   rmSync,
   writeFileSync,
+  readFileSync,
+  statSync,
   chmodSync,
   existsSync,
 } from "node:fs";
@@ -136,6 +138,35 @@ git worktree add "$ABS_TARGET" -b "$BRANCH" origin/main
     `#!/usr/bin/env bash\necho "permission denied" >&2\nexit 1\n`,
   );
   chmodSync(failScript, 0o755);
+
+  // Mirrors a real setup script: progress (and the actual failure reason) on
+  // stdout, incidental warnings on stderr, with the reason last.
+  const stdoutFailScript = join(repoRoot, "stdout-fail-setup.sh");
+  writeFileSync(
+    stdoutFailScript,
+    `#!/usr/bin/env bash
+echo "direnv: loading .envrc" >&2
+echo "Migrating MCPs..."
+echo "Installing dependencies..."
+echo "npm ERR! code ERESOLVE"
+exit 1
+`,
+  );
+  chmodSync(stdoutFailScript, 0o755);
+
+  const chattyFailScript = join(repoRoot, "chatty-fail-setup.sh");
+  writeFileSync(
+    chattyFailScript,
+    `#!/usr/bin/env bash
+for i in $(seq 1 12000); do
+  echo "stdout progress line $i: installing dependencies and migrating tooling"
+  echo "stderr warning line $i: noisy package manager diagnostic" >&2
+done
+echo "FINAL SETUP FAILURE: dependency resolution failed" >&2
+exit 1
+`,
+  );
+  chmodSync(chattyFailScript, 0o755);
 
   const partialFailScript = join(repoRoot, "partial-fail-setup.sh");
   writeFileSync(
@@ -344,6 +375,58 @@ describe("WorktreeManager.createWorktree", () => {
     expect(existsSync(wm.getWorktreePath("fail-flow", "fail-thread"))).toBe(
       false,
     );
+  });
+
+  it("surfaces a stdout-only failure reason and points at the full transcript", async () => {
+    const wm = new WorktreeManager([{
+      name: "stdout-fail-flow",
+      path: repoRoot,
+      defaultBase: "origin/main",
+      worktreeSetupCommand: "stdout-fail-setup.sh",
+    }], { setupMinFreeBytes: 0 });
+
+    let message = "";
+    try {
+      await wm.createWorktree("stdout-fail-flow", "stdout-fail-thread");
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+
+    // The reason lives on stdout — the stream the old error path discarded.
+    expect(message).toContain("npm ERR! code ERESOLVE");
+    expect(message).toContain("exit 1");
+    expect(message.length).toBeLessThan(500);
+    const logPath = message.match(/full output: (\S+\.log)/)?.[1];
+    expect(logPath).toBeDefined();
+    expect(existsSync(logPath!)).toBe(true);
+    const transcript = readFileSync(logPath!, "utf8");
+    expect(transcript).toContain("npm ERR! code ERESOLVE");
+    expect(transcript).toContain("direnv: loading .envrc");
+    expect((statSync(logPath!).mode & 0o777)).toBe(0o600);
+    rmSync(logPath!, { force: true });
+  });
+
+  it("drains chatty setup output without deadlocking and keeps the outward error bounded", async () => {
+    const wm = new WorktreeManager([{
+      name: "chatty-fail-flow",
+      path: repoRoot,
+      defaultBase: "origin/main",
+      worktreeSetupCommand: "chatty-fail-setup.sh",
+    }], { setupMinFreeBytes: 0 });
+
+    let message = "";
+    try {
+      await wm.createWorktree("chatty-fail-flow", "chatty-fail-thread");
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+
+    expect(message).toContain("FINAL SETUP FAILURE");
+    expect(message.length).toBeLessThan(500);
+    const logPath = message.match(/full output: (\S+\.log)/)?.[1];
+    expect(logPath).toBeDefined();
+    expect(readFileSync(logPath!, "utf8")).toContain("stdout progress line 12000");
+    rmSync(logPath!, { force: true });
   });
 
   it("refuses dependency-heavy setup when disk headroom is too low", async () => {

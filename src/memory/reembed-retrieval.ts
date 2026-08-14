@@ -4,6 +4,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { createEmbeddingProvider } from "./embedding/factory.ts";
+import type { EmbeddingProvider } from "./embedding/types.ts";
 import { buildLessonRetrievalTexts } from "./retrieval-text.ts";
 import { SqliteMemoryStore, serializeEmbedding } from "./sqlite.ts";
 
@@ -34,6 +35,22 @@ interface CorpusEntry extends RetrievalRewrite {
   appliesWhen: string | null;
 }
 
+interface LessonVariantSource {
+  id: string;
+  title: string;
+  body: string;
+  applies_when: string | null;
+  authoritative_text: string;
+}
+
+interface LessonVariantRow {
+  id: string;
+  authoritative_text: string;
+  lesson_title: string | null;
+  lesson_body: string | null;
+  applies_when: string | null;
+}
+
 export interface ComposerCheckpointMetadata {
   model: string;
   recipeHash: string;
@@ -43,6 +60,7 @@ const MAX_RETRIEVAL_CHARS = 10_000;
 const TARGET_COMPOSER_RETRIEVAL_CHARS = 2_000;
 const MAX_COMPOSER_RETRIEVAL_CHARS = 2_500;
 const DEFAULT_BATCH_SIZE = 20;
+const DEFAULT_EMBEDDING_BATCH_SIZE = 64;
 
 export function deterministicRetrievalText(row: CorpusRow): string {
   const authoritativeText = row.text.replace(/\s+/g, " ").trim();
@@ -332,6 +350,156 @@ export function backupDatabase(dbPath: string, backupPath: string): void {
   }
 }
 
+export interface MissingLessonVariantReport {
+  pending: number;
+  published: number;
+  backupPath: string;
+}
+
+export async function addMissingLessonVariants(
+  dbPath: string,
+  workDir: string,
+  embeddingBatchSize = DEFAULT_EMBEDDING_BATCH_SIZE,
+  provider: EmbeddingProvider = createEmbeddingProvider("local"),
+): Promise<MissingLessonVariantReport> {
+  if (!Number.isInteger(embeddingBatchSize) || embeddingBatchSize < 1) {
+    throw new Error("embeddingBatchSize must be a positive integer");
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupPath = resolve(
+    `${workDir}/memory-before-missing-variants-${stamp}.db`,
+  );
+  backupDatabase(dbPath, backupPath);
+  console.log(`Backup created: ${backupPath}`);
+
+  const readDb = new Database(dbPath, { readonly: true });
+  let sources: LessonVariantSource[];
+  try {
+    const rows = readDb.query<LessonVariantRow, []>(
+      `SELECT c.id, c.text AS authoritative_text,
+              l.title AS lesson_title, l.body AS lesson_body, l.applies_when
+       FROM claim AS c
+       LEFT JOIN lesson AS l ON l.id = c.id
+       WHERE c.active = 1 AND c.kind = 'lesson'
+       ORDER BY c.id`,
+    ).all();
+    sources = rows.map((row) => {
+      const [firstLine = row.authoritative_text, ...remainingLines] =
+        row.authoritative_text.split(/\r?\n/);
+      return {
+        id: row.id,
+        title: row.lesson_title?.trim() || firstLine.trim(),
+        body: row.lesson_body?.trim() ||
+          remainingLines.join("\n").trim() || row.authoritative_text,
+        applies_when: row.applies_when,
+        authoritative_text: row.authoritative_text,
+      };
+    });
+  } finally {
+    readDb.close();
+  }
+
+  const db = new Database(dbPath);
+  db.run("PRAGMA busy_timeout = 5000");
+  try {
+    const existingRows = db.query<
+      { claim_id: string; variant: number; retrieval_text: string; embed_model: string | null; dim: number },
+      []
+    >(
+      `SELECT ce.claim_id, ce.variant, ce.retrieval_text, ce.embed_model, ce.dim
+       FROM claim_embedding AS ce
+       JOIN claim AS c ON c.id = ce.claim_id
+       WHERE c.active = 1 AND c.kind = 'lesson' AND ce.variant IN (1, 2)`,
+    ).all();
+    const existing = new Map(
+      existingRows.map((row) => [`${row.claim_id}:${row.variant}`, row]),
+    );
+    const pending = sources.flatMap((source) => {
+      const texts = buildLessonRetrievalTexts({
+        title: source.title,
+        body: source.body,
+        appliesWhen: source.applies_when,
+      });
+      return ([1, 2] as const).flatMap((variant) => {
+        const text = texts[variant];
+        const current = existing.get(`${source.id}:${variant}`);
+        return current?.retrieval_text === text &&
+            current.embed_model === provider.model &&
+            current.dim === provider.dim
+          ? []
+          : [{ ...source, variant, text }];
+      });
+    });
+    console.log(`Missing or stale lesson retrieval variants: ${pending.length}`);
+
+    const vectors: Float32Array[] = [];
+    for (let offset = 0; offset < pending.length; offset += embeddingBatchSize) {
+      const batch = pending.slice(offset, offset + embeddingBatchSize);
+      vectors.push(...await provider.embed(batch.map((item) => item.text), "document"));
+      console.log(
+        `Embedded ${Math.min(offset + batch.length, pending.length)}/${pending.length} missing lesson variants`,
+      );
+    }
+
+    const currentSource = db.query<LessonVariantRow, [string]>(
+      `SELECT c.id, c.text AS authoritative_text,
+              l.title AS lesson_title, l.body AS lesson_body, l.applies_when
+       FROM claim AS c
+       LEFT JOIN lesson AS l ON l.id = c.id
+       WHERE c.id = ? AND c.active = 1 AND c.kind = 'lesson'`,
+    );
+    const upsert = db.query(
+      `INSERT INTO claim_embedding (
+         claim_id, variant, retrieval_text, embedding, embed_model, dim
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(claim_id, variant) DO UPDATE SET
+         retrieval_text = excluded.retrieval_text,
+         embedding = excluded.embedding,
+         embed_model = excluded.embed_model,
+         dim = excluded.dim`,
+    );
+    db.transaction(() => {
+      pending.forEach((item, index) => {
+        const row = currentSource.get(item.id);
+        const [firstLine = row?.authoritative_text ?? "", ...remainingLines] =
+          row?.authoritative_text.split(/\r?\n/) ?? [];
+        const current = row
+          ? {
+              title: row.lesson_title?.trim() || firstLine.trim(),
+              body: row.lesson_body?.trim() ||
+                remainingLines.join("\n").trim() || row.authoritative_text,
+              applies_when: row.applies_when,
+              authoritative_text: row.authoritative_text,
+            }
+          : null;
+        if (
+          !current || current.title !== item.title || current.body !== item.body ||
+          current.applies_when !== item.applies_when ||
+          current.authoritative_text !== item.authoritative_text
+        ) {
+          throw new Error(`Lesson changed while embedding: ${item.id}`);
+        }
+        upsert.run(
+          item.id,
+          item.variant,
+          item.text,
+          serializeEmbedding(vectors[index]!),
+          provider.model,
+          provider.dim,
+        );
+      });
+    }).immediate();
+    console.log(`Published ${pending.length} lesson retrieval variants.`);
+    return {
+      pending: pending.length,
+      published: pending.length,
+      backupPath,
+    };
+  } finally {
+    db.close();
+  }
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const option = (name: string): string | undefined => {
@@ -345,9 +513,32 @@ async function main(): Promise<void> {
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) {
     throw new Error("--batch-size must be an integer between 1 and 100");
   }
+  const embeddingBatchSize = Number(
+    option("--embedding-batch-size") ?? DEFAULT_EMBEDDING_BATCH_SIZE,
+  );
+  if (
+    !Number.isInteger(embeddingBatchSize) ||
+    embeddingBatchSize < 1 ||
+    embeddingBatchSize > 1_000
+  ) {
+    throw new Error(
+      "--embedding-batch-size must be an integer between 1 and 1000",
+    );
+  }
   const useComposer = args.includes("--composer");
   const apply = args.includes("--apply");
+  const missingLessonVariants = args.includes("--missing-lesson-variants");
   const inputPath = option("--input");
+  if (missingLessonVariants) {
+    if (useComposer || apply || inputPath) {
+      throw new Error(
+        "--missing-lesson-variants cannot be combined with --composer, --apply, or --input",
+      );
+    }
+    if (!existsSync(dbPath)) throw new Error(`DB not found: ${dbPath}`);
+    await addMissingLessonVariants(dbPath, workDir, embeddingBatchSize);
+    return;
+  }
   if (useComposer && apply) {
     throw new Error("--composer and --apply are separate review stages; run them separately");
   }

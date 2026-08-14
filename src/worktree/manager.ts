@@ -1,8 +1,13 @@
 import type { RepoConfig } from "../config.ts";
 import { statfs } from "node:fs/promises";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 
 const DEFAULT_SETUP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
-const MAX_COMMAND_ERROR_CHARS = 8_000;
+// Keep the outward error below Slack's long-error withholding threshold. The
+// complete stdout/stderr transcript remains available in the restricted log.
+const MAX_COMMAND_STREAM_CHARS = 110;
+const SETUP_LOG_DIR = join(import.meta.dir, "..", "..", "logs", "worktree-setup");
 
 export interface WorktreeManagerOptions {
   setupMinFreeBytes?: number;
@@ -293,16 +298,58 @@ export class WorktreeManager {
       stdout: "pipe",
       stderr: "pipe",
     });
+    // Drain both pipes before awaiting exit so a chatty setup script can't
+    // fill its stdout buffer and deadlock.
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
     const exitCode = await proc.exited;
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      const detail = stderr.trim();
-      const bounded = detail.length > MAX_COMMAND_ERROR_CHARS
-        ? `${detail.slice(0, MAX_COMMAND_ERROR_CHARS)}\n… output truncated`
-        : detail;
-      throw new Error(`command ${args[0]} failed: ${bounded}`);
+      // Setup scripts narrate their progress (fetch, env copy, MCP migration,
+      // dependency install) on stdout and leak only incidental warnings to
+      // stderr, so stderr alone rarely names the step that actually failed.
+      // Persist both streams in full to a per-run file, and keep the TAIL —
+      // where the failure lands — in the thrown message rather than the head.
+      const transcript =
+        `$ ${args.join(" ")}\n(cwd: ${cwd}, exit ${exitCode})\n\n` +
+        `--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`;
+      const logPath = this.writeCommandLog(args, transcript);
+      const bounded = [
+        ["stdout", stdout.trim()],
+        ["stderr", stderr.trim()],
+      ].flatMap(([label, value]) => {
+        if (!value) return [];
+        const tail = value.length > MAX_COMMAND_STREAM_CHARS
+          ? `… ${value.slice(-MAX_COMMAND_STREAM_CHARS)}`
+          : value;
+        return [`${label}: ${tail}`];
+      }).join("\n");
+      const pointer = logPath ? ` (full output: ${logPath})` : "";
+      const suffix = bounded ? `: ${bounded}` : "";
+      throw new Error(`command ${args[0]} failed with exit ${exitCode}${pointer}${suffix}`);
     }
-    return await new Response(proc.stdout).text();
+    return stdout;
+  }
+
+  /**
+   * Write a failed command's full transcript to `logs/worktree-setup/`.
+   * Returns the path, or null if it could not be written — logging must never
+   * be the reason a worktree setup failure is swallowed.
+   */
+  private writeCommandLog(args: string[], transcript: string): string | null {
+    try {
+      mkdirSync(SETUP_LOG_DIR, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const label = (args[1] ?? basename(args[0] ?? "command"))
+        .replace(/[^a-zA-Z0-9.-]/g, "-")
+        .slice(0, 60);
+      const path = join(SETUP_LOG_DIR, `${stamp}-${label}.log`);
+      writeFileSync(path, transcript, { mode: 0o600 });
+      return path;
+    } catch {
+      return null;
+    }
   }
 
   private async assertSetupDiskCapacity(path: string): Promise<void> {

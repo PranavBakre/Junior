@@ -195,6 +195,38 @@ describe("memory CLI", () => {
     }
   });
 
+  it("add-claim creates all lesson retrieval variants", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    try {
+      await runMemoryCli([
+        "add-claim", "--db", dbPath, "--json",
+        "--id", "lesson-direct", "--kind", "lesson",
+        "--text", "Verify the exact branch\nMatch the reviewed head before merging.",
+      ]);
+
+      const store = new SqliteMemoryStore(dbPath);
+      try {
+        const db = (store as unknown as { db: import("bun:sqlite").Database }).db;
+        const variants = db.query<{ variant: number }, []>(
+          "SELECT variant FROM claim_embedding WHERE claim_id = 'lesson-direct' ORDER BY variant",
+        ).all();
+        expect(variants.map((row) => row.variant)).toEqual([0, 1, 2]);
+      } finally {
+        store.close();
+      }
+
+      await expect(runMemoryCli([
+        "add-claim", "--db", dbPath,
+        "--id", "lesson-explicit", "--kind", "lesson",
+        "--text", "Do not create partial lesson embeddings.",
+        "--embedding", "1,0,0,0",
+      ])).rejects.toThrow("use add-lesson instead");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("ranks claims by a pre-computed query vector from the configured db", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
     const dbPath = join(tmpDir, "memory.db");

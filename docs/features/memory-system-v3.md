@@ -180,6 +180,15 @@ rebuildable. Lexical scoring considers those fields plus source provenance.
 Recall returns the atomic `text` and a `contextText` expanded from `source_text`
 when available.
 
+Lesson claims carry three retrieval projections in `claim_embedding`. Both
+`add-lesson` and generic `add-claim --kind lesson` populate the complete set;
+generic lesson writes with a caller-supplied base embedding are rejected because
+they cannot prove matching variant vectors (except the explicit `--skip-dedup`
+verbatim-restore hatch). The offline re-embedding command's
+`--missing-lesson-variants` mode repairs older incomplete rows after creating a
+database backup, and refuses to publish if the authoritative lesson changes
+while vectors are being generated.
+
 ### 6.2 Vector storage — stay on SQLite (the ladder)
 
 The vector store is *only* over the `claim` corpus — not profiles (keyed), not episodes (raw log). That corpus is small and dedup-on-write keeps it at *distinct-knowledge* size, so it plateaus in the low thousands. The math kills the case for a vector DB:
