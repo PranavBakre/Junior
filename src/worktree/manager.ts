@@ -1,6 +1,12 @@
 import type { RepoConfig } from "../config.ts";
 import { statfs } from "node:fs/promises";
-import { mkdirSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 
 const DEFAULT_SETUP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -292,52 +298,60 @@ export class WorktreeManager {
    * The first element is the command; remaining elements are args.
    * Throws on non-zero exit.
    */
-  private async runCommand(args: string[], cwd: string): Promise<string> {
+  private async runCommand(args: string[], cwd: string): Promise<void> {
     const proc = Bun.spawn(args, {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
     });
-    // Drain both pipes before awaiting exit so a chatty setup script can't
-    // fill its stdout buffer and deadlock.
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const exitCode = await proc.exited;
+    // Stream both pipes concurrently. Keeping only bounded tails prevents a
+    // runaway installer from either filling an OS pipe or filling Junior's
+    // heap; the complete output is written incrementally to a restricted log.
+    const commandLog = this.openCommandLog(args, cwd);
+    let stdout = "";
+    let stderr = "";
+    let exitCode: number;
+    try {
+      [stdout, stderr, exitCode] = await Promise.all([
+        this.drainCommandOutput(proc.stdout, "stdout", commandLog?.fd ?? null),
+        this.drainCommandOutput(proc.stderr, "stderr", commandLog?.fd ?? null),
+        proc.exited,
+      ]);
+    } finally {
+      if (commandLog) {
+        try {
+          closeSync(commandLog.fd);
+        } catch {
+          // The process result remains authoritative if transcript close fails.
+        }
+      }
+    }
     if (exitCode !== 0) {
-      // Setup scripts narrate their progress (fetch, env copy, MCP migration,
-      // dependency install) on stdout and leak only incidental warnings to
-      // stderr, so stderr alone rarely names the step that actually failed.
-      // Persist both streams in full to a per-run file, and keep the TAIL —
-      // where the failure lands — in the thrown message rather than the head.
-      const transcript =
-        `$ ${args.join(" ")}\n(cwd: ${cwd}, exit ${exitCode})\n\n` +
-        `--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n`;
-      const logPath = this.writeCommandLog(args, transcript);
       const bounded = [
-        ["stdout", stdout.trim()],
-        ["stderr", stderr.trim()],
+        ["stdout", stdout],
+        ["stderr", stderr],
       ].flatMap(([label, value]) => {
         if (!value) return [];
-        const tail = value.length > MAX_COMMAND_STREAM_CHARS
-          ? `… ${value.slice(-MAX_COMMAND_STREAM_CHARS)}`
-          : value;
-        return [`${label}: ${tail}`];
+        return [`${label}: ${value}`];
       }).join("\n");
-      const pointer = logPath ? ` (full output: ${logPath})` : "";
+      const pointer = commandLog ? ` (full output: ${commandLog.path})` : "";
       const suffix = bounded ? `: ${bounded}` : "";
       throw new Error(`command ${args[0]} failed with exit ${exitCode}${pointer}${suffix}`);
     }
-    return stdout;
+    if (commandLog) {
+      try {
+        unlinkSync(commandLog.path);
+      } catch {
+        // A successful setup must not fail because its temporary transcript
+        // could not be removed.
+      }
+    }
   }
 
-  /**
-   * Write a failed command's full transcript to `logs/worktree-setup/`.
-   * Returns the path, or null if it could not be written — logging must never
-   * be the reason a worktree setup failure is swallowed.
-   */
-  private writeCommandLog(args: string[], transcript: string): string | null {
+  private openCommandLog(
+    args: string[],
+    cwd: string,
+  ): { path: string; fd: number } | null {
     try {
       mkdirSync(SETUP_LOG_DIR, { recursive: true });
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -345,11 +359,47 @@ export class WorktreeManager {
         .replace(/[^a-zA-Z0-9.-]/g, "-")
         .slice(0, 60);
       const path = join(SETUP_LOG_DIR, `${stamp}-${label}.log`);
-      writeFileSync(path, transcript, { mode: 0o600 });
-      return path;
+      const fd = openSync(path, "wx", 0o600);
+      writeSync(fd, `$ ${args.join(" ")}\n(cwd: ${cwd})\n`);
+      return { path, fd };
     } catch {
       return null;
     }
+  }
+
+  private async drainCommandOutput(
+    stream: ReadableStream<Uint8Array>,
+    label: "stdout" | "stderr",
+    logFd: number | null,
+  ): Promise<string> {
+    const decoder = new TextDecoder();
+    const reader = stream.getReader();
+    let tail = "";
+    const consume = (text: string): void => {
+      if (!text) return;
+      tail = `${tail}${text}`.slice(-MAX_COMMAND_STREAM_CHARS);
+      if (logFd !== null) {
+        try {
+          writeSync(logFd, text);
+        } catch {
+          // Keep draining even when the diagnostic filesystem is unavailable.
+        }
+      }
+    };
+    if (logFd !== null) {
+      try {
+        writeSync(logFd, `\n--- ${label} ---\n`);
+      } catch {
+        // Keep draining without a transcript.
+      }
+    }
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      consume(decoder.decode(value, { stream: true }));
+    }
+    consume(decoder.decode());
+    return tail.trim();
   }
 
   private async assertSetupDiskCapacity(path: string): Promise<void> {

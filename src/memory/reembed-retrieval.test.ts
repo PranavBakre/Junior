@@ -316,13 +316,23 @@ describe("retrieval corpus migration", () => {
     );
     db.query("INSERT INTO claim VALUES (?, 'lesson', ?, 1)").run(
       "legacy-backed",
-      "Preserve work before pruning.",
+      "Preserve work\nPreserve work before pruning.",
     );
     db.query("INSERT INTO lesson VALUES (?, ?, ?, ?)").run(
       "legacy-backed",
       "Preserve work",
       "Preserve work before pruning.",
       "Removing a worktree",
+    );
+    db.query("INSERT INTO claim VALUES (?, 'lesson', ?, 1)").run(
+      "stale-legacy",
+      "Current source\nUse the authoritative claim text.",
+    );
+    db.query("INSERT INTO lesson VALUES (?, ?, ?, ?)").run(
+      "stale-legacy",
+      "Old source",
+      "Use obsolete legacy text.",
+      "An obsolete situation",
     );
     db.query("INSERT INTO claim_embedding VALUES (?, 1, ?, ?, ?, ?)").run(
       "legacy-backed",
@@ -336,8 +346,8 @@ describe("retrieval corpus migration", () => {
     try {
       const provider = new HashingEmbeddingProvider();
       const first = await addMissingLessonVariants(dbPath, workDir, 2, provider);
-      expect(first.pending).toBe(4);
-      expect(first.published).toBe(4);
+      expect(first.pending).toBe(6);
+      expect(first.published).toBe(6);
       expect(existsSync(first.backupPath)).toBe(true);
 
       const after = new Database(dbPath, { readonly: true });
@@ -351,13 +361,19 @@ describe("retrieval corpus migration", () => {
         }, []>(
           "SELECT claim_id, variant, retrieval_text, embed_model, dim FROM claim_embedding ORDER BY claim_id, variant",
         ).all();
-        expect(rows).toHaveLength(4);
+        expect(rows).toHaveLength(6);
         expect(rows.every((row) => row.embed_model === provider.model)).toBe(true);
         expect(rows.every((row) => row.dim === provider.dim)).toBe(true);
         expect(rows.find((row) => row.claim_id === "claim-only" && row.variant === 1)
           ?.retrieval_text).toContain("Use exact repository identity");
         expect(rows.find((row) => row.claim_id === "legacy-backed" && row.variant === 2)
           ?.retrieval_text).toContain("Removing a worktree");
+        const repairedStale = rows.find((row) =>
+          row.claim_id === "stale-legacy" && row.variant === 1
+        )?.retrieval_text ?? "";
+        expect(repairedStale).toContain("Current source");
+        expect(repairedStale).not.toContain("Old source");
+        expect(repairedStale).not.toContain("obsolete situation");
       } finally {
         after.close();
       }

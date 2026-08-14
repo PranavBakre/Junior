@@ -105,6 +105,12 @@ export class WorkflowExecutor {
   }
 
   async run(request: WorkflowRunRequest): Promise<WorkflowRunResult> {
+    const instructions = normalizeInstructions(request.instructions);
+    if (request.definition.nativeHandler && instructions) {
+      throw new Error(
+        `Workflow ${request.definition.name} uses a native handler and does not accept operator instructions.`,
+      );
+    }
     const started = this.now();
     const runId = `${request.definition.name}-${started.toISOString().replace(/[:.]/g, "-")}`;
     const artifactPath = artifactPathFor(request.definition, started, runId);
@@ -145,7 +151,7 @@ export class WorkflowExecutor {
             ),
             nativeResult: null,
             triggerContext: request.triggerContext ?? null,
-            instructions: normalizeInstructions(request.instructions),
+            instructions,
           }),
         );
       } else {
@@ -160,7 +166,7 @@ export class WorkflowExecutor {
         run,
         summary,
         triggerContext: request.triggerContext ?? null,
-        instructions: normalizeInstructions(request.instructions),
+        instructions,
       });
       await writeArtifact(artifactPath, body);
       const slackMeta = await this.emitOutputs(request.definition, summary);
@@ -178,7 +184,7 @@ export class WorkflowExecutor {
         run,
         summary: summary || "_Workflow failed before summary generation._",
         triggerContext: request.triggerContext ?? null,
-        instructions: normalizeInstructions(request.instructions),
+        instructions,
       });
       await writeArtifact(artifactPath, failureBody).catch(() => undefined);
       await this.store.updateRun(run);

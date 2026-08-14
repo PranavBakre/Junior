@@ -38,9 +38,10 @@ When `repo.worktreeSetupCommand` is set, Junior calls the script instead of runn
 
 The script owns `git fetch`, `git worktree add`, env copy, install, MCP migration. Junior always passes `--base` (defaults to `repo.defaultBase`) so worktrees are reproducible. When unset, Junior runs `git fetch origin --prune` then `git worktree add <path> -b <branch> <base>` inline.
 
-Junior drains delegated setup stdout and stderr concurrently so chatty installers
-cannot fill a pipe and deadlock. On failure it surfaces a short tail diagnostic
-plus a pointer to the complete `0600` transcript under `logs/worktree-setup/`;
+Junior streams delegated setup stdout and stderr concurrently so chatty installers
+cannot fill a pipe, deadlock, or accumulate unbounded output in memory. On
+failure it surfaces short per-stream tail diagnostics plus a pointer to the
+complete incrementally written `0600` transcript under `logs/worktree-setup/`;
 the bounded outward message remains safe for Slack delivery.
 
 Before delegated setup, Junior requires 2 GiB of free space by default (`WORKTREE_SETUP_MIN_FREE_BYTES` overrides it). A script failure after `git worktree add` triggers rollback of the registered worktree and its branch; the surfaced stdout/stderr tails are capped independently.

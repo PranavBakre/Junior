@@ -187,7 +187,9 @@ they cannot prove matching variant vectors (except the explicit `--skip-dedup`
 verbatim-restore hatch). The offline re-embedding command's
 `--missing-lesson-variants` mode repairs older incomplete rows after creating a
 database backup, and refuses to publish if the authoritative lesson changes
-while vectors are being generated.
+while vectors are being generated. Its repaired title/body projections always
+come from authoritative `claim.text`; legacy `applies_when` is retained only
+when the legacy title/body still describe that exact claim text.
 
 ### 6.2 Vector storage — stay on SQLite (the ladder)
 

@@ -51,6 +51,28 @@ interface LessonVariantRow {
   applies_when: string | null;
 }
 
+function lessonVariantSource(row: LessonVariantRow): LessonVariantSource {
+  const [firstLine = row.authoritative_text, ...remainingLines] =
+    row.authoritative_text.split(/\r?\n/);
+  const title = firstLine.trim();
+  const body = remainingLines.join("\n").trim() || row.authoritative_text;
+  const legacyText = row.lesson_title && row.lesson_body
+    ? `${row.lesson_title.trim()}\n${row.lesson_body.trim()}`
+    : null;
+  return {
+    id: row.id,
+    title,
+    body,
+    // applies_when is useful only while the legacy projection still describes
+    // the authoritative claim. Never let stale legacy title/body influence a
+    // repaired vector.
+    applies_when: legacyText === row.authoritative_text.trim()
+      ? row.applies_when
+      : null,
+    authoritative_text: row.authoritative_text,
+  };
+}
+
 export interface ComposerCheckpointMetadata {
   model: string;
   recipeHash: string;
@@ -383,18 +405,7 @@ export async function addMissingLessonVariants(
        WHERE c.active = 1 AND c.kind = 'lesson'
        ORDER BY c.id`,
     ).all();
-    sources = rows.map((row) => {
-      const [firstLine = row.authoritative_text, ...remainingLines] =
-        row.authoritative_text.split(/\r?\n/);
-      return {
-        id: row.id,
-        title: row.lesson_title?.trim() || firstLine.trim(),
-        body: row.lesson_body?.trim() ||
-          remainingLines.join("\n").trim() || row.authoritative_text,
-        applies_when: row.applies_when,
-        authoritative_text: row.authoritative_text,
-      };
-    });
+    sources = rows.map(lessonVariantSource);
   } finally {
     readDb.close();
   }
@@ -461,17 +472,7 @@ export async function addMissingLessonVariants(
     db.transaction(() => {
       pending.forEach((item, index) => {
         const row = currentSource.get(item.id);
-        const [firstLine = row?.authoritative_text ?? "", ...remainingLines] =
-          row?.authoritative_text.split(/\r?\n/) ?? [];
-        const current = row
-          ? {
-              title: row.lesson_title?.trim() || firstLine.trim(),
-              body: row.lesson_body?.trim() ||
-                remainingLines.join("\n").trim() || row.authoritative_text,
-              applies_when: row.applies_when,
-              authoritative_text: row.authoritative_text,
-            }
-          : null;
+        const current = row ? lessonVariantSource(row) : null;
         if (
           !current || current.title !== item.title || current.body !== item.body ||
           current.applies_when !== item.applies_when ||

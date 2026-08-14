@@ -219,6 +219,25 @@ describe("WorkflowExecutor", () => {
     }
   });
 
+  it("rejects operator instructions for native workflows instead of recording ignored scope", async () => {
+    const definition = workflowDefinition("data/workflow-runs");
+    definition.name = "memory-dedup-sweep";
+    definition.nativeHandler = "memory-dedup-sweep";
+    definition.runner = undefined;
+    const store = new InMemoryWorkflowStore();
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store,
+    });
+
+    await expect(executor.run({
+      definition,
+      reason: "manual",
+      instructions: "only recent claims",
+    })).rejects.toThrow("does not accept operator instructions");
+    expect(await store.listRuns(definition.name, 5)).toEqual([]);
+  });
+
   it("runs the v3 consolidation sweep for memory-consolidation (native-only path)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "junior-memory-workflow-test-"));
     const definition = workflowDefinition(dir);
