@@ -291,6 +291,70 @@ describe("MCP memory v3 tools", () => {
     }
   });
 
+  it("unions non-fact kinds with requested fact subtypes", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const lesson = await addMemory(
+        {
+          text: "Never run a repository-wide worktree prune while preserving a dev-server slot",
+          kind: "lesson",
+        },
+        deps,
+      );
+      const procedureId = "procedure-prune-empty-worktrees";
+      const procedureText =
+        "Remove an empty worktree only after checking commits and real local edits";
+      const [procedureEmbedding] = await deps.provider.embed(
+        [procedureText],
+        "document",
+      );
+      await deps.store.upsertFact({
+        id: procedureId,
+        kind: "procedure",
+        body: procedureText,
+        createdAt: Date.now(),
+      });
+      await deps.store.upsertClaim({
+        id: procedureId,
+        kind: "fact",
+        text: procedureText,
+        embedding: procedureEmbedding,
+        embedModel: deps.provider.model,
+        dim: deps.provider.dim,
+        createdAt: Date.now(),
+        skipDedup: true,
+      });
+      const ordinaryFact = await addMemory(
+        {
+          text: "The dashboard displays the current worktree branch name",
+          kind: "fact",
+        },
+        deps,
+      );
+
+      const result = await recallMemory(
+        {
+          query: "safely prune empty worktrees without harming dev-server slots",
+          kinds: ["lesson", "fact"],
+          factKinds: ["procedure"],
+          limit: 5,
+          minCosine: -1,
+        },
+        deps,
+      );
+
+      expect(result.claims.map((claim) => claim.id)).toEqual(
+        expect.arrayContaining([lesson.id, procedureId]),
+      );
+      expect(result.claims.map((claim) => claim.id)).not.toContain(ordinaryFact.id);
+      expect(result.claims.find((claim) => claim.id === procedureId)?.factKind).toBe(
+        "procedure",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
   it("memory_recall includes a keyed profile when entityRefs is passed", async () => {
     const { deps, cleanup } = makeMemoryDeps();
     try {
