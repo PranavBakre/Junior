@@ -1555,7 +1555,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           .array(z.enum(["curated_fact", "routing_memory", "procedure"]))
           .optional()
           .describe(
-            "Restrict fact claims to semantic subtypes, e.g. ['procedure']. When set, only matching fact subtypes are returned.",
+            "Restrict fact claims to semantic subtypes, e.g. ['procedure']. Combined with `kinds`, these subtypes are recalled alongside the non-fact kinds rather than replacing them.",
           ),
         entity_refs: z
           .array(z.string())
