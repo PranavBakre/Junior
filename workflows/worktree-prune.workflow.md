@@ -34,6 +34,13 @@ Prune stale local git worktrees across the configured Junior repos.
 
 Use the runtime context as the source of truth for repositories and their absolute paths. For each repo with a usable local git checkout:
 
+When `run.triggerContext.source` is `github.pr.merged`, limit the run to the
+listed `pullRequests`: inspect only the matching repo and worktree branch for
+each entry. Verify the worktree HEAD matches the supplied `headSha` before
+removal. If the branch has no registered local worktree, report that compactly
+and do not broaden the event-triggered run into a full sweep. Scheduled and
+manually triggered runs without this context continue to inspect every repo.
+
 1. Establish the protected primary checkout and default branch.
    - Use the repo path from runtime context as the primary checkout. Never delete or move this directory.
    - Normalize `repo.defaultBase` before fetching or resolving it. If it starts with `origin/`, treat that full value as the preferred base ref and fetch only its branch part from the remote, e.g. `origin/main` means fetch `main`. Otherwise prefer `origin/<base>`, then the local `<base>` branch.

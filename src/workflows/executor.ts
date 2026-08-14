@@ -67,6 +67,8 @@ export interface WorkflowRunRequest {
   definition: WorkflowDefinition;
   reason: WorkflowRunReason;
   actorSlackUserId?: string | null;
+  /** Structured context supplied by a system/event trigger. */
+  triggerContext?: Record<string, unknown> | null;
 }
 
 export interface WorkflowRunResult {
@@ -133,6 +135,7 @@ export class WorkflowExecutor {
             run,
             repos: this.reposFor(request.definition),
             nativeResult: null,
+            triggerContext: request.triggerContext ?? null,
           }),
         );
       } else {
@@ -146,6 +149,7 @@ export class WorkflowExecutor {
         definition: request.definition,
         run,
         summary,
+        triggerContext: request.triggerContext ?? null,
       });
       await writeArtifact(artifactPath, body);
       const slackMeta = await this.emitOutputs(request.definition, summary);
@@ -162,6 +166,7 @@ export class WorkflowExecutor {
         definition: request.definition,
         run,
         summary: summary || "_Workflow failed before summary generation._",
+        triggerContext: request.triggerContext ?? null,
       });
       await writeArtifact(artifactPath, failureBody).catch(() => undefined);
       await this.store.updateRun(run);
@@ -524,6 +529,7 @@ function renderArtifact(options: {
   definition: WorkflowDefinition;
   run: WorkflowRun;
   summary: string;
+  triggerContext?: Record<string, unknown> | null;
 }): string {
   return [
     `# Workflow Run: ${options.definition.name}`,
@@ -533,6 +539,9 @@ function renderArtifact(options: {
     `Source: ${options.definition.sourcePath}`,
     `Reason: ${options.run.reason}`,
     `Actor: ${options.run.actorSlackUserId ?? "system"}`,
+    options.triggerContext
+      ? `Trigger context: ${JSON.stringify(options.triggerContext)}`
+      : null,
     `Status: ${options.run.status}`,
     options.run.providerSessionId ? `Provider session: ${options.run.providerSessionId}` : null,
     options.run.error ? `Error: ${options.run.error}` : null,
@@ -551,6 +560,7 @@ function buildRunnerPromptWithNative(options: {
   run: WorkflowRun;
   repos: RepoConfig[];
   nativeResult: string | null;
+  triggerContext?: Record<string, unknown> | null;
 }): string {
   const parts = [
     `Run workflow: ${options.definition.name}`,
@@ -582,6 +592,7 @@ function buildRunnerPromptWithNative(options: {
         id: options.run.id,
         reason: options.run.reason,
         artifactPath: options.run.artifactPath,
+        triggerContext: options.triggerContext ?? null,
       },
       workflow: {
         name: options.definition.name,

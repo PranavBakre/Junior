@@ -41,6 +41,55 @@ describe("timerDelayFor", () => {
 });
 
 describe("WorkflowScheduler", () => {
+  it("forwards structured event context to the executor", async () => {
+    const definition = workflowDefinition();
+    const store = new InMemoryWorkflowStore();
+    const registry = {
+      get: (name: string) => name === definition.name ? definition : undefined,
+      snapshot: () => ({ definitions: new Map([[definition.name, definition]]), errors: [] }),
+      onEvent: () => undefined,
+    } as unknown as WorkflowRegistry;
+    let receivedContext: Record<string, unknown> | null | undefined;
+    const executor = {
+      run: async (request: { triggerContext?: Record<string, unknown> | null }) => {
+        receivedContext = request.triggerContext;
+        return {
+          summary: "ok",
+          run: {
+            id: "run-1",
+            workflowName: definition.name,
+            workflowVersionHash: definition.versionHash,
+            sourcePath: definition.sourcePath,
+            reason: "event",
+            actorSlackUserId: null,
+            status: "success",
+            startedAt: 1,
+            finishedAt: 2,
+            artifactPath: "data/workflow-runs/worklog/run.md",
+            providerSessionId: null,
+            slackChannel: null,
+            slackThreadTs: null,
+            error: null,
+          },
+        };
+      },
+    } as unknown as WorkflowExecutor;
+    const { WorkflowScheduler } = await import("./scheduler.ts");
+    const scheduler = new WorkflowScheduler({ registry, store, executor });
+    const triggerContext = {
+      source: "github.pr.merged",
+      pullRequests: [{ repo: "widgets", branch: "agent/fix" }],
+    };
+
+    await scheduler.runNow({
+      name: definition.name,
+      reason: "event",
+      triggerContext,
+    });
+
+    expect(receivedContext).toEqual(triggerContext);
+  });
+
   it("blocks stopped command triggers but allows manual runs", async () => {
     const definition = workflowDefinition();
     const store = new InMemoryWorkflowStore();

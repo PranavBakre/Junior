@@ -90,7 +90,12 @@ export function diffPrSnapshots(
     events.push(
       makeEvent("github.pr.merged", ctx, {
         previous: { state: previous.state, mergedAt: previous.mergedAt },
-        next: { state: next.state, mergedAt: next.mergedAt, headRefOid: next.headRefOid },
+        next: {
+          state: next.state,
+          mergedAt: next.mergedAt,
+          headRefName: next.headRefName,
+          headRefOid: next.headRefOid,
+        },
         fingerprintPart: `merged:${next.mergedAt ?? next.headRefOid}`,
       }),
     );

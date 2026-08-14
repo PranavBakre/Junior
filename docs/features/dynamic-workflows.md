@@ -172,6 +172,12 @@ used as proof of live work because a hard process exit can leave one behind.
 The scheduler counts active runs per workflow so this remains correct for both
 `skip` and `parallel` concurrency.
 
+System/event callers may attach structured `triggerContext` to a run. The
+executor includes it in the runner's `run` runtime context and the durable run
+artifact. GitHub reconciliation uses this to launch `worktree-prune` for the
+exact repo, branch, and head SHA of newly merged PRs without turning cleanup
+into a repo-bound agent dispatch.
+
 ## Slack Commands
 
 Read commands:

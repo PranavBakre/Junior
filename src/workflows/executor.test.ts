@@ -62,8 +62,11 @@ describe("WorkflowExecutor", () => {
     try {
       const result = await executor.run({
         definition,
-        reason: "manual",
-        actorSlackUserId: "U123ABC",
+        reason: "event",
+        triggerContext: {
+          source: "github.pr.merged",
+          pullRequests: [{ repo: "junior", branch: "agent/test" }],
+        },
       });
 
       expect(result.summary).toContain("Shipped workflow runner");
@@ -72,6 +75,7 @@ describe("WorkflowExecutor", () => {
       expect(captured.prompt).toContain("Collect my PR and commit activity");
       expect(captured.prompt).toContain("\"path\": \"/repo/junior\"");
       expect(captured.prompt).toContain("\"slack.post\"");
+      expect(captured.prompt).toContain("\"source\": \"github.pr.merged\"");
       expect(posts).toEqual([
         {
           channel: "C123ABC",
@@ -80,6 +84,9 @@ describe("WorkflowExecutor", () => {
       ]);
       expect(readFileSync(result.run.artifactPath, "utf8")).toContain(
         "Shipped workflow runner",
+      );
+      expect(readFileSync(result.run.artifactPath, "utf8")).toContain(
+        'Trigger context: {"source":"github.pr.merged"',
       );
       expect((await store.getRun(result.run.id))?.status).toBe("success");
       expect((await store.getRun(result.run.id))?.providerSessionId).toBe("ses-workflow");
