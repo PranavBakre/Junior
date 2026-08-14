@@ -51,6 +51,7 @@ import {
 } from "./workflows/store.ts";
 import { createPipelineStore } from "./pipelines/store/factory.ts";
 import { pumpOutbox } from "./pipelines/pump.ts";
+import { MergePruneDispatcher } from "./github/prune-trigger.ts";
 import {
   reconcileStalePipelineAssignments,
   recoverPipelineRuntime,
@@ -182,6 +183,41 @@ const workflowScheduler = new WorkflowScheduler({
   registry: workflowRegistry,
   store: workflowStore,
   executor: workflowExecutor,
+});
+let markWorkflowsReady: () => void = () => undefined;
+const workflowsReady = new Promise<void>((resolveReady) => {
+  markWorkflowsReady = resolveReady;
+});
+const mergePruneDispatcher = new MergePruneDispatcher({
+  run: async (mergedPullRequests) => {
+    await workflowsReady;
+    return workflowScheduler.runNow({
+      name: "worktree-prune",
+      reason: "event",
+      triggerContext: {
+        source: "github.pr.merged",
+        pullRequests: mergedPullRequests,
+      },
+    });
+  },
+  onRun: (targets, result) => {
+    log.info(
+      "github",
+      `merge-triggered worktree-prune prs=${targets.length} run=${result.runId || "queued"}`,
+    );
+  },
+  onError: (err) => {
+    log.warn(
+      "github",
+      `merge-triggered worktree-prune failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  },
+  onExhausted: (target, err) => {
+    log.error(
+      "github",
+      `merge-triggered worktree-prune exhausted ${target.owner}/${target.repo}#${target.number}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  },
 });
 const workflowController = new WorkflowController({
   registry: workflowRegistry,
@@ -482,6 +518,7 @@ const pipelineBoot = (async () => {
               `reconcile examined=${pass.examined} updated=${pass.updated} events=${pass.eventsEmitted} failures=${pass.failures} wakes=${pass.wakesDelivered}`,
             );
           }
+          mergePruneDispatcher.enqueue(pass.results);
         } catch (err) {
           log.warn(
             "github",
@@ -668,6 +705,8 @@ setInterval(() => {
       "workflow",
       `workflow bootstrap failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+  } finally {
+    markWorkflowsReady();
   }
 
   // WhatsApp ingestion (read-only archive). Incoming messages trigger nothing —

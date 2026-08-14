@@ -97,6 +97,10 @@ describe("diffPrSnapshots", () => {
       ctx,
     );
     expect(events.map((e) => e.type)).toEqual(["github.pr.merged"]);
+    expect(events[0]?.next).toMatchObject({
+      headRefName: "feat/x",
+      headRefOid: "aaa111",
+    });
   });
 
   it("emits reopened for closed→open", () => {

@@ -67,6 +67,8 @@ export interface WorkflowRunRequest {
   definition: WorkflowDefinition;
   reason: WorkflowRunReason;
   actorSlackUserId?: string | null;
+  /** Structured context supplied by a system/event trigger. */
+  triggerContext?: Record<string, unknown> | null;
 }
 
 export interface WorkflowRunResult {
@@ -131,8 +133,12 @@ export class WorkflowExecutor {
           buildRunnerPromptWithNative({
             definition: request.definition,
             run,
-            repos: this.reposFor(request.definition),
+            repos: this.reposForRun(
+              request.definition,
+              request.triggerContext ?? null,
+            ),
             nativeResult: null,
+            triggerContext: request.triggerContext ?? null,
           }),
         );
       } else {
@@ -146,6 +152,7 @@ export class WorkflowExecutor {
         definition: request.definition,
         run,
         summary,
+        triggerContext: request.triggerContext ?? null,
       });
       await writeArtifact(artifactPath, body);
       const slackMeta = await this.emitOutputs(request.definition, summary);
@@ -162,6 +169,7 @@ export class WorkflowExecutor {
         definition: request.definition,
         run,
         summary: summary || "_Workflow failed before summary generation._",
+        triggerContext: request.triggerContext ?? null,
       });
       await writeArtifact(artifactPath, failureBody).catch(() => undefined);
       await this.store.updateRun(run);
@@ -472,6 +480,19 @@ export class WorkflowExecutor {
     return this.config.repos.filter((repo) => permitted.has(repo.name));
   }
 
+  private reposForRun(
+    definition: WorkflowDefinition,
+    triggerContext: Record<string, unknown> | null,
+  ): RepoConfig[] {
+    const repos = this.reposFor(definition);
+    const githubTargets = githubMergeTargets(triggerContext);
+    if (githubTargets === null) return repos;
+    return repos.filter((repo) =>
+      repo.githubRepo != null &&
+      githubTargets.has(repo.githubRepo.toLowerCase())
+    );
+  }
+
   private timeoutFor(provider: ImplementedRunnerProvider): number {
     if (provider === "codex-app-server") return this.config.codex.timeoutMs;
     return provider === "opencode" || provider === "opencode-sdk"
@@ -524,6 +545,7 @@ function renderArtifact(options: {
   definition: WorkflowDefinition;
   run: WorkflowRun;
   summary: string;
+  triggerContext?: Record<string, unknown> | null;
 }): string {
   return [
     `# Workflow Run: ${options.definition.name}`,
@@ -533,6 +555,9 @@ function renderArtifact(options: {
     `Source: ${options.definition.sourcePath}`,
     `Reason: ${options.run.reason}`,
     `Actor: ${options.run.actorSlackUserId ?? "system"}`,
+    options.triggerContext
+      ? `Trigger context: ${JSON.stringify(options.triggerContext)}`
+      : null,
     `Status: ${options.run.status}`,
     options.run.providerSessionId ? `Provider session: ${options.run.providerSessionId}` : null,
     options.run.error ? `Error: ${options.run.error}` : null,
@@ -551,6 +576,7 @@ function buildRunnerPromptWithNative(options: {
   run: WorkflowRun;
   repos: RepoConfig[];
   nativeResult: string | null;
+  triggerContext?: Record<string, unknown> | null;
 }): string {
   const parts = [
     `Run workflow: ${options.definition.name}`,
@@ -582,6 +608,7 @@ function buildRunnerPromptWithNative(options: {
         id: options.run.id,
         reason: options.run.reason,
         artifactPath: options.run.artifactPath,
+        triggerContext: options.triggerContext ?? null,
       },
       workflow: {
         name: options.definition.name,
@@ -597,6 +624,7 @@ function buildRunnerPromptWithNative(options: {
         name: repo.name,
         path: repo.path,
         defaultBase: repo.defaultBase,
+        githubRepo: repo.githubRepo ?? null,
       })),
     }, null, 2),
     "",
@@ -607,6 +635,24 @@ function buildRunnerPromptWithNative(options: {
   );
 
   return parts.join("\n");
+}
+
+function githubMergeTargets(
+  triggerContext: Record<string, unknown> | null,
+): Set<string> | null {
+  if (triggerContext?.source !== "github.pr.merged") return null;
+  const pullRequests = triggerContext.pullRequests;
+  if (!Array.isArray(pullRequests)) return new Set();
+
+  const targets = new Set<string>();
+  for (const pullRequest of pullRequests) {
+    if (!pullRequest || typeof pullRequest !== "object") continue;
+    const owner = (pullRequest as { owner?: unknown }).owner;
+    const repo = (pullRequest as { repo?: unknown }).repo;
+    if (typeof owner !== "string" || typeof repo !== "string") continue;
+    targets.add(`${owner}/${repo}`.toLowerCase());
+  }
+  return targets;
 }
 
 function buildIdleContinuePrompt(
