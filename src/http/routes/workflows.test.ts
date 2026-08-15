@@ -43,11 +43,37 @@ describe("workflowDisplayStatus", () => {
 
     const response = await handleWorkflows(registry, store, { isRunning: () => false });
     const body = await response.json() as {
-      workflows: Array<{ displayStatus: string; runs: Array<{ status: string }> }>;
+      workflows: Array<{
+        displayStatus: string;
+        nativeHandler: string | null;
+        sourceMarkdown: boolean;
+        runs: Array<{ status: string }>;
+      }>;
     };
 
     expect(body.workflows[0]?.runs[0]?.status).toBe("running");
     expect(body.workflows[0]?.displayStatus).toBe("active");
+    expect(body.workflows[0]?.nativeHandler).toBeNull();
+    expect(body.workflows[0]?.sourceMarkdown).toBe(false);
+  });
+
+  test("includes nativeHandler on the list projection", async () => {
+    const definition = workflowDefinition();
+    definition.nativeHandler = "memory-dedup-sweep";
+    const registry = {
+      all: () => [definition],
+      getErrors: () => [],
+    } as unknown as WorkflowRegistry;
+    const store = {
+      listStates: async () => [],
+      listRuns: async () => [],
+    } as unknown as WorkflowStore;
+
+    const response = await handleWorkflows(registry, store, { isRunning: () => false });
+    const body = await response.json() as {
+      workflows: Array<{ nativeHandler: string | null }>;
+    };
+    expect(body.workflows[0]?.nativeHandler).toBe("memory-dedup-sweep");
   });
 });
 

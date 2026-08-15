@@ -94,6 +94,71 @@ export class WorkflowScheduler {
     }
   }
 
+  async enqueueManualRun(options: {
+    name: string;
+    actorSlackUserId?: string | null;
+    instructions?: string | null;
+  }): Promise<
+    | { status: "skipped"; runId: ""; summary: string }
+    | { status: "started"; runId: string; summary: string }
+  > {
+    const definition = this.registry.get(options.name);
+    if (!definition) throw new Error(`Unknown workflow: ${options.name}`);
+    if (!definition.enabled) {
+      throw new Error(`Workflow ${definition.name} is disabled in its workflow file.`);
+    }
+    const state = await this.ensureState(definition);
+    if (state.status === "invalid") {
+      throw new Error(`Workflow ${definition.name} is invalid and cannot run.`);
+    }
+    if (!this.tryClaimRun(definition)) {
+      await this.markSkipped(state, "Workflow already running.");
+      return {
+        status: "skipped",
+        runId: "",
+        summary: `Skipped *${definition.name}*: already running.`,
+      };
+    }
+    try {
+      const request = {
+        definition,
+        reason: "manual" as const,
+        actorSlackUserId: options.actorSlackUserId ?? null,
+        instructions: options.instructions ?? null,
+      };
+      const run = await this.executor.persistNewRun(request);
+      // schedule / lastRunStatus / releaseRun hang on this promise, not enqueue.
+      void this.executor.executePersistedRun(run, request)
+        .then(() => this.schedule(definition))
+        .catch(async (err) => {
+          const latest = await this.store.getState(definition.name);
+          if (latest) {
+            await this.store.setState({
+              ...latest,
+              lastError: formatError(err),
+              lastRunStatus: "failed",
+              lastRunAt: this.now().getTime(),
+            });
+          }
+        })
+        .finally(() => {
+          this.releaseRun(definition);
+        });
+      return {
+        status: "started",
+        runId: run.id,
+        summary: `Started *${definition.name}*.`,
+      };
+    } catch (err) {
+      this.releaseRun(definition);
+      throw err;
+    }
+  }
+
+  activeRunCount(name: string): number {
+    return this.activeRunCounts.get(name) ?? 0;
+  }
+
   async stopWorkflow(name: string): Promise<void> {
     const definition = this.registry.get(name);
     const state = definition

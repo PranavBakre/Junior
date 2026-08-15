@@ -368,7 +368,7 @@
   .qrow .pos { color: var(--fg-faint); width: 22px; }
 
   /* ---------- workflows ---------- */
-  .wf-card { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 16px; }
+  .wf-card { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1.1fr 0.9fr 1fr 1.15fr; gap: 16px; }
   .wf-card.on { background: rgba(0,100,255,.1); box-shadow: inset 2px 0 var(--accent); }
   .wf-card:last-child { border-bottom: none; }
   .wf-card .name { font-weight: 700; font-size: 14px; }
@@ -376,6 +376,23 @@
   .wf-card .src { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); margin-top: 6px; }
   .wf-card .mrow { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); line-height: 1.9; }
   .wf-card .mrow b { color: var(--fg); font-weight: 500; }
+  .wf-actions { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .wf-actions textarea {
+    width: 100%; min-height: 56px; resize: vertical;
+    background: var(--bg-paper); color: var(--fg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 8px 10px; font-family: var(--font-sans); font-size: 12px;
+  }
+  .wf-actions textarea:focus { outline: none; border-color: var(--accent); }
+  .wf-actions .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .wf-count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint); }
+  .wf-foot { padding: 10px 18px; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); }
+  #wf-status { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); }
+  #wf-status.err { color: var(--red); }
+  #wf-status.ok { color: var(--green); }
+  @media (max-width: 900px) {
+    .wf-card { grid-template-columns: 1fr; }
+  }
   .runs { display: flex; gap: 4px; align-items: center; margin-top: 6px; }
   .run-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--surface-strong); cursor: default; }
   .run-dot.done { background: rgba(34,197,94,0.7); }
@@ -1633,8 +1650,13 @@
       <div class="view-head" data-index="05">
         <h2>Workflows</h2>
         <span class="sub">scheduled runs · last outcomes per workflow</span>
+        <span class="right">
+          <span id="wf-status"></span>
+          <button class="ctrl" id="wf-reload" type="button">reload</button>
+        </span>
       </div>
       <div class="panel" id="wf-list"><div class="empty">loading…</div></div>
+      <div class="wf-foot">Workflow mutations write dashboard_audit and post to a Slack output channel when the definition has one. Otherwise the trail is weaker than Slack ! commands.</div>
     </section>
 
     <!-- ================= PIPELINES ================= -->
