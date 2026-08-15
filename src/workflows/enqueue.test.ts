@@ -157,6 +157,112 @@ describe("WorkflowScheduler.enqueueManualRun", () => {
     releases[1]?.();
     await waitFor(() => scheduler.activeRunCount(definition.name) === 0);
   });
+
+  it("throws for unknown, disabled, and invalid workflows before claiming a run", async () => {
+    const store = new InMemoryWorkflowStore();
+    let persistCalls = 0;
+    const definition = workflowDefinition();
+    const executor = mockExecutor(store, {
+      persist: async () => {
+        persistCalls += 1;
+        throw new Error("persist should not run");
+      },
+    });
+    const scheduler = new WorkflowScheduler({
+      registry: registryOf(definition),
+      store,
+      executor,
+    });
+
+    await expect(scheduler.enqueueManualRun({ name: "missing" }))
+      .rejects.toThrow("Unknown workflow: missing");
+
+    const disabled = { ...definition, enabled: false };
+    const disabledScheduler = new WorkflowScheduler({
+      registry: registryOf(disabled),
+      store,
+      executor,
+    });
+    await expect(disabledScheduler.enqueueManualRun({ name: definition.name }))
+      .rejects.toThrow("is disabled in its workflow file");
+
+    await store.setState({
+      name: definition.name,
+      status: "invalid",
+      activeVersionHash: definition.versionHash,
+      sourcePath: definition.sourcePath,
+      lastLoadedAt: 1,
+      nextRunAt: null,
+      lastRunAt: null,
+      lastRunStatus: null,
+      lastError: "broken yaml",
+    });
+    await expect(scheduler.enqueueManualRun({ name: definition.name }))
+      .rejects.toThrow("is invalid and cannot run");
+
+    expect(persistCalls).toBe(0);
+    expect(scheduler.activeRunCount(definition.name)).toBe(0);
+    expect(disabledScheduler.activeRunCount(definition.name)).toBe(0);
+  });
+
+  it("one-shots a stopped workflow because reason is always manual", async () => {
+    const definition = workflowDefinition();
+    const store = new InMemoryWorkflowStore();
+    await store.setState({
+      name: definition.name,
+      status: "stopped",
+      activeVersionHash: definition.versionHash,
+      sourcePath: definition.sourcePath,
+      lastLoadedAt: 1,
+      nextRunAt: null,
+      lastRunAt: null,
+      lastRunStatus: null,
+      lastError: null,
+    });
+    const executor = mockExecutor(store);
+    const scheduler = new WorkflowScheduler({
+      registry: registryOf(definition),
+      store,
+      executor,
+    });
+
+    const result = await scheduler.enqueueManualRun({ name: definition.name });
+    expect(result.status).toBe("started");
+    expect(result.runId).toBeTruthy();
+    await waitFor(() => !scheduler.isRunning(definition.name));
+  });
+
+  it("does not overwrite lastRunStatus when schedule fails after a successful execute", async () => {
+    const definition = {
+      ...workflowDefinition(),
+      triggers: [{ type: "schedule" as const, cron: "not-a-cron", timezone: "UTC" }],
+    };
+    const store = new InMemoryWorkflowStore();
+    const executor = mockExecutor(store, {
+      execute: async (run) => {
+        const state = await store.getState(definition.name);
+        if (state) {
+          await store.setState({
+            ...state,
+            lastRunStatus: "success",
+            lastError: null,
+            lastRunAt: Date.now(),
+          });
+        }
+        return successResult(run);
+      },
+    });
+    const scheduler = new WorkflowScheduler({
+      registry: registryOf(definition),
+      store,
+      executor,
+    });
+
+    const result = await scheduler.enqueueManualRun({ name: definition.name });
+    expect(result.status).toBe("started");
+    await waitFor(() => !scheduler.isRunning(definition.name));
+    expect((await store.getState(definition.name))?.lastRunStatus).toBe("success");
+  });
 });
 
 function workflowDefinition(): WorkflowDefinition {
@@ -188,7 +294,7 @@ function mockExecutor(
   hooks: {
     persist?: (definition: WorkflowDefinition) => Promise<WorkflowRun>;
     execute?: (run: WorkflowRun) => Promise<{ summary: string; run: WorkflowRun }>;
-  },
+  } = {},
 ): WorkflowExecutor {
   let seq = 0;
   return {

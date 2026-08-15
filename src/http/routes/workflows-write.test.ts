@@ -339,6 +339,60 @@ describe("workflow write routes", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("probes git from the overlay file's toplevel, not Junior", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-wf-git-"));
+    try {
+      const overlayRoot = join(dir, "agents-org");
+      const fileRel = join("workflows", "worklog.workflow.md");
+      mkdirSync(join(overlayRoot, "workflows"), { recursive: true });
+      writeFileSync(join(overlayRoot, fileRel), "# overlay\n");
+      await git(overlayRoot, ["init", "-b", "overlay-branch"]);
+      await git(overlayRoot, ["add", fileRel]);
+      await git(overlayRoot, [
+        "-c", "user.name=t",
+        "-c", "user.email=t@t.test",
+        "-c", "commit.gpgsign=false",
+        "commit", "-m", "overlay",
+      ]);
+      const overlaySha = (await git(overlayRoot, ["rev-parse", "HEAD"])).trim();
+
+      await git(dir, ["init", "-b", "junior-main"]);
+      writeFileSync(join(dir, "README.md"), "parent\n");
+      await git(dir, ["add", "README.md"]);
+      await git(dir, [
+        "-c", "user.name=t",
+        "-c", "user.email=t@t.test",
+        "-c", "commit.gpgsign=false",
+        "commit", "-m", "parent",
+      ]);
+      const parentSha = (await git(dir, ["rev-parse", "HEAD"])).trim();
+      expect(parentSha).not.toBe(overlaySha);
+
+      writeFileSync(join(overlayRoot, fileRel), "# overlay dirty\n");
+      const definition = workflowDefinition({
+        sourcePath: "agents-org/workflows/worklog.workflow.md",
+        sourceRoot: "overlay",
+      });
+      const response = await handleWorkflowDetail("worklog", {
+        registry: registryOf(definition),
+        store: new InMemoryWorkflowStore(),
+        scheduler: { isRunning: () => false },
+        projectRoot: dir,
+      });
+      const body = await response.json() as {
+        git: { sha: string | null; branch: string | null; detached: boolean; dirty: boolean };
+      };
+      expect(body.git).toEqual({
+        sha: overlaySha,
+        branch: "overlay-branch",
+        detached: false,
+        dirty: true,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("workflow nested routing", () => {
@@ -453,6 +507,21 @@ function stubServerDeps(): HttpServerDeps {
       isExplicitAdmin: async () => false,
     },
   };
+}
+
+async function git(cwd: string, args: string[]): Promise<string> {
+  const proc = Bun.spawn(["git", ...args], {
+    cwd,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exited] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (exited !== 0) throw new Error(`git ${args.join(" ")} failed: ${stderr}`);
+  return stdout;
 }
 
 async function waitFor(

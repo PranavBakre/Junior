@@ -127,18 +127,31 @@ export class WorkflowScheduler {
         instructions: options.instructions ?? null,
       };
       const run = await this.executor.persistNewRun(request);
-      // schedule / lastRunStatus / releaseRun hang on this promise, not enqueue.
+      // releaseRun hangs on execute, not enqueue. schedule is not on this chain.
       void this.executor.executePersistedRun(run, request)
-        .then(() => this.schedule(definition))
+        .then(() => {
+          this.schedule(definition).catch((err) => {
+            log.warn(
+              "workflow",
+              `continuation schedule failed workflow=${definition.name}: ${formatError(err)}`,
+            );
+          });
+        })
         .catch(async (err) => {
-          const latest = await this.store.getState(definition.name);
-          if (latest) {
+          try {
+            const latest = await this.store.getState(definition.name);
+            if (!latest) return;
             await this.store.setState({
               ...latest,
               lastError: formatError(err),
               lastRunStatus: "failed",
               lastRunAt: this.now().getTime(),
             });
+          } catch (storeErr) {
+            log.warn(
+              "workflow",
+              `failed-run status persist failed workflow=${definition.name}: ${formatError(storeErr)}`,
+            );
           }
         })
         .finally(() => {

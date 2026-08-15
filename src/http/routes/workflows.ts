@@ -1,4 +1,5 @@
-import { join, relative, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import type { Config } from "../../config.ts";
 import { log } from "../../logger.ts";
 import { hashWorkflowContent } from "../../workflows/definition.ts";
@@ -664,12 +665,15 @@ async function probeWorkflowGit(
 }> {
   const empty = { sha: null, branch: null, detached: false, dirty: false };
   if (!sourcePath) return empty;
-  const abs = resolve(projectRoot, sourcePath);
+  const abs = existingRealpath(resolve(projectRoot, sourcePath));
   try {
-    const sha = (await git(projectRoot, ["rev-parse", "HEAD"])).trim();
-    const branch = (await git(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-    const rel = relative(projectRoot, abs);
-    const porcelain = (await git(projectRoot, [
+    const toplevel = existingRealpath(
+      (await git(dirname(abs), ["rev-parse", "--show-toplevel"])).trim(),
+    );
+    const sha = (await git(toplevel, ["rev-parse", "HEAD"])).trim();
+    const branch = (await git(toplevel, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    const rel = relative(toplevel, abs);
+    const porcelain = (await git(toplevel, [
       "status",
       "--porcelain",
       "--",
@@ -686,17 +690,30 @@ async function probeWorkflowGit(
   }
 }
 
+function existingRealpath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
   const proc = Bun.spawn(["git", ...args], {
     cwd,
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, exited] = await Promise.all([
+  const [stdout, stderr, exited] = await Promise.all([
     new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  if (exited !== 0) throw new Error(`git ${args.join(" ")} failed`);
+  if (exited !== 0) throw new Error(`git ${args.join(" ")} failed: ${stderr.trim()}`);
   return stdout;
 }
 

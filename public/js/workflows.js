@@ -80,11 +80,53 @@ function renderWorkflows() {
     html += '<div class="empty" style="color:var(--red)">Validation errors: ' +
       errors.map((e) => esc(e.path) + " — " + esc(e.message)).join("; ") + "</div>";
   }
+  const draft = snapshotWorkflowInputs();
   $("wf-list").innerHTML = html;
+  restoreWorkflowInputs(draft);
   if (workflowScrollPending && selectedWorkflowName) {
     workflowScrollPending = false;
     const card = document.getElementById("wf-card-" + selectedWorkflowName);
     if (card) card.scrollIntoView({ block: "center" });
+  }
+}
+
+function snapshotWorkflowInputs() {
+  const values = {};
+  let focus = null;
+  const list = $("wf-list");
+  if (!list) return { values, focus };
+  for (const field of list.querySelectorAll(".wf-instr")) {
+    values[field.dataset.name] = field.value;
+  }
+  const active = document.activeElement;
+  if (active && active.classList && active.classList.contains("wf-instr")) {
+    focus = {
+      name: active.dataset.name,
+      start: active.selectionStart,
+      end: active.selectionEnd,
+    };
+  }
+  return { values, focus };
+}
+
+function restoreWorkflowInputs(draft) {
+  const list = $("wf-list");
+  if (!list) return;
+  for (const name of Object.keys(draft.values || {})) {
+    const field = list.querySelector('.wf-instr[data-name="' + name + '"]');
+    if (!field) continue;
+    field.value = draft.values[name];
+    const counter = list.querySelector('.wf-count[data-count="' + name + '"]');
+    if (counter) counter.textContent = field.value.length + " / " + WF_INSTR_MAX;
+  }
+  if (!draft.focus) return;
+  const field = list.querySelector('.wf-instr[data-name="' + draft.focus.name + '"]');
+  if (!field) return;
+  field.focus();
+  try {
+    field.setSelectionRange(draft.focus.start, draft.focus.end);
+  } catch {
+    // some browsers reject setSelectionRange on an unfocused node
   }
 }
 
@@ -118,20 +160,20 @@ async function runWorkflow(name) {
   if (wfActionBusy) return;
   const item = workflows.find((w) => w.name === name);
   if (!item) return;
-  const running = item.displayStatus === "running";
-  if (item.concurrency === "skip" && running) {
-    if (!confirm("This workflow is already running (concurrency=skip). A second run will be skipped. Continue?")) {
-      return;
-    }
-  }
-  if (item.concurrency === "parallel" && running) {
-    if (!confirm("This workflow allows parallel runs; start another?")) return;
-  }
-  const field = document.querySelector('.wf-instr[data-name="' + name + '"]');
-  const instructions = field ? String(field.value || "").trim() : "";
   wfActionBusy = true;
-  setWfStatus("starting " + name + "…");
   try {
+    const running = item.displayStatus === "running";
+    if (item.concurrency === "skip" && running) {
+      if (!confirm("This workflow is already running (concurrency=skip). A second run will be skipped. Continue?")) {
+        return;
+      }
+    }
+    if (item.concurrency === "parallel" && running) {
+      if (!confirm("This workflow allows parallel runs; start another?")) return;
+    }
+    const field = document.querySelector('.wf-instr[data-name="' + name + '"]');
+    const instructions = field ? String(field.value || "").trim() : "";
+    setWfStatus("starting " + name + "…");
     const result = await postWorkflow("/api/workflows/" + encodeURIComponent(name) + "/run", {
       instructions: instructions || undefined,
     });
