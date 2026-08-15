@@ -3,14 +3,17 @@ export function sessionTurnSourceId(
     threadId: string;
     activeTopLevelMessageTs?: string | null;
     activeTurnGeneration?: string | null;
+    currentMessageTs?: string | null;
   },
   agentName: string,
   postedTs?: string,
 ): string {
+  const isTopLevel = agentName === "lead" || agentName === "default";
+  const invocationTs = postedTs ?? session.currentMessageTs ?? undefined;
   const turnKey =
-    session.activeTopLevelMessageTs
-    ?? postedTs
-    ?? (session.activeTurnGeneration
+    (isTopLevel ? session.activeTopLevelMessageTs : undefined)
+    ?? invocationTs
+    ?? (isTopLevel && session.activeTurnGeneration
       ? `pending-${session.activeTurnGeneration}`
       : "unknown");
   return `${session.threadId}:${agentName}:${turnKey}`;

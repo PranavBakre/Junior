@@ -2304,8 +2304,9 @@ export class SessionManager {
           );
         }
         const runSession = this.buildRunSession(session, agentName, agentIdentity);
+        runSession.currentMessageTs = latestTs ?? null;
         this.onEvent?.(runSession, event);
-        this.recordSessionTurnUsage(runSession, event);
+        this.recordSessionTurnUsage(runSession, event, latestTs);
       });
       await this.persistRunProcessDetails(session.threadId, agentName, handle.pid);
 
@@ -2502,8 +2503,9 @@ export class SessionManager {
               );
             }
             const runSession = this.buildRunSession(session, agentName, agentIdentity);
+            runSession.currentMessageTs = latestTs ?? null;
             this.onEvent?.(runSession, event);
-            this.recordSessionTurnUsage(runSession, event);
+            this.recordSessionTurnUsage(runSession, event, latestTs);
           });
           await this.persistRunProcessDetails(session.threadId, agentName, retryHandle.pid);
 
@@ -3851,6 +3853,7 @@ export class SessionManager {
   private recordSessionTurnUsage(
     session: ThreadSession,
     event: RunnerEvent,
+    postedTs?: string,
   ): void {
     if (event.type !== "done" || !this.usageStore) return;
     const agentName = session.activeAgentName ?? session.agentType ?? "default";
@@ -3863,7 +3866,7 @@ export class SessionManager {
     }
     const normalized = normalizeRunnerUsage(event.usage, {
       sourceKind: "session-turn",
-      sourceId: sessionTurnSourceId(session, agentName),
+      sourceId: sessionTurnSourceId(session, agentName, postedTs),
       threadId: session.threadId,
       channelId: session.channel,
       agentName,

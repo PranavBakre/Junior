@@ -128,7 +128,7 @@ describe("normalizeRunnerUsage", () => {
 });
 
 describe("sessionTurnSourceId", () => {
-  it("prefers activeTopLevelMessageTs over postedTs and generation", () => {
+  it("prefers activeTopLevelMessageTs over postedTs and generation for top-level agents", () => {
     expect(sessionTurnSourceId(
       {
         threadId: "T1",
@@ -140,18 +140,45 @@ describe("sessionTurnSourceId", () => {
     )).toBe("T1:default:111.1");
   });
 
-  it("falls back to postedTs then pending generation then unknown", () => {
+  it("uses invocation ts for workers instead of a stale top-level ts or generation", () => {
+    expect(sessionTurnSourceId(
+      {
+        threadId: "T1",
+        activeTopLevelMessageTs: "lead-ts",
+        activeTurnGeneration: "gen-1",
+      },
+      "review",
+      "review-ts",
+    )).toBe("T1:review:review-ts");
+    expect(sessionTurnSourceId(
+      {
+        threadId: "T1",
+        activeTopLevelMessageTs: "lead-ts",
+        currentMessageTs: "current-ts",
+      },
+      "review",
+    )).toBe("T1:review:current-ts");
     expect(sessionTurnSourceId(
       { threadId: "T1", activeTurnGeneration: "gen-1" },
       "review",
-      "posted-ts",
-    )).toBe("T1:review:posted-ts");
-    expect(sessionTurnSourceId(
-      { threadId: "T1", activeTurnGeneration: "gen-1" },
-      "review",
-    )).toBe("T1:review:pending-gen-1");
+    )).toBe("T1:review:unknown");
     expect(sessionTurnSourceId({ threadId: "T1" }, "review")).toBe(
       "T1:review:unknown",
+    );
+  });
+
+  it("falls back to postedTs then pending generation then unknown for top-level", () => {
+    expect(sessionTurnSourceId(
+      { threadId: "T1", activeTurnGeneration: "gen-1" },
+      "default",
+      "posted-ts",
+    )).toBe("T1:default:posted-ts");
+    expect(sessionTurnSourceId(
+      { threadId: "T1", activeTurnGeneration: "gen-1" },
+      "lead",
+    )).toBe("T1:lead:pending-gen-1");
+    expect(sessionTurnSourceId({ threadId: "T1" }, "default")).toBe(
+      "T1:default:unknown",
     );
   });
 });

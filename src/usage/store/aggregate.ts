@@ -66,7 +66,7 @@ export function groupUsageEvents(
 function groupKey(event: UsageEvent, groupBy: UsageGroupBy): string {
   switch (groupBy) {
     case "day":
-      return new Date(event.occurredAt).toISOString().slice(0, 10);
+      return localDayKey(event.occurredAt);
     case "session":
       return event.threadId ?? "unknown";
     case "agent":
@@ -78,4 +78,12 @@ function groupKey(event: UsageEvent, groupBy: UsageGroupBy): string {
     case "pipeline":
       return event.pipelineRunId ?? "unknown";
   }
+}
+
+function localDayKey(occurredAt: number): string {
+  const date = new Date(occurredAt);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }

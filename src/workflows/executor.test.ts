@@ -775,12 +775,23 @@ describe("WorkflowExecutor", () => {
       kill: () => undefined,
       pid: null,
     });
+    let nowMs = Date.parse("2026-05-21T13:30:00.000Z");
+    const slackClient = {
+      chat: {
+        postMessage: async () => ({ ok: true, ts: "123.456" }),
+      },
+    } as unknown as WebClient;
     const executor = new WorkflowExecutor({
       config: testConfig(),
       store: new InMemoryWorkflowStore(),
+      slackClient,
       spawn,
       usageStore,
-      now: () => new Date("2026-05-21T13:30:00.000Z"),
+      now: () => {
+        const date = new Date(nowMs);
+        nowMs += 1_000;
+        return date;
+      },
     });
 
     try {
@@ -795,14 +806,66 @@ describe("WorkflowExecutor", () => {
         workflowName: "worklog",
         workflowRunId: result.run.id,
         provider: "opencode",
+        channelId: "C123ABC",
         inputTokens: 15,
         outputTokens: 5,
         totalTokens: 20,
         costEstimatedUsd: null,
+        occurredAt: result.run.finishedAt,
       });
+      expect(result.run.finishedAt).not.toBe(result.run.startedAt);
       expect(await usageStore.get("workflow-run", result.run.id)).toMatchObject({
         inputTokens: 15,
         outputTokens: 5,
+        channelId: "C123ABC",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists runner usage after a failed workflow run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-usage-fail-"));
+    const usageStore = new InMemoryUsageStore();
+    const spawn: SpawnRunnerFn = (): SpawnHandle => ({
+      provider: "opencode",
+      result: Promise.resolve({
+        provider: "opencode",
+        sessionId: "ses-fail",
+        response: "",
+        events: [
+          { type: "done", provider: "opencode", usage: { input: 8, output: 1 } },
+        ],
+        exitCode: 1,
+        error: "runner failed",
+      }),
+      onEvent: () => undefined,
+      kill: () => undefined,
+      pid: null,
+    });
+    const store = new InMemoryWorkflowStore();
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store,
+      spawn,
+      usageStore,
+      now: () => new Date("2026-05-21T13:31:00.000Z"),
+    });
+
+    try {
+      await expect(executor.run({
+        definition: workflowDefinition(dir),
+        reason: "manual",
+      })).rejects.toThrow("Workflow runner failed");
+      const run = (await store.listRuns("worklog", 1))[0];
+      expect(run?.status).toBe("failed");
+      const rows = await usageStore.list({ sourceKind: "workflow-run" });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        inputTokens: 8,
+        outputTokens: 1,
+        occurredAt: run?.finishedAt,
+        channelId: null,
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -169,6 +169,26 @@ describe("SqliteUsageStore", () => {
     expect(bySession.buckets.map((bucket) => bucket.key)).toEqual(["t1", "t2"]);
   });
 
+  it("groups day buckets in the host local timezone", async () => {
+    const occurredAt = new Date(2026, 5, 15, 23, 30, 0).getTime();
+    await store.add(usage({
+      sourceId: "local-day",
+      occurredAt,
+    }));
+    const result = await store.groupBy({
+      from: occurredAt - 1,
+      to: occurredAt + 1,
+      groupBy: "day",
+    });
+    const local = new Date(occurredAt);
+    const expected = [
+      String(local.getFullYear()),
+      String(local.getMonth() + 1).padStart(2, "0"),
+      String(local.getDate()).padStart(2, "0"),
+    ].join("-");
+    expect(result.buckets.map((bucket) => bucket.key)).toEqual([expected]);
+  });
+
   it("deletes rows older than the retention cutoff", async () => {
     const now = 1_800_000_000_000;
     await store.add(usage({

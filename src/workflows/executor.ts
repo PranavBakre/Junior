@@ -143,17 +143,20 @@ export class WorkflowExecutor {
     await this.store.createRun(run);
 
     let summary = "";
+    let nativeHandlerName: WorkflowNativeHandler | null = null;
+    let runnerProvider: ImplementedRunnerProvider | null = null;
+    const runnerEvents: RunnerEvent[] = [];
     try {
       if (request.definition.nativeHandler) {
         const nativeResult = await this.runNativeHandler(request.definition.nativeHandler);
         summary = nativeResult.summary;
         run.status = nativeResult.status;
-        await this.persistNativeWorkflowUsage(
-          request.definition,
-          run,
-          request.definition.nativeHandler,
-        );
+        nativeHandlerName = request.definition.nativeHandler;
       } else if (request.definition.runner) {
+        const runner = request.definition.runner;
+        runnerProvider = runner.provider === "default"
+          ? this.config.runner.provider
+          : runner.provider;
         summary = await this.runWithRunner(
           request.definition,
           run,
@@ -168,6 +171,7 @@ export class WorkflowExecutor {
             triggerContext: request.triggerContext ?? null,
             instructions,
           }),
+          runnerEvents,
         );
       } else {
         summary = request.definition.prompt.trim() ||
@@ -205,6 +209,21 @@ export class WorkflowExecutor {
       await this.store.updateRun(run);
       await this.updateStateAfterRun(request.definition, run);
       throw err;
+    } finally {
+      if (nativeHandlerName) {
+        await this.persistNativeWorkflowUsage(
+          request.definition,
+          run,
+          nativeHandlerName,
+        );
+      } else if (runnerProvider) {
+        await this.persistRunnerWorkflowUsage({
+          definition: request.definition,
+          run,
+          provider: runnerProvider,
+          events: runnerEvents,
+        });
+      }
     }
   }
 
@@ -228,6 +247,7 @@ export class WorkflowExecutor {
     definition: WorkflowDefinition,
     run: WorkflowRun,
     prompt: string,
+    collectedEvents: RunnerEvent[],
   ): Promise<string> {
     const runner = definition.runner;
     if (!runner) throw new Error(`Workflow ${definition.name} has no runner`);
@@ -252,25 +272,15 @@ export class WorkflowExecutor {
       "Junior will write your final response to configured docs outputs and post it to configured Slack outputs.",
     ].join("\n\n");
 
-    const collectedEvents: RunnerEvent[] = [];
-    try {
-      return await this.runWorkflowRunnerAttempts({
-        definition,
-        run,
-        runner,
-        provider,
-        session,
-        initialPrompt: prompt,
-        collectedEvents,
-      });
-    } finally {
-      await this.persistRunnerWorkflowUsage({
-        definition,
-        run,
-        provider,
-        events: collectedEvents,
-      });
-    }
+    return await this.runWorkflowRunnerAttempts({
+      definition,
+      run,
+      runner,
+      provider,
+      session,
+      initialPrompt: prompt,
+      collectedEvents,
+    });
   }
 
   private async runWorkflowRunnerAttempts(options: {

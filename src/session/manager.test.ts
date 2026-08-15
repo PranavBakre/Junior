@@ -4072,6 +4072,53 @@ describe("SessionManager", () => {
       numTurns: 2,
     });
   });
+
+  it("records distinct usage rows for sequential worker turns", async () => {
+    const usageStore = new InMemoryUsageStore();
+    const leadHandle = createMockHandle();
+    const reviewHandle1 = createMockHandle();
+    const reviewHandle2 = createMockHandle();
+    const handles = [leadHandle, reviewHandle1, reviewHandle2];
+    mockSpawnFn = mock(() => handles.shift() ?? createMockHandle());
+    manager = createTestManager(store);
+    manager.usageStore = usageStore;
+
+    await manager.handleMessage(makeEvent({ text: "lead first", ts: "ts-lead" }));
+    leadHandle._complete("lead ok", "lead-ses", [], undefined, {
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    await waitFor(async () => (await store.get("thread-1"))?.status === "idle");
+    await waitForUsage(usageStore, "session-turn", "thread-1:default:ts-lead");
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "review one", ts: "ts-review-1" }),
+      "review",
+    );
+    reviewHandle1._complete("first", "review-ses-1", [], undefined, {
+      usage: { input_tokens: 10, output_tokens: 1 },
+    });
+    await waitFor(async () =>
+      (await store.get("thread-1"))?.agentSessions.review?.status === "done"
+    );
+    await waitForUsage(usageStore, "session-turn", "thread-1:review:ts-review-1");
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "review two", ts: "ts-review-2" }),
+      "review",
+    );
+    reviewHandle2._complete("second", "review-ses-2", [], undefined, {
+      usage: { input_tokens: 20, output_tokens: 2 },
+    });
+    await waitForUsage(usageStore, "session-turn", "thread-1:review:ts-review-2");
+
+    const first = await usageStore.get("session-turn", "thread-1:review:ts-review-1");
+    const second = await usageStore.get("session-turn", "thread-1:review:ts-review-2");
+    const collapsed = await usageStore.get("session-turn", "thread-1:review:ts-lead");
+    expect(first).toMatchObject({ inputTokens: 10, outputTokens: 1 });
+    expect(second).toMatchObject({ inputTokens: 20, outputTokens: 2 });
+    expect(collapsed).toBeUndefined();
+    expect(await usageStore.list({ sourceKind: "session-turn" })).toHaveLength(3);
+  });
 });
 
 describe("typed pipeline settlement", () => {
