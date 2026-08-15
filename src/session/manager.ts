@@ -33,6 +33,8 @@ import {
   isRunnerProvider,
 } from "./types.ts";
 import { evaluateBusyFollowup } from "./followup-policy.ts";
+import { resolveContinueRoute } from "./continue-route.ts";
+import { toDashboardSlackEvent } from "./inject.ts";
 import {
   runnerTimeoutMs,
   sessionProvider,
@@ -119,6 +121,17 @@ const TURN_PROGRESS_EMOJI = "hourglass_flowing_sand";
  * — and reacting to those is an API call that can only fail.
  */
 const SLACK_MESSAGE_TS = /^\d+\.\d+$/;
+
+export type DashboardInjectResult =
+  | { status: "accepted" }
+  | { status: "buffered" }
+  | { status: "muted" };
+
+export function formatStopReply(interrupted: number): string {
+  return interrupted === 0
+    ? "Nothing running."
+    : `Interrupted (${interrupted} agent${interrupted === 1 ? "" : "s"}). Send a new message to continue.`;
+}
 
 export class SessionManager {
   private store: SessionStore;
@@ -509,17 +522,22 @@ export class SessionManager {
     event: SlackMessageEvent,
     agentName: string,
   ): Promise<void> {
+    await this.dispatchAgentMessage(event, agentName);
+  }
+
+  private async dispatchAgentMessage(
+    event: SlackMessageEvent,
+    agentName: string,
+  ): Promise<DashboardInjectResult> {
     if (agentName === "lead") {
-      await this.runSingleSession(event, "lead");
-      return;
+      return this.runSingleSession(event, "lead");
     }
     if (agentName === "default") {
-      await this.runSingleSession(event, "default");
-      return;
+      return this.runSingleSession(event, "default");
     }
 
     const dedupeKey = event.dedupeKey ?? `${event.ts}:${agentName}`;
-    if (this.seenMessages.has(dedupeKey)) return;
+    if (this.seenMessages.has(dedupeKey)) return { status: "accepted" };
 
     // Ensure the parent row exists before the concurrent-safe mutation.
     await this.getOrCreateSession(event);
@@ -531,7 +549,7 @@ export class SessionManager {
       await this.routeDirectTaskThroughDefaultRun(event, agentName, directSession)
     ) {
       this.rememberSeenMessage(dedupeKey);
-      return;
+      return { status: "accepted" };
     }
 
     // Object wrapper so TS doesn't narrow the flag past the mutator closure.
@@ -555,11 +573,11 @@ export class SessionManager {
     });
     this.rememberSeenMessage(dedupeKey);
 
-    if (outcome.action === "muted") return;
+    if (outcome.action === "muted") return { status: "muted" };
 
     if (outcome.action === "buffer") {
       this.onMessageBuffered?.(event);
-      return;
+      return { status: "buffered" };
     }
 
     const reservation = createRunSetupReservation(
@@ -576,6 +594,7 @@ export class SessionManager {
       event.user,
       reservation,
     );
+    return { status: "accepted" };
   }
 
   // Generic single-session path for "default" (any-channel @mentions) and the
@@ -587,10 +606,10 @@ export class SessionManager {
   private async runSingleSession(
     event: SlackMessageEvent,
     agentName: "lead" | "default",
-  ): Promise<void> {
+  ): Promise<DashboardInjectResult> {
     // Deduplicate: Slack fires both `message` and `app_mention` for @mentions
     const dedupeKey = event.dedupeKey ?? event.ts;
-    if (this.seenMessages.has(dedupeKey)) return;
+    if (this.seenMessages.has(dedupeKey)) return { status: "accepted" };
 
     let session = await this.getOrCreateSession(event);
     await this.captureSlackMemory(event, agentName, "single-session");
@@ -599,7 +618,7 @@ export class SessionManager {
       const handled = await this.handleCommand(session, event);
       if (handled) {
         this.rememberSeenMessage(dedupeKey);
-        return;
+        return { status: "accepted" };
       }
       // Commands may have rewritten the row; re-read before the busy gate.
       session = (await this.store.get(event.threadId)) ?? session;
@@ -607,12 +626,12 @@ export class SessionManager {
 
     if (session.muted) {
       this.rememberSeenMessage(dedupeKey);
-      return;
+      return { status: "muted" };
     }
 
     if (await this.routeDirectTaskThroughDefaultRun(event, agentName, session)) {
       this.rememberSeenMessage(dedupeKey);
-      return;
+      return { status: "accepted" };
     }
 
     await this.onAgentDispatched?.(session, agentName);
@@ -651,6 +670,7 @@ export class SessionManager {
             hasPipelineMetadata:
               pipelineControlled && Boolean(event.pipelineInvocation),
             isInternal: Boolean(event.isSelfBot && !event.attributionUserId),
+            isDashboardContinue: event.dashboardContinue === true,
           },
           maxMessageLength: this.config.session.shortFollowupMaxLength,
           maxWordCount: 40,
@@ -708,6 +728,7 @@ export class SessionManager {
                 hasPipelineMetadata:
                   pipelineControlled && Boolean(event.pipelineInvocation),
                 isInternal: Boolean(event.isSelfBot && !event.attributionUserId),
+                isDashboardContinue: event.dashboardContinue === true,
               },
               maxMessageLength: this.config.session.shortFollowupMaxLength,
               maxWordCount: 40,
@@ -766,7 +787,7 @@ export class SessionManager {
 
     if (outcome.action === "buffer") {
       this.onMessageBuffered?.(event);
-      return;
+      return { status: "buffered" };
     }
 
     if (outcome.action === "interrupt") {
@@ -774,7 +795,7 @@ export class SessionManager {
       // exact handle installed and let its normal settlement path start the
       // consolidated replacement after the process has actually exited.
       outcome.handle!.kill("SIGINT");
-      return;
+      return { status: "accepted" };
     }
 
     const handleKey = this.handleKey(session.threadId, agentName);
@@ -792,6 +813,61 @@ export class SessionManager {
       incomingAuthor ?? undefined,
       reservation,
     );
+    return { status: "accepted" };
+  }
+
+  async injectDashboardContinue(input: {
+    threadId: string;
+    channel: string;
+    prompt: string;
+    agentName?: string;
+    actorSlackUserId: string;
+    postedTs: string;
+  }): Promise<DashboardInjectResult> {
+    const session = await this.getSession(input.threadId);
+    if (!session) return { status: "muted" };
+    if (session.muted) return { status: "muted" };
+
+    const route = resolveContinueRoute(input.agentName, session);
+    if ("error" in route) return { status: "muted" };
+
+    if (session.dormant) {
+      await this.mutateSession(input.threadId, (s) => {
+        if (s.dormant) {
+          s.dormant = false;
+          s.needsThreadCatchup = true;
+        }
+      });
+    }
+
+    const event = toDashboardSlackEvent(input);
+    if (route.kind === "top-level") {
+      return this.runSingleSession(event, route.handle);
+    }
+    return this.dispatchAgentMessage(event, route.agentName);
+  }
+
+  async interruptThread(threadId: string): Promise<number> {
+    const session = await this.store.get(threadId);
+    if (!session) return 0;
+
+    const driver = this.driverFor(session.driverMode);
+    let touched = 0;
+    for (const [key, handle] of this.handles) {
+      if (!key.startsWith(`${threadId}:`)) continue;
+      const agentName = key.slice(threadId.length + 1);
+      await driver.interrupt(threadId, agentName).catch(() => undefined);
+      handle.kill();
+      this.handles.delete(key);
+      touched++;
+    }
+    await this.mutateSession(threadId, (s) => {
+      s.status = "idle";
+      for (const agentSession of Object.values(s.agentSessions ?? {})) {
+        if (agentSession.status === "busy") agentSession.status = "idle";
+      }
+    });
+    return touched;
   }
 
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
@@ -1362,30 +1438,8 @@ export class SessionManager {
       }
 
       case "stop": {
-        // Halt the in-flight turn WITHOUT killing the driver session.
-        // Headless: kill the process (same as !cancel for one slot).
-        // Tmux: send Escape to the TUI — the persistent claude stays alive,
-        // input box clears, next message starts fresh.
-        const driver = this.driverFor(session.driverMode);
-        let touched = 0;
-        for (const [key, handle] of this.handles) {
-          if (!key.startsWith(`${session.threadId}:`)) continue;
-          const agentName = key.slice(session.threadId.length + 1);
-          await driver.interrupt(session.threadId, agentName).catch(() => undefined);
-          handle.kill();
-          this.handles.delete(key);
-          touched++;
-        }
-        await this.mutateSession(session.threadId, (s) => {
-          s.status = "idle";
-          for (const agentSession of Object.values(s.agentSessions ?? {})) {
-            if (agentSession.status === "busy") agentSession.status = "idle";
-          }
-        });
-        this.onCommandResponse?.(
-          event,
-          touched === 0 ? "Nothing running." : `Interrupted (${touched} agent${touched === 1 ? "" : "s"}). Send a new message to continue.`,
-        );
+        const touched = await this.interruptThread(session.threadId);
+        this.onCommandResponse?.(event, formatStopReply(touched));
         return true;
       }
 
@@ -3632,6 +3686,7 @@ export class SessionManager {
     agentName: string,
     session: ThreadSession,
   ): Promise<boolean> {
+    if (event.dashboardContinue) return false;
     if (event.pipelineInvocation || !this.pipelineStore) return false;
     if ((this.config.pipeline?.runtimeMode ?? "off") !== "active") return false;
 

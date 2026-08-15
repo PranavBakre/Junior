@@ -5,14 +5,14 @@
 | **Title** | Redesign Junior's HTML dashboard, HTTP API, and supporting codebase |
 | **Author** | Junior dashboard redesign |
 | **Date** | 2026-08-15 |
-| **Status** | Draft |
+| **Status** | Implemented. Current behavior lives in [http-dashboard.md](http-dashboard.md). This file is the design record. |
 | **Supersedes** | `docs/features/http-dashboard.md` cut list item "Write endpoints stay read-only". The localhost dashboard becomes a first-class operator control surface. Session continue/stop post to the Slack thread (parity with `!` commands). Workflow mutations write `dashboard_audit` and a git commit; they post to a workflow Slack output channel when one exists, and are otherwise an accepted weaker trail than Slack (loopback-only identity). |
 
 ---
 
 ## Overview
 
-The localhost dashboard (`HTTP_DASHBOARD_PORT`, binds `127.0.0.1`) is a trusted-operator console. Today it is almost entirely read-only: sessions list + a Slack permalink, a copy-paste resume CLI command, a thin workflow card list, a 3D pipeline dispatch graph that omits leases / artifacts / blockers / gates, no spend ledger, and no runbook browser. Mutations go through Slack so they stay auditable.
+The localhost dashboard (`HTTP_DASHBOARD_PORT`, binds `127.0.0.1`) is a trusted-operator console. **Baseline below (`main` @ `77076fe`, 2026-08-15) was almost entirely read-only:** sessions list + a Slack permalink, a copy-paste resume CLI command, a thin workflow card list, a 3D pipeline dispatch graph that omits leases / artifacts / blockers / gates, no spend ledger, and no runbook browser. Mutations went through Slack so they stayed auditable. That surface is what this redesign replaced; see [http-dashboard.md](http-dashboard.md) for what shipped.
 
 This redesign keeps the loopback threat model and the existing control plane. It adds five operator capabilities — continue a session, inspect a live pipeline, query token/cost spend, trigger/edit/create Git-backed workflows, and view runbooks — by extending the existing Bun HTTP server, session manager, workflow controller, pipeline store, and runbook registry. Dashboard-originated turns go through a new `SessionManager.injectDashboardContinue` that resolves the `junior`/`default`/`lead` alias, skips default-run hijack, and returns `{ accepted | buffered | muted }` — it does not call `handleAgentMessage("junior")` and does not invent a fire-and-forget result from void `handle*` methods. Workflow **trigger** uses a new `WorkflowScheduler.enqueueManualRun` (because `runNow` awaits the whole executor). Creates and edits write `*.workflow.md` files and make a scoped git commit only on a named branch. Every mutating call writes a durable audit row.
 
@@ -22,7 +22,7 @@ The UI stays a no-build vanilla operator console. `public/index.html` is already
 
 ## Background & Motivation
 
-### Current state (verified 2026-08-15, `main` @ `77076fe`)
+### Baseline before this work (verified 2026-08-15, `main` @ `77076fe`)
 
 | Surface | What exists | Gap |
 |---|---|---|
@@ -398,7 +398,7 @@ Justification:
 | Phase tape | One cell per `transitions[]` entry, labeled `toPhase`, width proportional to time until the next transition (last cell stretches to now). |
 | Pins | Blocker kinds on the assignment bar; `needs-human` run status is an amber pin on the tape. |
 | Click | Selects the assignment; the right rail shows objective, lease, dispatch, outcomes, artifact refs, gates for `run.activeAttemptId`. No “agent chat” pane in v1. |
-| Empty | “No typed pipeline runs. Default-run durability is hidden unless you enable it.” |
+| Empty | “No typed pipeline runs. Default-kind durability is hidden unless you enable it.” |
 
 ```mermaid
 flowchart LR
@@ -508,7 +508,7 @@ No pipeline writes from the dashboard in v1 (no force-transition, no replay outb
 
 ### UI states
 
-- Empty: "No typed pipeline runs. Default-run durability is hidden unless you enable it."
+- Empty: "No typed pipeline runs. Default-kind durability is hidden unless you enable it."
 - `runtimeMode=off` and no rows: same empty, plus a hint that controllers are off.
 - Loading detail: keep the current summary skeleton; do not blank the list.
 - Failed detail: "Failed to load run. Retry." (existing `pipelineDetailErrors` set).

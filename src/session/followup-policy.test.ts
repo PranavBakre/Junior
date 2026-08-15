@@ -67,6 +67,7 @@ describe("evaluateBusyFollowup", () => {
     [{ hasCommand: true }, "incoming-has-command"],
     [{ hasPipelineMetadata: true }, "incoming-has-pipeline-metadata"],
     [{ isInternal: true }, "incoming-is-internal"],
+    [{ isDashboardContinue: true }, "incoming-is-dashboard-continue"],
     [{ text: "x".repeat(241) }, "incoming-too-long"],
     [{ text: Array.from({ length: 41 }, () => "word").join(" ") }, "incoming-too-many-words"],
     [{ text: "first line\nsecond line" }, "incoming-multiline-or-code"],

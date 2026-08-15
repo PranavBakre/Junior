@@ -4,16 +4,32 @@ function show(view) {
   const el = $("view-" + view);
   (el || $("view-overview")).classList.add("active");
   if (view === "pipelines") {
+    const pipelineId = hashQuery().get("id");
+    if (pipelineId && !pipelineDetailErrors.has(pipelineId)) selectedPipelineId = pipelineId;
     if (pipelineViewMode === "topology") {
       resizePipeline();
       invalidatePipeline();
     }
-    renderPipelines();
+    if (pipelines.length || selectedPipelineId) renderPipelines();
+    void loadPipelineSpend();
+  }
+  if (view === "workflows") {
+    const name = hashQuery().get("name");
+    if (name) {
+      selectedWorkflowName = name;
+      workflowScrollPending = true;
+    } else {
+      selectedWorkflowName = null;
+    }
+    renderWorkflows();
   }
   if (view === "memory") { resizeGalaxy(); if (!galaxyLoaded) loadGalaxy(false); }
   if (view === "profiles" && !profilesLoaded) loadProfiles();
   if (view === "docs" && !docsLoaded) loadDocsTree();
   if (view === "logs") fetchLogs();
+  if (view === "spend") loadSpend();
+  if (view === "runbooks" && !runbooksLoaded) loadRunbooks();
+  if (view === "audit") loadAudit();
 }
 window.addEventListener("hashchange", () => show(currentView()));
 
@@ -56,6 +72,11 @@ function renderSidebar() {
     openPipelineCount,
     openPipelineCount > 0 ? "hot" : "",
   );
+  const eventsToday = health && health.spend ? health.spend.eventsToday : 0;
+  setNavCount("nav-spend", eventsToday, "");
+  const writesToday = health && health.audit ? health.audit.writesToday : 0;
+  setNavCount("nav-audit", writesToday, writesToday > 0 ? "hot" : "");
+  if (runbooksLoaded) setNavCount("nav-runbooks", runbooks.length, "");
 
   // Static side-foot DOM — only update text nodes (live-toggle keeps one listener).
   $("sf-version").textContent = health ? String(health.version || "—") : "—";
@@ -176,6 +197,16 @@ function renderOverview() {
     ["Buffered msgs", buffered, "", "across threads"],
     ["Dev servers", running, "", "of " + devServers.length + " repos"],
   ];
+  const todayTotals = spendToday && spendToday.totals;
+  const todayCost = todayTotals ? fmtProviderCost(todayTotals.costUsd) : null;
+  stats.push([
+    "Today tokens",
+    todayTotals ? fmtTokens(spendTotalTokens(todayTotals)) : "—",
+    "",
+    todayTotals
+      ? (todayCost ? todayCost + " provider-reported" : "tokens only")
+      : "host-local today",
+  ]);
   $("ov-stats").innerHTML = stats.map(([lbl, num, cls, sub]) =>
     '<div class="stat"><div class="lbl">' + esc(lbl) + '</div><div class="num ' + esc(cls) + '">' +
     esc(num) + '</div><div class="sub">' + esc(sub) + "</div></div>"

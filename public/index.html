@@ -130,6 +130,9 @@
   .pill.failed, .pill.error
                 { color: var(--red);    border-color: rgba(255,59,59,0.35);  background: rgba(255,59,59,0.08); }
   .pill.stopped { color: var(--fg-faint); }
+  .pill.buffered, .pill.partial, .pill.received { color: var(--amber); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+  .pill.denied { color: var(--red); border-color: rgba(255,59,59,0.35); background: rgba(255,59,59,0.08); }
+  .pill.skipped { color: var(--fg-faint); }
 
   /* ---------- overview ---------- */
   .attn { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
@@ -283,6 +286,21 @@
   }
   .copy-btn:hover { color: var(--fg); border-color: var(--accent); background: rgba(0,100,255,0.08); }
   .copy-btn.copied { color: var(--green); border-color: rgba(34,197,94,0.4); }
+  .continue-box { margin-top: 18px; }
+  .continue-box textarea {
+    width: 100%; min-height: 88px; resize: vertical; box-sizing: border-box;
+    background: var(--bg-paper); color: var(--fg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 8px 10px; font-family: inherit; font-size: 13px; line-height: 1.45;
+    outline: none;
+  }
+  .continue-box textarea:focus { border-color: var(--accent); }
+  .continue-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .continue-actions select.ctrl { min-width: 140px; }
+  .continue-status { margin-top: 8px; font-size: 12px; color: var(--fg-dim); }
+  .continue-status.err { color: var(--red); }
+  button.ctrl.danger { color: var(--red); }
+  button.ctrl:disabled { opacity: 0.5; cursor: not-allowed; }
   .agent-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--surface); }
   .agent-card .top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
   .agent-card .top b { font-size: 13.5px; }
@@ -350,13 +368,61 @@
   .qrow .pos { color: var(--fg-faint); width: 22px; }
 
   /* ---------- workflows ---------- */
-  .wf-card { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 16px; }
+  .wf-card { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1.1fr 0.9fr 1fr 1.15fr; gap: 16px; }
+  .wf-card.on { background: rgba(0,100,255,.1); box-shadow: inset 2px 0 var(--accent); }
   .wf-card:last-child { border-bottom: none; }
   .wf-card .name { font-weight: 700; font-size: 14px; }
   .wf-card .desc { color: var(--fg-dim); font-size: 12px; margin-top: 2px; }
   .wf-card .src { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); margin-top: 6px; }
   .wf-card .mrow { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); line-height: 1.9; }
   .wf-card .mrow b { color: var(--fg); font-weight: 500; }
+  .wf-actions { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .wf-actions textarea {
+    width: 100%; min-height: 56px; resize: vertical;
+    background: var(--bg-paper); color: var(--fg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 8px 10px; font-family: var(--font-sans); font-size: 12px;
+  }
+  .wf-actions textarea:focus { outline: none; border-color: var(--accent); }
+  .wf-actions .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .wf-count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint); }
+  .wf-foot { padding: 10px 18px; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); }
+  #wf-status { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); }
+  #wf-status.err { color: var(--red); }
+  #wf-status.ok { color: var(--green); }
+  .wf-banner {
+    padding: 8px 10px; border-radius: 8px; font-size: 12px; margin-bottom: 8px;
+    background: rgba(245,158,11,0.12); color: var(--amber); border: 1px solid rgba(245,158,11,0.25);
+  }
+  .wf-banner.err { background: rgba(255,59,59,0.1); color: var(--red); border-color: rgba(255,59,59,0.25); }
+  .wf-banner.ok { background: rgba(34,197,94,0.1); color: var(--green); border-color: rgba(34,197,94,0.25); }
+  #wf-editor { margin-top: 12px; padding: 16px 18px; display: none; }
+  #wf-editor.open { display: block; }
+  #wf-editor .wf-editor-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  }
+  #wf-editor .wf-editor-head strong { font-size: 14px; }
+  #wf-markdown {
+    width: 100%; min-height: 280px; resize: vertical;
+    background: var(--bg-paper); color: var(--fg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.45;
+  }
+  #wf-markdown:focus { outline: none; border-color: var(--accent); }
+  .wf-field { display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
+  .wf-field span { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); }
+  .wf-field input, .wf-field select {
+    background: var(--bg-paper); color: var(--fg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 6px 8px; font-family: var(--font-mono); font-size: 12px;
+  }
+  #wf-save-result {
+    margin: 10px 0 0; white-space: pre-wrap; font-family: var(--font-mono);
+    font-size: 11px; color: var(--fg-dim);
+  }
+  @media (max-width: 900px) {
+    .wf-card { grid-template-columns: 1fr; }
+  }
   .runs { display: flex; gap: 4px; align-items: center; margin-top: 6px; }
   .run-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--surface-strong); cursor: default; }
   .run-dot.done { background: rgba(34,197,94,0.7); }
@@ -982,6 +1048,53 @@
   .doc-pane p, .doc-pane li { color: var(--fg-dim); font-size: 13px; }
   .doc-pane pre { background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px 14px; font-size: 12px; overflow-x: auto; }
 
+  /* ---------- spend / audit tables ---------- */
+  .data-table-wrap { overflow-x: auto; }
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: calc(12.5 * var(--baseline-font));
+  }
+  .data-table th, .data-table td {
+    padding: calc(9 * var(--baseline-font)) calc(14 * var(--baseline-font));
+    border-bottom: 1px solid var(--border-subtle);
+    text-align: left;
+    vertical-align: top;
+  }
+  .data-table th {
+    font-family: var(--font-mono);
+    font-size: calc(10 * var(--baseline-font));
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .data-table th[data-sort] { cursor: pointer; user-select: none; }
+  .data-table th[data-sort]:hover { color: var(--fg); }
+  .data-table th.sort-asc::after { content: " ↑"; color: var(--accent); }
+  .data-table th.sort-desc::after { content: " ↓"; color: var(--accent); }
+  .data-table td.num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .data-table tr:last-child td { border-bottom: none; }
+  .data-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+  .data-table a { color: var(--accent); text-decoration: none; }
+  .data-table a:hover { text-decoration: underline; }
+  .chip.risk-hot { color: var(--red); border-color: rgba(255,59,59,0.35); }
+
+  .pill.production-write, .pill.destructive,
+  .pill.credential, .pill.payment {
+    color: var(--red); border-color: rgba(255,59,59,0.35); background: rgba(255,59,59,0.08);
+  }
+  .pill.privacy-sensitive, .pill.access-control {
+    color: var(--amber); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08);
+  }
+  .pill.read-only { color: var(--green); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
+  .pill.workspace-write { color: var(--amber); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+
   /* ---------- spatial control room ---------- */
   :root {
     --baseline-font: 1px;
@@ -1080,7 +1193,12 @@
     color: var(--cyan);
     background: rgba(92,225,230,.05);
   }
-  nav { gap: calc(5 * var(--baseline-font)); }
+  nav {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    gap: calc(5 * var(--baseline-font));
+  }
   nav::before {
     content: "SYSTEM MAP";
     padding: 0 calc(12 * var(--baseline-font)) calc(8 * var(--baseline-font));
@@ -1280,7 +1398,7 @@
     aside {
       width: 100%;
       height: auto;
-      min-height: calc(65 * var(--baseline-font));
+      min-height: calc(108 * var(--baseline-font));
       position: fixed;
       inset: auto 0 0;
       padding: calc(8 * var(--baseline-font)) calc(10 * var(--baseline-font));
@@ -1291,7 +1409,10 @@
     .brand, .side-foot, nav::before { display: none; }
     nav {
       display: grid;
-      grid-template-columns: repeat(9, 1fr);
+      flex: none;
+      overflow: visible;
+      min-height: 0;
+      grid-template-columns: repeat(6, 1fr);
       gap: calc(2 * var(--baseline-font));
     }
     nav a {
@@ -1311,7 +1432,7 @@
     }
     nav a .ico { width: auto; font-size: calc(12 * var(--baseline-font)); }
     nav a .count { display: none !important; }
-    .content { height: calc(100vh - 64 * var(--baseline-font)); }
+    .content { height: calc(100vh - 108 * var(--baseline-font)); }
     .view {
       padding: calc(18 * var(--baseline-font)) calc(16 * var(--baseline-font)) calc(92 * var(--baseline-font));
     }
@@ -1447,9 +1568,12 @@
       <a href="#devservers" data-view="devservers"><span class="ico">▶</span>Dev Servers<span class="count" id="nav-ds" style="display:none"></span></a>
       <a href="#workflows" data-view="workflows"><span class="ico">↻</span>Workflows<span class="count" id="nav-wf" style="display:none"></span></a>
       <a href="#pipelines" data-view="pipelines"><span class="ico">◇</span>Pipelines<span class="count hot" id="nav-pipelines" style="display:none"></span></a>
+      <a href="#runbooks" data-view="runbooks"><span class="ico">▣</span>Runbooks<span class="count" id="nav-runbooks" style="display:none"></span></a>
+      <a href="#spend" data-view="spend"><span class="ico">$</span>Spend<span class="count" id="nav-spend" style="display:none"></span></a>
       <a href="#profiles" data-view="profiles"><span class="ico">◎</span>Profiles<span class="count" id="nav-profiles" style="display:none"></span></a>
       <a href="#memory" data-view="memory"><span class="ico">✦</span>Memory</a>
       <a href="#docs" data-view="docs"><span class="ico">¶</span>Docs</a>
+      <a href="#audit" data-view="audit"><span class="ico">⌗</span>Audit<span class="count" id="nav-audit" style="display:none"></span></a>
     </nav>
     <div class="side-foot" id="side-foot">
       v<b id="sf-version">—</b> · up <b id="sf-uptime">—</b><br />
@@ -1556,8 +1680,46 @@
       <div class="view-head" data-index="05">
         <h2>Workflows</h2>
         <span class="sub">scheduled runs · last outcomes per workflow</span>
+        <span class="right">
+          <span id="wf-status"></span>
+          <button class="ctrl" id="wf-new" type="button">New workflow</button>
+          <button class="ctrl" id="wf-reload" type="button">reload</button>
+        </span>
       </div>
       <div class="panel" id="wf-list"><div class="empty">loading…</div></div>
+      <div class="panel" id="wf-editor">
+        <div class="wf-editor-head">
+          <strong id="wf-editor-title">New workflow</strong>
+          <span class="right">
+            <button class="ctrl" id="wf-editor-close" type="button">close</button>
+          </span>
+        </div>
+        <div id="wf-banners"></div>
+        <div class="row" style="gap:12px; margin-bottom:10px; flex-wrap:wrap">
+          <label class="wf-field">
+            <span>name</span>
+            <input id="wf-name" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="wf-field">
+            <span>sourceRoot</span>
+            <select id="wf-source-root">
+              <option value="overlay">overlay (agents-org)</option>
+              <option value="public">public (workflows/)</option>
+            </select>
+          </label>
+        </div>
+        <textarea id="wf-markdown" spellcheck="false"></textarea>
+        <label id="wf-anyway-row" class="row" style="display:none; margin-top:8px; gap:8px; align-items:center; font-size:12px">
+          <input id="wf-anyway" type="checkbox" />
+          commit here anyway (<span id="wf-branch"></span> is not main/master)
+        </label>
+        <div class="row" style="margin-top:10px; gap:6px">
+          <button class="ctrl" id="wf-validate" type="button">Validate</button>
+          <button class="ctrl" id="wf-save" type="button">Save &amp; commit</button>
+        </div>
+        <pre id="wf-save-result"></pre>
+      </div>
+      <div class="wf-foot">Workflow mutations write dashboard_audit and a scoped git commit. They post to a Slack output channel when the definition has one. Otherwise the trail is weaker than Slack ! commands. Commits are not pushed.</div>
     </section>
 
     <!-- ================= PIPELINES ================= -->
@@ -1618,9 +1780,35 @@
       </div>
     </section>
 
+    <!-- ================= RUNBOOKS ================= -->
+    <section class="view" id="view-runbooks">
+      <div class="view-head" data-index="07">
+        <h2>Runbooks</h2>
+        <span class="sub">reviewed playbooks · view only · not workflows</span>
+        <span class="right"><input class="search" id="rb-search" placeholder="filter name / owner / tag…" autocomplete="off" /></span>
+      </div>
+      <div class="chips" id="rb-risks" style="margin-bottom: calc(14 * var(--baseline-font))"></div>
+      <div class="profiles-layout">
+        <div class="panel profile-list" id="rb-list"><div class="empty">loading…</div></div>
+        <div class="panel profile-detail" id="rb-detail"><div class="empty">select a runbook</div></div>
+      </div>
+    </section>
+
+    <!-- ================= SPEND ================= -->
+    <section class="view" id="view-spend">
+      <div class="view-head" data-index="08">
+        <h2>Spend</h2>
+        <span class="sub" id="spend-sub">token ledger · host timezone</span>
+      </div>
+      <div class="stat-grid" id="spend-kpis"><div class="empty">loading…</div></div>
+      <h3 class="sect">Group by</h3>
+      <div class="chips" id="spend-groups" style="margin-bottom: calc(14 * var(--baseline-font))"></div>
+      <div class="panel data-table-wrap" id="spend-table"><div class="empty">loading…</div></div>
+    </section>
+
     <!-- ================= PROFILES ================= -->
     <section class="view" id="view-profiles">
-      <div class="view-head" data-index="07">
+      <div class="view-head" data-index="09">
         <h2>Profiles</h2>
         <span class="sub">grounded working context · inspection does not affect recall freshness</span>
         <span class="right"><input class="search" id="profile-search" placeholder="filter profiles…" autocomplete="off" /></span>
@@ -1635,7 +1823,7 @@
 
     <!-- ================= MEMORY ================= -->
     <section class="view" id="view-memory">
-      <div class="view-head" data-index="08">
+      <div class="view-head" data-index="10">
         <h2>Memory</h2>
         <span class="sub">3D projection — local neighbourhoods are meaningful, global distances are not</span>
         <span class="right">
@@ -1688,7 +1876,7 @@
 
     <!-- ================= DOCS ================= -->
     <section class="view" id="view-docs">
-      <div class="view-head" data-index="09">
+      <div class="view-head" data-index="11">
         <h2>Docs</h2>
         <span class="sub">read-only browser over docs/**/*.md</span>
       </div>
@@ -1696,6 +1884,28 @@
         <div class="panel doc-tree" id="doc-tree"><div class="empty">loading…</div></div>
         <div class="panel doc-pane" id="doc-pane"><div class="empty">select a file</div></div>
       </div>
+    </section>
+
+    <!-- ================= AUDIT ================= -->
+    <section class="view" id="view-audit">
+      <div class="view-head" data-index="12">
+        <h2>Audit</h2>
+        <span class="sub">dashboard mutations · newest first · loopback only</span>
+      </div>
+      <div class="log-toolbar">
+        <input class="search" id="audit-action" placeholder="action…" autocomplete="off" />
+        <select class="ctrl" id="audit-target" aria-label="Filter audit by target type">
+          <option value="">all targets</option>
+          <option value="session">session</option>
+          <option value="workflow">workflow</option>
+          <option value="pipeline">pipeline</option>
+          <option value="runbook">runbook</option>
+        </select>
+        <input type="date" class="ctrl" id="audit-from" aria-label="Audit from date" />
+        <input type="date" class="ctrl" id="audit-to" aria-label="Audit to date" />
+        <button class="ctrl" id="audit-clear" type="button">clear filters</button>
+      </div>
+      <div class="panel data-table-wrap" id="audit-table"><div class="empty">loading…</div></div>
     </section>
 
   </div>
@@ -1722,6 +1932,9 @@ for (const src of [
   "/js/pipeline-layout.js",
   "/js/pipelines.js",
   "/js/galaxy.js",
+  "/js/spend.js",
+  "/js/runbooks.js",
+  "/js/audit.js",
   "/js/app.js",
 ]) {
   await loadScript(src);

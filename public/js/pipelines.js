@@ -438,6 +438,10 @@ function pipelineInCurrentFilter(runId) {
   return pipelines.some((run) => run.id === runId);
 }
 
+function pipelineInCurrentList(id) {
+  return pipelineInCurrentFilter(id);
+}
+
 function selectedPipelineSummary() {
   if (!selectedPipelineId) return null;
   return pipelines.find((run) => run.id === selectedPipelineId)
@@ -446,9 +450,37 @@ function selectedPipelineSummary() {
     || { id: selectedPipelineId };
 }
 
+function pipelineSummaryFor(id) {
+  if (!id) return null;
+  return pipelines.find((run) => run.id === id)
+    || attentionPipelines.find((run) => run.id === id)
+    || pipelineDetails.get(id)
+    || null;
+}
+
 function pipelineFilterNote() {
   if (!selectedPipelineId || pipelineInCurrentFilter(selectedPipelineId)) return "";
   return '<div class="empty pipeline-filter-note">run not in current filter</div>';
+}
+
+function renderPipelineRunRow(run, extras) {
+  const detail = pipelineDetails.get(run.id);
+  const open = (detail?.assignments || []).filter((assignment) =>
+    ["pending", "leased", "waiting"].includes(assignment.status)
+  ).length;
+  return '<div class="pipeline-run' + (run.id === selectedPipelineId ? " on" : "") +
+    '" data-pipeline-id="' + esc(run.id) + '">' +
+    '<div class="top"><span class="name">' + esc(run.kind || "run") + " · " + esc(shortId(run.id)) +
+    '</span><span class="count">' +
+    (extras && extras.badge
+      ? esc(extras.badge)
+      : (detail ? open + " open" : esc(run.status || "—"))) + "</span></div>" +
+    '<div class="phase">' +
+    (extras && extras.phase
+      ? esc(extras.phase)
+      : esc(run.phase || "—") + " · " + esc(run.status || "—") + " · " + ago(run.updatedAt) + " ago") +
+    "</div></div>";
+
 }
 
 function renderPipelines() {
@@ -457,35 +489,42 @@ function renderPipelines() {
     selectedPipelineId = pipelines[0]?.id || null;
     PIPE.selectedNodeId = null;
   }
-  const listSignature = selectedPipelineId + "|" +
-    (selectedPipelineId && !pipelineInCurrentFilter(selectedPipelineId) ? "hidden|" : "") +
+  const inList = pipelineInCurrentList(selectedPipelineId);
+  const listSignature = selectedPipelineId + "|" + (inList ? "in" : "out") + "|" +
     pipelines.map((run) => {
-    const detail = pipelineDetails.get(run.id);
-    return [run.id, run.phase, run.status, run.updatedAt, detail?.updatedAt || 0].join(":");
-  }).join("|");
+      const detail = pipelineDetails.get(run.id);
+      return [run.id, run.phase, run.status, run.updatedAt, detail?.updatedAt || 0].join(":");
+    }).join("|");
   if (listSignature !== renderedPipelineListSignature) {
     renderedPipelineListSignature = listSignature;
-    $("pipeline-runs").innerHTML = pipelines.length
-      ? pipelines.map((run) => {
-        const detail = pipelineDetails.get(run.id);
-        const open = detail
-          ? (detail.assignments || []).filter((assignment) =>
-            ["pending", "leased", "waiting"].includes(assignment.status)
-          ).length
-          : (run.openAssignmentCount ?? null);
-        return '<div class="pipeline-run' + (run.id === selectedPipelineId ? " on" : "") +
-          '" data-pipeline-id="' + esc(run.id) + '">' +
-          '<div class="top"><span class="name">' + esc(run.kind) + " · " + esc(shortId(run.id)) +
-          '</span><span class="count">' +
-          (open != null ? open + " open" : esc(run.status)) + "</span></div>" +
-          '<div class="phase">' + esc(run.phase) + " · " + esc(run.status) + " · " + ago(run.updatedAt) + " ago</div></div>";
-        }).join("")
-      : '<div class="empty">' +
-        (pipelineFetchError ? "Failed to load pipelines." : esc(pipelineEmptyCopy())) +
-        "</div>";
+    let rows = pipelines.map((run) => renderPipelineRunRow(run)).join("");
+    if (selectedPipelineId && !inList) {
+      const pinned = pipelineSummaryFor(selectedPipelineId) || { id: selectedPipelineId };
+      rows = renderPipelineRunRow(pinned, {
+        badge: "not in filter",
+        phase: "run not in current filter",
+      }) + rows;
+    }
+    $("pipeline-runs").innerHTML = rows || (
+      '<div class="empty">' +
+      (pipelineFetchError ? "Failed to load pipelines." : esc(pipelineEmptyCopy())) +
+      "</div>"
+    );
   }
   const summary = selectedPipelineSummary();
+
   if (!summary) {
+    if (selectedPipelineId) {
+      $("pipeline-summary").innerHTML =
+        '<div class="eyebrow">control plane</div><div class="title">' + esc(shortId(selectedPipelineId)) + "</div>" +
+        '<div class="meta">run not in current filter. Loading by id…</div>';
+      $("pipeline-detail").style.display = "none";
+      $("pipeline-status").textContent = pipelineDetailErrors.has(selectedPipelineId)
+        ? "Failed to load selected pipeline. Use refresh to retry."
+        : "run not in current filter";
+      if (currentView() === "pipelines") void loadPipelineDetail(selectedPipelineId);
+      return;
+    }
     $("pipeline-summary").innerHTML =
       '<div class="eyebrow">control plane</div><div class="title">No typed runs</div>' +
       '<div class="meta">' + esc(pipelineEmptyCopy()) + "</div>";
@@ -538,15 +577,23 @@ function renderPipelines() {
   paintPipelineDetail(run);
 }
 
+function pipelineSpendMeta(run) {
+  const spend = (run && run.spend) || pipelineSpendById.get(run && run.id);
+  if (!spend) return "";
+  return "<br />spend " + esc(formatSpendSummary(spend));
+}
+
 function paintPipelineSummary(run) {
+  const offList = run.id && !pipelineInCurrentList(run.id);
   $("pipeline-summary").innerHTML =
     '<div class="eyebrow">' + esc(run.kind || "pipeline") + " · " + esc(run.status || "loading") + "</div>" +
     '<div class="title">' + esc(run.phase || "Loading flow") + "</div>" +
     '<div class="meta">owner ' + esc(run.ownerAgent || "—") + "<br />thread " +
     esc(shortId(run.threadId || run.id)) +
     (run.repoRefs?.length ? "<br />repos " + esc(run.repoRefs.join(", ")) : "") +
-    (selectedPipelineId && !pipelineInCurrentFilter(selectedPipelineId)
-      ? "<br />run not in current filter" : "") +
+    pipelineSpendMeta(run) +
+    (offList ? "<br />run not in current filter" : "") +
+
     "</div>";
   $("pipeline-detail").style.display = "none";
   $("pipeline-detail").closest(".pipeline-rail")?.classList.remove("detail-open");
@@ -580,6 +627,7 @@ async function loadPipelineDetail(runId, force = false) {
   if (controller.signal.aborted) return;
   if (pipelineDetailAbortController === controller) pipelineDetailAbortController = null;
   if (pipelineDetailLoadingId === runId) pipelineDetailLoadingId = null;
+  const stillSelected = selectedPipelineId === runId;
   if (response.ok && response.data.pipeline) {
     pipelineDetails.delete(runId);
     pipelineDetails.set(runId, response.data.pipeline);
@@ -593,12 +641,13 @@ async function loadPipelineDetail(runId, force = false) {
       }
       pipelineDetails.delete(oldestId);
     }
-  } else if (selectedPipelineId === runId) {
+  } else if (stillSelected) {
     pipelineDetailErrors.add(runId);
     $("pipeline-status").innerHTML =
       'Failed to load run. <button class="ctrl retry" type="button" data-retry-pipeline>Retry</button>';
+
   }
-  if (selectedPipelineId === runId) renderPipelines();
+  if (stillSelected) renderPipelines();
 }
 
 function paintPipelineDetail(run) {
@@ -613,6 +662,8 @@ function paintPipelineDetail(run) {
     (run.assignments || []).length + " dispatches · " + open + " open<br />" +
     "thread " + esc(shortId(run.threadId)) +
     (run.repoRefs?.length ? "<br />repos " + esc(run.repoRefs.join(", ")) : "") +
+    pipelineSpendMeta(run) +
+    (pipelineInCurrentList(run.id) ? "" : "<br />run not in current filter") +
     (transitions.length ? "<br />phase trail " + esc(transitions.map((item) => item.toPhase).join(" → ")) : "") +
     (run.slackPermalink ? '<br /><a class="tlink" href="' + esc(run.slackPermalink) +
       '" target="_blank" rel="noreferrer">open in Slack</a>' : "") +
@@ -813,6 +864,18 @@ function formatSwimlaneTick(ts, span) {
     return (date.getMonth() + 1) + "/" + date.getDate() + " " + hh + ":" + mm;
   }
   return hh + ":" + mm;
+}
+
+async function loadPipelineSpend() {
+  const generation = ++pipelineSpendGeneration;
+  const from = Date.now() - 89 * 24 * 60 * 60 * 1000;
+  const res = await safeFetch("/api/spend?from=" + from + "&groupBy=pipeline");
+  if (generation !== pipelineSpendGeneration) return;
+  if (!res.ok) return;
+  const next = new Map();
+  for (const bucket of res.data.buckets || []) next.set(bucket.key, bucket);
+  pipelineSpendById = next;
+  if (currentView() === "pipelines") renderPipelines();
 }
 
 $("pipeline-runs").addEventListener("click", (event) => {
