@@ -4,7 +4,7 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 
 ## Admin Dashboard (DONE)
 
-**Status:** Completed as the [HTTP Dashboard](./http-dashboard.md). Surfaces live sessions, dev-server queue, workflows/pipelines, logs, docs, profiles, and memory projections.
+**Status:** Completed as the [HTTP Dashboard](./http-dashboard.md). Surfaces live sessions (allowlisted), a swimlane pipeline operator view, spend ledger, runbook viewer, audit log, logs, docs, profiles, and memory projections. Session continue/stop go through `SessionManager` and post to the Slack thread. Workflow enqueue/start/stop/reload/create/edit are loopback writes with `dashboard_audit`; they post to a workflow Slack output channel only when one exists — otherwise the trail is weaker than Slack `!` commands. Remaining dashboard items (auth, SSE, pending-body viewer, worktree/dev-server kill, push/PR) stay on that feature doc's cut list.
 
 ## Batch User Resolution in Thread Context
 
@@ -30,7 +30,7 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 **Open questions:**
 - Should active sessions pin the identity/prompt version they started with, or adopt new identity data on the next turn?
 - Should invalid org overlays fail closed for private assets, or fall back to public defaults?
-- Which command surface owns this: a general `!org reload`, per-asset commands, or an admin dashboard action?
+- Which command surface owns this: a general `!org reload`, per-asset commands, or an admin dashboard action? (Workflow files already hot-reload via `fs.watch`, and the dashboard exposes `POST /api/workflows/reload` as the same diagnostic as `!workflow reload`. That does not extend to other org assets.)
 
 ## Per-agent mute
 

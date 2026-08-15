@@ -1780,7 +1780,16 @@ export class SqlitePipelineStore implements PipelineStore {
       .map(runFromRow);
   }
 
-  async countOpenRuns(): Promise<number> {
+  async countOpenRuns(filter?: { kind?: PipelineRun["kind"] }): Promise<number> {
+    if (filter?.kind) {
+      return this.db
+        .query<{ count: number }, [string]>(
+          `SELECT COUNT(*) AS count
+           FROM pipeline_runs
+           WHERE status != 'terminal' AND kind = ?`,
+        )
+        .get(filter.kind)!.count;
+    }
     return this.db
       .query<{ count: number }, []>(
         `SELECT COUNT(*) AS count

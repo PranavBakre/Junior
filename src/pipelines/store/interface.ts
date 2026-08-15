@@ -44,8 +44,8 @@ export interface PipelineStore {
     kind?: PipelineRun["kind"];
     limit?: number;
   }): Promise<PipelineRun[]>;
-  /** Global non-terminal count, independent of dashboard filters. */
-  countOpenRuns(): Promise<number>;
+  /** Non-terminal count. Optional `kind` narrows the dashboard visibility window. */
+  countOpenRuns(filter?: { kind?: PipelineRun["kind"] }): Promise<number>;
 
   /**
    * Atomically create a run + initial assignment (and optional seed events).

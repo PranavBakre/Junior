@@ -102,8 +102,10 @@ export class InMemoryPipelineStore implements PipelineStore {
       .map(cloneRun);
   }
 
-  async countOpenRuns(): Promise<number> {
-    return [...this.runs.values()].filter((run) => run.status !== "terminal").length;
+  async countOpenRuns(filter?: { kind?: PipelineRun["kind"] }): Promise<number> {
+    return [...this.runs.values()].filter((run) =>
+      run.status !== "terminal" && (!filter?.kind || run.kind === filter.kind)
+    ).length;
   }
 
   async createRunWithAssignment(input: {

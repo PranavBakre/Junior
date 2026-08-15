@@ -824,6 +824,31 @@ setInterval(() => {
         memoryStore,
         profileStore,
         pipelineStore,
+        usageStore,
+        auditStore,
+        runbookCatalog: runbookCatalogStore,
+        sessionManager,
+        slackPoster: {
+          post: async (channel, threadTs, text) => {
+            try {
+              const result = await app.client.chat.postMessage({
+                channel,
+                text,
+                ...(threadTs ? { thread_ts: threadTs } : {}),
+                unfurl_links: false,
+                unfurl_media: false,
+              });
+              return typeof result.ts === "string" ? { ts: result.ts } : null;
+            } catch (err) {
+              log.warn(
+                "dashboard",
+                `slack post failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              return null;
+            }
+          },
+        },
+        projectRoot: process.cwd(),
         resolveSlackPermalink: async (channel, messageTs) => {
           const result = await app.client.chat.getPermalink({
             channel,

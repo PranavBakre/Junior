@@ -56,6 +56,13 @@ export interface UsageStore {
     to: number;
     groupBy: UsageGroupBy;
   }): Promise<UsageGroupResult>;
+  count(filter?: {
+    from?: number;
+    to?: number;
+    threadId?: string;
+    sourceKind?: UsageSourceKind;
+  }): Promise<number>;
+  summarizeByThread(threadIds: string[]): Promise<UsageBucket[]>;
   deleteOlderThan(occurredAt: number): Promise<number>;
   close?(): void;
 }
