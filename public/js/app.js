@@ -6,11 +6,13 @@ function show(view) {
   if (view === "pipelines") {
     const pipelineId = hashQuery().get("id");
     if (pipelineId && !pipelineDetailErrors.has(pipelineId)) selectedPipelineId = pipelineId;
-    if (pipelineViewMode === "topology") {
+    if (pipelineViewMode === "topology" && typeof resizePipeline === "function") {
       resizePipeline();
       invalidatePipeline();
     }
-    if (pipelines.length || selectedPipelineId) renderPipelines();
+    if ((pipelines.length || selectedPipelineId) && typeof renderPipelines === "function") {
+      renderPipelines();
+    }
     void loadPipelineSpend();
   }
   if (view === "workflows") {
