@@ -125,5 +125,9 @@ describe("dashboard operator views", () => {
     }
     const pipelines = await Bun.file(resolve(publicDir, "js/pipelines.js")).text();
     expect(pipelines).toContain("function renderPipelines(");
+    const api = await Bun.file(resolve(publicDir, "js/api.js")).text();
+    expect(api).toMatch(/var pipelineViewMode = "swimlane"/);
+    expect(pipelines).not.toMatch(/var pipelineViewMode/);
+    expect(pipelines).toMatch(/target:\s*null/);
   });
 });

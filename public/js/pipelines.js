@@ -15,13 +15,11 @@ const PIPE = {
   lastFrameAt: 0, needsRender: true, frameRequest: null,
   worker: null, layoutRequestId: 0, layoutResolvers: new Map(),
   buildGeneration: 0, buildingSignature: null,
-  width: 1, height: 1, target: new THREE.Vector3(),
+  width: 1, height: 1, target: null,
   yaw: 0, pitch: 0, distance: 14, desiredDistance: 14,
   drag: null,
 };
 const pipelineColor = (status) => PIPELINE_COLORS[status] || 0x999999;
-var pipelineViewMode = "swimlane";
-var renderedSwimlaneSignature = null;
 
 function pipelineEmptyCopy() {
   const copy = "No typed pipeline runs. Default-kind durability is hidden unless you enable it.";
@@ -54,6 +52,7 @@ function setPipelineViewMode(mode) {
 
 function ensurePipelineRenderer() {
   if (PIPE.renderer) return;
+  if (!PIPE.target) PIPE.target = new THREE.Vector3();
   PIPE.renderer = new THREE.WebGLRenderer({
     canvas: PIPE.canvas, antialias: true, alpha: true, powerPreference: "high-performance",
   });

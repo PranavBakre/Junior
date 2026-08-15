@@ -5,6 +5,7 @@ import type { ThreadSession } from "../session/types.ts";
 import type { WorkflowRun, WorkflowState } from "../workflows/types.ts";
 import type { WorkflowStore } from "../workflows/store.ts";
 import { sanitizeErrorForSlack } from "./formatting.ts";
+import type { SlackPermalinkResolve } from "./permalink-cache.ts";
 
 const HOME_TEXT_LIMIT = 2_900;
 const MODAL_TEXT_LIMIT = 2_900;
@@ -15,9 +16,17 @@ export function registerHomeTab(
   store: SessionStore,
   windowMs: number,
   workflowStore?: WorkflowStore,
+  permalinkResolver?: SlackPermalinkResolve,
 ): void {
   app.event("app_home_opened", async ({ event }) => {
-    await publishHomeTab(app, event.user, store, windowMs, workflowStore);
+    await publishHomeTab(
+      app,
+      event.user,
+      store,
+      windowMs,
+      workflowStore,
+      permalinkResolver,
+    );
   });
 
   app.action(ACTION_SESSION_DETAILS, async ({ ack, body, client }) => {
@@ -44,12 +53,13 @@ export async function publishHomeTab(
   store: SessionStore,
   windowMs: number,
   workflowStore?: WorkflowStore,
+  permalinkResolver?: SlackPermalinkResolve,
 ): Promise<void> {
   const sessions = await store.getRecent(windowMs);
   const workflowData = workflowStore
     ? await loadWorkflowHomeData(workflowStore)
     : { states: [], runsByWorkflow: new Map<string, WorkflowRun[]>() };
-  const permalinks = await resolvePermalinks(app, sessions);
+  const permalinks = await resolvePermalinks(app, sessions, permalinkResolver);
   const blocks = buildHomeBlocks(sessions, permalinks, workflowData);
 
   try {
@@ -69,15 +79,20 @@ export async function publishHomeTab(
 async function resolvePermalinks(
   app: App,
   sessions: Map<string, ThreadSession>,
+  permalinkResolver?: SlackPermalinkResolve,
 ): Promise<Map<string, string>> {
+  const resolve: SlackPermalinkResolve = permalinkResolver ??
+    (async (channel, messageTs) => {
+      const res = await app.client.chat.getPermalink({
+        channel,
+        message_ts: messageTs,
+      });
+      return res.permalink ?? null;
+    });
   const entries = await Promise.all(
     Array.from(sessions.values()).map(async (s) => {
       try {
-        const res = await app.client.chat.getPermalink({
-          channel: s.channel,
-          message_ts: s.threadId,
-        });
-        return [s.threadId, res.permalink ?? ""] as const;
+        return [s.threadId, await resolve(s.channel, s.threadId) ?? ""] as const;
       } catch {
         return [s.threadId, ""] as const;
       }

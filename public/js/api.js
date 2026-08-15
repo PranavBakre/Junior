@@ -139,6 +139,8 @@ var pipelineFetchError = null;
 var pipelineFetchGeneration = 0;
 var selectedPipelineId = null;
 var renderedPipelineListSignature = null;
+var pipelineViewMode = "swimlane";
+var renderedSwimlaneSignature = null;
 var logEntries = [];
 var logErrorCount = 0;
 var logFetchError = null;
@@ -286,7 +288,7 @@ async function refreshPipelineControlPlane() {
   applyAttentionPipelineResponse(attn);
   renderSidebar();
   renderOverview();
-  renderPipelines();
+  if (typeof renderPipelines === "function") renderPipelines();
   if (!response.ok && pipelines.length === 0) {
     $("pipeline-status").textContent = "Failed to load pipeline control plane.";
     $("pipeline-runs").innerHTML = '<div class="empty">Failed to load pipelines.</div>';
@@ -331,8 +333,8 @@ async function refreshMain() {
   renderDevServers();
   renderWorkflows();
   if (currentView() === "pipelines") {
-    renderPipelines();
-    await loadPipelineSpend();
+    if (typeof renderPipelines === "function") renderPipelines();
+    if (typeof loadPipelineSpend === "function") await loadPipelineSpend();
   }
   if (currentView() === "spend") await loadSpend();
   if (currentView() === "runbooks" && runbooksLoaded) await loadRunbooks();

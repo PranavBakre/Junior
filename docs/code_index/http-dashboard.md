@@ -13,7 +13,7 @@ Spend capture (`usage_events`) and audit retention deletes are always-on: they a
 | `startHttpServer(deps)` | `server.ts` | Bun.serve on 127.0.0.1:port; `matchApi` + method 405; serves `public/index.html`, `public/js/*`, leftover `public/assets/*` |
 | `resolvePublicStaticPath(pathname)` | `server.ts` | Resolves `/js/*` and leftover `/assets/*` under `public/`; rejects `..`, `.`, empty segments, and null bytes |
 | `matchApi(pathname)` / `allowedMethods(kind)` | `match-api.ts` | Nested session/workflow/pipeline paths; 405 on wrong method |
-| `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore?, pipelineStore, resolveSlackPermalink?, sessionManager, slackPoster, usageStore, auditStore, runbookCatalog?, projectRoot? }` |
+| `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore?, pipelineStore, resolveSlackPermalink?, lookupSlackPermalink?, sessionManager, slackPoster, usageStore, auditStore, runbookCatalog?, projectRoot? }` |
 | `handleHealth(store, config, startedAt, extras?)` | `routes/health.ts` | `GET /api/health` — uptime, session counts, agent counts, repo list, `pipeline.runtimeMode`, spend/audit today counters |
 | `handleSessions(store, usageStore?)` | `routes/sessions.ts` | `GET /api/sessions` — allowlist projection + numeric pending + spend summary |
 | `handleSessionDetail(store, threadId, resolveSlackPermalink?, usageStore?)` | `routes/sessions.ts` | `GET /api/sessions/:threadId` — same allowlist plus `resumeCwd`, spend, and a best-effort Slack permalink |
@@ -25,7 +25,7 @@ Spend capture (`usage_events`) and audit retention deletes are always-on: they a
 | `handleWorkflowDetail(name, deps)` | `routes/workflows.ts` | `GET /api/workflows/:name` — on-disk markdown + both hashes + git + last 20 runs |
 | `handleWorkflowRun` / `handleWorkflowStart` / `handleWorkflowStop` / `handleWorkflowReload` | `routes/workflows.ts` | Dashboard mutations; run uses `enqueueManualRun`, not blocking `runNow` |
 | `handleWorkflowCreate` / `handleWorkflowPut` | `routes/workflows.ts` | Git-backed create (201) / edit (200); `?validate=1` dry-run |
-| `handlePipelines(store, params, runId?, options?)` | `routes/pipelines.ts` | `GET /api/pipelines` and `GET /api/pipelines/:runId` — summaries hide default-kind unless `includeDefault=1` or `kind=default`; detail expands leases/outbox/gates |
+| `handlePipelines(store, params, runId?, options?)` | `routes/pipelines.ts` | `GET /api/pipelines` and `GET /api/pipelines/:runId` — summaries hide default-kind unless `includeDefault=1` or `kind=default`; detail expands leases/outbox/gates. The polled list only reads already-cached Slack permalinks (`lookupSlackPermalink`); detail resolves through `resolveSlackPermalink` |
 | `handlePipelineArtifact(store, runId, params, options?)` | `routes/pipelines.ts` | `GET /api/pipelines/:runId/artifacts?ref=` — relative-to-run-root file read, 256 KiB cap |
 | `handleSpend(store, params)` | `routes/spend.ts` | `GET /api/spend` — usage `groupBy` over a host-local window (max 90 days) |
 | `handleRunbooks(params, catalog?)` / `handleRunbookDetail(name, catalog?)` | `routes/runbooks.ts` | `GET /api/runbooks` and `GET /api/runbooks/:name` — registry + catalog + metrics |
@@ -185,6 +185,8 @@ overlays on that single graph scene.
 ### Boot wiring
 
 `index.ts` dynamic-imports `./http/server.ts` inside a try/catch — a port conflict on dashboard must not crash the bot. `UsageStore` and `DashboardAuditStore` are constructed next to the session/workflow sqlite path regardless of whether the dashboard port is set.
+
+Both permalink deps come from one `SlackPermalinkCache` (`src/slack/permalink-cache.ts`) built at boot over `config.session.sqlitePath`. It memoizes hits in memory, persists them to the `slack_permalinks` table so a restart does not re-fetch, single-flights concurrent requests for the same message, and holds misses for 60s. `chat.getPermalink` is Tier 3, and the dashboard polls `/api/pipelines` twice every 2s — without the cache-only list lookup that alone exceeds the method's rate limit.
 
 ## Dependencies
 
