@@ -58,8 +58,13 @@ describe("dashboard operator views", () => {
   });
 
   it("scrolls the desktop nav so Audit stays reachable", async () => {
-    const html = await Bun.file(resolve(publicDir, "index.html")).text();
-    expect(html).toMatch(/nav\s*\{[^}]*overflow-y:\s*auto/s);
+    const css = await Bun.file(resolve(publicDir, "assets/dashboard.css")).text();
+    expect(css).toMatch(/nav\s*\{[^}]*overflow-y:\s*auto/s);
+  });
+
+  it("opens the workflow editor from its id-based mount", async () => {
+    const css = await Bun.file(resolve(publicDir, "assets/dashboard.css")).text();
+    expect(css).toMatch(/#wf-editor\.open\s*\{\s*display:\s*block/);
   });
 
   it("prefers the overlay runbook path for copy", async () => {
@@ -107,8 +112,9 @@ describe("dashboard operator views", () => {
       "markdown.js",
       "threads.js",
       "workflows.js",
-      "pipeline-layout.js",
+      "pipeline-directed-flow-layout.js",
       "pipelines.js",
+      "pipeline-directed-flow.js",
       "galaxy.js",
       "spend.js",
       "runbooks.js",
@@ -125,9 +131,10 @@ describe("dashboard operator views", () => {
     }
     const pipelines = await Bun.file(resolve(publicDir, "js/pipelines.js")).text();
     expect(pipelines).toContain("function renderPipelines(");
-    const api = await Bun.file(resolve(publicDir, "js/api.js")).text();
-    expect(api).toMatch(/var pipelineViewMode = "swimlane"/);
-    expect(pipelines).not.toMatch(/var pipelineViewMode/);
-    expect(pipelines).toMatch(/target:\s*null/);
+    expect(pipelines).toContain("function renderPipelineTrace");
+    const directedFlow = await Bun.file(resolve(publicDir, "js/pipeline-directed-flow.js")).text();
+    expect(directedFlow).toContain("function renderPipelineFlow");
+    expect(directedFlow).not.toContain("THREE");
+    expect(pipelines).not.toMatch(/pipelineViewMode/);
   });
 });

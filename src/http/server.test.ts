@@ -4,6 +4,7 @@ import type { Config } from "../config.ts";
 import { resolvePublicStaticPath, startHttpServer, type HttpServerDeps } from "./server.ts";
 
 const PUBLIC_JS_API = resolve(import.meta.dirname, "../../public/js/api.js");
+const PUBLIC_DASHBOARD_CSS = resolve(import.meta.dirname, "../../public/assets/dashboard.css");
 
 function stubDeps(): HttpServerDeps {
   return {
@@ -34,6 +35,7 @@ function stubDeps(): HttpServerDeps {
 describe("resolvePublicStaticPath", () => {
   it("resolves a real /js/* file under public/", () => {
     expect(resolvePublicStaticPath("/js/api.js")).toBe(PUBLIC_JS_API);
+    expect(resolvePublicStaticPath("/assets/dashboard.css")).toBe(PUBLIC_DASHBOARD_CSS);
   });
 
   it("rejects traversal, encoded dots, and null-byte paths", () => {
@@ -71,5 +73,13 @@ describe("startHttpServer public /js/*", () => {
 
     const nullByte = await fetch(`${base}/js/foo%00.js`);
     expect(nullByte.status).toBe(404);
+  });
+
+  it("serves dashboard styles with the CSS content type", async () => {
+    server = startHttpServer(stubDeps());
+    const response = await fetch(`http://127.0.0.1:${server.port}/assets/dashboard.css`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(await response.text()).toContain("--baseline-font");
   });
 });

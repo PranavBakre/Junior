@@ -990,8 +990,14 @@ function stubServerDeps(): HttpServerDeps {
     usageStore: {} as HttpServerDeps["usageStore"],
     auditStore: {} as HttpServerDeps["auditStore"],
     sessionManager: {
+      injectDashboardContinue: async () => ({ status: "accepted" }),
+      interruptThread: async () => 0,
+      getSession: async () => undefined,
       isAdmin: async () => true,
       isExplicitAdmin: async () => false,
+    },
+    slackPoster: {
+      post: async () => ({ ts: "1.1" }),
     },
   };
 }

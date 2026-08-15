@@ -160,7 +160,7 @@ async function openDrawer(threadId, settle) {
   $("drawer").innerHTML =
     '<button class="close" type="button" id="drawer-close">esc</button>' +
     "<h3>" + esc(t.channel || "thread") + "</h3>" +
-    '<div class="mono" style="font-size:11px;color:var(--accent)">' + esc(t.threadId) + "</div>" +
+    '<div class="mono" style="font-size:calc(11 * var(--baseline-font));color:var(--accent)">' + esc(t.threadId) + "</div>" +
     slackAction +
     '<div style="margin-top:10px">' + pill(t.status) +
     (pend ? ' <span class="apill">' + pend + " buffered</span>" : "") +
@@ -177,7 +177,7 @@ async function openDrawer(threadId, settle) {
     '<span class="k">target repo</span><span>' + esc(t.targetRepo || "—") +
     (t.baseRef ? " @ " + esc(t.baseRef) : "") + "</span>" +
     '<span class="k">worktree</span><span>' + (t.hasWorktree ? "yes" : "no") + "</span>" +
-    '<span class="k">resume cwd</span><span class="mono" style="font-size:11px">' +
+    '<span class="k">resume cwd</span><span class="mono" style="font-size:calc(11 * var(--baseline-font))">' +
     esc(t.resumeCwd || "—") + "</span>" +
     '<span class="k">last activity</span><span>' + ago(t.lastActivity) + " ago</span>" +
     '<span class="k">driver</span><span>' + esc(t.driverMode || "—") + "</span>" +

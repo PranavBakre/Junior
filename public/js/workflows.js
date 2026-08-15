@@ -26,16 +26,16 @@ function renderWorkflows() {
     const runs = (w.runs || []).slice().reverse();
     const dots = runs.map((r) =>
       '<span class="run-dot ' + esc(r.status) + '" title="' + esc(r.status) + '"></span>'
-    ).join("") || '<span class="faint" style="font-size:11px">no runs</span>';
+    ).join("") || '<span class="faint" style="font-size:calc(11 * var(--baseline-font))">no runs</span>';
     const lastRuns = (w.runs || []).slice(0, 5).map((r) => {
       const dur = r.finishedAt && r.startedAt
         ? " · " + fmtRemaining(r.finishedAt - r.startedAt)
         : "";
       return (
-        '<div class="run-line">' + pill(r.status) + " " +
-        esc(new Date(r.startedAt).toLocaleString()) + " · " + esc(r.reason || "") +
-        dur +
-        (r.error ? ' <span style="color:var(--red)">' + esc(r.error) + "</span>" : "") +
+        '<div class="run-line"><span class="run-state">' + pill(r.status) + "</span>" +
+        '<span class="run-meta">' + esc(new Date(r.startedAt).toLocaleString()) + " · " +
+        esc(r.reason || "") + dur + "</span>" +
+        (r.error ? '<span class="run-error">' + esc(r.error) + "</span>" : "") +
         "</div>"
       );
     }).join("") || '<div class="faint run-line">no runs yet</div>';

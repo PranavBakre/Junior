@@ -5,7 +5,7 @@
 | **Title** | Redesign Junior's HTML dashboard, HTTP API, and supporting codebase |
 | **Author** | Junior dashboard redesign |
 | **Date** | 2026-08-15 |
-| **Status** | Implemented. Current behavior lives in [http-dashboard.md](http-dashboard.md). This file is the design record. |
+| **Status** | Implemented design record. Current behavior lives in [http-dashboard.md](http-dashboard.md). On 2026-08-15 the pipeline surface moved to a text-first dispatch trace with 3D topology as a secondary tab. |
 | **Supersedes** | `docs/features/http-dashboard.md` cut list item "Write endpoints stay read-only". The localhost dashboard becomes a first-class operator control surface. Session continue/stop post to the Slack thread (parity with `!` commands). Workflow mutations write `dashboard_audit` and a git commit; they post to a workflow Slack output channel when one exists, and are otherwise an accepted weaker trail than Slack (loopback-only identity). |
 
 ---
@@ -141,7 +141,7 @@ Keep the existing left nav. Add two items. Do not merge workflows and runbooks.
 | Logs | Unchanged |
 | Dev Servers | Unchanged |
 | Workflows | List + detail/editor + run + git provenance |
-| Pipelines | List + **swimlane/timeline** detail (3D topology becomes a toggle) |
+| Pipelines | List + **dispatch trace** detail (directed flow is a toggle) |
 | Runbooks | **New.** Browse/view only |
 | Spend | **New.** Ledger + slices |
 | Profiles | Unchanged |
@@ -163,7 +163,9 @@ public/
     api.js                   safeFetch, poll, error toast
     app.js                   hash router, nav, overview
     threads.js               list, drawer, continue/stop
-    pipelines.js             list + swimlane + optional 3D
+    pipelines.js             list + dispatch trace + directed-flow selection
+    pipeline-directed-flow-layout.js  causal assignment layout
+    pipeline-directed-flow.js         SVG/HTML flow renderer + pan/zoom
     workflows.js             list, editor, run, git status
     runbooks.js              list + viewer
     spend.js                 KPI + groupBy table + chips (no canvas chart)

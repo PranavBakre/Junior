@@ -31,7 +31,7 @@ indexes, and the source links in those documents.
   registry overlays, scheduler, executor, Slack `!workflow`, and dashboard
   enqueue/create/edit.
 - [HTTP dashboard](features/http-dashboard.md): loopback operator console —
-  session continue/stop, pipeline swimlane, spend ledger, runbook viewer,
+  session continue/stop, pipeline dispatch trace + optional directed flow, spend ledger, runbook viewer,
   Git-backed workflow writes, and `dashboard_audit`.
 - [Pipeline implementation](features/agent-product-debugging-pipeline-implementation-plan.md):
   typed product/bug runs, assignments, outbox delivery, recovery, and GC.

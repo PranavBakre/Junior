@@ -35,12 +35,27 @@ src/http/
 src/usage/                 -- always-on spend ledger (not gated on the dashboard port)
 src/workflows/git-commit.ts
 public/
-├── index.html             -- shell, CSS, nav, view mounts
-├── pipeline-worker.js     -- 3D topology layout worker
+├── index.html             -- semantic shell, nav, and view mounts
+├── assets/dashboard.css   -- responsive operator UI and contained workspaces
 └── js/                    -- same-origin modules (no bundler)
 ```
 
 Bun-native: no router framework, no auth, no CORS. Static `public/index.html` plus `public/js/*` are served from the same origin as the API.
+
+### Web shell and responsive workspaces
+
+The browser UI uses one shared dark operator-console system from
+`public/assets/dashboard.css`. HTML owns semantic view structure, JavaScript
+modules own data projection and interaction, and the stylesheet owns layout and
+presentation. Pipeline and Memory are contained workspaces inside the main
+shell: each uses a stage plus an independently scrolling context rail rather
+than positioning a second viewport over the page. Below the mobile breakpoint,
+those workspaces stack vertically and navigation becomes a single-row,
+horizontally scrollable bottom bar.
+
+Dashboard CSS is served as `text/css`; JavaScript and Three.js assets retain
+their JavaScript MIME type. The existing traversal guard covers both `/js/*`
+and `/assets/*`.
 
 Junior is intentionally insecure as a networked product. The dashboard assumes a trusted local operator and host-level access control; exposing it beyond loopback requires adding authentication, authorization, and a real security review.
 
@@ -125,11 +140,17 @@ Detail only: `resumeCwd` (`worktreePath || cwd`) and `slackPermalink`. List neve
 
 ## Pipeline operator view
 
-Default UI is an **assignment swimlane + phase tape**, not the 3D topology graph. Topology stays behind a toggle (`public/js/pipelines.js`, `pipelineViewMode = "swimlane"`).
+The default UI is a text-first **dispatch trace** (`public/js/pipelines.js`). It
+shows the run start, each durable assignment in creation order, and the current
+or terminal end state. Every assignment exposes source and target agent, status,
+start/end/duration, dispatch objective, and the latest typed outcome reply
+without requiring hover or selection.
 
-- Lanes are `assignment.targetAgent` (`lead`, `default`, then A–Z).
-- Bars encode lease / pending / waiting / terminal; unleased pending is hollow.
-- Phase tape is `transitions[]`. Click an assignment to load the rail (objective, lease, dispatch, outcomes, artifacts, attempt-scoped gates).
+- Click an assignment to open deeper lease, outbox, artifact, blocker, and gate detail in the rail.
+- The secondary **Directed flow** tab uses `public/js/pipeline-directed-flow-layout.js`: the run starts on the left and durable assignment cards progress right through explicit or inferred causal branches without overlapping within a column.
+- Solid SVG arrows carry clipped dispatch reasons; dashed return arrows indicate recorded replies. Each destination card keeps source/target agent, status, full dispatch reason, and latest reply readable.
+- The graph is static—no automatic motion—and supports drag-to-pan, cursor-centered wheel zoom, reset-to-start, frame-all, and reply visibility.
+- Clicking an assignment opens its complete lease, outbox, artifact, blocker, gate, and typed-outcome detail in the rail. Assignments remain distinct from provider sessions.
 - `GET /api/pipelines` hides `kind=default` unless `includeDefault=1` or `kind=default`. `limit` default 50, max 200. Response includes `runtimeMode` from config (never inferred) and `openCount`.
 - `GET /api/pipelines/:runId` expands leases, full-run outbox **without payload**, outcomes, gates, GitHub resources, dev-server jobs, and artifact refs. No pipeline writes (no force-transition, no replay).
 - `GET /api/pipelines/:runId/artifacts?ref=` reads a path relative to `data/pipelines/<runId>/` only, 256 KiB cap. 400 on traversal, 404 if missing.
@@ -192,7 +213,7 @@ Runbooks stay a separate registry (`src/runbooks/`). The dashboard does not merg
 
 `OPTIONS *` returns 204 (preflight handler kept for browsers that probe; no CORS headers attached). Unknown paths return JSON `{ error: "not found" }` 404. Wrong method on a known `/api/*` path returns 405 `{ error: "method not allowed" }`. Handler exceptions log to the `http` tag and return JSON 500 — the bot does not die on a route bug. Mutations also log on the `dashboard` tag.
 
-The server also serves the locally pinned Three.js modules and pipeline worker under `/assets/`; these are fixed allowlisted paths, not a general static-file server.
+The server also serves the locally pinned Three.js modules under `/assets/`; these are fixed allowlisted paths, not a general static-file server.
 
 ## Memory galaxy
 

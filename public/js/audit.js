@@ -12,7 +12,11 @@ function renderAudit() {
     return;
   }
   if (!auditRows.length) {
-    $("audit-table").innerHTML = '<div class="empty">No dashboard audit entries.</div>';
+    $("audit-table").innerHTML =
+      '<div class="audit-empty"><div class="audit-empty-icon" aria-hidden="true">⌁</div>' +
+      '<div><strong>No dashboard changes yet</strong>' +
+      '<p>This history fills when you continue or stop a thread, run or edit a workflow, ' +
+      'or perform another dashboard mutation. Slack-originated actions are not duplicated here.</p></div></div>';
     return;
   }
   const rows = auditRows.map((row) =>

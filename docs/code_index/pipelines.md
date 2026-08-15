@@ -34,11 +34,17 @@ consumers and outcome writes must remain idempotent; version/CAS checks prevent
 stale workers from overwriting newer state. Retention is controlled by
 `PIPELINE_RETENTION_DAYS`.
 
-The localhost dashboard default is an assignment **swimlane + phase tape**
-(`public/js/pipelines.js`, `pipelineViewMode = "swimlane"`). The older 3D
-topology graph stays behind a Topology toggle and still uses
-`public/pipeline-worker.js`. There are no pipeline writes from the dashboard
-(no force-transition, no outbox replay); those stay in Slack / MCP.
+The localhost dashboard defaults to a readable **dispatch trace** in
+`public/js/pipelines.js`: run start/end, assignment source→target agents,
+status, start/end/duration, dispatch objective, and latest outcome reply are all
+visible inline. A secondary directed-flow view uses deterministic causal layout
+from `public/js/pipeline-directed-flow-layout.js`: the run anchors the left,
+assignment cards branch right, solid arrows show dispatches and reasons, and
+dashed return arrows show replies. The static graph supports pan and zoom, while
+clicking a card opens the complete assignment rail. Assignments are not provider
+sessions.
+There are no pipeline writes from the dashboard (no force-transition, no outbox
+replay); those stay in Slack / MCP.
 
 See [the HTTP index](http-dashboard.md) for the operator routes,
 [the implementation plan](../features/agent-product-debugging-pipeline-implementation-plan.md)

@@ -178,19 +178,6 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
           return new Response("Three.js runtime not found", { status: 404 });
         }
 
-        if (url.pathname === "/assets/pipeline-worker.js") {
-          const file = Bun.file(path.join(PUBLIC_DIR, "pipeline-worker.js"));
-          if (await file.exists()) {
-            return new Response(file, {
-              headers: {
-                "Content-Type": "text/javascript; charset=utf-8",
-                "Cache-Control": "no-cache",
-              },
-            });
-          }
-          return new Response("Pipeline worker not found", { status: 404 });
-        }
-
         if (url.pathname.startsWith("/js/") || url.pathname.startsWith("/assets/")) {
           const resolved = resolvePublicStaticPath(url.pathname);
           if (!resolved) {
@@ -200,7 +187,9 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
           if (await file.exists()) {
             return new Response(file, {
               headers: {
-                "Content-Type": "text/javascript; charset=utf-8",
+                "Content-Type": url.pathname.endsWith(".css")
+                  ? "text/css; charset=utf-8"
+                  : "text/javascript; charset=utf-8",
                 "Cache-Control": "no-cache",
               },
             });

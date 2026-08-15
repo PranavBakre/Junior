@@ -659,7 +659,7 @@ function renderDetail() {
     esc(p.kind) + (p.repo ? " · " + esc(p.repo) : "") + "</div>" +
     '<div class="body">' + esc(p.text) + "</div>" +
     ((p.tags || []).length
-      ? '<div class="tags" style="font-family:var(--font-mono);font-size:11px;color:var(--fg-faint);margin-bottom:6px">' +
+      ? '<div class="tags" style="font-family:var(--font-mono);font-size:calc(11 * var(--baseline-font));color:var(--fg-faint);margin-bottom:calc(6 * var(--baseline-font))">' +
         p.tags.map((t) => '<span data-tag="' + esc(t) + '" style="cursor:pointer">' + esc(t) + "</span>").join(" · ") + "</div>"
       : "") +
     '<div class="meta">weight ' + (p.weight || 0).toFixed(2) +
@@ -674,7 +674,7 @@ function renderKindChips() {
   $("mem-kinds").innerHTML = (GAL.facets.kinds || []).map((k) =>
     '<span class="chip tag' + (GAL.filter.kinds.has(k.value) ? " on" : "") + '" data-kind="' + esc(k.value) + '">' +
     '<span style="color:' + kindColor(k.value) + '">▪</span> ' + esc(k.value) + '<span class="n">' + k.count + "</span></span>"
-  ).join("") || '<span class="faint" style="font-size:11px">—</span>';
+  ).join("") || '<span class="faint" style="font-size:calc(11 * var(--baseline-font))">—</span>';
 }
 
 function renderRepoChips() {
@@ -682,7 +682,7 @@ function renderRepoChips() {
   $("mem-repos").innerHTML = repos.map((r) =>
     '<span class="chip tag' + (GAL.filter.repo === r.value ? " on" : "") + '" data-repo="' + esc(r.value) + '">' +
     esc(r.value) + '<span class="n">' + r.count + "</span></span>"
-  ).join("") || '<span class="faint" style="font-size:11px">none tagged</span>';
+  ).join("") || '<span class="faint" style="font-size:calc(11 * var(--baseline-font))">none tagged</span>';
 }
 
 function renderTagPicker() {

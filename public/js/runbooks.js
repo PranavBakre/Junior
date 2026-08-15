@@ -158,7 +158,7 @@ function renderRunbookDetail(payload) {
     '<h3 class="sect">Provenance</h3>' +
     '<div class="kv">' +
     '<span class="k">repo</span><span>' + esc(git.repo || rb.origin || "—") + "</span>" +
-    '<span class="k">path</span><span class="mono" style="font-size:11px">' + esc(absPath || copyPath) + "</span>" +
+    '<span class="k">path</span><span class="mono" style="font-size:calc(11 * var(--baseline-font))">' + esc(absPath || copyPath) + "</span>" +
     '<span class="k">SHA</span><code>' + esc(git.commitSha || "—") + "</code>" +
     '<span class="k">digest</span><code>' + esc(git.contentDigest || rb.contentDigest || "—") + "</code>" +
     "</div>" +

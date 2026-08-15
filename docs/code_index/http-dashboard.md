@@ -10,7 +10,7 @@ Spend capture (`usage_events`) and audit retention deletes are always-on: they a
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `startHttpServer(deps)` | `server.ts` | Bun.serve on 127.0.0.1:port; `matchApi` + method 405; serves `public/index.html`, `public/js/*`, leftover `public/assets/*` |
+| `startHttpServer(deps)` | `server.ts` | Bun.serve on 127.0.0.1:port; `matchApi` + method 405; serves `public/index.html`, `public/js/*`, and typed `public/assets/*` (including dashboard CSS) |
 | `resolvePublicStaticPath(pathname)` | `server.ts` | Resolves `/js/*` and leftover `/assets/*` under `public/`; rejects `..`, `.`, empty segments, and null bytes |
 | `matchApi(pathname)` / `allowedMethods(kind)` | `match-api.ts` | Nested session/workflow/pipeline paths; 405 on wrong method |
 | `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore?, pipelineStore, resolveSlackPermalink?, lookupSlackPermalink?, sessionManager, slackPoster, usageStore, auditStore, runbookCatalog?, projectRoot? }` |
@@ -98,10 +98,9 @@ GET    /api/memory/recall      → handleMemoryRecall (503 if unavailable)
 GET    /api/memory/projection  → handleMemoryProjection (503 if unavailable)
     ?refresh=1                force a rebuild instead of the memoised result
 GET    /js/*                   → public/js/* (text/javascript, Cache-Control: no-cache)
-GET    /assets/*               → leftover public/assets/* (same headers; three.* and pipeline-worker stay dedicated)
+GET    /assets/*               → public/assets/* (same headers; three.* stays dedicated)
 GET    /assets/three.module.js → locally served pinned Three.js module
 GET    /assets/three.core.min.js → locally served pinned Three.js core module
-GET    /assets/pipeline-worker.js → locally served pipeline worker
 ```
 
 Wrong method on a known `/api/*` path → 405 `{ error: "method not allowed" }`.
@@ -113,16 +112,24 @@ Wrong method on a known `/api/*` path → 405 `{ error: "method not allowed" }`.
 | `api.js` | `safeFetch`, poll, error toast |
 | `app.js` | hash router, nav, overview |
 | `threads.js` | list, drawer, continue/stop, `resumeCmd` |
-| `pipelines.js` | list + **swimlane default** + Topology toggle |
-| `pipeline-layout.js` | swimlane/tape geometry helpers |
+| `pipelines.js` | default dispatch trace + pipeline list/rail + directed-flow mode selection |
+| `pipeline-directed-flow-layout.js` | deterministic causal parent inference and non-overlapping left-to-right card positions |
+| `pipeline-directed-flow.js` | static SVG connectors, HTML assignment cards, reply visibility, pan, zoom, reset, and frame |
 | `workflows.js` | list, markdown editor, run, git status, create |
 | `runbooks.js` | list + viewer |
 | `spend.js` | KPI + `groupBy` table (no canvas chart) |
 | `audit.js` | audit table |
+| `../assets/dashboard.css` | Fresh responsive operator-console shell, shared component styling, and contained Pipeline/Memory workspaces |
 | `markdown.js` | shared markdown renderer |
 | `galaxy.js` | Three.js memory scene |
 
-`pipelineViewMode` defaults to `"swimlane"`. 3D topology is opt-in.
+Pipelines default to a text-first dispatch trace with explicit run boundaries,
+agent names, assignment status/timing, dispatch reason, and latest reply. The 3D
+directed flow remains an optional second view. A run-start card anchors the left
+edge, durable assignment cards branch to the right, solid arrows carry dispatch
+reasons, and dashed return arrows represent replies. Cards expose status,
+source/target agent, reason, and reply without hover. The graph is static and
+supports pan, zoom, reset, and frame; it does not initialize WebGL.
 
 ## Key Concepts
 

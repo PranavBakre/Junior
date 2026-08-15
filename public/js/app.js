@@ -4,9 +4,13 @@ function show(view) {
   const el = $("view-" + view);
   (el || $("view-overview")).classList.add("active");
   if (view === "pipelines") {
-    const pipelineId = hashQuery().get("id");
+    const pipelineQuery = hashQuery();
+    const pipelineId = pipelineQuery.get("id");
     if (pipelineId && !pipelineDetailErrors.has(pipelineId)) selectedPipelineId = pipelineId;
-    if (pipelineViewMode === "topology" && typeof resizePipeline === "function") {
+    if (pipelineQuery.get("mode") === "topology" && typeof setPipelineMode === "function") {
+      setPipelineMode("topology");
+    }
+    if (typeof resizePipeline === "function") {
       resizePipeline();
       invalidatePipeline();
     }
