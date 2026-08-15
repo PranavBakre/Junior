@@ -130,6 +130,9 @@
   .pill.failed, .pill.error
                 { color: var(--red);    border-color: rgba(255,59,59,0.35);  background: rgba(255,59,59,0.08); }
   .pill.stopped { color: var(--fg-faint); }
+  .pill.buffered, .pill.partial, .pill.received { color: var(--amber); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+  .pill.denied { color: var(--red); border-color: rgba(255,59,59,0.35); background: rgba(255,59,59,0.08); }
+  .pill.skipped { color: var(--fg-faint); }
 
   /* ---------- overview ---------- */
   .attn { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
@@ -982,6 +985,53 @@
   .doc-pane p, .doc-pane li { color: var(--fg-dim); font-size: 13px; }
   .doc-pane pre { background: var(--bg-paper); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 12px 14px; font-size: 12px; overflow-x: auto; }
 
+  /* ---------- spend / audit tables ---------- */
+  .data-table-wrap { overflow-x: auto; }
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: calc(12.5 * var(--baseline-font));
+  }
+  .data-table th, .data-table td {
+    padding: calc(9 * var(--baseline-font)) calc(14 * var(--baseline-font));
+    border-bottom: 1px solid var(--border-subtle);
+    text-align: left;
+    vertical-align: top;
+  }
+  .data-table th {
+    font-family: var(--font-mono);
+    font-size: calc(10 * var(--baseline-font));
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .data-table th[data-sort] { cursor: pointer; user-select: none; }
+  .data-table th[data-sort]:hover { color: var(--fg); }
+  .data-table th.sort-asc::after { content: " ↑"; color: var(--accent); }
+  .data-table th.sort-desc::after { content: " ↓"; color: var(--accent); }
+  .data-table td.num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .data-table tr:last-child td { border-bottom: none; }
+  .data-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+  .data-table a { color: var(--accent); text-decoration: none; }
+  .data-table a:hover { text-decoration: underline; }
+  .chip.risk-hot { color: var(--red); border-color: rgba(255,59,59,0.35); }
+
+  .pill.production-write, .pill.destructive,
+  .pill.credential, .pill.payment {
+    color: var(--red); border-color: rgba(255,59,59,0.35); background: rgba(255,59,59,0.08);
+  }
+  .pill.privacy-sensitive, .pill.access-control {
+    color: var(--amber); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08);
+  }
+  .pill.read-only { color: var(--green); border-color: rgba(34,197,94,0.35); background: rgba(34,197,94,0.08); }
+  .pill.workspace-write { color: var(--amber); border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+
   /* ---------- spatial control room ---------- */
   :root {
     --baseline-font: 1px;
@@ -1280,7 +1330,7 @@
     aside {
       width: 100%;
       height: auto;
-      min-height: calc(65 * var(--baseline-font));
+      min-height: calc(108 * var(--baseline-font));
       position: fixed;
       inset: auto 0 0;
       padding: calc(8 * var(--baseline-font)) calc(10 * var(--baseline-font));
@@ -1291,7 +1341,7 @@
     .brand, .side-foot, nav::before { display: none; }
     nav {
       display: grid;
-      grid-template-columns: repeat(9, 1fr);
+      grid-template-columns: repeat(6, 1fr);
       gap: calc(2 * var(--baseline-font));
     }
     nav a {
@@ -1311,7 +1361,7 @@
     }
     nav a .ico { width: auto; font-size: calc(12 * var(--baseline-font)); }
     nav a .count { display: none !important; }
-    .content { height: calc(100vh - 64 * var(--baseline-font)); }
+    .content { height: calc(100vh - 108 * var(--baseline-font)); }
     .view {
       padding: calc(18 * var(--baseline-font)) calc(16 * var(--baseline-font)) calc(92 * var(--baseline-font));
     }
@@ -1447,9 +1497,12 @@
       <a href="#devservers" data-view="devservers"><span class="ico">▶</span>Dev Servers<span class="count" id="nav-ds" style="display:none"></span></a>
       <a href="#workflows" data-view="workflows"><span class="ico">↻</span>Workflows<span class="count" id="nav-wf" style="display:none"></span></a>
       <a href="#pipelines" data-view="pipelines"><span class="ico">◇</span>Pipelines<span class="count hot" id="nav-pipelines" style="display:none"></span></a>
+      <a href="#runbooks" data-view="runbooks"><span class="ico">▣</span>Runbooks<span class="count" id="nav-runbooks" style="display:none"></span></a>
+      <a href="#spend" data-view="spend"><span class="ico">$</span>Spend<span class="count" id="nav-spend" style="display:none"></span></a>
       <a href="#profiles" data-view="profiles"><span class="ico">◎</span>Profiles<span class="count" id="nav-profiles" style="display:none"></span></a>
       <a href="#memory" data-view="memory"><span class="ico">✦</span>Memory</a>
       <a href="#docs" data-view="docs"><span class="ico">¶</span>Docs</a>
+      <a href="#audit" data-view="audit"><span class="ico">⌗</span>Audit<span class="count" id="nav-audit" style="display:none"></span></a>
     </nav>
     <div class="side-foot" id="side-foot">
       v<b id="sf-version">—</b> · up <b id="sf-uptime">—</b><br />
@@ -1618,9 +1671,35 @@
       </div>
     </section>
 
+    <!-- ================= RUNBOOKS ================= -->
+    <section class="view" id="view-runbooks">
+      <div class="view-head" data-index="07">
+        <h2>Runbooks</h2>
+        <span class="sub">reviewed playbooks · view only · not workflows</span>
+        <span class="right"><input class="search" id="rb-search" placeholder="filter name / owner / tag…" autocomplete="off" /></span>
+      </div>
+      <div class="chips" id="rb-risks" style="margin-bottom: calc(14 * var(--baseline-font))"></div>
+      <div class="profiles-layout">
+        <div class="panel profile-list" id="rb-list"><div class="empty">loading…</div></div>
+        <div class="panel profile-detail" id="rb-detail"><div class="empty">select a runbook</div></div>
+      </div>
+    </section>
+
+    <!-- ================= SPEND ================= -->
+    <section class="view" id="view-spend">
+      <div class="view-head" data-index="08">
+        <h2>Spend</h2>
+        <span class="sub" id="spend-sub">token ledger · host timezone</span>
+      </div>
+      <div class="stat-grid" id="spend-kpis"><div class="empty">loading…</div></div>
+      <h3 class="sect">Group by</h3>
+      <div class="chips" id="spend-groups" style="margin-bottom: calc(14 * var(--baseline-font))"></div>
+      <div class="panel data-table-wrap" id="spend-table"><div class="empty">loading…</div></div>
+    </section>
+
     <!-- ================= PROFILES ================= -->
     <section class="view" id="view-profiles">
-      <div class="view-head" data-index="07">
+      <div class="view-head" data-index="09">
         <h2>Profiles</h2>
         <span class="sub">grounded working context · inspection does not affect recall freshness</span>
         <span class="right"><input class="search" id="profile-search" placeholder="filter profiles…" autocomplete="off" /></span>
@@ -1635,7 +1714,7 @@
 
     <!-- ================= MEMORY ================= -->
     <section class="view" id="view-memory">
-      <div class="view-head" data-index="08">
+      <div class="view-head" data-index="10">
         <h2>Memory</h2>
         <span class="sub">3D projection — local neighbourhoods are meaningful, global distances are not</span>
         <span class="right">
@@ -1688,7 +1767,7 @@
 
     <!-- ================= DOCS ================= -->
     <section class="view" id="view-docs">
-      <div class="view-head" data-index="09">
+      <div class="view-head" data-index="11">
         <h2>Docs</h2>
         <span class="sub">read-only browser over docs/**/*.md</span>
       </div>
@@ -1696,6 +1775,28 @@
         <div class="panel doc-tree" id="doc-tree"><div class="empty">loading…</div></div>
         <div class="panel doc-pane" id="doc-pane"><div class="empty">select a file</div></div>
       </div>
+    </section>
+
+    <!-- ================= AUDIT ================= -->
+    <section class="view" id="view-audit">
+      <div class="view-head" data-index="12">
+        <h2>Audit</h2>
+        <span class="sub">dashboard mutations · newest first · loopback only</span>
+      </div>
+      <div class="log-toolbar">
+        <input class="search" id="audit-action" placeholder="action…" autocomplete="off" />
+        <select class="ctrl" id="audit-target" aria-label="Filter audit by target type">
+          <option value="">all targets</option>
+          <option value="session">session</option>
+          <option value="workflow">workflow</option>
+          <option value="pipeline">pipeline</option>
+          <option value="runbook">runbook</option>
+        </select>
+        <input type="date" class="ctrl" id="audit-from" aria-label="Audit from date" />
+        <input type="date" class="ctrl" id="audit-to" aria-label="Audit to date" />
+        <button class="ctrl" id="audit-clear" type="button">clear filters</button>
+      </div>
+      <div class="panel data-table-wrap" id="audit-table"><div class="empty">loading…</div></div>
     </section>
 
   </div>
@@ -1722,6 +1823,9 @@ for (const src of [
   "/js/pipeline-layout.js",
   "/js/pipelines.js",
   "/js/galaxy.js",
+  "/js/spend.js",
+  "/js/runbooks.js",
+  "/js/audit.js",
   "/js/app.js",
 ]) {
   await loadScript(src);

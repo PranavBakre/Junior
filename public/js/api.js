@@ -127,6 +127,28 @@ var profileKind = "all";
 var profileQuery = "";
 var selectedProfileRef = null;
 var drawerThreadId = null;
+var spendToday = null;
+var spendWeek = null;
+var spendTable = null;
+var spendGroupBy = "day";
+var spendSortKey = "key";
+var spendSortDir = "asc";
+var spendError = null;
+var runbooks = [];
+var runbookErrors = [];
+var runbooksLoaded = false;
+var runbookQuery = "";
+var runbookRisk = "";
+var selectedRunbookName = null;
+var runbookDetail = null;
+var runbookDetailError = null;
+var auditRows = [];
+var auditLoaded = false;
+var auditError = null;
+var auditAction = "";
+var auditTargetType = "";
+var auditFrom = "";
+var auditTo = "";
 
 /* =================== navigation =================== */
 function currentView() {
@@ -236,13 +258,14 @@ async function refreshPipelineControlPlane() {
 
 async function refreshMain() {
   const pipelineGeneration = ++pipelineFetchGeneration;
-  const [h, s, d, w, p, attn] = await Promise.all([
+  const [h, s, d, w, p, attn, spend] = await Promise.all([
     safeFetch("/api/health"),
     safeFetch("/api/sessions"),
     safeFetch("/api/dev-server"),
     safeFetch("/api/workflows"),
     safeFetch(pipelineListPath()),
     safeFetch(attentionPipelinePath()),
+    safeFetch("/api/spend"),
   ]);
 
   if (h.ok) health = h.data;
@@ -260,6 +283,7 @@ async function refreshMain() {
     applyPipelineListResponse(p);
     applyAttentionPipelineResponse(attn);
   }
+  if (spend.ok) spendToday = spend.data;
 
   lastRefreshAt = Date.now();
   renderSidebar();
@@ -268,6 +292,9 @@ async function refreshMain() {
   renderDevServers();
   renderWorkflows();
   if (currentView() === "pipelines") renderPipelines();
+  if (currentView() === "spend") await loadSpend();
+  if (currentView() === "runbooks" && runbooksLoaded) await loadRunbooks();
+  if (currentView() === "audit") await loadAudit();
   // panel-level errors when first load fails
   if (!s.ok && sessions.length === 0) {
     $("th-list").innerHTML = '<div class="empty">Failed to load sessions.</div>';

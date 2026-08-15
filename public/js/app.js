@@ -14,6 +14,9 @@ function show(view) {
   if (view === "profiles" && !profilesLoaded) loadProfiles();
   if (view === "docs" && !docsLoaded) loadDocsTree();
   if (view === "logs") fetchLogs();
+  if (view === "spend") loadSpend();
+  if (view === "runbooks" && !runbooksLoaded) loadRunbooks();
+  if (view === "audit") loadAudit();
 }
 window.addEventListener("hashchange", () => show(currentView()));
 
@@ -56,6 +59,11 @@ function renderSidebar() {
     openPipelineCount,
     openPipelineCount > 0 ? "hot" : "",
   );
+  const eventsToday = health && health.spend ? health.spend.eventsToday : 0;
+  setNavCount("nav-spend", eventsToday, "");
+  const writesToday = health && health.audit ? health.audit.writesToday : 0;
+  setNavCount("nav-audit", writesToday, writesToday > 0 ? "hot" : "");
+  if (runbooksLoaded) setNavCount("nav-runbooks", runbooks.length, "");
 
   // Static side-foot DOM — only update text nodes (live-toggle keeps one listener).
   $("sf-version").textContent = health ? String(health.version || "—") : "—";
@@ -176,6 +184,16 @@ function renderOverview() {
     ["Buffered msgs", buffered, "", "across threads"],
     ["Dev servers", running, "", "of " + devServers.length + " repos"],
   ];
+  const todayTotals = spendToday && spendToday.totals;
+  const todayCost = todayTotals ? fmtProviderCost(todayTotals.costUsd) : null;
+  stats.push([
+    "Today tokens",
+    todayTotals ? fmtTokens(spendTotalTokens(todayTotals)) : "—",
+    "",
+    todayTotals
+      ? (todayCost ? todayCost + " provider-reported" : "tokens only")
+      : "host-local today",
+  ]);
   $("ov-stats").innerHTML = stats.map(([lbl, num, cls, sub]) =>
     '<div class="stat"><div class="lbl">' + esc(lbl) + '</div><div class="num ' + esc(cls) + '">' +
     esc(num) + '</div><div class="sub">' + esc(sub) + "</div></div>"
