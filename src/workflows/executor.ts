@@ -83,6 +83,8 @@ export interface WorkflowRunRequest {
    * never relax the workflow's own safety rules. Scheduled runs have none.
    */
   instructions?: string | null;
+  /** Durable id when the caller already allocated one. */
+  runId?: string;
 }
 
 export interface WorkflowRunResult {
@@ -114,7 +116,7 @@ export class WorkflowExecutor {
     this.usageStore = options.usageStore;
   }
 
-  async run(request: WorkflowRunRequest): Promise<WorkflowRunResult> {
+  async persistNewRun(request: WorkflowRunRequest): Promise<WorkflowRun> {
     const instructions = normalizeInstructions(request.instructions);
     if (request.definition.nativeHandler && instructions) {
       throw new Error(
@@ -122,7 +124,8 @@ export class WorkflowExecutor {
       );
     }
     const started = this.now();
-    const runId = `${request.definition.name}-${started.toISOString().replace(/[:.]/g, "-")}`;
+    const runId = request.runId ??
+      `${request.definition.name}-${started.toISOString().replace(/[:.]/g, "-")}`;
     const artifactPath = artifactPathFor(request.definition, started, runId);
     const run: WorkflowRun = {
       id: runId,
@@ -141,6 +144,15 @@ export class WorkflowExecutor {
       error: null,
     };
     await this.store.createRun(run);
+    return run;
+  }
+
+  async executePersistedRun(
+    run: WorkflowRun,
+    request: WorkflowRunRequest,
+  ): Promise<WorkflowRunResult> {
+    const instructions = normalizeInstructions(request.instructions);
+    const artifactPath = run.artifactPath;
 
     let summary = "";
     let nativeHandlerName: WorkflowNativeHandler | null = null;
@@ -225,6 +237,11 @@ export class WorkflowExecutor {
         });
       }
     }
+  }
+
+  async run(request: WorkflowRunRequest): Promise<WorkflowRunResult> {
+    const run = await this.persistNewRun(request);
+    return this.executePersistedRun(run, request);
   }
 
   async terminateActiveRuns(): Promise<void> {

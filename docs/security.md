@@ -8,7 +8,7 @@ Do not expose Junior, its dashboard, or its MCP server to untrusted networks wit
 The [HTTP Dashboard](./features/http-dashboard.md) binds only to `127.0.0.1` by default.
 - **No Remote Access**: It is not reachable from the internet without an explicit SSH tunnel.
 - **No Auth by Design**: Because Junior assumes a trusted local operator, the dashboard does not include an authentication layer.
-- **No CORS Opt-in**: The dashboard does not emit CORS headers, so arbitrary websites cannot read API responses from a browser. The current dashboard is read-only; it does not validate `Origin` or `Sec-Fetch-Site` as a CSRF defense.
+- **No CORS Opt-in**: The dashboard does not emit CORS headers, so arbitrary websites cannot read API responses from a browser. It does not validate `Origin` or `Sec-Fetch-Site` as a CSRF defense. Writes (session continue/stop, workflow enqueue/edit) are allowed from any local process that can reach `127.0.0.1`; compensating controls are `dashboard_audit` plus Slack posts where a destination exists. Do not tunnel the port without adding auth.
 
 ## 2. Worktree Isolation
 Target repositories are never edited in their original paths.

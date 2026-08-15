@@ -79,6 +79,8 @@ export interface SlackMessageEvent {
   attributionUserId?: string;
   /** Raw human text used only for conversational interruption policy. */
   conversationalText?: string;
+  /** Dashboard-originated inject. Skip default-run hijack and short-followup. */
+  dashboardContinue?: boolean;
 }
 
 export type OnMessageCallback = (event: SlackMessageEvent) => void | Promise<void>;
@@ -182,6 +184,11 @@ export function registerEventHandlers(
     const eventText = "text" in event ? event.text : undefined;
     const commandText = eventText ? stripOwnMention(eventText, selfUserId) : undefined;
     const hasDirective = containsDispatchDirective(commandText ?? eventText);
+
+    if (typeof eventText === "string" && eventText.startsWith("*Dashboard continue*")) {
+      logDrop("dashboard-continue", evMeta);
+      return;
+    }
 
     // Only support auto-trigger channels route our own bot messages; other
     // channels keep the legacy self-filter to avoid ordinary response loops.

@@ -23,7 +23,7 @@ export interface LoadWorkflowDefinitionOptions {
   builtInCommands?: Set<string>;
 }
 
-const WORKFLOW_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+export const WORKFLOW_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
 const COMMAND_RE = /^[a-z0-9][a-z0-9-]*$/;
 const SLACK_CHANNEL_RE = /^[CDG][A-Z0-9]+$/;
 const SLACK_USER_RE = /^U[A-Z0-9]+$/;
@@ -55,11 +55,27 @@ export async function loadWorkflowDefinition(
   const file = Bun.file(options.path);
   if (!(await file.exists())) return null;
   const content = await file.text();
-  const { frontmatter, body } = parseFrontmatter(content, options.path);
+  return validateWorkflowMarkdown({
+    markdown: content,
+    path: options.path,
+    sourceRoot: options.sourceRoot,
+    repos: options.repos,
+    builtInCommands: options.builtInCommands,
+  });
+}
+
+export function validateWorkflowMarkdown(options: {
+  markdown: string;
+  path: string;
+  sourceRoot: WorkflowSourceRoot;
+  repos: RepoConfig[];
+  builtInCommands?: Set<string>;
+}): WorkflowDefinition {
+  const { frontmatter, body } = parseFrontmatter(options.markdown, options.path);
   return validateWorkflowDefinition({
     frontmatter,
     body,
-    content,
+    content: options.markdown,
     path: options.path,
     sourceRoot: options.sourceRoot,
     repos: options.repos,
@@ -138,7 +154,7 @@ export function validateWorkflowDefinition(options: {
     fallback,
     concurrency,
     prompt: options.body.trim(),
-    versionHash: hashContent(options.content),
+    versionHash: hashWorkflowContent(options.content),
     sourcePath: options.path,
     sourceRoot: options.sourceRoot,
   };
@@ -388,6 +404,6 @@ function positiveNumber(value: unknown, label: string): number {
   return value;
 }
 
-function hashContent(content: string): string {
+export function hashWorkflowContent(content: string): string {
   return createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
