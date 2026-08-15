@@ -181,6 +181,7 @@ async function openDrawer(threadId) {
     esc(t.resumeCwd || "—") + "</span>" +
     '<span class="k">last activity</span><span>' + ago(t.lastActivity) + " ago</span>" +
     '<span class="k">driver</span><span>' + esc(t.driverMode || "—") + "</span>" +
+    '<span class="k">spend</span><span>' + esc(formatSpendSummary(t.spend)) + "</span>" +
     "</div>" +
     '<h3 class="sect">Resume lead session (' + esc(provider) + ")</h3>" +
     cmdRow(resumeCmd(provider, leadId, cwd)) +

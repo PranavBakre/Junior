@@ -117,7 +117,8 @@ function renderRunbookDetail(payload) {
   const rb = payload.runbook;
   const git = payload.git || {};
   const metrics = payload.metrics;
-  const path = git.path || rb.filePath || "";
+  const copyPath = "agents-org/runbooks/" + rb.name + ".runbook.md";
+  const absPath = git.path || rb.filePath || "";
   const fields = [
     ["owner", rb.ownerAgent || "—"],
     ["risk", rb.risk || "—"],
@@ -157,16 +158,17 @@ function renderRunbookDetail(payload) {
     '<h3 class="sect">Provenance</h3>' +
     '<div class="kv">' +
     '<span class="k">repo</span><span>' + esc(git.repo || rb.origin || "—") + "</span>" +
-    '<span class="k">path</span><span class="mono" style="font-size:11px">' + esc(path || "—") + "</span>" +
+    '<span class="k">path</span><span class="mono" style="font-size:11px">' + esc(absPath || copyPath) + "</span>" +
     '<span class="k">SHA</span><code>' + esc(git.commitSha || "—") + "</code>" +
     '<span class="k">digest</span><code>' + esc(git.contentDigest || rb.contentDigest || "—") + "</code>" +
     "</div>" +
     '<h3 class="sect">Metrics</h3>' + metricStrip +
-    '<div class="profile-evidence">copy path · <code id="rb-path">' +
-    esc(path || "agents-org/runbooks/" + rb.name + ".runbook.md") + "</code> " +
-    '<button class="copy-btn" type="button" data-cmd="' +
-    esc(path || "agents-org/runbooks/" + rb.name + ".runbook.md") +
-    '">copy</button></div>';
+    '<div class="profile-evidence">copy path · <code id="rb-path">' + esc(copyPath) + "</code> " +
+    '<button class="copy-btn" type="button" data-cmd="' + esc(copyPath) + '">copy</button>' +
+    (absPath && absPath !== copyPath
+      ? '<div class="faint" style="margin-top:4px">' + esc(absPath) + "</div>"
+      : "") +
+    "</div>";
 }
 
 function renderRunbooks() {

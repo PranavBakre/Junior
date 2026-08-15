@@ -57,6 +57,31 @@ describe("dashboard operator views", () => {
     );
   });
 
+  it("scrolls the desktop nav so Audit stays reachable", async () => {
+    const html = await Bun.file(resolve(publicDir, "index.html")).text();
+    expect(html).toMatch(/nav\s*\{[^}]*overflow-y:\s*auto/s);
+  });
+
+  it("prefers the overlay runbook path for copy", async () => {
+    const source = await Bun.file(resolve(publicDir, "js/runbooks.js")).text();
+    expect(source).toContain('agents-org/runbooks/" + rb.name + ".runbook.md');
+  });
+
+  it("guards spend and audit loads with a request generation", async () => {
+    const spend = await Bun.file(resolve(publicDir, "js/spend.js")).text();
+    const audit = await Bun.file(resolve(publicDir, "js/audit.js")).text();
+    expect(spend).toContain("spendFetchGeneration");
+    expect(audit).toContain("auditFetchGeneration");
+  });
+
+  it("keeps an out-of-filter pipeline selection and shows drawer spend", async () => {
+    const pipelines = await Bun.file(resolve(publicDir, "js/pipelines.js")).text();
+    const threads = await Bun.file(resolve(publicDir, "js/threads.js")).text();
+    expect(pipelines).toContain("run not in current filter");
+    expect(pipelines).toContain("function pipelineSummaryFor");
+    expect(threads).toContain("formatSpendSummary(t.spend)");
+  });
+
   it("loads spend, runbooks, and audit scripts after the existing modules", async () => {
     const html = await Bun.file(resolve(publicDir, "index.html")).text();
     const api = html.indexOf('"/js/api.js"');

@@ -4,11 +4,22 @@ function show(view) {
   const el = $("view-" + view);
   (el || $("view-overview")).classList.add("active");
   if (view === "pipelines") {
+    const pipelineId = hashQuery().get("id");
+    if (pipelineId && !pipelineDetailErrors.has(pipelineId)) selectedPipelineId = pipelineId;
     if (pipelineViewMode === "topology") {
       resizePipeline();
       invalidatePipeline();
     }
-    renderPipelines();
+    if (pipelines.length || selectedPipelineId) renderPipelines();
+    void loadPipelineSpend();
+  }
+  if (view === "workflows") {
+    const name = hashQuery().get("name");
+    if (name) {
+      selectedWorkflowName = name;
+      workflowScrollPending = true;
+    }
+    renderWorkflows();
   }
   if (view === "memory") { resizeGalaxy(); if (!galaxyLoaded) loadGalaxy(false); }
   if (view === "profiles" && !profilesLoaded) loadProfiles();

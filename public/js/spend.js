@@ -15,32 +15,10 @@ function startOfLocalDayMs(date) {
   return d.getTime();
 }
 
-function spendTotalTokens(totals) {
-  if (!totals) return 0;
-  return (Number(totals.inputTokens) || 0) + (Number(totals.outputTokens) || 0);
-}
-
-function fmtTokens(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "—";
-  if (Math.abs(v) >= 1_000_000) return (v / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
-  if (Math.abs(v) >= 10_000) return Math.round(v / 1000) + "k";
-  if (Math.abs(v) >= 1000) return (v / 1000).toFixed(1).replace(/\.0$/, "") + "k";
-  return String(Math.round(v));
-}
-
 function fmtInt(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return "—";
   return v.toLocaleString();
-}
-
-function fmtProviderCost(costUsd) {
-  if (costUsd == null || !Number.isFinite(Number(costUsd))) return null;
-  const n = Number(costUsd);
-  if (n === 0) return null;
-  if (n >= 0.01) return "$" + n.toFixed(2);
-  return "$" + n.toFixed(4);
 }
 
 function spendBucketLink(groupBy, bucket) {
@@ -176,12 +154,15 @@ function renderSpend() {
 }
 
 async function loadSpend() {
+  const generation = ++spendFetchGeneration;
+  const groupBy = spendGroupBy;
   const weekStart = startOfLocalDayMs() - 6 * 24 * 60 * 60 * 1000;
-  const tablePath = "/api/spend?from=" + weekStart + "&groupBy=" + encodeURIComponent(spendGroupBy);
+  const tablePath = "/api/spend?from=" + weekStart + "&groupBy=" + encodeURIComponent(groupBy);
   const [todayRes, weekRes] = await Promise.all([
     safeFetch("/api/spend"),
     safeFetch(tablePath),
   ]);
+  if (generation !== spendFetchGeneration || spendGroupBy !== groupBy) return;
   if (todayRes.ok) spendToday = todayRes.data;
   if (weekRes.ok) {
     spendWeek = weekRes.data;
@@ -225,8 +206,10 @@ $("spend-table").addEventListener("click", (event) => {
     if (typeof openDrawer === "function") openDrawer(id);
   } else if (link.dataset.spendLink === "pipeline") {
     selectedPipelineId = id;
-    location.hash = "pipelines";
+    location.hash = "pipelines?id=" + encodeURIComponent(id);
   } else if (link.dataset.spendLink === "workflow") {
-    location.hash = "workflows";
+    selectedWorkflowName = id;
+    workflowScrollPending = true;
+    location.hash = "workflows?name=" + encodeURIComponent(id);
   }
 });

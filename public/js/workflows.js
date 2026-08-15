@@ -34,7 +34,8 @@ function renderWorkflows() {
       ? (w.runner.provider + "/" + w.runner.agentName)
       : "none";
     return (
-      '<div class="wf-card">' +
+      '<div class="wf-card' + (selectedWorkflowName === w.name ? " on" : "") +
+      '" id="wf-card-' + esc(w.name) + '" data-workflow="' + esc(w.name) + '">' +
       '<div><div class="name">' + esc(w.name) + "</div>" +
       '<div class="desc">' + esc(w.description || "no description") + "</div>" +
       '<div class="src">' + esc(w.sourcePath || "") + "</div></div>" +
@@ -55,4 +56,9 @@ function renderWorkflows() {
       errors.map((e) => esc(e.path) + " — " + esc(e.message)).join("; ") + "</div>";
   }
   $("wf-list").innerHTML = html;
+  if (workflowScrollPending && selectedWorkflowName) {
+    workflowScrollPending = false;
+    const card = document.getElementById("wf-card-" + selectedWorkflowName);
+    if (card) card.scrollIntoView({ block: "center" });
+  }
 }

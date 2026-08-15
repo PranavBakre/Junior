@@ -72,6 +72,35 @@ function pendingCount(v) {
 function isErrorSession(s) {
   return s.status === "error" || !!(s.lastError);
 }
+function hashQuery() {
+  return new URLSearchParams(location.hash.split("?")[1] || "");
+}
+function spendTotalTokens(totals) {
+  if (!totals) return 0;
+  return (Number(totals.inputTokens) || 0) + (Number(totals.outputTokens) || 0);
+}
+function fmtTokens(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  if (Math.abs(v) >= 1_000_000) return (v / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (Math.abs(v) >= 10_000) return Math.round(v / 1000) + "k";
+  if (Math.abs(v) >= 1000) return (v / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+  return String(Math.round(v));
+}
+function fmtProviderCost(costUsd) {
+  if (costUsd == null || !Number.isFinite(Number(costUsd))) return null;
+  const n = Number(costUsd);
+  if (n === 0) return null;
+  if (n >= 0.01) return "$" + n.toFixed(2);
+  return "$" + n.toFixed(4);
+}
+function formatSpendSummary(spend) {
+  if (!spend) return "—";
+  const turns = Number(spend.turns) || 0;
+  const cost = fmtProviderCost(spend.costUsd);
+  return fmtTokens(spendTotalTokens(spend)) + " tok · " + turns + " turn" +
+    (turns === 1 ? "" : "s") + (cost ? " · " + cost + " provider-reported" : "");
+}
 async function fetchJson(path, init) {
   const res = await fetch(path, init);
   if (!res.ok) throw new Error(path + " " + res.status);
@@ -134,6 +163,11 @@ var spendGroupBy = "day";
 var spendSortKey = "key";
 var spendSortDir = "asc";
 var spendError = null;
+var spendFetchGeneration = 0;
+var selectedWorkflowName = null;
+var workflowScrollPending = false;
+var pipelineSpendById = new Map();
+var pipelineSpendGeneration = 0;
 var runbooks = [];
 var runbookErrors = [];
 var runbooksLoaded = false;
@@ -149,6 +183,7 @@ var auditAction = "";
 var auditTargetType = "";
 var auditFrom = "";
 var auditTo = "";
+var auditFetchGeneration = 0;
 
 /* =================== navigation =================== */
 function currentView() {
@@ -291,7 +326,10 @@ async function refreshMain() {
   renderThreads();
   renderDevServers();
   renderWorkflows();
-  if (currentView() === "pipelines") renderPipelines();
+  if (currentView() === "pipelines") {
+    renderPipelines();
+    await loadPipelineSpend();
+  }
   if (currentView() === "spend") await loadSpend();
   if (currentView() === "runbooks" && runbooksLoaded) await loadRunbooks();
   if (currentView() === "audit") await loadAudit();

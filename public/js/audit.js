@@ -34,6 +34,7 @@ function renderAudit() {
 }
 
 async function loadAudit() {
+  const generation = ++auditFetchGeneration;
   const params = new URLSearchParams();
   if (auditAction) params.set("action", auditAction);
   if (auditTargetType) params.set("targetType", auditTargetType);
@@ -41,6 +42,7 @@ async function loadAudit() {
   if (auditTo) params.set("to", auditTo);
   const qs = params.toString();
   const res = await safeFetch("/api/audit" + (qs ? "?" + qs : ""));
+  if (generation !== auditFetchGeneration) return;
   auditLoaded = true;
   if (!res.ok) {
     auditError = res.error || true;
