@@ -9,20 +9,24 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 | Symbol | File | Purpose |
 |---|---|---|
 | `startHttpServer(deps)` | `server.ts` | Bun.serve on 127.0.0.1:port; routes API + serves `public/index.html` |
-| `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore?, pipelineStore, resolveSlackPermalink? }` |
-| `handleHealth(store, config, startedAt)` | `routes/health.ts` | `GET /api/health` — uptime, session counts, agent counts, repo list |
-| `handleSessions(store)` | `routes/sessions.ts` | `GET /api/sessions` — list (strips worktreePath, systemPrompt, cwd, pid, slackIdentity, pendingMessages flattened to count) |
-| `handleSessionDetail(store, threadId, resolveSlackPermalink?)` | `routes/sessions.ts` | `GET /api/sessions/:threadId` — full session JSON plus a best-effort Slack permalink |
+| `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore?, pipelineStore, resolveSlackPermalink?, usageStore, auditStore, runbookCatalog? }` |
+| `handleHealth(store, config, startedAt, extras?)` | `routes/health.ts` | `GET /api/health` — uptime, session counts, agent counts, repo list, `pipeline.runtimeMode`, spend/audit today counters |
+| `handleSessions(store, usageStore?)` | `routes/sessions.ts` | `GET /api/sessions` — allowlist projection + numeric pending + spend summary |
+| `handleSessionDetail(store, threadId, resolveSlackPermalink?, usageStore?)` | `routes/sessions.ts` | `GET /api/sessions/:threadId` — same allowlist plus `resumeCwd`, spend, and a best-effort Slack permalink |
 | `handleDevServers(manager, queue, repos)` | `routes/dev-server.ts` | `GET /api/dev-server` — per-repo state, idle TTL remaining, queue depth |
 | `handleWorkflows(registry, store, scheduler)` | `routes/workflows.ts` | `GET /api/workflows` — definitions, persisted state, recent runs, registry errors, and live scheduler-derived display status |
-| `handlePipelines(store, params, runId?)` | `routes/pipelines.ts` | `GET /api/pipelines` and `GET /api/pipelines/:runId` — pipeline run summaries/detail with filters and assignment/artifact state |
+| `handlePipelines(store, params, runId?, options?)` | `routes/pipelines.ts` | `GET /api/pipelines` and `GET /api/pipelines/:runId` — summaries hide default-kind unless `includeDefault=1` or `kind=default`; detail expands leases/outbox/gates |
+| `handlePipelineArtifact(store, runId, params, options?)` | `routes/pipelines.ts` | `GET /api/pipelines/:runId/artifacts?ref=` — relative-to-run-root file read, 256 KiB cap |
+| `handleSpend(store, params)` | `routes/spend.ts` | `GET /api/spend` — usage `groupBy` over a host-local window (max 90 days) |
+| `handleRunbooks(params, catalog?)` / `handleRunbookDetail(name, catalog?)` | `routes/runbooks.ts` | `GET /api/runbooks` and `GET /api/runbooks/:name` — registry + catalog + metrics |
+| `handleAudit(store, params)` | `routes/audit.ts` | `GET /api/audit` — newest-first dashboard audit rows |
 | `handleLogs(searchParams)` | `routes/logs.ts` | `GET /api/logs?date=YYYY-MM-DD` — parses daily log file (strict date regex prevents path traversal) |
 | `handleProfiles(store, params)` | `routes/profiles.ts` | `GET /api/profiles` — read-only profile list/filter; never bumps `last_used_at` |
 | `handleMemoryList()` | `routes/memory.ts` | `GET /api/memory` — list files under `docs/` |
 | `handleMemoryRead(filePath)` | `routes/memory.ts` | `GET /api/memory/:path` — read a doc file (path-traversal guarded) |
 | `handleMemoryRecall(store, params)` | `routes/memory.ts` | `GET /api/memory/recall` — semantic claim recall without recording dashboard usage |
 | `handleMemoryProjection(store, params?)` | `routes/memory.ts` | `GET /api/memory/projection` — 3D PCA + spread + KNN projection for the memory galaxy; memoised per claim set, `?refresh=1` rebuilds |
-| `resumeCmd(provider, sessionId, cwd)` | `public/index.html` | Renders provider-correct Claude, OpenCode, or Codex resume commands on session cards. |
+| `resumeCmd(provider, sessionId, resumeCwd)` | `public/index.html` | Renders provider-correct Claude, OpenCode, or Codex resume commands from detail `resumeCwd`. |
 | `projectClaims(claims, k?, spread?)` | `projection.ts` | PCA to 3D (power iteration + deflation) → separation relaxation → cosine KNN edges |
 
 ## Routes
@@ -34,8 +38,13 @@ GET /api/sessions           → handleSessions
 GET /api/sessions/<id>      → handleSessionDetail
 GET /api/dev-server         → handleDevServers
 GET /api/workflows          → handleWorkflows
-GET /api/pipelines          → handlePipelines
+GET /api/pipelines          → handlePipelines (runtimeMode + default-kind hide)
 GET /api/pipelines/<runId>  → handlePipelines (detail)
+GET /api/pipelines/<runId>/artifacts?ref= → handlePipelineArtifact
+GET /api/spend              → handleSpend
+GET /api/runbooks           → handleRunbooks
+GET /api/runbooks/<name>    → handleRunbookDetail
+GET /api/audit              → handleAudit
 GET /api/logs?date=...      → handleLogs
 GET /api/profiles[?kind=…]  → handleProfiles
 GET /api/memory             → handleMemoryList
@@ -90,5 +99,5 @@ overlays on that single graph scene.
 
 ## Dependencies
 
-- **Uses**: `Bun.serve`, `SessionStore`, `DevServerManager`, `DevServerQueue`, `WorkflowRegistry`, `WorkflowScheduler`, `WorkflowStore`, `PipelineStore`, optional `MemoryStore` and `ProfileStore`, optional Slack permalink resolver, `RepoConfig`, `logger`
+- **Uses**: `Bun.serve`, `SessionStore`, `DevServerManager`, `DevServerQueue`, `WorkflowRegistry`, `WorkflowScheduler`, `WorkflowStore`, `PipelineStore`, `UsageStore`, `DashboardAuditStore`, optional `MemoryStore`, `ProfileStore`, and runbook `CatalogStore`, optional Slack permalink resolver, `RepoConfig`, `logger`
 - **Used by**: `src/index.ts` (gated on `config.http.enabled`)

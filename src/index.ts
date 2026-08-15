@@ -824,6 +824,9 @@ setInterval(() => {
         memoryStore,
         profileStore,
         pipelineStore,
+        usageStore,
+        auditStore,
+        runbookCatalog: runbookCatalogStore,
         resolveSlackPermalink: async (channel, messageTs) => {
           const result = await app.client.chat.getPermalink({
             channel,

@@ -1690,14 +1690,14 @@ $("live-toggle").addEventListener("click", () => {
 });
 
 /* =================== copy / resume =================== */
-function resumeCmd(provider, sessionId, cwd) {
+function resumeCmd(provider, sessionId, resumeCwd) {
   if (!sessionId) return null;
   const r = provider === "claude"
     ? "claude --resume " + sessionId
     : provider === "codex" || provider === "codex-app-server"
       ? "codex resume " + sessionId
       : "opencode --session " + sessionId;
-  return cwd ? "cd " + cwd + " && " + r : r;
+  return resumeCwd ? "cd " + resumeCwd + " && " + r : r;
 }
 function cmdRow(cmd) {
   if (!cmd) return '<div class="faint" style="margin-top:8px">no session id</div>';
@@ -2127,13 +2127,12 @@ async function openDrawer(threadId) {
   }
   const t = res.data.session;
   const provider = t.provider || "opencode";
-  const cwd = t.worktreePath || t.cwd || null;
+  const cwd = t.resumeCwd || null;
   const leadId = t.leadSessionId || t.sessionId;
-  const agentsMap = t.agentSessions || {};
-  const agents = Object.values(agentsMap);
+  const agents = Array.isArray(t.agents) ? t.agents : [];
   const pend = pendingCount(t.pendingMessages);
-  const slackAction = res.data.slackPermalink
-    ? '<a class="slack-action" href="' + esc(res.data.slackPermalink) +
+  const slackAction = (t.slackPermalink || res.data.slackPermalink)
+    ? '<a class="slack-action" href="' + esc(t.slackPermalink || res.data.slackPermalink) +
       '" target="_blank" rel="noopener noreferrer">Open thread in Slack <span aria-hidden="true">↗</span></a>'
     : "";
 
@@ -2172,9 +2171,9 @@ async function openDrawer(threadId) {
     '<span class="k">agent type</span><span>' + esc(t.agentType || "—") + "</span>" +
     '<span class="k">target repo</span><span>' + esc(t.targetRepo || "—") +
     (t.baseRef ? " @ " + esc(t.baseRef) : "") + "</span>" +
-    '<span class="k">worktree</span><span class="mono" style="font-size:11px">' +
-    esc(t.worktreePath || "—") + "</span>" +
-    '<span class="k">cwd</span><span class="mono" style="font-size:11px">' + esc(t.cwd || "—") + "</span>" +
+    '<span class="k">worktree</span><span>' + (t.hasWorktree ? "yes" : "no") + "</span>" +
+    '<span class="k">resume cwd</span><span class="mono" style="font-size:11px">' +
+    esc(t.resumeCwd || "—") + "</span>" +
     '<span class="k">last activity</span><span>' + ago(t.lastActivity) + " ago</span>" +
     '<span class="k">driver</span><span>' + esc(t.driverMode || "—") + "</span>" +
     "</div>" +

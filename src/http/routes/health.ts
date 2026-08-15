@@ -1,10 +1,17 @@
 import type { Config } from "../../config.ts";
 import type { SessionStore } from "../../session/store/interface.ts";
+import type { UsageStore } from "../../usage/store/interface.ts";
+import type { DashboardAuditStore } from "../audit/interface.ts";
+import { startOfLocalDay } from "../query.ts";
 
 export async function handleHealth(
   store: SessionStore,
   config: Config,
   startedAt: string,
+  extras: {
+    usageStore?: UsageStore;
+    auditStore?: DashboardAuditStore;
+  } = {},
 ): Promise<Response> {
   const allSessions = await store.getAll();
   let busy = 0, idle = 0, draining = 0, errors = 0;
@@ -24,6 +31,15 @@ export async function handleHealth(
     }
   }
 
+  const todayStart = startOfLocalDay();
+  const now = Date.now();
+  const eventsToday = extras.usageStore
+    ? (await extras.usageStore.list({ from: todayStart, to: now })).length
+    : 0;
+  const writesToday = extras.auditStore
+    ? (await extras.auditStore.list({ from: todayStart, to: now, limit: 500 })).length
+    : 0;
+
   return Response.json({
     status: "ok",
     uptime: Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000),
@@ -41,5 +57,7 @@ export async function handleHealth(
       githubEventWakeEnabled: config.github?.eventWakeEnabled ?? false,
       sessionsWithActiveRun: activePipelineRuns,
     },
+    spend: { eventsToday },
+    audit: { writesToday },
   });
 }

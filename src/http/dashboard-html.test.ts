@@ -4,12 +4,12 @@ import { resolve } from "node:path";
 describe("dashboard resume commands", () => {
   it("uses the CLI that owns each provider session", async () => {
     const html = await Bun.file(resolve(import.meta.dirname, "../../public/index.html")).text();
-    const source = html.match(/function resumeCmd\(provider, sessionId, cwd\) \{[\s\S]*?\n\}/)?.[0];
+    const source = html.match(/function resumeCmd\(provider, sessionId, resumeCwd\) \{[\s\S]*?\n\}/)?.[0];
     expect(source).toBeDefined();
     const resumeCmd = new Function(`${source}; return resumeCmd;`)() as (
       provider: string,
       sessionId: string,
-      cwd?: string,
+      resumeCwd?: string,
     ) => string;
 
     expect(resumeCmd("codex-app-server", "019ff47d", "/tmp/repo"))
