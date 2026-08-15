@@ -47,7 +47,7 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 ## Security posture
 
 - **Loopback-only.** Binds `127.0.0.1` — never reachable off-host without an explicit SSH tunnel. This is the entire threat model; there is intentionally no auth layer behind it. Do not tunnel the port without adding auth.
-- **Writes are in scope.** Continue, stop, workflow run/start/stop/reload, and Git-backed create/edit are first-class. They do not invent a second control plane: they call `SessionManager` / `WorkflowScheduler` / the git helper the Slack path already uses.
+- **Writes are in scope.** Continue, stop, workflow run/start/stop/reload, and Git-backed create/edit are first-class. They do not invent a second session/workflow runtime: continue/stop go through `SessionManager` (`injectDashboardContinue` / `interruptThread`); run/start/stop reuse scheduler enablement and `canManage` checks. Dashboard **run** is `enqueueManualRun` — Slack `!workflow run` still blocks on `runNow`. Create/edit use a dashboard-only scoped git helper (`src/workflows/git-commit.ts`); Slack never commits workflow files.
 - **Audit is required, Slack-parity is not.** Every mutating call writes `dashboard_audit`. Session continue/stop also post to the Slack thread (conversation of record). Workflow mutations post a one-liner to a `slack` / `slack-thread` output **when the definition has one**. Workflows without an output channel leave only git + `dashboard_audit` — **weaker than Slack `!` commands**, accepted for a no-auth loopback console, and must not be documented as Slack-parity.
 - **Actor is loopback identity.** `ADMIN_SLACK_USER_ID` when set, else `dashboard-operator`. Fail closed when the `admins` table is non-empty but the env admin is unset. Open-mode (neither tier configured) matches Slack open-mode.
 - **Profiles are private operator data.** `/api/profiles` can include derived context about real people. It is available only inside the same loopback-only console and must not be exposed through a public bind or permissive CORS.
@@ -134,7 +134,7 @@ Default UI is an **assignment swimlane + phase tape**, not the 3D topology graph
 - `GET /api/pipelines/:runId` expands leases, full-run outbox **without payload**, outcomes, gates, GitHub resources, dev-server jobs, and artifact refs. No pipeline writes (no force-transition, no replay).
 - `GET /api/pipelines/:runId/artifacts?ref=` reads a path relative to `data/pipelines/<runId>/` only, 256 KiB cap. 400 on traversal, 404 if missing.
 
-Empty copy: “No typed pipeline runs. Default-run durability is hidden unless you enable it.”
+Empty copy: “No typed pipeline runs. Default-kind durability is hidden unless you enable it.”
 
 ## Spend ledger
 
@@ -235,7 +235,7 @@ HTTP_DASHBOARD_PORT=4567  # positive integer 1-65535. Unset = disabled.
 - Unset/empty → `{ enabled: false }`, `startHttpServer` is never called from `index.ts`.
 - Anything other than a positive integer in range throws at config load — better to fail boot than silently bind to a surprise port.
 - `Bun.serve` startup failures (port in use, permissions) are caught and logged; the bot continues without the dashboard.
-- Unsetting the port hides the UI. It does **not** stop `usage_events` / `dashboard_audit` writes; those are wired in `SessionManager`, `WorkflowExecutor`, and cleanup regardless of the port.
+- Unsetting the port hides the UI. Spend capture (`usage_events` from `SessionManager` / `WorkflowExecutor`) and 90-day/180-day retention deletes stay always-on. `dashboard_audit` **inserts** happen only when a mutating HTTP route runs; they do not fire when the dashboard is off. `cleanupOperationalTables` deletes old usage/audit rows — it does not write them.
 
 ## Integration points
 
