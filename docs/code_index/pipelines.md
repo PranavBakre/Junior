@@ -14,7 +14,9 @@ disabled by default (`PIPELINE_RUNTIME_MODE=off`) and can run in `shadow` or
 | Persistence | `src/pipelines/store/*` | Memory and SQLite stores, versioned writes, and transactional outcome handling. |
 | Reliability | `src/pipelines/outbox.ts`, `recovery.ts`, `settlement-recovery` paths | At-least-once outbox delivery, lease recovery, and settlement repair. |
 | Outcomes | `src/pipelines/outcomes.ts`, `revision.ts`, `artifacts.ts` | Idempotent agent outcomes, revisions, artifacts, and handoffs. |
-| Projection and cleanup | `src/pipelines/projection.ts`, `src/pipelines/gc.ts` | Dashboard projections and retention cleanup. |
+| Slack/`!status` summary | `src/pipelines/projection.ts` | Human-readable `projectRunSummary` for Slack status. Not the dashboard HTTP projector. |
+| Dashboard operator projection | `src/http/routes/pipelines.ts` | List + detail + artifact read. Hides `kind=default` unless `includeDefault=1` or `kind=default`. Detail expands leases, full-run outbox (payload stripped), attempt-scoped gates, GitHub resources, dev-server jobs, artifact refs. |
+| Retention cleanup | `src/pipelines/gc.ts` | Pipeline retention GC (`PIPELINE_RETENTION_DAYS`). |
 | Legacy bridge | `src/pipelines/legacy-directives.ts`, `src/support/pipeline-guard.ts` | Safely maps selected legacy directives while preserving existing routing. |
 | MCP tools | `src/pipelines/tools.ts` | Runner-facing pipeline read/write tools with scope and idempotency checks. |
 
@@ -32,6 +34,13 @@ consumers and outcome writes must remain idempotent; version/CAS checks prevent
 stale workers from overwriting newer state. Retention is controlled by
 `PIPELINE_RETENTION_DAYS`.
 
-See [the implementation plan](../features/agent-product-debugging-pipeline-implementation-plan.md)
-for design history and [GitHub reconciliation](github-reconciliation.md) for
+The localhost dashboard default is an assignment **swimlane + phase tape**
+(`public/js/pipelines.js`, `pipelineViewMode = "swimlane"`). The older 3D
+topology graph stays behind a Topology toggle and still uses
+`public/pipeline-worker.js`. There are no pipeline writes from the dashboard
+(no force-transition, no outbox replay); those stay in Slack / MCP.
+
+See [the HTTP index](http-dashboard.md) for the operator routes,
+[the implementation plan](../features/agent-product-debugging-pipeline-implementation-plan.md)
+for design history, and [GitHub reconciliation](github-reconciliation.md) for
 the external review boundary.

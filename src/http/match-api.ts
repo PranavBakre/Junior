@@ -30,6 +30,8 @@ export type MatchedApi =
 
 const GET = ["GET"] as const;
 const POST = ["POST"] as const;
+const GET_POST = ["GET", "POST"] as const;
+const GET_PUT = ["GET", "PUT"] as const;
 
 export function allowedMethods(kind: MatchedApi["kind"]): readonly string[] {
   switch (kind) {
@@ -40,6 +42,10 @@ export function allowedMethods(kind: MatchedApi["kind"]): readonly string[] {
     case "workflow-start":
     case "workflow-stop":
       return POST;
+    case "workflows":
+      return GET_POST;
+    case "workflow":
+      return GET_PUT;
     case "not-found":
       return [];
     default:

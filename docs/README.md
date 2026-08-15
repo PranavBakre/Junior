@@ -28,7 +28,11 @@ indexes, and the source links in those documents.
 - [MCP server](features/mcp-server.md): loopback Slack, agent, memory,
   pipeline, GitHub, MongoDB, and WhatsApp tool surfaces.
 - [Dynamic workflows](features/dynamic-workflows.md): markdown definitions,
-  registry overlays, scheduler, executor, and dashboard state.
+  registry overlays, scheduler, executor, Slack `!workflow`, and dashboard
+  enqueue/create/edit.
+- [HTTP dashboard](features/http-dashboard.md): loopback operator console —
+  session continue/stop, pipeline swimlane, spend ledger, runbook viewer,
+  Git-backed workflow writes, and `dashboard_audit`.
 - [Pipeline implementation](features/agent-product-debugging-pipeline-implementation-plan.md):
   typed product/bug runs, assignments, outbox delivery, recovery, and GC.
 - [GitHub reconciliation](code_index/github-reconciliation.md): review-state
@@ -65,13 +69,7 @@ The remaining indexes are listed by module in `docs/code_index/`.
 
 ## Historical and proposal documents
 
-Active proposals (designed, not implemented):
-
-- [Operator dashboard redesign](features/operator-dashboard-redesign.md):
-  continue sessions, pipeline swimlane, spend ledger, Git-backed workflow
-  edits, and a runbook viewer on the localhost console.
-
-The claim dedup write guard, pre-recall synthesis, and task
+The operator dashboard redesign, claim dedup write guard, pre-recall synthesis, and task
 routes all graduated out of this list — they are shipped and listed under
 [current runtime surfaces](#current-runtime-surfaces).
 

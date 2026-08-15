@@ -1,6 +1,14 @@
 /* =================== workflows =================== */
 var WF_INSTR_MAX = 500;
 var wfActionBusy = false;
+var wfEditor = {
+  mode: null,
+  name: null,
+  sourceRoot: null,
+  fileVersionHash: null,
+  git: null,
+  parentGit: null,
+};
 
 function renderWorkflows() {
   const items = workflows;
@@ -73,6 +81,7 @@ function renderWorkflows() {
         ? '<button class="ctrl wf-start" type="button" data-name="' + esc(w.name) + '"' +
           (w.enabled ? "" : " disabled") + ">start</button>"
         : '<button class="ctrl wf-stop" type="button" data-name="' + esc(w.name) + '">stop</button>') +
+      '<button class="ctrl wf-edit" type="button" data-name="' + esc(w.name) + '">edit</button>' +
       "</div></div></div>"
     );
   }).join("");
@@ -152,7 +161,10 @@ async function refreshWorkflowList() {
   if (w.ok) {
     workflows = w.data.workflows || [];
     workflowErrors = w.data.errors || [];
+    workflowWriteGit = w.data.git || workflowWriteGit;
+    overlayRootExists = Boolean(w.data.overlayRootExists);
     renderWorkflows();
+    if (wfEditor.mode === "create") syncCreateGitControls();
   }
 }
 
@@ -253,6 +265,38 @@ document.addEventListener("click", (event) => {
   if (event.target.id === "wf-reload") {
     event.preventDefault();
     reloadWorkflows();
+    return;
+  }
+  const edit = event.target.closest && event.target.closest(".wf-edit");
+  if (edit) {
+    event.preventDefault();
+    openWorkflowEditor(edit.dataset.name);
+    return;
+  }
+  if (event.target.id === "wf-new") {
+    event.preventDefault();
+    openNewWorkflowEditor();
+    return;
+  }
+  if (event.target.id === "wf-editor-close") {
+    event.preventDefault();
+    closeWorkflowEditor();
+    return;
+  }
+  if (event.target.id === "wf-validate") {
+    event.preventDefault();
+    validateWorkflowEditor();
+    return;
+  }
+  if (event.target.id === "wf-save") {
+    event.preventDefault();
+    saveWorkflowEditor();
+  }
+});
+
+document.addEventListener("change", (event) => {
+  if (event.target.id === "wf-source-root" || event.target.id === "wf-anyway") {
+    syncCreateGitControls();
   }
 });
 
@@ -263,3 +307,259 @@ document.addEventListener("input", (event) => {
   const counter = document.querySelector('.wf-count[data-count="' + name + '"]');
   if (counter) counter.textContent = field.value.length + " / " + WF_INSTR_MAX;
 });
+
+function newWorkflowTemplate(name) {
+  const slug = name || "my-workflow";
+  return [
+    "---",
+    "name: " + slug,
+    "enabled: true",
+    "description: ",
+    "ownerSlackUserIds: []",
+    "triggers:",
+    "  - type: command",
+    "    command: " + slug,
+    "outputs:",
+    "  - type: docs",
+    "    path: data/workflow-runs/" + slug,
+    "permissions:",
+    "  tools:",
+    "    - docs.write",
+    "---",
+    "",
+    "Describe the work.",
+    "",
+  ].join("\n");
+}
+
+function gitBlocked(git) {
+  return Boolean(git && (git.detached || git.merging || git.rebasing));
+}
+
+function gitNeedsAnyway(git) {
+  return Boolean(git && git.branch && git.branch !== "main" && git.branch !== "master");
+}
+
+function writeReposForEditor() {
+  const sourceRoot = $("wf-source-root").value;
+  const repos = [];
+  if (wfEditor.mode === "edit") {
+    repos.push({ label: wfEditor.sourceRoot === "overlay" ? "agents-org" : "junior", git: wfEditor.git });
+    if (wfEditor.sourceRoot === "overlay") {
+      repos.push({ label: "junior", git: wfEditor.parentGit || (workflowWriteGit && workflowWriteGit.junior) });
+    }
+    return repos;
+  }
+  if (sourceRoot === "overlay") {
+    repos.push({ label: "agents-org", git: workflowWriteGit && workflowWriteGit.overlay });
+    repos.push({ label: "junior", git: workflowWriteGit && workflowWriteGit.junior });
+  } else {
+    repos.push({ label: "junior", git: workflowWriteGit && workflowWriteGit.junior });
+  }
+  return repos;
+}
+
+function renderEditorBanners(extra) {
+  const el = $("wf-banners");
+  if (!el) return;
+  const banners = extra ? extra.slice() : [];
+  if (wfEditor.mode === "edit" && wfEditor.sourceRoot === "public" && wfEditor.overlayExists) {
+    banners.push("An overlay is active; editing the public file will not change runtime.");
+  } else if (wfEditor.mode === "edit" && wfEditor.sourceRoot === "overlay") {
+    banners.push("An overlay is active; runtime loads this overlay file.");
+  }
+  if (wfEditor.runtimeUsesFile === false) {
+    banners.push(
+      "Runtime is using last-known-good (`" +
+      esc(wfEditor.loadedVersionHash || "") +
+      "`); editor shows on-disk bytes (`" +
+      esc(wfEditor.fileVersionHash || "") +
+      "`).",
+    );
+  }
+  el.innerHTML = banners.map((text) =>
+    '<div class="wf-banner' + (text.indexOf("parent pointer") >= 0 ? " err" : "") + '">' + text + "</div>"
+  ).join("");
+}
+
+function syncCreateGitControls() {
+  const repos = writeReposForEditor();
+  const blocked = repos.some((item) => gitBlocked(item.git));
+  const anywayNeeded = repos.some((item) => gitNeedsAnyway(item.git));
+  const row = $("wf-anyway-row");
+  const branch = $("wf-branch");
+  if (row) row.style.display = anywayNeeded && !blocked ? "flex" : "none";
+  if (branch) {
+    branch.textContent = repos
+      .filter((item) => gitNeedsAnyway(item.git))
+      .map((item) => item.label + ":" + item.git.branch)
+      .join(", ") || "branch";
+  }
+  const save = $("wf-save");
+  if (save) {
+    save.disabled = blocked || (anywayNeeded && !$("wf-anyway").checked);
+  }
+}
+
+function closeWorkflowEditor() {
+  wfEditor = {
+    mode: null,
+    name: null,
+    sourceRoot: null,
+    fileVersionHash: null,
+    git: null,
+    parentGit: null,
+  };
+  const editor = $("wf-editor");
+  if (editor) editor.classList.remove("open");
+  if ($("wf-save-result")) $("wf-save-result").textContent = "";
+}
+
+function openNewWorkflowEditor() {
+  wfEditor = {
+    mode: "create",
+    name: null,
+    sourceRoot: overlayRootExists ? "overlay" : "public",
+    fileVersionHash: null,
+    git: null,
+    parentGit: null,
+    runtimeUsesFile: true,
+  };
+  $("wf-editor-title").textContent = "New workflow";
+  $("wf-name").value = "";
+  $("wf-name").disabled = false;
+  $("wf-source-root").value = overlayRootExists ? "overlay" : "public";
+  $("wf-source-root").disabled = false;
+  $("wf-markdown").value = newWorkflowTemplate("my-workflow");
+  $("wf-anyway").checked = false;
+  $("wf-save-result").textContent = "";
+  $("wf-editor").classList.add("open");
+  renderEditorBanners();
+  syncCreateGitControls();
+}
+
+async function openWorkflowEditor(name) {
+  setWfStatus("loading " + name + "…");
+  const res = await safeFetch("/api/workflows/" + encodeURIComponent(name));
+  if (!res.ok) {
+    setWfStatus((res.data && res.data.error) || "failed to load workflow", "err");
+    return;
+  }
+  const source = res.data.source || {};
+  const git = res.data.git || {};
+  wfEditor = {
+    mode: "edit",
+    name: name,
+    sourceRoot: source.sourceRoot || "public",
+    fileVersionHash: source.fileVersionHash || "",
+    loadedVersionHash: source.loadedVersionHash || null,
+    overlayExists: Boolean(source.overlayExists || source.sourceRoot === "overlay"),
+    runtimeUsesFile: res.data.runtimeUsesFile !== false,
+    git: git,
+    parentGit: git.parent || null,
+  };
+  $("wf-editor-title").textContent = "Edit " + name;
+  $("wf-name").value = name;
+  $("wf-name").disabled = true;
+  $("wf-source-root").value = wfEditor.sourceRoot;
+  $("wf-source-root").disabled = true;
+  $("wf-markdown").value = source.markdown || "";
+  $("wf-anyway").checked = false;
+  $("wf-save-result").textContent = "";
+  $("wf-editor").classList.add("open");
+  renderEditorBanners();
+  syncCreateGitControls();
+  setWfStatus("");
+}
+
+async function validateWorkflowEditor() {
+  const name = wfEditor.mode === "create" ? String($("wf-name").value || "").trim() : wfEditor.name;
+  if (!name) {
+    setWfStatus("name is required", "err");
+    return;
+  }
+  const result = await fetch("/api/workflows/" + encodeURIComponent(name) + "?validate=1", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ markdown: $("wf-markdown").value }),
+  });
+  const data = await result.json().catch(() => ({}));
+  if (!result.ok) {
+    const errors = (data.errors || []).map((e) => e.message).join("; ");
+    setWfStatus(errors || data.error || "invalid workflow", "err");
+    return;
+  }
+  setWfStatus("valid", "ok");
+}
+
+async function saveWorkflowEditor() {
+  if (wfActionBusy) return;
+  const name = wfEditor.mode === "create" ? String($("wf-name").value || "").trim() : wfEditor.name;
+  if (!name) {
+    setWfStatus("name is required", "err");
+    return;
+  }
+  wfActionBusy = true;
+  $("wf-save").disabled = true;
+  setWfStatus("saving " + name + "…");
+  try {
+    const payload = {
+      markdown: $("wf-markdown").value,
+      sourceRoot: $("wf-source-root").value,
+      commitHereAnyway: $("wf-anyway").checked,
+    };
+    if (wfEditor.mode === "create") payload.name = name;
+    if (wfEditor.mode === "edit") {
+      payload.expectedVersionHash = wfEditor.fileVersionHash;
+    }
+    const path = wfEditor.mode === "create"
+      ? "/api/workflows"
+      : "/api/workflows/" + encodeURIComponent(name);
+    const result = await fetch(path, {
+      method: wfEditor.mode === "create" ? "POST" : "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await result.json().catch(() => ({}));
+    if (!result.ok) {
+      const errors = (data.errors || []).map((e) => e.message).join("; ");
+      setWfStatus(errors || data.error || ("save failed " + result.status), "err");
+      return;
+    }
+    const lines = [];
+    if (data.commit) {
+      lines.push(
+        data.commit.repo + " " + (data.commit.sha || "").slice(0, 12) +
+        " on " + (data.commit.branch || "?") + " · not pushed",
+      );
+      if (data.commit.stat) lines.push(data.commit.stat);
+    }
+    if (data.parentPointer && data.parentPointer.sha) {
+      lines.push(
+        "junior pointer " + data.parentPointer.sha.slice(0, 12) +
+        " on " + (data.parentPointer.branch || "?") + " · not pushed",
+      );
+      if (data.parentPointer.stat) lines.push(data.parentPointer.stat);
+    }
+    $("wf-save-result").textContent = lines.join("\n");
+    const extra = [];
+    if (data.parentPointerCommitted === false) {
+      extra.push(
+        "parent pointer failed after overlay commit " +
+        ((data.commit && data.commit.sha) || "") +
+        ". Bump agents-org manually. " +
+        ((data.parentPointer && data.parentPointer.detail) || data.parentPointer && data.parentPointer.code || ""),
+      );
+    }
+    renderEditorBanners(extra);
+    setWfStatus("saved " + name, data.parentPointerCommitted === false ? "err" : "ok");
+    if (wfEditor.mode === "edit") wfEditor.fileVersionHash = data.versionHash;
+    await refreshWorkflowList();
+    if (wfEditor.mode === "edit") await openWorkflowEditor(name);
+  } catch (err) {
+    setWfStatus(String(err && err.message ? err.message : err), "err");
+  } finally {
+    wfActionBusy = false;
+    syncCreateGitControls();
+  }
+}
