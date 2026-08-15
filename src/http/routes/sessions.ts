@@ -16,7 +16,6 @@ const SLACK_ID_RE = /^[UWB][A-Z0-9]+$/;
 
 export type SlackPoster = {
   post: (channel: string, threadTs: string, text: string) => Promise<{ ts: string } | null>;
-  react: (channel: string, ts: string, emoji: string) => Promise<void>;
 };
 
 export function dashboardActor(config: Config): string {

@@ -27,7 +27,6 @@ function stubDeps(): HttpServerDeps {
     },
     slackPoster: {
       post: async () => ({ ts: "1.1" }),
-      react: async () => {},
     },
   };
 }

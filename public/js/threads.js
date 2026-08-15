@@ -114,7 +114,7 @@ $("th-list").addEventListener("click", (e) => {
   if (row) openDrawer(row.dataset.openThread);
 });
 
-async function openDrawer(threadId) {
+async function openDrawer(threadId, settle) {
   drawerThreadId = threadId;
   $("drawer").innerHTML = '<button class="close" type="button" id="drawer-close">esc</button><div class="empty">loading…</div>';
   $("drawer").classList.add("open");
@@ -190,6 +190,7 @@ async function openDrawer(threadId) {
 
   $("drawer-close").addEventListener("click", closeDrawer);
   bindContinueComposer(t);
+  if (settle && settle.text) setContinueStatus(settle.text, !!settle.isError);
 }
 
 function continueComposerHtml(t, agents) {
@@ -259,21 +260,30 @@ function bindContinueComposer(t) {
       continueBtn.disabled = true;
       if (stopBtn) stopBtn.disabled = true;
       setContinueStatus("Sending…", false);
-      const agentName = agentEl && agentEl.value ? agentEl.value : undefined;
-      const res = await postSessionWrite(
-        "/api/sessions/" + encodeURIComponent(t.threadId) + "/continue",
-        { prompt, agentName },
-      );
-      if (!res.ok) {
-        setContinueStatus((res.data && res.data.error) || ("Continue failed (" + res.status + ")"), true);
-        continueBtn.disabled = false;
-        if (stopBtn) stopBtn.disabled = false;
-        return;
+      let settled = false;
+      try {
+        const agentName = agentEl && agentEl.value ? agentEl.value : undefined;
+        const res = await postSessionWrite(
+          "/api/sessions/" + encodeURIComponent(t.threadId) + "/continue",
+          { prompt, agentName },
+        );
+        if (!res.ok) {
+          setContinueStatus((res.data && res.data.error) || ("Continue failed (" + res.status + ")"), true);
+          return;
+        }
+        settled = true;
+        const statusText = res.data && res.data.status === "buffered" ? "Buffered." : "Accepted.";
+        if (promptEl) promptEl.value = "";
+        if (typeof refreshMain === "function") await refreshMain();
+        if (drawerThreadId === t.threadId) await openDrawer(t.threadId, { text: statusText });
+      } catch (err) {
+        setContinueStatus((err && err.message) || "Continue failed.", true);
+      } finally {
+        if (!settled) {
+          continueBtn.disabled = false;
+          if (stopBtn) stopBtn.disabled = false;
+        }
       }
-      setContinueStatus(res.data && res.data.status === "buffered" ? "Buffered." : "Accepted.", false);
-      if (promptEl) promptEl.value = "";
-      if (typeof refreshMain === "function") await refreshMain();
-      if (drawerThreadId === t.threadId) await openDrawer(t.threadId);
     });
   }
   if (stopBtn) {
@@ -281,18 +291,27 @@ function bindContinueComposer(t) {
       stopBtn.disabled = true;
       if (continueBtn) continueBtn.disabled = true;
       setContinueStatus("Stopping…", false);
-      const res = await postSessionWrite(
-        "/api/sessions/" + encodeURIComponent(t.threadId) + "/stop",
-      );
-      if (!res.ok) {
-        setContinueStatus((res.data && res.data.error) || ("Stop failed (" + res.status + ")"), true);
-        stopBtn.disabled = false;
-        if (continueBtn && !t.muted) continueBtn.disabled = false;
-        return;
+      let settled = false;
+      try {
+        const res = await postSessionWrite(
+          "/api/sessions/" + encodeURIComponent(t.threadId) + "/stop",
+        );
+        if (!res.ok) {
+          setContinueStatus((res.data && res.data.error) || ("Stop failed (" + res.status + ")"), true);
+          return;
+        }
+        settled = true;
+        const statusText = (res.data && res.data.message) || "Stopped.";
+        if (typeof refreshMain === "function") await refreshMain();
+        if (drawerThreadId === t.threadId) await openDrawer(t.threadId, { text: statusText });
+      } catch (err) {
+        setContinueStatus((err && err.message) || "Stop failed.", true);
+      } finally {
+        if (!settled) {
+          stopBtn.disabled = false;
+          if (continueBtn && !t.muted) continueBtn.disabled = false;
+        }
       }
-      setContinueStatus((res.data && res.data.message) || "Stopped.", false);
-      if (typeof refreshMain === "function") await refreshMain();
-      if (drawerThreadId === t.threadId) await openDrawer(t.threadId);
     });
   }
 }

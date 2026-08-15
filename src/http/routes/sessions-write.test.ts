@@ -324,7 +324,6 @@ describe("session continue/stop writes", () => {
           slackPosts.push({ channel, threadTs, text });
           return slackPostResult;
         },
-        react: async () => {},
       },
     };
   }
