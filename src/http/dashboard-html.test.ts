@@ -82,6 +82,11 @@ describe("dashboard operator views", () => {
     expect(threads).toContain("formatSpendSummary(t.spend)");
   });
 
+  it("clears the workflow highlight when the hash has no name", async () => {
+    const source = await Bun.file(resolve(publicDir, "js/app.js")).text();
+    expect(source).toMatch(/if \(name\) \{[\s\S]*?\} else \{\s*selectedWorkflowName = null;/);
+  });
+
   it("loads spend, runbooks, and audit scripts after the existing modules", async () => {
     const html = await Bun.file(resolve(publicDir, "index.html")).text();
     const api = html.indexOf('"/js/api.js"');

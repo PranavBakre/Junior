@@ -18,6 +18,8 @@ function show(view) {
     if (name) {
       selectedWorkflowName = name;
       workflowScrollPending = true;
+    } else {
+      selectedWorkflowName = null;
     }
     renderWorkflows();
   }
