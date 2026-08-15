@@ -730,7 +730,7 @@ function renderAssignmentRail(run, assignment) {
         const blockers = (outcome.blockers || []).map((blocker) => blocker.kind).join(", ");
         const checks = (outcome.checks || []).map((check) => check.name + ":" + check.status).join(", ");
         return '<div class="rail-item"><div class="meta">' + esc(outcome.action) + " · " +
-          esc(outcome.status) + "</div><div class="objective">' + esc(outcome.reason || "") +
+          esc(outcome.status) + '</div><div class="objective">' + esc(outcome.reason || "") +
           "</div>" +
           (blockers ? '<div class="meta">blockers ' + esc(blockers) + "</div>" : "") +
           (checks ? '<div class="meta">checks ' + esc(checks) + "</div>" : "") +

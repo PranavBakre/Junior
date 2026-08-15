@@ -100,4 +100,30 @@ describe("dashboard operator views", () => {
     expect(audit).toBeGreaterThan(runbooks);
     expect(app).toBeGreaterThan(audit);
   });
+
+  it("parses every public/js module so a quote typo cannot hide renderPipelines", async () => {
+    const files = [
+      "api.js",
+      "markdown.js",
+      "threads.js",
+      "workflows.js",
+      "pipeline-layout.js",
+      "pipelines.js",
+      "galaxy.js",
+      "spend.js",
+      "runbooks.js",
+      "audit.js",
+      "app.js",
+    ];
+    for (const name of files) {
+      const source = await Bun.file(resolve(publicDir, "js", name)).text();
+      try {
+        new Function(source);
+      } catch (err) {
+        throw new Error(`${name}: ${(err as Error).message}`);
+      }
+    }
+    const pipelines = await Bun.file(resolve(publicDir, "js/pipelines.js")).text();
+    expect(pipelines).toContain("function renderPipelines(");
+  });
 });
