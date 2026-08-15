@@ -4,9 +4,11 @@ function show(view) {
   const el = $("view-" + view);
   (el || $("view-overview")).classList.add("active");
   if (view === "pipelines") {
-    resizePipeline();
-    if (pipelines.length) renderPipelines();
-    invalidatePipeline();
+    if (pipelineViewMode === "topology") {
+      resizePipeline();
+      invalidatePipeline();
+    }
+    renderPipelines();
   }
   if (view === "memory") { resizeGalaxy(); if (!galaxyLoaded) loadGalaxy(false); }
   if (view === "profiles" && !profilesLoaded) loadProfiles();
@@ -109,6 +111,19 @@ function deriveAttention() {
       });
     }
   }
+  for (const run of pipelines) {
+    if (run.status === "needs-human") {
+      cards.push({
+        sev: "warn",
+        kind: "pipeline needs human",
+        title: (run.kind || "pipeline") + " · " + (run.phase || "needs-human"),
+        desc: (run.lastOutcomeSummary || "A pipeline is waiting on a human.") +
+          " — " + shortId(run.id),
+        view: "pipelines",
+        pipelineId: run.id,
+      });
+    }
+  }
   for (const w of workflows) {
     const state = w.state || {};
     const runs = w.runs || [];
@@ -140,7 +155,8 @@ function renderOverview() {
     $("attn-ok").style.display = "none";
     $("attn").innerHTML = cards.map((a) =>
       '<div class="attn-card sev-' + a.sev + '" data-view="' + esc(a.view) + '"' +
-      (a.threadId ? ' data-thread="' + esc(a.threadId) + '"' : "") + ">" +
+      (a.threadId ? ' data-thread="' + esc(a.threadId) + '"' : "") +
+      (a.pipelineId ? ' data-pipeline="' + esc(a.pipelineId) + '"' : "") + ">" +
       '<div class="kind">' + (a.sev === "err" ? "✕" : "△") + " " + esc(a.kind) + "</div>" +
       '<div class="t">' + esc(a.title) + '</div><div class="d">' + esc(a.desc) + "</div>" +
       '<span class="go">→</span></div>'
@@ -212,6 +228,9 @@ $("attn").addEventListener("click", (e) => {
   if (card.dataset.thread) {
     location.hash = "threads";
     openDrawer(card.dataset.thread);
+  } else if (card.dataset.pipeline) {
+    selectedPipelineId = card.dataset.pipeline;
+    location.hash = "pipelines";
   } else if (card.dataset.view) {
     location.hash = card.dataset.view;
   }

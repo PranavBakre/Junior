@@ -98,6 +98,7 @@ var workflows = [];
 var workflowErrors = [];
 var pipelines = [];
 var openPipelineCount = 0;
+var pipelineRuntimeMode = null;
 var pipelineDetails = new Map();
 var pipelineDetailErrors = new Set();
 var pipelineDetailLoadingId = null;
@@ -177,6 +178,8 @@ function pipelineListPath() {
   const pipelineParams = new URLSearchParams();
   if (pipelineStatus) pipelineParams.set("status", pipelineStatus);
   if (pipelineKind) pipelineParams.set("kind", pipelineKind);
+  const includeDefault = $("pipeline-include-default");
+  if (includeDefault && includeDefault.checked) pipelineParams.set("includeDefault", "1");
   return "/api/pipelines" +
     (pipelineParams.size ? "?" + pipelineParams.toString() : "");
 }
@@ -186,6 +189,7 @@ function applyPipelineListResponse(response) {
     pipelineFetchError = null;
     const nextPipelines = response.data.pipelines || [];
     openPipelineCount = Number(response.data.openCount) || 0;
+    pipelineRuntimeMode = response.data.runtimeMode ?? null;
     for (const run of nextPipelines) {
       const detail = pipelineDetails.get(run.id);
       if (detail && detail.updatedAt !== run.updatedAt) pipelineDetails.delete(run.id);

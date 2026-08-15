@@ -492,6 +492,184 @@
   .pipeline-tools .ctrl {
     background: rgba(5,7,12,.92);
   }
+  .pipeline-tools .ctrl.on {
+    color: var(--fg);
+    border-color: var(--accent);
+    background: rgba(0,100,255,.16);
+  }
+  .ctrl-check {
+    display: inline-flex;
+    align-items: center;
+    gap: calc(6 * var(--baseline-font));
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: calc(9.5 * var(--baseline-font));
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .ctrl-check input { accent-color: var(--accent); }
+  .pipeline-topology { position: absolute; inset: 0; }
+  #pipeline-stage:not(.topology) .pipeline-topology {
+    visibility: hidden;
+    pointer-events: none;
+  }
+  #pipeline-stage.topology .pipeline-swimlane { display: none; }
+  .pipeline-swimlane {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding: calc(128 * var(--baseline-font)) calc(18 * var(--baseline-font)) calc(58 * var(--baseline-font));
+  }
+  .pipeline-swimlane > .empty {
+    position: absolute;
+    inset: calc(140 * var(--baseline-font)) calc(24 * var(--baseline-font)) auto;
+    max-width: calc(520 * var(--baseline-font));
+  }
+  .phase-tape {
+    position: relative;
+    min-height: calc(38 * var(--baseline-font));
+    margin-bottom: calc(14 * var(--baseline-font));
+    border: 1px solid rgba(112,157,255,.18);
+    border-radius: calc(8 * var(--baseline-font));
+    background: rgba(79,140,255,.04);
+    overflow: hidden;
+  }
+  .phase-cell {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    min-width: calc(36 * var(--baseline-font));
+    padding: calc(8 * var(--baseline-font)) calc(10 * var(--baseline-font));
+    overflow: hidden;
+    border-right: 1px solid rgba(255,255,255,.06);
+    color: #82acff;
+    font-family: var(--font-mono);
+    font-size: calc(9 * var(--baseline-font));
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .phase-pin {
+    position: absolute;
+    top: calc(5 * var(--baseline-font));
+    right: calc(6 * var(--baseline-font));
+    width: calc(8 * var(--baseline-font));
+    height: calc(8 * var(--baseline-font));
+    border-radius: 50%;
+    background: #f59e0b;
+    box-shadow: 0 0 0 3px rgba(245,158,11,.22);
+  }
+  .swim-lane {
+    display: grid;
+    grid-template-columns: calc(92 * var(--baseline-font)) 1fr;
+    gap: calc(8 * var(--baseline-font));
+    margin-bottom: calc(10 * var(--baseline-font));
+  }
+  .lane-label {
+    padding-top: calc(8 * var(--baseline-font));
+    color: #82acff;
+    font-family: var(--font-mono);
+    font-size: calc(9.5 * var(--baseline-font));
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .lane-track {
+    position: relative;
+    min-height: calc(36 * var(--baseline-font));
+    border: 1px solid rgba(79,140,255,.1);
+    border-radius: calc(8 * var(--baseline-font));
+    background: rgba(79,140,255,.035);
+  }
+  .assignment-row {
+    position: relative;
+    height: calc(28 * var(--baseline-font));
+    margin: calc(6 * var(--baseline-font)) 0;
+  }
+  .assignment-bar {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    overflow: hidden;
+    padding: 0 calc(8 * var(--baseline-font));
+    border: 0;
+    border-radius: calc(5 * var(--baseline-font));
+    background: var(--bar-color, #4f8cff);
+    color: #fff;
+    font-family: var(--font-mono);
+    font-size: calc(8.5 * var(--baseline-font));
+    letter-spacing: .03em;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .assignment-bar.hollow {
+    background: transparent;
+    border: 1px solid var(--bar-color, #4f8cff);
+    color: var(--bar-color, #4f8cff);
+  }
+  .assignment-bar.selected,
+  .assignment-bar:hover {
+    box-shadow: 0 0 0 1px rgba(255,255,255,.7);
+    z-index: 1;
+  }
+  .lease-tick {
+    position: absolute;
+    top: calc(-3 * var(--baseline-font));
+    bottom: calc(-3 * var(--baseline-font));
+    width: 2px;
+    background: #fff;
+    opacity: .85;
+    pointer-events: none;
+  }
+  .blocker-pin {
+    position: absolute;
+    top: calc(-4 * var(--baseline-font));
+    width: calc(8 * var(--baseline-font));
+    height: calc(8 * var(--baseline-font));
+    border-radius: 1px;
+    background: #ff3b3b;
+    transform: rotate(45deg);
+    pointer-events: none;
+  }
+  .swim-axis {
+    position: relative;
+    height: calc(18 * var(--baseline-font));
+    margin: calc(4 * var(--baseline-font)) 0 0 calc(100 * var(--baseline-font));
+    color: var(--fg-faint);
+    font-family: var(--font-mono);
+    font-size: calc(8.5 * var(--baseline-font));
+  }
+  .axis-tick { position: absolute; transform: translateX(-50%); }
+  .axis-tick:first-child { transform: none; }
+  .axis-tick:last-child { transform: translateX(-100%); }
+  .rail-section { margin-top: calc(10 * var(--baseline-font)); }
+  .rail-section .lbl {
+    font-family: var(--font-mono);
+    font-size: calc(8.5 * var(--baseline-font));
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .rail-item {
+    margin-top: calc(5 * var(--baseline-font));
+    padding: calc(7 * var(--baseline-font)) calc(8 * var(--baseline-font));
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: calc(6 * var(--baseline-font));
+    background: rgba(255,255,255,.03);
+  }
+  .pipeline-status .retry { pointer-events: auto; }
+  .pill.leased, .pill.pending { color: #4f8cff; border-color: rgba(79,140,255,.35); background: rgba(79,140,255,.08); }
+  .pill.waiting, .pill.needs-human { color: #f59e0b; border-color: rgba(245,158,11,.35); background: rgba(245,158,11,.08); }
+  .pill.completed { color: #22c55e; border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.08); }
+  .pill.cancelled, .pill.terminal { color: #666666; }
+  .pipeline-rail.detail-open .pipeline-detail { flex: 1 1 auto; max-height: 52%; }
   .pipeline-hud {
     position: absolute;
     z-index: 5;
@@ -1201,10 +1379,10 @@
       height: 35vh;
       padding: calc(10 * var(--baseline-font));
     }
-    .pipeline-rail.chat-open .pipeline-summary,
-    .pipeline-rail.chat-open .pipeline-rail-head,
-    .pipeline-rail.chat-open .pipeline-runs { display: none; }
-    .pipeline-rail.chat-open .pipeline-detail {
+    .pipeline-rail.detail-open .pipeline-summary,
+    .pipeline-rail.detail-open .pipeline-rail-head,
+    .pipeline-rail.detail-open .pipeline-runs { display: none; }
+    .pipeline-rail.detail-open .pipeline-detail {
       display: block !important;
       max-height: none;
       flex: 1;
@@ -1400,8 +1578,12 @@
     <section class="view" id="view-pipelines">
       <div class="view-head" data-index="06">
         <h2>Pipeline dispatches</h2>
-        <span class="sub">durable agent handoffs · live control-plane flow</span>
+        <span class="sub">assignment swimlane · phase tape · topology toggle</span>
         <span class="right">
+          <label class="ctrl-check">
+            <input type="checkbox" id="pipeline-include-default" />
+            include default
+          </label>
           <select class="ctrl" id="pipeline-kind" aria-label="Filter pipelines by type">
             <option value="">all types</option>
             <option value="product">product</option>
@@ -1419,18 +1601,24 @@
       </div>
       <div class="pipeline-layout">
         <div class="pipeline-stage" id="pipeline-stage">
-          <canvas id="pipeline-canvas"></canvas>
-          <div class="pipeline-node-layer" id="pipeline-node-layer"></div>
+          <div class="pipeline-swimlane" id="pipeline-swimlane"></div>
+          <div class="pipeline-topology" id="pipeline-topology">
+            <canvas id="pipeline-canvas"></canvas>
+            <div class="pipeline-node-layer" id="pipeline-node-layer"></div>
+          </div>
           <div class="pipeline-tools">
-            <button class="ctrl" id="pipeline-fit" type="button">fit flow</button>
-            <button class="ctrl" id="pipeline-reset" type="button">reset view</button>
+            <button class="ctrl on" id="pipeline-mode-swimlane" type="button">swimlane</button>
+            <button class="ctrl" id="pipeline-mode-topology" type="button">topology</button>
+            <button class="ctrl" id="pipeline-fit" type="button" hidden>fit flow</button>
+            <button class="ctrl" id="pipeline-reset" type="button" hidden>reset view</button>
           </div>
           <div class="pipeline-hud">
-            <span class="legend"><span class="sw" style="background:#4f8cff"></span>active</span>
-            <span class="legend"><span class="sw" style="background:#22c55e"></span>completed</span>
+            <span class="legend"><span class="sw" style="background:#4f8cff"></span>leased / pending</span>
             <span class="legend"><span class="sw" style="background:#f59e0b"></span>waiting</span>
+            <span class="legend"><span class="sw" style="background:#22c55e"></span>completed</span>
             <span class="legend"><span class="sw" style="background:#ff3b3b"></span>failed</span>
-            <span class="hint">drag orbit · wheel zoom · shift-drag pan<br />select a node for dispatch detail</span>
+            <span class="legend"><span class="sw" style="background:#666666"></span>cancelled</span>
+            <span class="hint" id="pipeline-hud-hint">click a bar for assignment detail</span>
           </div>
           <div class="tip" id="pipeline-tip" style="max-width:300px;white-space:normal"></div>
           <div class="pipeline-status" id="pipeline-status">loading pipeline control plane…</div>
@@ -1545,6 +1733,7 @@ for (const src of [
   "/js/markdown.js",
   "/js/threads.js",
   "/js/workflows.js",
+  "/js/pipeline-layout.js",
   "/js/pipelines.js",
   "/js/galaxy.js",
   "/js/app.js",
