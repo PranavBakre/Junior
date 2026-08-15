@@ -29,6 +29,7 @@ interface MockHandle extends SpawnHandle {
     sessionId?: string | null,
     events?: RunnerEvent[],
     completion?: RunnerCompletion,
+    usage?: Record<string, unknown>,
   ) => void;
   _error: (errorMsg: string) => void;
 }
@@ -54,6 +55,7 @@ function createMockHandle(
       sid?: string | null,
       resultEvents?: RunnerEvent[],
       completion?: RunnerCompletion,
+      usage?: Record<string, unknown>,
     ) => {
       const finalResponse = resp ?? response;
       const finalSessionId = sid === undefined ? sessionId : sid;
@@ -66,7 +68,7 @@ function createMockHandle(
           });
         }
       for (const l of listeners)
-        l({ type: "done", provider: "claude" });
+        l({ type: "done", provider: "claude", ...(usage ? { usage } : {}) });
       resolveResult({
         provider: "claude",
         sessionId: finalSessionId,
@@ -104,6 +106,7 @@ mock.module("../lifecycle/timeout.ts", () => ({
 // Import after mocking
 const { SessionManager } = await import("./manager.ts");
 import { InMemorySessionStore } from "./store/memory.ts";
+import { InMemoryUsageStore } from "../usage/store/memory.ts";
 import type { DriverMap } from "../claude/factory.ts";
 import type { ClaudeDriver } from "../claude/driver.ts";
 
@@ -4011,6 +4014,64 @@ describe("SessionManager", () => {
       expect(calls[3]).toEqual({ action: "remove", ts: TS_B, emoji: EMOJI });
     });
   });
+
+  it("records usage on done for a quiet session", async () => {
+    const usageStore = new InMemoryUsageStore();
+    manager.usageStore = usageStore;
+    const seen: string[] = [];
+    manager.onEvent = (session, event) => {
+      seen.push(event.type);
+      if (session.verbosity === "quiet") return;
+      throw new Error("quiet onEvent must return before Slack status work");
+    };
+
+    await manager.handleMessage(makeEvent({
+      ts: "111.222",
+      pipelineInvocation: {
+        runId: "run-spend",
+        assignmentId: "asg-spend",
+        dispatchKey: "dispatch-spend",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }));
+    currentHandle._complete("quiet ok", "ses-quiet", [], undefined, {
+      total_cost_usd: 0.02,
+      usage: {
+        input_tokens: 11,
+        output_tokens: 7,
+        cache_read_input_tokens: 3,
+        cache_creation_input_tokens: 1,
+      },
+      num_turns: 2,
+    });
+    await waitFor(async () => (await store.get("thread-1"))?.status === "idle");
+    const row = await waitForUsage(
+      usageStore,
+      "session-turn",
+      "thread-1:default:111.222",
+    );
+
+    expect(seen).toContain("done");
+    expect((await store.get("thread-1"))?.verbosity).toBe("quiet");
+    expect(row).toMatchObject({
+      sourceKind: "session-turn",
+      sourceId: "thread-1:default:111.222",
+      threadId: "thread-1",
+      agentName: "default",
+      provider: "claude",
+      pipelineRunId: "run-spend",
+      assignmentId: "asg-spend",
+      inputTokens: 11,
+      outputTokens: 7,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 1,
+      totalTokens: 22,
+      costUsd: 0.02,
+      costEstimatedUsd: null,
+      numTurns: 2,
+    });
+  });
 });
 
 describe("typed pipeline settlement", () => {
@@ -5203,3 +5264,14 @@ describe("typed pipeline settlement", () => {
     expect(outcomes[0]!.reason).toContain("without a recovery continuation");
   });
 });
+
+async function waitForUsage(
+  usageStore: InMemoryUsageStore,
+  sourceKind: "session-turn",
+  sourceId: string,
+) {
+  await waitFor(async () => Boolean(await usageStore.get(sourceKind, sourceId)));
+  const row = await usageStore.get(sourceKind, sourceId);
+  if (!row) throw new Error(`missing usage ${sourceKind} ${sourceId}`);
+  return row;
+}

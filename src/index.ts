@@ -21,7 +21,12 @@ import { createSessionStore } from "./session/store/factory.ts";
 import { setupGracefulShutdown } from "./lifecycle/shutdown.ts";
 import { registerHomeTab } from "./slack/home.ts";
 import { checkOrphanedSessions } from "./lifecycle/health.ts";
-import { cleanupStaleSessions } from "./lifecycle/cleanup.ts";
+import {
+  cleanupOperationalTables,
+  cleanupStaleSessions,
+} from "./lifecycle/cleanup.ts";
+import { createUsageStore } from "./usage/store/factory.ts";
+import { createDashboardAuditStore } from "./http/audit/factory.ts";
 import { reconcileTmuxSessions } from "./lifecycle/tmux-reconcile.ts";
 import { evictIdleTmuxSessions } from "./lifecycle/tmux-evict.ts";
 import type { TmuxDriver } from "./claude/tmux-driver.ts";
@@ -97,6 +102,15 @@ const pipelineStore = createPipelineStore({
   kind: config.session.store === "memory" ? "memory" : "sqlite",
   sqlitePath: resolve(config.session.sqlitePath),
 });
+const usageStore = createUsageStore({
+  kind: config.session.store === "memory" ? "memory" : "sqlite",
+  sqlitePath: resolve(config.session.sqlitePath),
+});
+const auditStore = createDashboardAuditStore({
+  kind: config.session.store === "memory" ? "memory" : "sqlite",
+  sqlitePath: resolve(config.session.sqlitePath),
+});
+sessionManager.usageStore = usageStore;
 const pipelineRuntimeMode = config.pipeline?.runtimeMode ?? "off";
 const pipelineToolRuntime: PipelineToolRuntime = {
   store: pipelineStore,
@@ -178,6 +192,7 @@ const workflowExecutor = new WorkflowExecutor({
   store: workflowStore,
   slackClient: app.client,
   memoryStore,
+  usageStore,
 });
 const workflowScheduler = new WorkflowScheduler({
   registry: workflowRegistry,
@@ -379,6 +394,8 @@ setupGracefulShutdown(sessionManager, devServerManager, async () => {
   workflowRegistry.stopWatching();
   workflowStore.close?.();
   pipelineStore.close?.();
+  usageStore.close?.();
+  auditStore.close?.();
   actionStore.close();
   memoryStore.close();
   runbookCatalogStore.close();
@@ -622,6 +639,19 @@ setInterval(() => {
     if (cleaned.length > 0) {
       log.info("cleanup", `Removed ${cleaned.length} stale sessions: ${cleaned.join(", ")}`);
     }
+  });
+  cleanupOperationalTables({ usageStore, auditStore }).then((report) => {
+    if (report.usageDeleted > 0 || report.auditDeleted > 0) {
+      log.info(
+        "cleanup",
+        `Removed ${report.usageDeleted} usage event(s) and ${report.auditDeleted} audit row(s).`,
+      );
+    }
+  }).catch((err) => {
+    log.warn(
+      "cleanup",
+      `operational table cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   });
 }, config.session.cleanupIntervalMs);
 
