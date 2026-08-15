@@ -471,7 +471,7 @@ function renderPipelines() {
       '<div class="eyebrow">control plane</div><div class="title">No typed runs</div>' +
       '<div class="meta">' + esc(pipelineEmptyCopy()) + "</div>";
     $("pipeline-detail").style.display = "none";
-    $("pipeline-detail").closest(".pipeline-rail")?.classList.remove("detail-open", "chat-open");
+    $("pipeline-detail").closest(".pipeline-rail")?.classList.remove("detail-open");
     $("pipeline-status").textContent = pipelineFetchError
       ? "Failed to load pipeline control plane." : "";
     paintSwimlane(null);
@@ -486,7 +486,14 @@ function renderPipelines() {
       const root = $("pipeline-swimlane");
       if (root) {
         renderedSwimlaneSignature = null;
-        root.innerHTML = '<div class="empty">Loading selected pipeline…</div>';
+        if (pipelineDetailErrors.has(summary.id)) {
+          root.innerHTML =
+            '<div class="empty">Failed to load run. <button class="ctrl retry" type="button" data-retry-pipeline>Retry</button></div>';
+        } else if (pipelineDetailLoadingId === summary.id) {
+          root.innerHTML = '<div class="empty">Loading selected pipeline…</div>';
+        } else {
+          root.innerHTML = '<div class="empty">Select this run to load its dispatch flow.</div>';
+        }
       }
     }
     if (currentView() === "pipelines") void loadPipelineDetail(summary.id);
@@ -519,7 +526,7 @@ function paintPipelineSummary(run) {
     (run.repoRefs?.length ? "<br />repos " + esc(run.repoRefs.join(", ")) : "") +
     "</div>";
   $("pipeline-detail").style.display = "none";
-  $("pipeline-detail").closest(".pipeline-rail")?.classList.remove("detail-open", "chat-open");
+  $("pipeline-detail").closest(".pipeline-rail")?.classList.remove("detail-open");
   if (pipelineDetailErrors.has(run.id)) {
     $("pipeline-status").innerHTML =
       'Failed to load run. <button class="ctrl retry" type="button" data-retry-pipeline>Retry</button>';
@@ -593,7 +600,7 @@ function paintPipelineDetail(run) {
   const rail = detail.closest(".pipeline-rail");
   if (!selectedAssignment) {
     if (PIPE.selectedNodeId === "run:" + run.id) {
-      rail.classList.remove("detail-open", "chat-open");
+      rail.classList.remove("detail-open");
       detail.style.display = "";
       detail.innerHTML =
         '<div class="eyebrow">selected run</div><div class="objective">' + esc(run.kind) +
@@ -602,13 +609,12 @@ function paintPipelineDetail(run) {
         " ago<br />state version " + esc(run.stateVersion) + "</div>";
       return;
     }
-    rail.classList.remove("detail-open", "chat-open");
+    rail.classList.remove("detail-open");
     detail.style.display = "none";
     detail.innerHTML = "";
     return;
   }
   rail.classList.add("detail-open");
-  rail.classList.remove("chat-open");
   detail.style.display = "";
   detail.innerHTML = renderAssignmentRail(run, selectedAssignment);
 }
@@ -626,13 +632,10 @@ function renderAssignmentRail(run, assignment) {
       (assignment.dispatch.lastError ? " · " + assignment.dispatch.lastError : "")
     : "none";
   const outcomes = assignment.outcomes || [];
-  const artifacts = [
-    ...(assignment.artifactRefs || []),
-    ...((run.artifacts || []).map((item) => item.ref).filter(Boolean)),
-  ].filter((ref, index, all) => all.indexOf(ref) === index);
+  const artifacts = assignment.artifactRefs || [];
   const readable = new Map((run.artifacts || []).map((item) => [item.ref, item.readable]));
   const gates = run.gates || [];
-  return '<button class="chat-close" type="button" data-close-assignment>close</button>' +
+  return '<button class="rail-close" type="button" data-close-assignment>close</button>' +
     '<div class="eyebrow">assignment · ' + esc(assignment.targetAgent) + "</div>" +
     pill(assignment.status) +
     '<div class="objective">' + esc(assignment.objective || "—") + "</div>" +
@@ -713,19 +716,20 @@ function paintSwimlane(run) {
       ? [{ toPhase: run.phase, start: domain.start, end: now, duration: Math.max(0, now - domain.start) }]
       : [];
   const lastCell = cells[cells.length - 1];
-  const tape = '<div class="phase-tape">' +
-    (cells.length
-      ? cells.map((cell) => {
-        const left = Math.max(0, domainPercent(cell.start, domain));
-        const width = Math.max(1.5, domainPercent(cell.end, domain) - left);
-        const pin = run.status === "needs-human" && cell === lastCell
-          ? '<span class="phase-pin" title="needs-human"></span>'
-          : "";
-        return '<div class="phase-cell" style="left:' + left.toFixed(2) +
-          "%;width:" + width.toFixed(2) + '%">' + esc(cell.toPhase) + pin + "</div>";
-      }).join("")
-      : '<div class="phase-cell" style="left:0;width:100%">no phase transitions</div>') +
-    "</div>";
+  const tapeCells = cells.length
+    ? cells.map((cell) => {
+      const left = Math.max(0, domainPercent(cell.start, domain));
+      const width = Math.max(0, domainPercent(cell.end, domain) - left);
+      const pin = run.status === "needs-human" && cell === lastCell
+        ? '<span class="phase-pin" title="needs-human"></span>'
+        : "";
+      return '<div class="phase-cell" title="' + esc(cell.toPhase) + '" style="left:' +
+        left.toFixed(2) + "%;width:" + width.toFixed(2) + '%">' +
+        esc(cell.toPhase) + pin + "</div>";
+    }).join("")
+    : '<div class="phase-cell" style="left:0;width:100%">no phase transitions</div>';
+  const tape = '<div class="swim-lane phase-tape-row"><div class="lane-label"></div>' +
+    '<div class="phase-tape">' + tapeCells + "</div></div>";
   const lanes = groupAssignmentsByLane(assignments);
   const laneHtml = lanes.length
     ? lanes.map((lane) => {
@@ -767,7 +771,9 @@ function paintSwimlane(run) {
       esc(formatSwimlaneTick(ts, span)) + "</span>";
   }).join("");
   const scrollTop = root.scrollTop;
-  root.innerHTML = tape + laneHtml + '<div class="swim-axis">' + ticks + "</div>";
+  root.innerHTML = tape + laneHtml +
+    '<div class="swim-lane"><div class="lane-label"></div><div class="swim-axis">' +
+    ticks + "</div></div>";
   root.scrollTop = scrollTop;
 }
 
@@ -822,6 +828,13 @@ $("pipeline-reset").addEventListener("click", () => {
   fitPipeline();
 });
 $("pipeline-swimlane").addEventListener("click", (event) => {
+  if (event.target.closest("[data-retry-pipeline]")) {
+    if (!selectedPipelineId) return;
+    pipelineDetails.delete(selectedPipelineId);
+    pipelineDetailErrors.delete(selectedPipelineId);
+    void loadPipelineDetail(selectedPipelineId, true);
+    return;
+  }
   const bar = event.target.closest("[data-assignment-id]");
   if (!bar) return;
   PIPE.selectedNodeId = bar.dataset.assignmentId;

@@ -155,6 +155,15 @@ describe("pipeline swimlane markup", () => {
     expect(js).toContain("Pipeline controllers are off.");
     expect(js).toContain("Failed to load run.");
     expect(js).not.toContain("agent chat");
+    expect(js).not.toContain("chat-close");
     expect(js).toContain("renderAssignmentRail");
+    expect(js).toContain('class="swim-lane phase-tape-row"');
+    expect(js).toContain("assignment.artifactRefs");
+    expect(js).not.toContain("Math.max(1.5, domainPercent(cell.end, domain)");
+    const api = await Bun.file(
+      resolve(import.meta.dirname, "../../public/js/api.js"),
+    ).text();
+    expect(api).toContain("attentionPipelinePath");
+    expect(api).toContain('params.set("status", "needs-human")');
   });
 });

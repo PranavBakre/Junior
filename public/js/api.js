@@ -97,6 +97,7 @@ var idleTtlMs = null;
 var workflows = [];
 var workflowErrors = [];
 var pipelines = [];
+var attentionPipelines = [];
 var openPipelineCount = 0;
 var pipelineRuntimeMode = null;
 var pipelineDetails = new Map();
@@ -172,16 +173,31 @@ async function refreshDayLogs() {
 }
 
 /* =================== poll loop =================== */
+function pipelineIncludeDefault() {
+  const includeDefault = $("pipeline-include-default");
+  return !!(includeDefault && includeDefault.checked);
+}
+
 function pipelineListPath() {
   const pipelineStatus = $("pipeline-filter").value;
   const pipelineKind = $("pipeline-kind").value;
   const pipelineParams = new URLSearchParams();
   if (pipelineStatus) pipelineParams.set("status", pipelineStatus);
   if (pipelineKind) pipelineParams.set("kind", pipelineKind);
-  const includeDefault = $("pipeline-include-default");
-  if (includeDefault && includeDefault.checked) pipelineParams.set("includeDefault", "1");
+  if (pipelineIncludeDefault()) pipelineParams.set("includeDefault", "1");
   return "/api/pipelines" +
     (pipelineParams.size ? "?" + pipelineParams.toString() : "");
+}
+
+function attentionPipelinePath() {
+  const params = new URLSearchParams();
+  params.set("status", "needs-human");
+  if (pipelineIncludeDefault()) params.set("includeDefault", "1");
+  return "/api/pipelines?" + params.toString();
+}
+
+function applyAttentionPipelineResponse(response) {
+  if (response.ok) attentionPipelines = response.data.pipelines || [];
 }
 
 function applyPipelineListResponse(response) {
@@ -202,10 +218,15 @@ function applyPipelineListResponse(response) {
 
 async function refreshPipelineControlPlane() {
   const generation = ++pipelineFetchGeneration;
-  const response = await safeFetch(pipelineListPath());
+  const [response, attn] = await Promise.all([
+    safeFetch(pipelineListPath()),
+    safeFetch(attentionPipelinePath()),
+  ]);
   if (generation !== pipelineFetchGeneration) return;
   applyPipelineListResponse(response);
+  applyAttentionPipelineResponse(attn);
   renderSidebar();
+  renderOverview();
   renderPipelines();
   if (!response.ok && pipelines.length === 0) {
     $("pipeline-status").textContent = "Failed to load pipeline control plane.";
@@ -215,12 +236,13 @@ async function refreshPipelineControlPlane() {
 
 async function refreshMain() {
   const pipelineGeneration = ++pipelineFetchGeneration;
-  const [h, s, d, w, p] = await Promise.all([
+  const [h, s, d, w, p, attn] = await Promise.all([
     safeFetch("/api/health"),
     safeFetch("/api/sessions"),
     safeFetch("/api/dev-server"),
     safeFetch("/api/workflows"),
     safeFetch(pipelineListPath()),
+    safeFetch(attentionPipelinePath()),
   ]);
 
   if (h.ok) health = h.data;
@@ -234,7 +256,10 @@ async function refreshMain() {
     workflows = w.data.workflows || [];
     workflowErrors = w.data.errors || [];
   }
-  if (pipelineGeneration === pipelineFetchGeneration) applyPipelineListResponse(p);
+  if (pipelineGeneration === pipelineFetchGeneration) {
+    applyPipelineListResponse(p);
+    applyAttentionPipelineResponse(attn);
+  }
 
   lastRefreshAt = Date.now();
   renderSidebar();

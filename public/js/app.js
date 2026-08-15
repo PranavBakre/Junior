@@ -111,7 +111,7 @@ function deriveAttention() {
       });
     }
   }
-  for (const run of pipelines) {
+  for (const run of attentionPipelines) {
     if (run.status === "needs-human") {
       cards.push({
         sev: "warn",

@@ -530,10 +530,10 @@
     inset: calc(140 * var(--baseline-font)) calc(24 * var(--baseline-font)) auto;
     max-width: calc(520 * var(--baseline-font));
   }
+  .phase-tape-row { margin-bottom: calc(14 * var(--baseline-font)); }
   .phase-tape {
     position: relative;
     min-height: calc(38 * var(--baseline-font));
-    margin-bottom: calc(14 * var(--baseline-font));
     border: 1px solid rgba(112,157,255,.18);
     border-radius: calc(8 * var(--baseline-font));
     background: rgba(79,140,255,.04);
@@ -543,8 +543,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    min-width: calc(36 * var(--baseline-font));
-    padding: calc(8 * var(--baseline-font)) calc(10 * var(--baseline-font));
+    padding: calc(8 * var(--baseline-font)) calc(8 * var(--baseline-font));
     overflow: hidden;
     border-right: 1px solid rgba(255,255,255,.06);
     color: #82acff;
@@ -641,7 +640,7 @@
   .swim-axis {
     position: relative;
     height: calc(18 * var(--baseline-font));
-    margin: calc(4 * var(--baseline-font)) 0 0 calc(100 * var(--baseline-font));
+    margin-top: calc(4 * var(--baseline-font));
     color: var(--fg-faint);
     font-family: var(--font-mono);
     font-size: calc(8.5 * var(--baseline-font));
@@ -742,7 +741,7 @@
     border-radius: calc(10 * var(--baseline-font));
     background: var(--surface);
   }
-  .chat-close {
+  .rail-close {
     float: right;
     margin: calc(-3 * var(--baseline-font)) calc(-3 * var(--baseline-font)) 0 calc(8 * var(--baseline-font));
     border: 1px solid var(--border-subtle);
@@ -754,33 +753,8 @@
     padding: calc(3 * var(--baseline-font)) calc(7 * var(--baseline-font));
     cursor: pointer;
   }
-  .chat-close:hover { color: var(--fg); border-color: rgba(79,140,255,.38); }
+  .rail-close:hover { color: var(--fg); border-color: rgba(79,140,255,.38); }
   .pipeline-detail .objective { margin-top: calc(6 * var(--baseline-font)); font-size: calc(12 * var(--baseline-font)); color: rgba(255,255,255,.9); line-height: 1.45; }
-  .agent-chat { margin-top: calc(10 * var(--baseline-font)); display: flex; flex-direction: column; gap: calc(8 * var(--baseline-font)); }
-  .chat-entry {
-    padding: calc(9 * var(--baseline-font)) calc(10 * var(--baseline-font));
-    border: 1px solid rgba(255,255,255,.08);
-    border-radius: calc(8 * var(--baseline-font));
-    background: rgba(255,255,255,.035);
-  }
-  .chat-entry.out {
-    margin-left: calc(18 * var(--baseline-font));
-    border-color: rgba(79,140,255,.22);
-    background: rgba(0,100,255,.07);
-  }
-  .chat-entry.in { margin-right: calc(18 * var(--baseline-font)); }
-  .chat-entry .who {
-    display: flex;
-    gap: calc(7 * var(--baseline-font));
-    font-family: var(--font-mono);
-    font-size: calc(8.5 * var(--baseline-font));
-    color: #82acff;
-    text-transform: uppercase;
-    letter-spacing: .08em;
-  }
-  .chat-entry .who time { margin-left: auto; color: var(--fg-faint); letter-spacing: 0; }
-  .chat-entry .message { margin-top: calc(5 * var(--baseline-font)); font-size: calc(11 * var(--baseline-font)); line-height: 1.45; color: rgba(255,255,255,.86); }
-  .chat-entry .result { margin-top: calc(5 * var(--baseline-font)); font-family: var(--font-mono); font-size: calc(8.5 * var(--baseline-font)); color: var(--fg-dim); }
   .pipeline-rail-head {
     display: flex;
     align-items: baseline;
