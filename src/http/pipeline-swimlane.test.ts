@@ -165,5 +165,11 @@ describe("pipeline swimlane markup", () => {
     ).text();
     expect(api).toContain("attentionPipelinePath");
     expect(api).toContain('params.set("status", "needs-human")');
+    expect(js).toContain("run not in current filter");
+    expect(js).toContain("function selectedPipelineSummary");
+    expect(js).toMatch(/if \(!selectedPipelineId\) \{\s*selectedPipelineId = pipelines\[0\]/);
+    expect(js).not.toMatch(
+      /if \(!pipelines\.some\(\(run\) => run\.id === selectedPipelineId\)\) \{\s*selectedPipelineId = pipelines\[0\]/,
+    );
   });
 });

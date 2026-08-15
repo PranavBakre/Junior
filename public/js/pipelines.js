@@ -434,13 +434,32 @@ function pipelineSignature(run) {
   ]);
 }
 
+function pipelineInCurrentFilter(runId) {
+  return pipelines.some((run) => run.id === runId);
+}
+
+function selectedPipelineSummary() {
+  if (!selectedPipelineId) return null;
+  return pipelines.find((run) => run.id === selectedPipelineId)
+    || attentionPipelines.find((run) => run.id === selectedPipelineId)
+    || pipelineDetails.get(selectedPipelineId)
+    || { id: selectedPipelineId };
+}
+
+function pipelineFilterNote() {
+  if (!selectedPipelineId || pipelineInCurrentFilter(selectedPipelineId)) return "";
+  return '<div class="empty pipeline-filter-note">run not in current filter</div>';
+}
+
 function renderPipelines() {
   $("pipeline-count").textContent = pipelines.length + " runs";
-  if (!pipelines.some((run) => run.id === selectedPipelineId)) {
+  if (!selectedPipelineId) {
     selectedPipelineId = pipelines[0]?.id || null;
     PIPE.selectedNodeId = null;
   }
-  const listSignature = selectedPipelineId + "|" + pipelines.map((run) => {
+  const listSignature = selectedPipelineId + "|" +
+    (selectedPipelineId && !pipelineInCurrentFilter(selectedPipelineId) ? "hidden|" : "") +
+    pipelines.map((run) => {
     const detail = pipelineDetails.get(run.id);
     return [run.id, run.phase, run.status, run.updatedAt, detail?.updatedAt || 0].join(":");
   }).join("|");
@@ -465,7 +484,7 @@ function renderPipelines() {
         (pipelineFetchError ? "Failed to load pipelines." : esc(pipelineEmptyCopy())) +
         "</div>";
   }
-  const summary = pipelines.find((candidate) => candidate.id === selectedPipelineId);
+  const summary = selectedPipelineSummary();
   if (!summary) {
     $("pipeline-summary").innerHTML =
       '<div class="eyebrow">control plane</div><div class="title">No typed runs</div>' +
@@ -486,13 +505,15 @@ function renderPipelines() {
       const root = $("pipeline-swimlane");
       if (root) {
         renderedSwimlaneSignature = null;
+        const note = pipelineFilterNote();
         if (pipelineDetailErrors.has(summary.id)) {
-          root.innerHTML =
+          root.innerHTML = note +
             '<div class="empty">Failed to load run. <button class="ctrl retry" type="button" data-retry-pipeline>Retry</button></div>';
         } else if (pipelineDetailLoadingId === summary.id) {
-          root.innerHTML = '<div class="empty">Loading selected pipeline…</div>';
+          root.innerHTML = note + '<div class="empty">Loading selected pipeline…</div>';
         } else {
-          root.innerHTML = '<div class="empty">Select this run to load its dispatch flow.</div>';
+          root.innerHTML = note ||
+            '<div class="empty">Select this run to load its dispatch flow.</div>';
         }
       }
     }
@@ -524,6 +545,8 @@ function paintPipelineSummary(run) {
     '<div class="meta">owner ' + esc(run.ownerAgent || "—") + "<br />thread " +
     esc(shortId(run.threadId || run.id)) +
     (run.repoRefs?.length ? "<br />repos " + esc(run.repoRefs.join(", ")) : "") +
+    (selectedPipelineId && !pipelineInCurrentFilter(selectedPipelineId)
+      ? "<br />run not in current filter" : "") +
     "</div>";
   $("pipeline-detail").style.display = "none";
   $("pipeline-detail").closest(".pipeline-rail")?.classList.remove("detail-open");
@@ -546,8 +569,10 @@ async function loadPipelineDetail(runId, force = false) {
   pipelineDetailAbortController = controller;
   pipelineDetailErrors.delete(runId);
   pipelineDetailLoadingId = runId;
-  const summary = pipelines.find((candidate) => candidate.id === runId);
-  if (selectedPipelineId === runId && summary) paintPipelineSummary(summary);
+  const summary = pipelines.find((candidate) => candidate.id === runId)
+    || attentionPipelines.find((candidate) => candidate.id === runId)
+    || { id: runId };
+  if (selectedPipelineId === runId) paintPipelineSummary(summary);
   const response = await safeFetch(
     "/api/pipelines/" + encodeURIComponent(runId),
     { signal: controller.signal },
@@ -591,6 +616,8 @@ function paintPipelineDetail(run) {
     (transitions.length ? "<br />phase trail " + esc(transitions.map((item) => item.toPhase).join(" → ")) : "") +
     (run.slackPermalink ? '<br /><a class="tlink" href="' + esc(run.slackPermalink) +
       '" target="_blank" rel="noreferrer">open in Slack</a>' : "") +
+    (selectedPipelineId && !pipelineInCurrentFilter(selectedPipelineId)
+      ? "<br />run not in current filter" : "") +
     "</div>";
   $("pipeline-status").textContent = "";
   const selectedAssignment = (run.assignments || []).find(
@@ -685,6 +712,7 @@ function swimlaneSignature(run) {
   if (!run) return "";
   return JSON.stringify([
     run.id, run.phase, run.status, run.updatedAt, PIPE.selectedNodeId,
+    pipelineInCurrentFilter(run.id),
     Math.floor(Date.now() / 10000),
     (run.transitions || []).map((item) => [item.toPhase, item.occurredAt]),
     (run.assignments || []).map((assignment) => [
@@ -771,7 +799,7 @@ function paintSwimlane(run) {
       esc(formatSwimlaneTick(ts, span)) + "</span>";
   }).join("");
   const scrollTop = root.scrollTop;
-  root.innerHTML = tape + laneHtml +
+  root.innerHTML = pipelineFilterNote() + tape + laneHtml +
     '<div class="swim-lane"><div class="lane-label"></div><div class="swim-axis">' +
     ticks + "</div></div>";
   root.scrollTop = scrollTop;
