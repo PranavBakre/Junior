@@ -13,6 +13,7 @@ import type {
   StoredOutcome,
 } from "../../pipelines/types.ts";
 import { parseLimit } from "../query.ts";
+import type { SlackPermalinkLookup } from "../../slack/permalink-cache.ts";
 import type { SlackPermalinkResolver } from "./sessions.ts";
 
 const RUN_STATUSES = new Set(["active", "waiting", "needs-human", "terminal"]);
@@ -23,6 +24,7 @@ const ARTIFACT_CAP_BYTES = 256 * 1024;
 export type PipelineRouteOptions = {
   runtimeMode?: PipelineRuntimeMode;
   resolveSlackPermalink?: SlackPermalinkResolver;
+  lookupSlackPermalink?: SlackPermalinkLookup;
   rootDir?: string;
 };
 
@@ -37,7 +39,9 @@ export async function handlePipelines(
   if (runId) {
     const run = await store.getRun(runId);
     if (!run) return Response.json({ error: "pipeline not found" }, { status: 404 });
-    return Response.json({ pipeline: await projectPipeline(store, run) });
+    return Response.json({
+      pipeline: await projectPipeline(store, run, options.resolveSlackPermalink),
+    });
   }
 
   const rawStatus = params.get("status");
@@ -57,7 +61,7 @@ export async function handlePipelines(
   ]);
 
   const pipelines = await Promise.all(
-    runs.map((run) => projectRunSummary(store, run, options.resolveSlackPermalink)),
+    runs.map((run) => projectRunSummary(store, run, options.lookupSlackPermalink)),
   );
 
   return Response.json({ pipelines, openCount, runtimeMode });
@@ -146,17 +150,19 @@ async function countVisibleOpenRuns(
 async function projectRunSummary(
   store: PipelineStore,
   run: PipelineRun,
-  resolveSlackPermalink?: SlackPermalinkResolver,
+  lookupSlackPermalink?: SlackPermalinkLookup,
 ) {
   const [assignments, outcomes] = await Promise.all([
     store.listAssignments(run.id),
     store.listOutcomesForRun(run.id),
   ]);
   const lastOutcome = [...outcomes].sort((a, b) => b.createdAt - a.createdAt)[0];
+  // The list is polled every few seconds; only already-cached permalinks are
+  // served here so the poll never fans out to Slack. Detail resolves for real.
   let slackPermalink: string | null | undefined;
-  if (resolveSlackPermalink) {
+  if (lookupSlackPermalink) {
     try {
-      slackPermalink = await resolveSlackPermalink(run.channelId, run.threadId);
+      slackPermalink = lookupSlackPermalink(run.channelId, run.threadId);
     } catch {
       slackPermalink = null;
     }
@@ -180,7 +186,11 @@ async function projectRunSummary(
   };
 }
 
-async function projectPipeline(store: PipelineStore, run: PipelineRun) {
+async function projectPipeline(
+  store: PipelineStore,
+  run: PipelineRun,
+  resolveSlackPermalink?: SlackPermalinkResolver,
+) {
   const [assignments, events, outbox, outcomes] = await Promise.all([
     store.listAssignments(run.id),
     store.listEvents(run.id),
@@ -277,8 +287,18 @@ async function projectPipeline(store: PipelineStore, run: PipelineRun) {
     ...assignments.flatMap((assignment) => assignment.artifactRefs),
   ]);
 
+  let slackPermalink: string | null | undefined;
+  if (resolveSlackPermalink) {
+    try {
+      slackPermalink = await resolveSlackPermalink(run.channelId, run.threadId);
+    } catch {
+      slackPermalink = null;
+    }
+  }
+
   return {
     ...projectRun(run),
+    slackPermalink,
     acceptanceCriteria: run.acceptanceCriteria,
     artifactRefs: run.artifactRefs,
     blockerRefs: run.blockerRefs,

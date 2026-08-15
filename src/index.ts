@@ -13,6 +13,10 @@ import {
 import { SlackResponder } from "./slack/responder.ts";
 import { SlackActionStore } from "./slack/action-store.ts";
 import {
+  SlackPermalinkCache,
+  SqliteSlackPermalinkStore,
+} from "./slack/permalink-cache.ts";
+import {
   disableAgentActionMessages,
   registerAgentActionButtons,
 } from "./slack/action-buttons.ts";
@@ -76,6 +80,16 @@ const app = createSlackApp(config);
 const store = createSessionStore(config);
 log.info("boot", `Session store: ${config.session.store}`);
 const actionStore = new SlackActionStore(resolve(config.session.sqlitePath));
+const permalinkCache = new SlackPermalinkCache({
+  store: new SqliteSlackPermalinkStore(resolve(config.session.sqlitePath)),
+  resolve: async (channel, messageTs) => {
+    const result = await app.client.chat.getPermalink({
+      channel,
+      message_ts: messageTs,
+    });
+    return result.permalink ?? null;
+  },
+});
 const memoryStore = createMemoryStore(config.memory.sqlitePath, {
   dedupThreshold: config.memory.dedupThreshold,
 });
@@ -379,7 +393,13 @@ sessionManager.onAgentDispatched = async (session, agentName) => {
 // actions. Cleanup is explicit (Cleanup worktree button) or terminal-pipeline
 // only. See docs/features/agent-product-debugging-pipeline-implementation-plan.md Phase 0.
 
-registerHomeTab(app, store, config.session.homeWindowMs, workflowStore);
+registerHomeTab(
+  app,
+  store,
+  config.session.homeWindowMs,
+  workflowStore,
+  (channel, messageTs) => permalinkCache.resolve(channel, messageTs),
+);
 registerAgentActionButtons(app, actionStore, sessionManager, worktreeManager, {
   supportChannels,
 });
@@ -849,13 +869,10 @@ setInterval(() => {
           },
         },
         projectRoot: process.cwd(),
-        resolveSlackPermalink: async (channel, messageTs) => {
-          const result = await app.client.chat.getPermalink({
-            channel,
-            message_ts: messageTs,
-          });
-          return result.permalink ?? null;
-        },
+        resolveSlackPermalink: (channel, messageTs) =>
+          permalinkCache.resolve(channel, messageTs),
+        lookupSlackPermalink: (channel, messageTs) =>
+          permalinkCache.lookup(channel, messageTs),
       });
     } catch (err) {
       log.error(

@@ -375,6 +375,45 @@ describe("handlePipelines", () => {
       rmSync(rootDir, { recursive: true, force: true });
     }
   });
+
+  it("keeps the polled list off Slack and resolves the permalink on detail", async () => {
+    const store = new InMemoryPipelineStore();
+    const run = makeRun();
+    await store.createRunWithAssignment({
+      run,
+      assignment: makeAssignment(run.id, "root", null, "system", "build"),
+      outbox: [],
+    });
+
+    let resolveCalls = 0;
+    const resolveSlackPermalink = async () => {
+      resolveCalls++;
+      return "https://slack.example/thread";
+    };
+    const cached = new Map([["C123 thread-run-1", "https://slack.example/cached"]]);
+    const lookupSlackPermalink = (channel: string, messageTs: string) =>
+      cached.get(`${channel} ${messageTs}`) ?? null;
+
+    const list = await handlePipelines(store, new URLSearchParams(), undefined, {
+      resolveSlackPermalink,
+      lookupSlackPermalink,
+    });
+    const listBody = await list.json() as {
+      pipelines: Array<{ slackPermalink?: string | null }>;
+    };
+    expect(listBody.pipelines[0]!.slackPermalink).toBe("https://slack.example/cached");
+    expect(resolveCalls).toBe(0);
+
+    const detail = await handlePipelines(store, new URLSearchParams(), run.id, {
+      resolveSlackPermalink,
+      lookupSlackPermalink,
+    });
+    const detailBody = await detail.json() as {
+      pipeline: { slackPermalink?: string | null };
+    };
+    expect(detailBody.pipeline.slackPermalink).toBe("https://slack.example/thread");
+    expect(resolveCalls).toBe(1);
+  });
 });
 
 function makeRun(

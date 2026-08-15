@@ -20,6 +20,7 @@ import type { PipelineStore } from "../pipelines/store/interface.ts";
 import type { ProfileStore } from "../memory/profiles/store.ts";
 import type { CatalogStore } from "../runbooks/catalog-store.ts";
 import type { UsageStore } from "../usage/store/interface.ts";
+import type { SlackPermalinkLookup } from "../slack/permalink-cache.ts";
 import type { DashboardAuditStore } from "./audit/interface.ts";
 import { handleHealth } from "./routes/health.ts";
 import type { SessionManager } from "../session/manager.ts";
@@ -84,6 +85,7 @@ export interface HttpServerDeps {
   profileStore?: ProfileStore;
   pipelineStore: PipelineStore;
   resolveSlackPermalink?: SlackPermalinkResolver;
+  lookupSlackPermalink?: SlackPermalinkLookup;
   sessionManager: Pick<
     SessionManager,
     "injectDashboardContinue" | "interruptThread" | "isAdmin" | "isExplicitAdmin" | "getSession"
@@ -109,6 +111,7 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
     profileStore,
     pipelineStore,
     resolveSlackPermalink,
+    lookupSlackPermalink,
     sessionManager,
     slackPoster,
     usageStore,
@@ -271,7 +274,7 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
             case "pipelines":
               return await handlePipelines(pipelineStore, url.searchParams, undefined, {
                 runtimeMode: config.pipeline?.runtimeMode ?? "off",
-                resolveSlackPermalink,
+                lookupSlackPermalink,
               });
             case "pipeline":
               return await handlePipelines(pipelineStore, url.searchParams, route.id, {
