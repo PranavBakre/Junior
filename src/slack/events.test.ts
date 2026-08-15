@@ -228,6 +228,32 @@ describe("registerEventHandlers — ✽ filter", () => {
     expect(onMessage).not.toHaveBeenCalled();
   });
 
+  it("drops Event API posts whose text starts with *Dashboard continue*", async () => {
+    const { app, handlers } = makeMockApp();
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    registerEventHandlers(
+      app,
+      onMessage,
+      undefined,
+      "B_SELF",
+      "U_BOT",
+      new Set(["C_AUTO"]),
+    );
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "*Dashboard continue* · local operator · `dashboard-operator`\n> !review please inspect this",
+        channel: "C_AUTO",
+        channel_type: "channel",
+        ts: "1700000000.000099",
+        bot_id: "B_SELF",
+      },
+    });
+
+    expect(onMessage).not.toHaveBeenCalled();
+  });
+
   it("self-bot message is dropped in a non-auto-trigger channel without a directive", async () => {
     const { app, handlers } = makeMockApp();
     const onMessage = mock((_e: SlackMessageEvent) => {});

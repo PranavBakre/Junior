@@ -72,6 +72,35 @@ function pendingCount(v) {
 function isErrorSession(s) {
   return s.status === "error" || !!(s.lastError);
 }
+function hashQuery() {
+  return new URLSearchParams(location.hash.split("?")[1] || "");
+}
+function spendTotalTokens(totals) {
+  if (!totals) return 0;
+  return (Number(totals.inputTokens) || 0) + (Number(totals.outputTokens) || 0);
+}
+function fmtTokens(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  if (Math.abs(v) >= 1_000_000) return (v / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (Math.abs(v) >= 10_000) return Math.round(v / 1000) + "k";
+  if (Math.abs(v) >= 1000) return (v / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+  return String(Math.round(v));
+}
+function fmtProviderCost(costUsd) {
+  if (costUsd == null || !Number.isFinite(Number(costUsd))) return null;
+  const n = Number(costUsd);
+  if (n === 0) return null;
+  if (n >= 0.01) return "$" + n.toFixed(2);
+  return "$" + n.toFixed(4);
+}
+function formatSpendSummary(spend) {
+  if (!spend) return "—";
+  const turns = Number(spend.turns) || 0;
+  const cost = fmtProviderCost(spend.costUsd);
+  return fmtTokens(spendTotalTokens(spend)) + " tok · " + turns + " turn" +
+    (turns === 1 ? "" : "s") + (cost ? " · " + cost + " provider-reported" : "");
+}
 async function fetchJson(path, init) {
   const res = await fetch(path, init);
   if (!res.ok) throw new Error(path + " " + res.status);
@@ -96,8 +125,12 @@ var devServers = [];
 var idleTtlMs = null;
 var workflows = [];
 var workflowErrors = [];
+var workflowWriteGit = { junior: null, overlay: null };
+var overlayRootExists = false;
 var pipelines = [];
+var attentionPipelines = [];
 var openPipelineCount = 0;
+var pipelineRuntimeMode = null;
 var pipelineDetails = new Map();
 var pipelineDetailErrors = new Set();
 var pipelineDetailLoadingId = null;
@@ -125,6 +158,34 @@ var profileKind = "all";
 var profileQuery = "";
 var selectedProfileRef = null;
 var drawerThreadId = null;
+var spendToday = null;
+var spendWeek = null;
+var spendTable = null;
+var spendGroupBy = "day";
+var spendSortKey = "key";
+var spendSortDir = "asc";
+var spendError = null;
+var spendFetchGeneration = 0;
+var selectedWorkflowName = null;
+var workflowScrollPending = false;
+var pipelineSpendById = new Map();
+var pipelineSpendGeneration = 0;
+var runbooks = [];
+var runbookErrors = [];
+var runbooksLoaded = false;
+var runbookQuery = "";
+var runbookRisk = "";
+var selectedRunbookName = null;
+var runbookDetail = null;
+var runbookDetailError = null;
+var auditRows = [];
+var auditLoaded = false;
+var auditError = null;
+var auditAction = "";
+var auditTargetType = "";
+var auditFrom = "";
+var auditTo = "";
+var auditFetchGeneration = 0;
 
 /* =================== navigation =================== */
 function currentView() {
@@ -171,14 +232,31 @@ async function refreshDayLogs() {
 }
 
 /* =================== poll loop =================== */
+function pipelineIncludeDefault() {
+  const includeDefault = $("pipeline-include-default");
+  return !!(includeDefault && includeDefault.checked);
+}
+
 function pipelineListPath() {
   const pipelineStatus = $("pipeline-filter").value;
   const pipelineKind = $("pipeline-kind").value;
   const pipelineParams = new URLSearchParams();
   if (pipelineStatus) pipelineParams.set("status", pipelineStatus);
   if (pipelineKind) pipelineParams.set("kind", pipelineKind);
+  if (pipelineIncludeDefault()) pipelineParams.set("includeDefault", "1");
   return "/api/pipelines" +
     (pipelineParams.size ? "?" + pipelineParams.toString() : "");
+}
+
+function attentionPipelinePath() {
+  const params = new URLSearchParams();
+  params.set("status", "needs-human");
+  if (pipelineIncludeDefault()) params.set("includeDefault", "1");
+  return "/api/pipelines?" + params.toString();
+}
+
+function applyAttentionPipelineResponse(response) {
+  if (response.ok) attentionPipelines = response.data.pipelines || [];
 }
 
 function applyPipelineListResponse(response) {
@@ -186,6 +264,7 @@ function applyPipelineListResponse(response) {
     pipelineFetchError = null;
     const nextPipelines = response.data.pipelines || [];
     openPipelineCount = Number(response.data.openCount) || 0;
+    pipelineRuntimeMode = response.data.runtimeMode ?? null;
     for (const run of nextPipelines) {
       const detail = pipelineDetails.get(run.id);
       if (detail && detail.updatedAt !== run.updatedAt) pipelineDetails.delete(run.id);
@@ -198,10 +277,15 @@ function applyPipelineListResponse(response) {
 
 async function refreshPipelineControlPlane() {
   const generation = ++pipelineFetchGeneration;
-  const response = await safeFetch(pipelineListPath());
+  const [response, attn] = await Promise.all([
+    safeFetch(pipelineListPath()),
+    safeFetch(attentionPipelinePath()),
+  ]);
   if (generation !== pipelineFetchGeneration) return;
   applyPipelineListResponse(response);
+  applyAttentionPipelineResponse(attn);
   renderSidebar();
+  renderOverview();
   renderPipelines();
   if (!response.ok && pipelines.length === 0) {
     $("pipeline-status").textContent = "Failed to load pipeline control plane.";
@@ -211,12 +295,14 @@ async function refreshPipelineControlPlane() {
 
 async function refreshMain() {
   const pipelineGeneration = ++pipelineFetchGeneration;
-  const [h, s, d, w, p] = await Promise.all([
+  const [h, s, d, w, p, attn, spend] = await Promise.all([
     safeFetch("/api/health"),
     safeFetch("/api/sessions"),
     safeFetch("/api/dev-server"),
     safeFetch("/api/workflows"),
     safeFetch(pipelineListPath()),
+    safeFetch(attentionPipelinePath()),
+    safeFetch("/api/spend"),
   ]);
 
   if (h.ok) health = h.data;
@@ -229,8 +315,14 @@ async function refreshMain() {
   if (w.ok) {
     workflows = w.data.workflows || [];
     workflowErrors = w.data.errors || [];
+    workflowWriteGit = w.data.git || workflowWriteGit;
+    overlayRootExists = Boolean(w.data.overlayRootExists);
   }
-  if (pipelineGeneration === pipelineFetchGeneration) applyPipelineListResponse(p);
+  if (pipelineGeneration === pipelineFetchGeneration) {
+    applyPipelineListResponse(p);
+    applyAttentionPipelineResponse(attn);
+  }
+  if (spend.ok) spendToday = spend.data;
 
   lastRefreshAt = Date.now();
   renderSidebar();
@@ -238,7 +330,13 @@ async function refreshMain() {
   renderThreads();
   renderDevServers();
   renderWorkflows();
-  if (currentView() === "pipelines") renderPipelines();
+  if (currentView() === "pipelines") {
+    renderPipelines();
+    await loadPipelineSpend();
+  }
+  if (currentView() === "spend") await loadSpend();
+  if (currentView() === "runbooks" && runbooksLoaded) await loadRunbooks();
+  if (currentView() === "audit") await loadAudit();
   // panel-level errors when first load fails
   if (!s.ok && sessions.length === 0) {
     $("th-list").innerHTML = '<div class="empty">Failed to load sessions.</div>';

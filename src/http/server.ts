@@ -22,20 +22,34 @@ import type { CatalogStore } from "../runbooks/catalog-store.ts";
 import type { UsageStore } from "../usage/store/interface.ts";
 import type { DashboardAuditStore } from "./audit/interface.ts";
 import { handleHealth } from "./routes/health.ts";
+import type { SessionManager } from "../session/manager.ts";
 import {
   handleSessions,
   handleSessionDetail,
+  handleSessionContinue,
+  handleSessionStop,
   type SlackPermalinkResolver,
+  type SlackPoster,
 } from "./routes/sessions.ts";
 import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryProjection, handleMemoryRead, handleMemoryRecall } from "./routes/memory.ts";
 import { handleDevServers } from "./routes/dev-server.ts";
-import { handleWorkflows } from "./routes/workflows.ts";
+import {
+  handleWorkflowCreate,
+  handleWorkflowDetail,
+  handleWorkflowPut,
+  handleWorkflowReload,
+  handleWorkflowRun,
+  handleWorkflowStart,
+  handleWorkflowStop,
+  handleWorkflows,
+} from "./routes/workflows.ts";
 import { handlePipelineArtifact, handlePipelines } from "./routes/pipelines.ts";
 import { handleProfiles } from "./routes/profiles.ts";
 import { handleSpend } from "./routes/spend.ts";
 import { handleRunbookDetail, handleRunbooks } from "./routes/runbooks.ts";
 import { handleAudit } from "./routes/audit.ts";
+import { allowedMethods, matchApi } from "./match-api.ts";
 import { log } from "../logger.ts";
 
 const PUBLIC_DIR = path.resolve(import.meta.dir, "../../public");
@@ -70,9 +84,15 @@ export interface HttpServerDeps {
   profileStore?: ProfileStore;
   pipelineStore: PipelineStore;
   resolveSlackPermalink?: SlackPermalinkResolver;
+  sessionManager: Pick<
+    SessionManager,
+    "injectDashboardContinue" | "interruptThread" | "isAdmin" | "isExplicitAdmin" | "getSession"
+  >;
+  slackPoster: SlackPoster;
   usageStore: UsageStore;
   auditStore: DashboardAuditStore;
   runbookCatalog?: CatalogStore;
+  projectRoot?: string;
 }
 
 export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.serve> {
@@ -89,10 +109,25 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
     profileStore,
     pipelineStore,
     resolveSlackPermalink,
+    sessionManager,
+    slackPoster,
     usageStore,
     auditStore,
     runbookCatalog,
+    projectRoot,
   } = deps;
+
+  const workflowDeps = {
+    registry: workflowRegistry,
+    store: workflowStore,
+    scheduler: workflowScheduler,
+    config,
+    sessionManager,
+    auditStore,
+    slackPoster,
+    projectRoot,
+    repos,
+  };
 
   const server = Bun.serve({
     port: config.http.port,
@@ -170,87 +205,115 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
           return new Response("not found", { status: 404 });
         }
 
-        if (url.pathname === "/api/health") {
-          return await handleHealth(store, config, startedAt, {
-            usageStore,
-            auditStore,
-          });
-        } else if (url.pathname === "/api/sessions") {
-          return await handleSessions(store, usageStore);
-        } else if (url.pathname.startsWith("/api/sessions/")) {
-          const threadId = decodeURIComponent(
-            url.pathname.slice("/api/sessions/".length),
-          );
-          return await handleSessionDetail(
-            store,
-            threadId,
-            resolveSlackPermalink,
-            usageStore,
-          );
-        } else if (url.pathname === "/api/dev-server") {
-          return await handleDevServers(devServerManager, devServerQueue, repos);
-        } else if (url.pathname === "/api/workflows") {
-          return await handleWorkflows(
-            workflowRegistry,
-            workflowStore,
-            workflowScheduler,
-          );
-        } else if (url.pathname === "/api/pipelines") {
-          return await handlePipelines(pipelineStore, url.searchParams, undefined, {
-            runtimeMode: config.pipeline?.runtimeMode ?? "off",
-            resolveSlackPermalink,
-          });
-        } else if (url.pathname.startsWith("/api/pipelines/")) {
-          const rest = decodeURIComponent(
-            url.pathname.slice("/api/pipelines/".length),
-          );
-          const artifactsMatch = rest.match(/^([^/]+)\/artifacts$/);
-          if (artifactsMatch) {
-            return await handlePipelineArtifact(
-              pipelineStore,
-              artifactsMatch[1],
-              url.searchParams,
-            );
-          }
-          if (rest.includes("/")) {
+        if (url.pathname.startsWith("/api/")) {
+          const route = matchApi(url.pathname);
+          if (route.kind === "not-found") {
             return Response.json({ error: "not found" }, { status: 404 });
           }
-          return await handlePipelines(pipelineStore, url.searchParams, rest, {
-            runtimeMode: config.pipeline?.runtimeMode ?? "off",
-            resolveSlackPermalink,
-          });
-        } else if (url.pathname === "/api/spend") {
-          return await handleSpend(usageStore, url.searchParams);
-        } else if (url.pathname === "/api/runbooks") {
-          return await handleRunbooks(url.searchParams, runbookCatalog);
-        } else if (url.pathname.startsWith("/api/runbooks/")) {
-          const name = decodeURIComponent(
-            url.pathname.slice("/api/runbooks/".length),
-          );
-          if (!name || name.includes("/")) {
-            return Response.json({ error: "not found" }, { status: 404 });
+          const allowed = allowedMethods(route.kind);
+          if (!allowed.includes(req.method)) {
+            return Response.json({ error: "method not allowed" }, { status: 405 });
           }
-          return await handleRunbookDetail(name, runbookCatalog);
-        } else if (url.pathname === "/api/audit") {
-          return await handleAudit(auditStore, url.searchParams);
-        } else if (url.pathname === "/api/logs") {
-          return await handleLogs(url.searchParams);
-        } else if (url.pathname === "/api/profiles") {
-          if (!profileStore) return Response.json({ error: "profile store not available" }, { status: 503 });
-          return await handleProfiles(profileStore, url.searchParams);
-        } else if (url.pathname === "/api/memory/recall") {
-          if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
-          return await handleMemoryRecall(memoryStore, url.searchParams);
-        } else if (url.pathname === "/api/memory/projection") {
-          if (!memoryStore) return Response.json({ error: "memory store not available" }, { status: 503 });
-          return await handleMemoryProjection(memoryStore, url.searchParams);
-        } else if (url.pathname === "/api/memory") {
-          return await handleMemoryList();
-        } else if (url.pathname.startsWith("/api/memory/")) {
-          const filePath = decodeURIComponent(
-            url.pathname.slice("/api/memory/".length),
-          );
-          return await handleMemoryRead(filePath);
+          switch (route.kind) {
+            case "health":
+              return await handleHealth(store, config, startedAt, {
+                usageStore,
+                auditStore,
+              });
+            case "sessions":
+              return await handleSessions(store, usageStore);
+            case "session":
+              return await handleSessionDetail(
+                store,
+                route.threadId,
+                resolveSlackPermalink,
+                usageStore,
+              );
+            case "session-continue":
+              return await handleSessionContinue(req, route.threadId, {
+                sessionManager,
+                slackPoster,
+                auditStore,
+                config,
+              });
+            case "session-stop":
+              return await handleSessionStop(route.threadId, {
+                sessionManager,
+                slackPoster,
+                auditStore,
+                config,
+              });
+            case "dev-server":
+              return await handleDevServers(devServerManager, devServerQueue, repos);
+            case "workflows":
+              if (req.method === "POST") {
+                return await handleWorkflowCreate(req, workflowDeps);
+              }
+              return await handleWorkflows(
+                workflowRegistry,
+                workflowStore,
+                workflowScheduler,
+                projectRoot,
+              );
+            case "workflow":
+              if (req.method === "PUT") {
+                return await handleWorkflowPut(route.name, req, workflowDeps);
+              }
+              return await handleWorkflowDetail(route.name, workflowDeps);
+            case "workflow-run":
+              return await handleWorkflowRun(route.name, req, workflowDeps);
+            case "workflow-start":
+              return await handleWorkflowStart(route.name, workflowDeps);
+            case "workflow-stop":
+              return await handleWorkflowStop(route.name, workflowDeps);
+            case "workflow-reload":
+              return await handleWorkflowReload(workflowDeps);
+            case "pipelines":
+              return await handlePipelines(pipelineStore, url.searchParams, undefined, {
+                runtimeMode: config.pipeline?.runtimeMode ?? "off",
+                resolveSlackPermalink,
+              });
+            case "pipeline":
+              return await handlePipelines(pipelineStore, url.searchParams, route.id, {
+                runtimeMode: config.pipeline?.runtimeMode ?? "off",
+                resolveSlackPermalink,
+              });
+            case "pipeline-artifacts":
+              return await handlePipelineArtifact(
+                pipelineStore,
+                route.id,
+                url.searchParams,
+              );
+            case "spend":
+              return await handleSpend(usageStore, url.searchParams);
+            case "runbooks":
+              return await handleRunbooks(url.searchParams, runbookCatalog);
+            case "runbook":
+              return await handleRunbookDetail(route.name, runbookCatalog);
+            case "audit":
+              return await handleAudit(auditStore, url.searchParams);
+            case "logs":
+              return await handleLogs(url.searchParams);
+            case "profiles":
+              if (!profileStore) {
+                return Response.json({ error: "profile store not available" }, { status: 503 });
+              }
+              return await handleProfiles(profileStore, url.searchParams);
+            case "memory":
+              return await handleMemoryList();
+            case "memory-recall":
+              if (!memoryStore) {
+                return Response.json({ error: "memory store not available" }, { status: 503 });
+              }
+              return await handleMemoryRecall(memoryStore, url.searchParams);
+            case "memory-projection":
+              if (!memoryStore) {
+                return Response.json({ error: "memory store not available" }, { status: 503 });
+              }
+              return await handleMemoryProjection(memoryStore, url.searchParams);
+            case "memory-read":
+              return await handleMemoryRead(route.filePath);
+          }
         }
         return Response.json({ error: "not found" }, { status: 404 });
       } catch (err) {
