@@ -1,13 +1,13 @@
 # Dynamic Workflows
 
-> **Current status (2026-08-15):** Shipped. The registry, SQLite state/run store, hot reload, scheduler, Slack commands, and localhost dashboard endpoint are live. Current definitions include `worklog`, `release-notes`, `memory-consolidation`, `memory-dedup-sweep`, `slack-archive-maintenance`, and `worktree-prune`; private overlays may add or override definitions. `slack-archive-maintenance` is a native deterministic handler, not an agent-run workflow.
+> **Current status (2026-08-15):** Shipped. The registry, SQLite state/run store, hot reload, scheduler, Slack commands, and localhost dashboard (read + enqueue/start/stop/reload + Git-backed create/edit) are live. Current definitions include `worklog`, `release-notes`, `memory-consolidation`, `memory-dedup-sweep`, `slack-archive-maintenance`, and `worktree-prune`; private overlays may add or override definitions. `slack-archive-maintenance` is a native deterministic handler, not an agent-run workflow.
 
 ## Problem
 
 Junior needs recurring and on-demand workflows that can be added without restarting the bot. The first workflow is a daily worklog: collect my PRs and commits, turn them into grouped "things I did", store a markdown artifact, and post a Slack summary.
 
 **Who has this problem:** Junior operators who need repeatable automation.
-**What happens today:** Workflow definitions are discovered from `workflows/` and `agents-org/workflows/`, reloaded on file changes, persisted in SQLite, and controllable through `!workflow` / `!workflows`. The dashboard exposes the same state at `GET /api/workflows`.
+**What happens today:** Workflow definitions are discovered from `workflows/` and `agents-org/workflows/`, reloaded on file changes, persisted in SQLite, and controllable through `!workflow` / `!workflows` and the localhost dashboard. Slack `!workflow run` still awaits blocking `runNow`. The dashboard calls `enqueueManualRun` (durable `persistNewRun`, then background `executePersistedRun`) so a long worklog does not hold the HTTP request. Create/edit write `*.workflow.md` and commit on a named branch (detached HEAD refused); overlay writes also try a Junior submodule-pointer commit.
 **Painful part:** Every new cron-like behavior currently risks becoming a code deploy.
 **"Finally" moment:** Add or edit `workflows/worklog.workflow.md`; Junior reloads it, schedules it, and owners can `!workflow run worklog` or `!workflow stop worklog` from Slack.
 
@@ -203,6 +203,8 @@ Admin-only commands:
 
 Authorization uses existing Junior admins plus `ownerSlackUserIds` from the workflow file. Non-authorized mutating commands are rejected with a reaction and no workflow run.
 
+The dashboard uses the same `canManage` / admin checks with actor `ADMIN_SLACK_USER_ID` or `dashboard-operator`. Create/edit/reload require admin (open-mode still allows them, matching Slack). Dashboard run/start/stop/reload/create/edit write `dashboard_audit`. If the definition has a `slack` or `slack-thread` output, the dashboard also posts a one-liner there. **If it has none, git + `dashboard_audit` is a weaker trail than Slack `!` commands** — accepted for the no-auth loopback console, not Slack-parity. Continue/stop on sessions remain full Slack-thread records; see [http-dashboard.md](http-dashboard.md).
+
 ## Hot Reload
 
 Junior uses `fs.watch` on both fixed workflow roots. Watch events are debounced and followed by a full rescan of each root because file watchers can coalesce, duplicate, or miss exact filenames across platforms.
@@ -278,13 +280,14 @@ This is a CLI fallback, not OpenCode's native server interrupt. The implemented 
 
 ## Cut List
 
-- Interactive workflow creation from Slack.
+- Interactive workflow creation from Slack (the dashboard can already create/edit Git-backed files).
 - Multi-step workflow DAGs.
-- Retrying failed workflow runs.
+- Retrying failed workflow runs from the UI.
 - Per-output templates.
 - Workflow-specific secrets.
-- A UI for workflow states and history.
+- Automatic `git push` / PR after a dashboard create or edit. Commits stay local and unpushed. Detached HEAD, merge, and rebase are refused; overlay writes also commit the Junior `agents-org` pointer (`git add -- agents-org` only) and report — without rolling back the overlay — if that parent commit fails.
+- Slack-parity conversation-of-record for dashboard workflow writes that have no Slack output channel. Today those leave only git + `dashboard_audit`.
 
-The localhost dashboard already exposes workflow definitions, state, recent runs,
-and registry errors through `GET /api/workflows`; a richer interactive UI remains
-out of scope.
+The localhost dashboard lists definitions, state, recent runs, and registry
+errors, and can enqueue (`enqueueManualRun`), start, stop, reload, create, and
+edit workflows. See [http-dashboard.md](http-dashboard.md).
