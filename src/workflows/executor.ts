@@ -4,6 +4,13 @@ import type { WebClient } from "@slack/web-api";
 import type { Config, RepoConfig } from "../config.ts";
 import { spawnRunner } from "../runners/index.ts";
 import type { RunnerEvent, SpawnHandle, SpawnRunnerFn } from "../runners/types.ts";
+import {
+  normalizeRunnerUsage,
+  type NormalizedUsage,
+  type UsageMeta,
+} from "../usage/normalize.ts";
+import { mergeNormalizedUsage } from "../usage/merge.ts";
+import type { UsageStore } from "../usage/store/interface.ts";
 import { createSession, type ImplementedRunnerProvider } from "../session/types.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import { log } from "../logger.ts";
@@ -61,6 +68,7 @@ export interface WorkflowExecutorOptions {
     resolvePeople?: PeopleResolver;
   };
   slackArchiveMaintenance?: () => Promise<SlackArchiveMaintenanceReport>;
+  usageStore?: UsageStore;
 }
 
 export interface WorkflowRunRequest {
@@ -91,6 +99,7 @@ export class WorkflowExecutor {
   private memoryStore?: MemoryStore;
   private consolidationDeps?: WorkflowExecutorOptions["consolidationDeps"];
   private slackArchiveMaintenance?: WorkflowExecutorOptions["slackArchiveMaintenance"];
+  private usageStore?: UsageStore;
   private activeHandles = new Set<SpawnHandle>();
 
   constructor(options: WorkflowExecutorOptions) {
@@ -102,6 +111,7 @@ export class WorkflowExecutor {
     this.memoryStore = options.memoryStore;
     this.consolidationDeps = options.consolidationDeps;
     this.slackArchiveMaintenance = options.slackArchiveMaintenance;
+    this.usageStore = options.usageStore;
   }
 
   async run(request: WorkflowRunRequest): Promise<WorkflowRunResult> {
@@ -133,12 +143,20 @@ export class WorkflowExecutor {
     await this.store.createRun(run);
 
     let summary = "";
+    let nativeHandlerName: WorkflowNativeHandler | null = null;
+    let runnerProvider: ImplementedRunnerProvider | null = null;
+    const runnerEvents: RunnerEvent[] = [];
     try {
       if (request.definition.nativeHandler) {
         const nativeResult = await this.runNativeHandler(request.definition.nativeHandler);
         summary = nativeResult.summary;
         run.status = nativeResult.status;
+        nativeHandlerName = request.definition.nativeHandler;
       } else if (request.definition.runner) {
+        const runner = request.definition.runner;
+        runnerProvider = runner.provider === "default"
+          ? this.config.runner.provider
+          : runner.provider;
         summary = await this.runWithRunner(
           request.definition,
           run,
@@ -153,6 +171,7 @@ export class WorkflowExecutor {
             triggerContext: request.triggerContext ?? null,
             instructions,
           }),
+          runnerEvents,
         );
       } else {
         summary = request.definition.prompt.trim() ||
@@ -190,6 +209,21 @@ export class WorkflowExecutor {
       await this.store.updateRun(run);
       await this.updateStateAfterRun(request.definition, run);
       throw err;
+    } finally {
+      if (nativeHandlerName) {
+        await this.persistNativeWorkflowUsage(
+          request.definition,
+          run,
+          nativeHandlerName,
+        );
+      } else if (runnerProvider) {
+        await this.persistRunnerWorkflowUsage({
+          definition: request.definition,
+          run,
+          provider: runnerProvider,
+          events: runnerEvents,
+        });
+      }
     }
   }
 
@@ -213,6 +247,7 @@ export class WorkflowExecutor {
     definition: WorkflowDefinition,
     run: WorkflowRun,
     prompt: string,
+    collectedEvents: RunnerEvent[],
   ): Promise<string> {
     const runner = definition.runner;
     if (!runner) throw new Error(`Workflow ${definition.name} has no runner`);
@@ -244,6 +279,7 @@ export class WorkflowExecutor {
       provider,
       session,
       initialPrompt: prompt,
+      collectedEvents,
     });
   }
 
@@ -254,6 +290,7 @@ export class WorkflowExecutor {
     provider: ImplementedRunnerProvider;
     session: ReturnType<typeof createSession>;
     initialPrompt: string;
+    collectedEvents: RunnerEvent[];
   }): Promise<string> {
     const idleResumeEnabled = this.idleResumeEnabled(options.provider);
     const maxIdleInterrupts = options.runner.idleTimeoutMs && idleResumeEnabled
@@ -268,6 +305,7 @@ export class WorkflowExecutor {
         prompt,
         idleResumeEnabled,
       });
+      options.collectedEvents.push(...attempt.result.events);
       if (attempt.result.sessionId) {
         options.session.sessionId = attempt.result.sessionId;
       }
@@ -376,6 +414,84 @@ export class WorkflowExecutor {
       this.activeHandles.delete(handle);
     });
     return { result, idleInterrupted };
+  }
+
+  private workflowUsageMeta(
+    definition: WorkflowDefinition,
+    run: WorkflowRun,
+    provider: string | null,
+  ): UsageMeta {
+    return {
+      sourceKind: "workflow-run",
+      sourceId: run.id,
+      threadId: null,
+      channelId: run.slackChannel,
+      agentName: definition.runner?.agentName ?? null,
+      provider,
+      providerSessionId: run.providerSessionId,
+      pipelineRunId: null,
+      assignmentId: null,
+      workflowName: definition.name,
+      workflowRunId: run.id,
+      occurredAt: run.finishedAt ?? run.startedAt,
+    };
+  }
+
+  private async persistNativeWorkflowUsage(
+    definition: WorkflowDefinition,
+    run: WorkflowRun,
+    nativeHandler: WorkflowNativeHandler,
+  ): Promise<void> {
+    if (!this.usageStore) return;
+    const usage = normalizeRunnerUsage(
+      undefined,
+      this.workflowUsageMeta(definition, run, null),
+    );
+    usage.raw = { nativeHandler };
+    usage.inputTokens = 0;
+    usage.outputTokens = 0;
+    usage.cacheReadTokens = 0;
+    usage.cacheWriteTokens = 0;
+    usage.totalTokens = 0;
+    await this.writeWorkflowUsage(definition, run, usage);
+  }
+
+  private async persistRunnerWorkflowUsage(input: {
+    definition: WorkflowDefinition;
+    run: WorkflowRun;
+    provider: ImplementedRunnerProvider;
+    events: RunnerEvent[];
+  }): Promise<void> {
+    if (!this.usageStore) return;
+    const meta = this.workflowUsageMeta(
+      input.definition,
+      input.run,
+      input.provider,
+    );
+    const usage = usageFromDoneEvents(input.events, meta);
+    if (!usage.raw || Object.keys(usage.raw).length === 0) {
+      log.info(
+        "spend",
+        `spend.missing provider=${input.provider} workflow=${input.definition.name} run=${input.run.id}`,
+      );
+    }
+    await this.writeWorkflowUsage(input.definition, input.run, usage);
+  }
+
+  private async writeWorkflowUsage(
+    definition: WorkflowDefinition,
+    run: WorkflowRun,
+    usage: NormalizedUsage,
+  ): Promise<void> {
+    if (!this.usageStore) return;
+    try {
+      await this.usageStore.add(usage);
+    } catch (err) {
+      log.warn(
+        "spend",
+        `spend.persist.fail workflow=${definition.name} run=${run.id}: ${formatError(err)}`,
+      );
+    }
   }
 
   private idleResumeEnabled(provider: ImplementedRunnerProvider): boolean {
@@ -748,4 +864,26 @@ function logWorkflowRunnerEvent(
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function usageFromDoneEvents(
+  events: RunnerEvent[],
+  meta: UsageMeta,
+): NormalizedUsage {
+  const dones = events.filter((event) => event.type === "done");
+  if (dones.length === 0) return normalizeRunnerUsage(undefined, meta);
+  let acc = normalizeRunnerUsage(dones[0]!.usage, {
+    ...meta,
+    provider: dones[0]!.provider ?? meta.provider,
+  });
+  for (const done of dones.slice(1)) {
+    acc = mergeNormalizedUsage(
+      acc,
+      normalizeRunnerUsage(done.usage, {
+        ...meta,
+        provider: done.provider ?? meta.provider,
+      }),
+    );
+  }
+  return acc;
 }

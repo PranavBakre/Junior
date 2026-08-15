@@ -20,6 +20,9 @@ import { resolveAgentManifest } from "../agents/registry.ts";
 import { requiresManagedWorktree } from "../agents/capabilities.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
 import type { PipelineStore } from "../pipelines/store/interface.ts";
+import type { UsageStore } from "../usage/store/interface.ts";
+import { normalizeRunnerUsage } from "../usage/normalize.ts";
+import { sessionTurnSourceId } from "../usage/source-id.ts";
 import {
   createProductRun,
   shouldCreateProductRun,
@@ -143,6 +146,7 @@ export class SessionManager {
    * Also used to enrich !status when a run is active.
    */
   pipelineStore?: PipelineStore;
+  usageStore?: UsageStore;
   onResponse?: (session: ThreadSession, response: string) => unknown;
   onAgentSettled?: (
     session: ThreadSession,
@@ -2299,7 +2303,10 @@ export class SessionManager {
             invocationCwd,
           );
         }
-        this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
+        const runSession = this.buildRunSession(session, agentName, agentIdentity);
+        runSession.currentMessageTs = latestTs ?? null;
+        this.onEvent?.(runSession, event);
+        this.recordSessionTurnUsage(runSession, event, latestTs);
       });
       await this.persistRunProcessDetails(session.threadId, agentName, handle.pid);
 
@@ -2495,7 +2502,10 @@ export class SessionManager {
                 invocationCwd,
               );
             }
-            this.onEvent?.(this.buildRunSession(session, agentName, agentIdentity), event);
+            const runSession = this.buildRunSession(session, agentName, agentIdentity);
+            runSession.currentMessageTs = latestTs ?? null;
+            this.onEvent?.(runSession, event);
+            this.recordSessionTurnUsage(runSession, event, latestTs);
           });
           await this.persistRunProcessDetails(session.threadId, agentName, retryHandle.pid);
 
@@ -3838,6 +3848,46 @@ export class SessionManager {
       worktreePath: null,
       worktreePaths: {},
     };
+  }
+
+  private recordSessionTurnUsage(
+    session: ThreadSession,
+    event: RunnerEvent,
+    postedTs?: string,
+  ): void {
+    if (event.type !== "done" || !this.usageStore) return;
+    const agentName = session.activeAgentName ?? session.agentType ?? "default";
+    const invocation = session.activePipelineInvocation;
+    if (!event.usage) {
+      _log.info(
+        "spend",
+        `spend.missing provider=${event.provider} thread=${session.threadId}`,
+      );
+    }
+    const normalized = normalizeRunnerUsage(event.usage, {
+      sourceKind: "session-turn",
+      sourceId: sessionTurnSourceId(session, agentName, postedTs),
+      threadId: session.threadId,
+      channelId: session.channel,
+      agentName,
+      provider: event.provider ?? session.provider ?? null,
+      providerSessionId: session.sessionId,
+      pipelineRunId:
+        invocation?.runId ??
+        session.activeRunId ??
+        session.activePipelineRunId ??
+        null,
+      assignmentId: invocation?.assignmentId ?? null,
+      workflowName: null,
+      workflowRunId: null,
+      occurredAt: Date.now(),
+    });
+    void this.usageStore.add(normalized).catch((err) => {
+      _log.warn(
+        "spend",
+        `spend.persist.fail thread=${session.threadId} agent=${agentName}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
   }
 
   private buildRunSession(

@@ -29,6 +29,7 @@ interface MockHandle extends SpawnHandle {
     sessionId?: string | null,
     events?: RunnerEvent[],
     completion?: RunnerCompletion,
+    usage?: Record<string, unknown>,
   ) => void;
   _error: (errorMsg: string) => void;
 }
@@ -54,6 +55,7 @@ function createMockHandle(
       sid?: string | null,
       resultEvents?: RunnerEvent[],
       completion?: RunnerCompletion,
+      usage?: Record<string, unknown>,
     ) => {
       const finalResponse = resp ?? response;
       const finalSessionId = sid === undefined ? sessionId : sid;
@@ -66,7 +68,7 @@ function createMockHandle(
           });
         }
       for (const l of listeners)
-        l({ type: "done", provider: "claude" });
+        l({ type: "done", provider: "claude", ...(usage ? { usage } : {}) });
       resolveResult({
         provider: "claude",
         sessionId: finalSessionId,
@@ -104,6 +106,7 @@ mock.module("../lifecycle/timeout.ts", () => ({
 // Import after mocking
 const { SessionManager } = await import("./manager.ts");
 import { InMemorySessionStore } from "./store/memory.ts";
+import { InMemoryUsageStore } from "../usage/store/memory.ts";
 import type { DriverMap } from "../claude/factory.ts";
 import type { ClaudeDriver } from "../claude/driver.ts";
 
@@ -4011,6 +4014,111 @@ describe("SessionManager", () => {
       expect(calls[3]).toEqual({ action: "remove", ts: TS_B, emoji: EMOJI });
     });
   });
+
+  it("records usage on done for a quiet session", async () => {
+    const usageStore = new InMemoryUsageStore();
+    manager.usageStore = usageStore;
+    const seen: string[] = [];
+    manager.onEvent = (session, event) => {
+      seen.push(event.type);
+      if (session.verbosity === "quiet") return;
+      throw new Error("quiet onEvent must return before Slack status work");
+    };
+
+    await manager.handleMessage(makeEvent({
+      ts: "111.222",
+      pipelineInvocation: {
+        runId: "run-spend",
+        assignmentId: "asg-spend",
+        dispatchKey: "dispatch-spend",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }));
+    currentHandle._complete("quiet ok", "ses-quiet", [], undefined, {
+      total_cost_usd: 0.02,
+      usage: {
+        input_tokens: 11,
+        output_tokens: 7,
+        cache_read_input_tokens: 3,
+        cache_creation_input_tokens: 1,
+      },
+      num_turns: 2,
+    });
+    await waitFor(async () => (await store.get("thread-1"))?.status === "idle");
+    const row = await waitForUsage(
+      usageStore,
+      "session-turn",
+      "thread-1:default:111.222",
+    );
+
+    expect(seen).toContain("done");
+    expect((await store.get("thread-1"))?.verbosity).toBe("quiet");
+    expect(row).toMatchObject({
+      sourceKind: "session-turn",
+      sourceId: "thread-1:default:111.222",
+      threadId: "thread-1",
+      agentName: "default",
+      provider: "claude",
+      pipelineRunId: "run-spend",
+      assignmentId: "asg-spend",
+      inputTokens: 11,
+      outputTokens: 7,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 1,
+      totalTokens: 22,
+      costUsd: 0.02,
+      costEstimatedUsd: null,
+      numTurns: 2,
+    });
+  });
+
+  it("records distinct usage rows for sequential worker turns", async () => {
+    const usageStore = new InMemoryUsageStore();
+    const leadHandle = createMockHandle();
+    const reviewHandle1 = createMockHandle();
+    const reviewHandle2 = createMockHandle();
+    const handles = [leadHandle, reviewHandle1, reviewHandle2];
+    mockSpawnFn = mock(() => handles.shift() ?? createMockHandle());
+    manager = createTestManager(store);
+    manager.usageStore = usageStore;
+
+    await manager.handleMessage(makeEvent({ text: "lead first", ts: "ts-lead" }));
+    leadHandle._complete("lead ok", "lead-ses", [], undefined, {
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    await waitFor(async () => (await store.get("thread-1"))?.status === "idle");
+    await waitForUsage(usageStore, "session-turn", "thread-1:default:ts-lead");
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "review one", ts: "ts-review-1" }),
+      "review",
+    );
+    reviewHandle1._complete("first", "review-ses-1", [], undefined, {
+      usage: { input_tokens: 10, output_tokens: 1 },
+    });
+    await waitFor(async () =>
+      (await store.get("thread-1"))?.agentSessions.review?.status === "done"
+    );
+    await waitForUsage(usageStore, "session-turn", "thread-1:review:ts-review-1");
+
+    await manager.handleAgentMessage(
+      makeEvent({ text: "review two", ts: "ts-review-2" }),
+      "review",
+    );
+    reviewHandle2._complete("second", "review-ses-2", [], undefined, {
+      usage: { input_tokens: 20, output_tokens: 2 },
+    });
+    await waitForUsage(usageStore, "session-turn", "thread-1:review:ts-review-2");
+
+    const first = await usageStore.get("session-turn", "thread-1:review:ts-review-1");
+    const second = await usageStore.get("session-turn", "thread-1:review:ts-review-2");
+    const collapsed = await usageStore.get("session-turn", "thread-1:review:ts-lead");
+    expect(first).toMatchObject({ inputTokens: 10, outputTokens: 1 });
+    expect(second).toMatchObject({ inputTokens: 20, outputTokens: 2 });
+    expect(collapsed).toBeUndefined();
+    expect(await usageStore.list({ sourceKind: "session-turn" })).toHaveLength(3);
+  });
 });
 
 describe("typed pipeline settlement", () => {
@@ -5203,3 +5311,14 @@ describe("typed pipeline settlement", () => {
     expect(outcomes[0]!.reason).toContain("without a recovery continuation");
   });
 });
+
+async function waitForUsage(
+  usageStore: InMemoryUsageStore,
+  sourceKind: "session-turn",
+  sourceId: string,
+) {
+  await waitFor(async () => Boolean(await usageStore.get(sourceKind, sourceId)));
+  const row = await usageStore.get(sourceKind, sourceId);
+  if (!row) throw new Error(`missing usage ${sourceKind} ${sourceId}`);
+  return row;
+}

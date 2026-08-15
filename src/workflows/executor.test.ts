@@ -12,6 +12,8 @@ import {
   WORKFLOW_UTILITY_CWD,
 } from "./executor.ts";
 import { InMemoryWorkflowStore } from "./store.ts";
+import { InMemoryUsageStore } from "../usage/store/memory.ts";
+import type { NormalizedUsage } from "../usage/normalize.ts";
 import type { WorkflowDefinition } from "./types.ts";
 import { SqliteMemoryStore } from "../memory/sqlite.ts";
 import { ProfileStore } from "../memory/profiles/store.ts";
@@ -738,6 +740,167 @@ describe("WorkflowExecutor", () => {
       const runs = await store.listRuns(definition.name, 1);
       expect(runs[0]?.providerSessionId).toBe("ses-shutdown");
       expect(runs[0]?.status).toBe("failed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists workflow usage once from SpawnResult, not per onEvent", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-usage-"));
+    const added: NormalizedUsage[] = [];
+    const usageStore = new InMemoryUsageStore();
+    const origAdd = usageStore.add.bind(usageStore);
+    usageStore.add = async (usage) => {
+      added.push(usage);
+      return origAdd(usage);
+    };
+    const spawn: SpawnRunnerFn = (): SpawnHandle => ({
+      provider: "opencode",
+      result: Promise.resolve({
+        provider: "opencode",
+        sessionId: "ses-usage",
+        response: "workflow done",
+        events: [
+          { type: "done", provider: "opencode", usage: { input: 10, output: 2 } },
+          { type: "done", provider: "opencode", usage: { input: 5, output: 3 } },
+        ],
+        exitCode: 0,
+        error: null,
+      }),
+      onEvent: (cb) => {
+        cb({ type: "init", provider: "opencode", sessionId: "ses-usage" });
+        cb({ type: "done", provider: "opencode", usage: { input: 10, output: 2 } });
+        cb({ type: "done", provider: "opencode", usage: { input: 5, output: 3 } });
+      },
+      kill: () => undefined,
+      pid: null,
+    });
+    let nowMs = Date.parse("2026-05-21T13:30:00.000Z");
+    const slackClient = {
+      chat: {
+        postMessage: async () => ({ ok: true, ts: "123.456" }),
+      },
+    } as unknown as WebClient;
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store: new InMemoryWorkflowStore(),
+      slackClient,
+      spawn,
+      usageStore,
+      now: () => {
+        const date = new Date(nowMs);
+        nowMs += 1_000;
+        return date;
+      },
+    });
+
+    try {
+      const result = await executor.run({
+        definition: workflowDefinition(dir),
+        reason: "manual",
+      });
+      expect(added).toHaveLength(1);
+      expect(added[0]).toMatchObject({
+        sourceKind: "workflow-run",
+        sourceId: result.run.id,
+        workflowName: "worklog",
+        workflowRunId: result.run.id,
+        provider: "opencode",
+        channelId: "C123ABC",
+        inputTokens: 15,
+        outputTokens: 5,
+        totalTokens: 20,
+        costEstimatedUsd: null,
+        occurredAt: result.run.finishedAt,
+      });
+      expect(result.run.finishedAt).not.toBe(result.run.startedAt);
+      expect(await usageStore.get("workflow-run", result.run.id)).toMatchObject({
+        inputTokens: 15,
+        outputTokens: 5,
+        channelId: "C123ABC",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists runner usage after a failed workflow run", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-usage-fail-"));
+    const usageStore = new InMemoryUsageStore();
+    const spawn: SpawnRunnerFn = (): SpawnHandle => ({
+      provider: "opencode",
+      result: Promise.resolve({
+        provider: "opencode",
+        sessionId: "ses-fail",
+        response: "",
+        events: [
+          { type: "done", provider: "opencode", usage: { input: 8, output: 1 } },
+        ],
+        exitCode: 1,
+        error: "runner failed",
+      }),
+      onEvent: () => undefined,
+      kill: () => undefined,
+      pid: null,
+    });
+    const store = new InMemoryWorkflowStore();
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store,
+      spawn,
+      usageStore,
+      now: () => new Date("2026-05-21T13:31:00.000Z"),
+    });
+
+    try {
+      await expect(executor.run({
+        definition: workflowDefinition(dir),
+        reason: "manual",
+      })).rejects.toThrow("Workflow runner failed");
+      const run = (await store.listRuns("worklog", 1))[0];
+      expect(run?.status).toBe("failed");
+      const rows = await usageStore.list({ sourceKind: "workflow-run" });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        inputTokens: 8,
+        outputTokens: 1,
+        occurredAt: run?.finishedAt,
+        channelId: null,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists a zero-token usage row after a native handler returns", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-workflow-native-usage-"));
+    const definition = workflowDefinition(dir);
+    definition.name = "slack-archive-maintenance";
+    definition.nativeHandler = "slack-archive-maintenance";
+    definition.runner = undefined;
+    definition.outputs = [{ type: "docs", path: join(dir, "slack-archive-maintenance") }];
+    const usageStore = new InMemoryUsageStore();
+    const executor = new WorkflowExecutor({
+      config: testConfig(),
+      store: new InMemoryWorkflowStore(),
+      usageStore,
+      slackClient: {} as WebClient,
+      now: () => new Date("2026-08-16T03:17:00+05:30"),
+    });
+
+    try {
+      const result = await executor.run({ definition, reason: "schedule" });
+      const row = await usageStore.get("workflow-run", result.run.id);
+      expect(row).toMatchObject({
+        sourceKind: "workflow-run",
+        sourceId: result.run.id,
+        workflowName: "slack-archive-maintenance",
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: null,
+        raw: { nativeHandler: "slack-archive-maintenance" },
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
