@@ -2348,6 +2348,33 @@ describe("SessionManager", () => {
 
   // --- Commands ---
 
+  describe("interruptThread / !stop", () => {
+    it("interruptThread matches !stop: kills handles and idles the thread", async () => {
+      await manager.handleMessage(makeEvent({ text: "go" }));
+      expect((await store.get("thread-1"))!.status).toBe("busy");
+
+      const touched = await manager.interruptThread("thread-1");
+      expect(touched).toBe(1);
+      expect(currentHandle.kill).toHaveBeenCalled();
+      expect((await store.get("thread-1"))!.status).toBe("idle");
+    });
+
+    it("!stop calls interruptThread and posts the Slack line", async () => {
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+      await manager.handleMessage(makeEvent({ text: "go" }));
+
+      await manager.handleMessage(makeEvent({ command: "stop", text: "", ts: "ts-stop" }));
+
+      expect(currentHandle.kill).toHaveBeenCalled();
+      expect(onCmd).toHaveBeenCalledWith(
+        expect.objectContaining({ command: "stop" }),
+        "Interrupted (1 agent). Send a new message to continue.",
+      );
+      expect((await store.get("thread-1"))!.status).toBe("idle");
+    });
+  });
+
   describe("!reset", () => {
     it("rejects bare !reset with usage help", async () => {
       const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});

@@ -827,6 +827,41 @@ setInterval(() => {
         usageStore,
         auditStore,
         runbookCatalog: runbookCatalogStore,
+        sessionManager,
+        slackPoster: {
+          post: async (channel, threadTs, text) => {
+            try {
+              const result = await app.client.chat.postMessage({
+                channel,
+                thread_ts: threadTs,
+                text,
+                unfurl_links: false,
+                unfurl_media: false,
+              });
+              return typeof result.ts === "string" ? { ts: result.ts } : null;
+            } catch (err) {
+              log.error(
+                "dashboard",
+                `slack post failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              return null;
+            }
+          },
+          react: async (channel, ts, emoji) => {
+            try {
+              await app.client.reactions.add({
+                channel,
+                timestamp: ts,
+                name: emoji,
+              });
+            } catch (err) {
+              log.warn(
+                "dashboard",
+                `slack react failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          },
+        },
         resolveSlackPermalink: async (channel, messageTs) => {
           const result = await app.client.chat.getPermalink({
             channel,
