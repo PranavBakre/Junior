@@ -14,6 +14,7 @@ export type FollowupMessageContext = {
   hasCommand: boolean;
   hasPipelineMetadata: boolean;
   isInternal: boolean;
+  isDashboardContinue?: boolean;
 };
 
 export type BusyFollowupContext = {
@@ -57,6 +58,7 @@ function messageIneligibleReason(
   if (message.hasCommand) return `${label}-has-command`;
   if (message.hasPipelineMetadata) return `${label}-has-pipeline-metadata`;
   if (message.isInternal) return `${label}-is-internal`;
+  if (message.isDashboardContinue) return `${label}-is-dashboard-continue`;
   if (message.text.length > maxMessageLength) return `${label}-too-long`;
   if (wordCount(message.text) > maxWordCount) return `${label}-too-many-words`;
   if (isMultilineOrCodeHeavy(message.text)) return `${label}-multiline-or-code`;

@@ -1,6 +1,35 @@
+import type { Config } from "../../config.ts";
+import type { DashboardAuditStore } from "../audit/interface.ts";
+import { log } from "../../logger.ts";
+import { resolveContinueRoute } from "../../session/continue-route.ts";
+import {
+  formatStopReply,
+  type SessionManager,
+} from "../../session/manager.ts";
 import type { SessionStore } from "../../session/store/interface.ts";
 import type { AgentSession, ThreadSession } from "../../session/types.ts";
 import type { UsageStore } from "../../usage/store/interface.ts";
+
+export const CONTINUE_PROMPT_MAX = 8000;
+
+const SLACK_ID_RE = /^[UWB][A-Z0-9]+$/;
+
+export type SlackPoster = {
+  post: (channel: string, threadTs: string, text: string) => Promise<{ ts: string } | null>;
+};
+
+export function dashboardActor(config: Config): string {
+  return config.adminSlackUserId ?? "dashboard-operator";
+}
+
+export function formatDashboardContinueSlackBody(
+  actor: string,
+  prompt: string,
+): string {
+  const who = SLACK_ID_RE.test(actor) ? `<@${actor}>` : "`dashboard-operator`";
+  const preview = prompt.replace(/\r\n/g, " · ").replace(/[\r\n]/g, " · ").slice(0, 240);
+  return `*Dashboard continue* · local operator · ${who}\n> ${preview}`;
+}
 
 export type SlackPermalinkResolver = (
   channel: string,
@@ -153,4 +182,273 @@ async function spendByThreadId(
     });
   }
   return result;
+}
+
+export async function handleSessionContinue(
+  req: Request,
+  threadId: string,
+  deps: {
+    sessionManager: Pick<
+      SessionManager,
+      "injectDashboardContinue" | "getSession"
+    >;
+    slackPoster: SlackPoster;
+    auditStore: DashboardAuditStore;
+    config: Config;
+  },
+): Promise<Response> {
+  const actor = dashboardActor(deps.config);
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request: {},
+      result: "error",
+      error: parsed.error,
+    });
+    return Response.json({ error: parsed.error }, { status: 400 });
+  }
+
+  const prompt = parsed.value.prompt;
+  const agentName = parsed.value.agentName;
+  const request = {
+    prompt: typeof prompt === "string" ? prompt : prompt ?? null,
+    agentName: agentName ?? null,
+  };
+
+  if (typeof prompt !== "string" || prompt.trim() === "") {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "error",
+      error: "invalid prompt",
+    });
+    return Response.json({ error: "invalid prompt" }, { status: 400 });
+  }
+  if (prompt.length > CONTINUE_PROMPT_MAX) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "error",
+      error: "prompt too long",
+    });
+    return Response.json({ error: "prompt too long" }, { status: 400 });
+  }
+  if (agentName !== undefined && typeof agentName !== "string") {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "error",
+      error: "unknown-agent",
+    });
+    return Response.json({ error: "unknown-agent" }, { status: 400 });
+  }
+
+  const session = await deps.sessionManager.getSession(threadId);
+  if (!session) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "error",
+      error: "session not found",
+    });
+    return Response.json({ error: "session not found" }, { status: 404 });
+  }
+  if (!session.channel || !session.threadId) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "error",
+      error: "session has no channel",
+    });
+    return Response.json({ error: "session has no channel" }, { status: 400 });
+  }
+
+  const route = resolveContinueRoute(agentName, session);
+  if ("error" in route) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "error",
+      error: "unknown-agent",
+    });
+    return Response.json({ error: "unknown-agent" }, { status: 400 });
+  }
+
+  if (session.muted) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "denied",
+      error: "session muted",
+    });
+    return Response.json({ error: "session muted" }, { status: 409 });
+  }
+
+  const posted = await deps.slackPoster.post(
+    session.channel,
+    session.threadId,
+    formatDashboardContinueSlackBody(actor, prompt),
+  );
+  if (!posted?.ts) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "error",
+      error: "slack post failed",
+    });
+    return Response.json({ error: "slack post failed" }, { status: 502 });
+  }
+
+  const injected = await deps.sessionManager.injectDashboardContinue({
+    threadId: session.threadId,
+    channel: session.channel,
+    prompt,
+    agentName,
+    actorSlackUserId: actor,
+    postedTs: posted.ts,
+  });
+
+  if (injected.status === "muted") {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.continue",
+      targetId: threadId,
+      request,
+      result: "denied",
+      error: "session muted",
+      slackTs: posted.ts,
+    });
+    return Response.json({ error: "session muted" }, { status: 409 });
+  }
+
+  log.info(
+    "dashboard",
+    `action=session.continue thread=${threadId} result=${injected.status}`,
+  );
+  await recordSessionAudit(deps.auditStore, {
+    actor,
+    action: "session.continue",
+    targetId: threadId,
+    request,
+    result: injected.status === "buffered" ? "buffered" : "ok",
+    slackTs: posted.ts,
+  });
+  return Response.json({ status: injected.status }, { status: 202 });
+}
+
+export async function handleSessionStop(
+  threadId: string,
+  deps: {
+    sessionManager: Pick<SessionManager, "interruptThread" | "getSession">;
+    slackPoster: SlackPoster;
+    auditStore: DashboardAuditStore;
+    config: Config;
+  },
+): Promise<Response> {
+  const actor = dashboardActor(deps.config);
+  const session = await deps.sessionManager.getSession(threadId);
+  if (!session) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.stop",
+      targetId: threadId,
+      result: "error",
+      error: "session not found",
+    });
+    return Response.json({ error: "session not found" }, { status: 404 });
+  }
+  if (!session.channel || !session.threadId) {
+    await recordSessionAudit(deps.auditStore, {
+      actor,
+      action: "session.stop",
+      targetId: threadId,
+      result: "error",
+      error: "session has no channel",
+    });
+    return Response.json({ error: "session has no channel" }, { status: 400 });
+  }
+
+  const interrupted = await deps.sessionManager.interruptThread(session.threadId);
+  const message = formatStopReply(interrupted);
+  const posted = await deps.slackPoster.post(
+    session.channel,
+    session.threadId,
+    message,
+  );
+
+  log.info(
+    "dashboard",
+    `action=session.stop thread=${threadId} result=ok interrupted=${interrupted}`,
+  );
+  await recordSessionAudit(deps.auditStore, {
+    actor,
+    action: "session.stop",
+    targetId: threadId,
+    result: posted?.ts ? "ok" : "partial",
+    error: posted?.ts ? null : "slack post failed",
+    slackTs: posted?.ts ?? null,
+  });
+  return Response.json({ status: "ok", interrupted, message });
+}
+
+async function readJsonBody(
+  req: Request,
+): Promise<
+  | { ok: true; value: { prompt?: unknown; agentName?: unknown } }
+  | { ok: false; error: string }
+> {
+  const text = await req.text();
+  if (!text.trim()) return { ok: true, value: {} };
+  try {
+    const value = JSON.parse(text) as { prompt?: unknown; agentName?: unknown };
+    if (value == null || typeof value !== "object" || Array.isArray(value)) {
+      return { ok: false, error: "invalid json" };
+    }
+    return { ok: true, value };
+  } catch {
+    return { ok: false, error: "invalid json" };
+  }
+}
+
+async function recordSessionAudit(
+  store: DashboardAuditStore,
+  entry: {
+    actor: string;
+    action: string;
+    targetId: string;
+    request?: Record<string, unknown>;
+    result: string;
+    error?: string | null;
+    slackTs?: string | null;
+  },
+): Promise<void> {
+  await store.record({
+    actor: entry.actor,
+    action: entry.action,
+    targetType: "session",
+    targetId: entry.targetId,
+    request: entry.request ?? {},
+    result: entry.result,
+    error: entry.error ?? null,
+    slackTs: entry.slackTs ?? null,
+  });
 }

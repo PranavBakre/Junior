@@ -125,6 +125,8 @@ var devServers = [];
 var idleTtlMs = null;
 var workflows = [];
 var workflowErrors = [];
+var workflowWriteGit = { junior: null, overlay: null };
+var overlayRootExists = false;
 var pipelines = [];
 var attentionPipelines = [];
 var openPipelineCount = 0;
@@ -313,6 +315,8 @@ async function refreshMain() {
   if (w.ok) {
     workflows = w.data.workflows || [];
     workflowErrors = w.data.errors || [];
+    workflowWriteGit = w.data.git || workflowWriteGit;
+    overlayRootExists = Boolean(w.data.overlayRootExists);
   }
   if (pipelineGeneration === pipelineFetchGeneration) {
     applyPipelineListResponse(p);

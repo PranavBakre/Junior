@@ -18,6 +18,16 @@ function stubDeps(): HttpServerDeps {
     pipelineStore: {} as HttpServerDeps["pipelineStore"],
     usageStore: {} as HttpServerDeps["usageStore"],
     auditStore: {} as HttpServerDeps["auditStore"],
+    sessionManager: {
+      injectDashboardContinue: async () => ({ status: "accepted" }),
+      interruptThread: async () => 0,
+      isAdmin: async () => true,
+      isExplicitAdmin: async () => false,
+      getSession: async () => undefined,
+    },
+    slackPoster: {
+      post: async () => ({ ts: "1.1" }),
+    },
   };
 }
 
