@@ -88,7 +88,7 @@ Admins: bootstrap one in `ADMIN_SLACK_USER_ID`; the rest live in the `admins` SQ
 ## Observability
 
 - Per-agent status pills stream via `onEvent` (see [stream-to-slack.md](stream-to-slack.md)).
-- HTTP dashboard reads `getRecent` and surfaces `defaultAgent` + `agentSessions`.
+- HTTP dashboard lists sessions via `store.getAll()` and `projectSession` (allowlist: numeric `pendingMessages`, `agents[]` without bodies/paths/`pid`; detail-only `resumeCwd`). See [http-dashboard.md](http-dashboard.md).
 - `!status` prints status, muted, agentType, defaultAgent, repo, worktree, last activity, pending count.
 
 ## Cleanup

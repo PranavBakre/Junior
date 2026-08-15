@@ -368,7 +368,7 @@
   .qrow .pos { color: var(--fg-faint); width: 22px; }
 
   /* ---------- workflows ---------- */
-  .wf-card { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 16px; }
+  .wf-card { padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1.1fr 0.9fr 1fr 1.15fr; gap: 16px; }
   .wf-card.on { background: rgba(0,100,255,.1); box-shadow: inset 2px 0 var(--accent); }
   .wf-card:last-child { border-bottom: none; }
   .wf-card .name { font-weight: 700; font-size: 14px; }
@@ -376,6 +376,53 @@
   .wf-card .src { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); margin-top: 6px; }
   .wf-card .mrow { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); line-height: 1.9; }
   .wf-card .mrow b { color: var(--fg); font-weight: 500; }
+  .wf-actions { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .wf-actions textarea {
+    width: 100%; min-height: 56px; resize: vertical;
+    background: var(--bg-paper); color: var(--fg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 8px 10px; font-family: var(--font-sans); font-size: 12px;
+  }
+  .wf-actions textarea:focus { outline: none; border-color: var(--accent); }
+  .wf-actions .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .wf-count { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--fg-faint); }
+  .wf-foot { padding: 10px 18px; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); }
+  #wf-status { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg-dim); }
+  #wf-status.err { color: var(--red); }
+  #wf-status.ok { color: var(--green); }
+  .wf-banner {
+    padding: 8px 10px; border-radius: 8px; font-size: 12px; margin-bottom: 8px;
+    background: rgba(245,158,11,0.12); color: var(--amber); border: 1px solid rgba(245,158,11,0.25);
+  }
+  .wf-banner.err { background: rgba(255,59,59,0.1); color: var(--red); border-color: rgba(255,59,59,0.25); }
+  .wf-banner.ok { background: rgba(34,197,94,0.1); color: var(--green); border-color: rgba(34,197,94,0.25); }
+  #wf-editor { margin-top: 12px; padding: 16px 18px; display: none; }
+  #wf-editor.open { display: block; }
+  #wf-editor .wf-editor-head {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  }
+  #wf-editor .wf-editor-head strong { font-size: 14px; }
+  #wf-markdown {
+    width: 100%; min-height: 280px; resize: vertical;
+    background: var(--bg-paper); color: var(--fg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 10px 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.45;
+  }
+  #wf-markdown:focus { outline: none; border-color: var(--accent); }
+  .wf-field { display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
+  .wf-field span { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-faint); }
+  .wf-field input, .wf-field select {
+    background: var(--bg-paper); color: var(--fg);
+    border: 1px solid var(--border-subtle); border-radius: 8px;
+    padding: 6px 8px; font-family: var(--font-mono); font-size: 12px;
+  }
+  #wf-save-result {
+    margin: 10px 0 0; white-space: pre-wrap; font-family: var(--font-mono);
+    font-size: 11px; color: var(--fg-dim);
+  }
+  @media (max-width: 900px) {
+    .wf-card { grid-template-columns: 1fr; }
+  }
   .runs { display: flex; gap: 4px; align-items: center; margin-top: 6px; }
   .run-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--surface-strong); cursor: default; }
   .run-dot.done { background: rgba(34,197,94,0.7); }
@@ -1633,8 +1680,46 @@
       <div class="view-head" data-index="05">
         <h2>Workflows</h2>
         <span class="sub">scheduled runs · last outcomes per workflow</span>
+        <span class="right">
+          <span id="wf-status"></span>
+          <button class="ctrl" id="wf-new" type="button">New workflow</button>
+          <button class="ctrl" id="wf-reload" type="button">reload</button>
+        </span>
       </div>
       <div class="panel" id="wf-list"><div class="empty">loading…</div></div>
+      <div class="panel" id="wf-editor">
+        <div class="wf-editor-head">
+          <strong id="wf-editor-title">New workflow</strong>
+          <span class="right">
+            <button class="ctrl" id="wf-editor-close" type="button">close</button>
+          </span>
+        </div>
+        <div id="wf-banners"></div>
+        <div class="row" style="gap:12px; margin-bottom:10px; flex-wrap:wrap">
+          <label class="wf-field">
+            <span>name</span>
+            <input id="wf-name" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="wf-field">
+            <span>sourceRoot</span>
+            <select id="wf-source-root">
+              <option value="overlay">overlay (agents-org)</option>
+              <option value="public">public (workflows/)</option>
+            </select>
+          </label>
+        </div>
+        <textarea id="wf-markdown" spellcheck="false"></textarea>
+        <label id="wf-anyway-row" class="row" style="display:none; margin-top:8px; gap:8px; align-items:center; font-size:12px">
+          <input id="wf-anyway" type="checkbox" />
+          commit here anyway (<span id="wf-branch"></span> is not main/master)
+        </label>
+        <div class="row" style="margin-top:10px; gap:6px">
+          <button class="ctrl" id="wf-validate" type="button">Validate</button>
+          <button class="ctrl" id="wf-save" type="button">Save &amp; commit</button>
+        </div>
+        <pre id="wf-save-result"></pre>
+      </div>
+      <div class="wf-foot">Workflow mutations write dashboard_audit and a scoped git commit. They post to a Slack output channel when the definition has one. Otherwise the trail is weaker than Slack ! commands. Commits are not pushed.</div>
     </section>
 
     <!-- ================= PIPELINES ================= -->

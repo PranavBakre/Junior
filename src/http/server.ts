@@ -34,12 +34,22 @@ import {
 import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryProjection, handleMemoryRead, handleMemoryRecall } from "./routes/memory.ts";
 import { handleDevServers } from "./routes/dev-server.ts";
-import { handleWorkflows } from "./routes/workflows.ts";
+import {
+  handleWorkflowCreate,
+  handleWorkflowDetail,
+  handleWorkflowPut,
+  handleWorkflowReload,
+  handleWorkflowRun,
+  handleWorkflowStart,
+  handleWorkflowStop,
+  handleWorkflows,
+} from "./routes/workflows.ts";
 import { handlePipelineArtifact, handlePipelines } from "./routes/pipelines.ts";
 import { handleProfiles } from "./routes/profiles.ts";
 import { handleSpend } from "./routes/spend.ts";
 import { handleRunbookDetail, handleRunbooks } from "./routes/runbooks.ts";
 import { handleAudit } from "./routes/audit.ts";
+import { allowedMethods, matchApi } from "./match-api.ts";
 import { log } from "../logger.ts";
 
 const PUBLIC_DIR = path.resolve(import.meta.dir, "../../public");
@@ -82,109 +92,7 @@ export interface HttpServerDeps {
   usageStore: UsageStore;
   auditStore: DashboardAuditStore;
   runbookCatalog?: CatalogStore;
-}
-
-export type MatchedApi =
-  | { route: "health" }
-  | { route: "sessions" }
-  | { route: "session"; threadId: string }
-  | { route: "session-continue"; threadId: string }
-  | { route: "session-stop"; threadId: string }
-  | { route: "dev-server" }
-  | { route: "workflows" }
-  | { route: "pipelines" }
-  | { route: "pipeline"; runId: string }
-  | { route: "pipeline-artifacts"; runId: string }
-  | { route: "spend" }
-  | { route: "runbooks" }
-  | { route: "runbook"; name: string }
-  | { route: "audit" }
-  | { route: "logs" }
-  | { route: "profiles" }
-  | { route: "memory" }
-  | { route: "memory-recall" }
-  | { route: "memory-projection" }
-  | { route: "memory-read"; filePath: string }
-  | { route: "not-found" };
-
-const API_METHODS: Record<Exclude<MatchedApi["route"], "not-found">, readonly string[]> = {
-  health: ["GET"],
-  sessions: ["GET"],
-  session: ["GET"],
-  "session-continue": ["POST"],
-  "session-stop": ["POST"],
-  "dev-server": ["GET"],
-  workflows: ["GET"],
-  pipelines: ["GET"],
-  pipeline: ["GET"],
-  "pipeline-artifacts": ["GET"],
-  spend: ["GET"],
-  runbooks: ["GET"],
-  runbook: ["GET"],
-  audit: ["GET"],
-  logs: ["GET"],
-  profiles: ["GET"],
-  memory: ["GET"],
-  "memory-recall": ["GET"],
-  "memory-projection": ["GET"],
-  "memory-read": ["GET"],
-};
-
-export function matchApi(pathname: string): MatchedApi {
-  if (!pathname.startsWith("/api/")) return { route: "not-found" };
-  const raw = pathname.slice("/api/".length);
-  if (!raw) return { route: "not-found" };
-  const parts = raw.split("/").filter((part) => part !== "").map((part) => {
-    try {
-      return decodeURIComponent(part);
-    } catch {
-      return part;
-    }
-  });
-  const [head, ...rest] = parts;
-  if (head === "health" && rest.length === 0) return { route: "health" };
-  if (head === "sessions" && rest.length === 0) return { route: "sessions" };
-  if (head === "sessions" && rest.length === 1) {
-    return { route: "session", threadId: rest[0]! };
-  }
-  if (head === "sessions" && rest.length === 2 && rest[1] === "continue") {
-    return { route: "session-continue", threadId: rest[0]! };
-  }
-  if (head === "sessions" && rest.length === 2 && rest[1] === "stop") {
-    return { route: "session-stop", threadId: rest[0]! };
-  }
-  if (head === "dev-server" && rest.length === 0) return { route: "dev-server" };
-  if (head === "workflows" && rest.length === 0) return { route: "workflows" };
-  if (head === "pipelines" && rest.length === 0) return { route: "pipelines" };
-  if (head === "pipelines" && rest.length === 1) {
-    return { route: "pipeline", runId: rest[0]! };
-  }
-  if (head === "pipelines" && rest.length === 2 && rest[1] === "artifacts") {
-    return { route: "pipeline-artifacts", runId: rest[0]! };
-  }
-  if (head === "spend" && rest.length === 0) return { route: "spend" };
-  if (head === "runbooks" && rest.length === 0) return { route: "runbooks" };
-  if (head === "runbooks" && rest.length === 1) {
-    return { route: "runbook", name: rest[0]! };
-  }
-  if (head === "audit" && rest.length === 0) return { route: "audit" };
-  if (head === "logs" && rest.length === 0) return { route: "logs" };
-  if (head === "profiles" && rest.length === 0) return { route: "profiles" };
-  if (head === "memory" && rest.length === 0) return { route: "memory" };
-  if (head === "memory" && rest.length === 1 && rest[0] === "recall") {
-    return { route: "memory-recall" };
-  }
-  if (head === "memory" && rest.length === 1 && rest[0] === "projection") {
-    return { route: "memory-projection" };
-  }
-  if (head === "memory") {
-    return { route: "memory-read", filePath: rest.join("/") };
-  }
-  return { route: "not-found" };
-}
-
-function methodNotAllowed(): Response {
-  return Response.json({ error: "method not allowed" }, { status: 405 });
+  projectRoot?: string;
 }
 
 export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.serve> {
@@ -206,7 +114,20 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
     usageStore,
     auditStore,
     runbookCatalog,
+    projectRoot,
   } = deps;
+
+  const workflowDeps = {
+    registry: workflowRegistry,
+    store: workflowStore,
+    scheduler: workflowScheduler,
+    config,
+    sessionManager,
+    auditStore,
+    slackPoster,
+    projectRoot,
+    repos,
+  };
 
   const server = Bun.serve({
     port: config.http.port,
@@ -285,14 +206,15 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
         }
 
         if (url.pathname.startsWith("/api/")) {
-          const matched = matchApi(url.pathname);
-          if (matched.route === "not-found") {
+          const route = matchApi(url.pathname);
+          if (route.kind === "not-found") {
             return Response.json({ error: "not found" }, { status: 404 });
           }
-          if (!API_METHODS[matched.route].includes(req.method)) {
-            return methodNotAllowed();
+          const allowed = allowedMethods(route.kind);
+          if (!allowed.includes(req.method)) {
+            return Response.json({ error: "method not allowed" }, { status: 405 });
           }
-          switch (matched.route) {
+          switch (route.kind) {
             case "health":
               return await handleHealth(store, config, startedAt, {
                 usageStore,
@@ -303,19 +225,19 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
             case "session":
               return await handleSessionDetail(
                 store,
-                matched.threadId,
+                route.threadId,
                 resolveSlackPermalink,
                 usageStore,
               );
             case "session-continue":
-              return await handleSessionContinue(req, matched.threadId, {
+              return await handleSessionContinue(req, route.threadId, {
                 sessionManager,
                 slackPoster,
                 auditStore,
                 config,
               });
             case "session-stop":
-              return await handleSessionStop(matched.threadId, {
+              return await handleSessionStop(route.threadId, {
                 sessionManager,
                 slackPoster,
                 auditStore,
@@ -324,30 +246,42 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
             case "dev-server":
               return await handleDevServers(devServerManager, devServerQueue, repos);
             case "workflows":
+              if (req.method === "POST") {
+                return await handleWorkflowCreate(req, workflowDeps);
+              }
               return await handleWorkflows(
                 workflowRegistry,
                 workflowStore,
                 workflowScheduler,
+                projectRoot,
               );
+            case "workflow":
+              if (req.method === "PUT") {
+                return await handleWorkflowPut(route.name, req, workflowDeps);
+              }
+              return await handleWorkflowDetail(route.name, workflowDeps);
+            case "workflow-run":
+              return await handleWorkflowRun(route.name, req, workflowDeps);
+            case "workflow-start":
+              return await handleWorkflowStart(route.name, workflowDeps);
+            case "workflow-stop":
+              return await handleWorkflowStop(route.name, workflowDeps);
+            case "workflow-reload":
+              return await handleWorkflowReload(workflowDeps);
             case "pipelines":
               return await handlePipelines(pipelineStore, url.searchParams, undefined, {
                 runtimeMode: config.pipeline?.runtimeMode ?? "off",
                 resolveSlackPermalink,
               });
             case "pipeline":
-              return await handlePipelines(
-                pipelineStore,
-                url.searchParams,
-                matched.runId,
-                {
-                  runtimeMode: config.pipeline?.runtimeMode ?? "off",
-                  resolveSlackPermalink,
-                },
-              );
+              return await handlePipelines(pipelineStore, url.searchParams, route.id, {
+                runtimeMode: config.pipeline?.runtimeMode ?? "off",
+                resolveSlackPermalink,
+              });
             case "pipeline-artifacts":
               return await handlePipelineArtifact(
                 pipelineStore,
-                matched.runId,
+                route.id,
                 url.searchParams,
               );
             case "spend":
@@ -355,7 +289,7 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
             case "runbooks":
               return await handleRunbooks(url.searchParams, runbookCatalog);
             case "runbook":
-              return await handleRunbookDetail(matched.name, runbookCatalog);
+              return await handleRunbookDetail(route.name, runbookCatalog);
             case "audit":
               return await handleAudit(auditStore, url.searchParams);
             case "logs":
@@ -365,6 +299,8 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
                 return Response.json({ error: "profile store not available" }, { status: 503 });
               }
               return await handleProfiles(profileStore, url.searchParams);
+            case "memory":
+              return await handleMemoryList();
             case "memory-recall":
               if (!memoryStore) {
                 return Response.json({ error: "memory store not available" }, { status: 503 });
@@ -375,10 +311,8 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
                 return Response.json({ error: "memory store not available" }, { status: 503 });
               }
               return await handleMemoryProjection(memoryStore, url.searchParams);
-            case "memory":
-              return await handleMemoryList();
             case "memory-read":
-              return await handleMemoryRead(matched.filePath);
+              return await handleMemoryRead(route.filePath);
           }
         }
         return Response.json({ error: "not found" }, { status: 404 });

@@ -38,6 +38,9 @@ export class WorkflowRegistry {
   private listeners: Array<(event: WorkflowRegistryEvent) => void> = [];
   private watchers: FSWatcher[] = [];
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private reloadsPaused = false;
+  private pauseDepth = 0;
+  private writeLock: Promise<void> = Promise.resolve();
 
   constructor(options: WorkflowRegistryOptions) {
     this.roots = options.roots ?? [
@@ -65,6 +68,41 @@ export class WorkflowRegistry {
 
   getErrors(): WorkflowValidationError[] {
     return [...this.errors];
+  }
+
+  validationContext(): { repos: RepoConfig[]; builtInCommands: Set<string> } {
+    return { repos: this.repos, builtInCommands: this.builtInCommands };
+  }
+
+  pauseReloads(): void {
+    this.pauseDepth += 1;
+    this.reloadsPaused = true;
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+  }
+
+  async resumeReloads(options?: { reload?: boolean }): Promise<void> {
+    if (this.pauseDepth > 0) this.pauseDepth -= 1;
+    if (this.pauseDepth > 0) return;
+    this.reloadsPaused = false;
+    if (options?.reload === false) return;
+    await this.reload();
+  }
+
+  async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const previous = this.writeLock;
+    this.writeLock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   snapshot(): WorkflowRegistrySnapshot {
@@ -174,6 +212,7 @@ export class WorkflowRegistry {
   }
 
   private scheduleReload(rootPath: string): void {
+    if (this.reloadsPaused) return;
     if (this.reloadTimer) clearTimeout(this.reloadTimer);
     log.info(
       "workflow",
