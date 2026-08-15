@@ -55,11 +55,27 @@ export async function loadWorkflowDefinition(
   const file = Bun.file(options.path);
   if (!(await file.exists())) return null;
   const content = await file.text();
-  const { frontmatter, body } = parseFrontmatter(content, options.path);
+  return validateWorkflowMarkdown({
+    markdown: content,
+    path: options.path,
+    sourceRoot: options.sourceRoot,
+    repos: options.repos,
+    builtInCommands: options.builtInCommands,
+  });
+}
+
+export function validateWorkflowMarkdown(options: {
+  markdown: string;
+  path: string;
+  sourceRoot: WorkflowSourceRoot;
+  repos: RepoConfig[];
+  builtInCommands?: Set<string>;
+}): WorkflowDefinition {
+  const { frontmatter, body } = parseFrontmatter(options.markdown, options.path);
   return validateWorkflowDefinition({
     frontmatter,
     body,
-    content,
+    content: options.markdown,
     path: options.path,
     sourceRoot: options.sourceRoot,
     repos: options.repos,

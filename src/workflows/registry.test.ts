@@ -76,6 +76,44 @@ describe("WorkflowRegistry", () => {
     }
   });
 
+  it("pauses watch reloads and reloads once on resume", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "junior-workflows-"));
+    try {
+      const publicRoot = join(dir, "workflows");
+      const overlayRoot = join(dir, "agents-org", "workflows");
+      const overlayPath = join(overlayRoot, "worklog.workflow.md");
+      await mkdir(publicRoot, { recursive: true });
+      await mkdir(overlayRoot, { recursive: true });
+      await Bun.write(overlayPath, workflowFile({
+        description: "overlay",
+        command: "private-worklog",
+      }));
+
+      const registry = new WorkflowRegistry({
+        repos,
+        roots: [
+          { path: publicRoot, sourceRoot: "public" },
+          { path: overlayRoot, sourceRoot: "overlay" },
+        ],
+        debounceMs: 20,
+      });
+      await registry.reload();
+      expect(registry.get("worklog")?.description).toBe("overlay");
+
+      registry.pauseReloads();
+      await Bun.write(overlayPath, "---\nname: mismatch\nenabled: true\n---\nbroken");
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(registry.get("worklog")?.description).toBe("overlay");
+      expect(registry.getErrors()).toHaveLength(0);
+
+      await registry.resumeReloads();
+      expect(registry.get("worklog")?.description).toBe("overlay");
+      expect(registry.getErrors()).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("blocks public fallback on cold boot when an overlay exists but is invalid", async () => {
     const dir = await mkdtemp(join(tmpdir(), "junior-workflows-"));
     try {

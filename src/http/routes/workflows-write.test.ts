@@ -11,7 +11,9 @@ import { InMemoryWorkflowStore } from "../../workflows/store.ts";
 import type { WorkflowDefinition } from "../../workflows/types.ts";
 import { startHttpServer, type HttpServerDeps } from "../server.ts";
 import {
+  handleWorkflowCreate,
   handleWorkflowDetail,
+  handleWorkflowPut,
   handleWorkflowReload,
   handleWorkflowRun,
   handleWorkflowStart,
@@ -381,14 +383,337 @@ describe("workflow write routes", () => {
         projectRoot: dir,
       });
       const body = await response.json() as {
-        git: { sha: string | null; branch: string | null; detached: boolean; dirty: boolean };
+        git: {
+          sha: string | null;
+          branch: string | null;
+          detached: boolean;
+          dirty: boolean;
+          parent?: { branch: string | null; detached: boolean };
+        };
       };
-      expect(body.git).toEqual({
+      expect(body.git).toMatchObject({
         sha: overlaySha,
         branch: "overlay-branch",
         detached: false,
         dirty: true,
+        merging: false,
+        rebasing: false,
       });
+      expect(body.git.parent).toMatchObject({
+        detached: false,
+        branch: "junior-main",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("workflow create/edit routes", () => {
+  it("validates PUT without writing when validate=1", async () => {
+    const dir = tempDir();
+    try {
+      const original = validMarkdown();
+      writeFileSync(join(dir, "workflows", "worklog.workflow.md"), original);
+      const deps = baseDeps({ projectRoot: dir });
+      const response = await handleWorkflowPut(
+        "worklog",
+        jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog?validate=1", {
+          markdown: validMarkdown("worklog", "validated only"),
+        }),
+        deps,
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json() as { valid: boolean; versionHash: string };
+      expect(body.valid).toBe(true);
+      expect(body.versionHash).toBe(hashWorkflowContent(validMarkdown("worklog", "validated only")));
+      expect(await Bun.file(join(dir, "workflows", "worklog.workflow.md")).text()).toBe(original);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 400 with errors for invalid markdown and does not write", async () => {
+    const dir = tempDir();
+    try {
+      const original = validMarkdown();
+      writeFileSync(join(dir, "workflows", "worklog.workflow.md"), original);
+      const response = await handleWorkflowPut(
+        "worklog",
+        jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
+          markdown: "---\nname: worklog\nenabled: true\nownerSlackUserIds: []\n---\nno schema",
+        }),
+        baseDeps({ projectRoot: dir }),
+      );
+      expect(response.status).toBe(400);
+      const body = await response.json() as { error: string; errors: Array<{ message: string }> };
+      expect(body.error).toBe("invalid workflow");
+      expect(body.errors[0]?.message).toContain("triggers");
+      expect(await Bun.file(join(dir, "workflows", "worklog.workflow.md")).text()).toBe(original);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 409 when expectedVersionHash does not match the on-disk file", async () => {
+    const dir = tempDir();
+    try {
+      const original = validMarkdown();
+      writeFileSync(join(dir, "workflows", "worklog.workflow.md"), original);
+      const response = await handleWorkflowPut(
+        "worklog",
+        jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
+          markdown: validMarkdown("worklog", "new"),
+          expectedVersionHash: "deadbeefdeadbeef",
+        }),
+        baseDeps({ projectRoot: dir }),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "version hash mismatch",
+        fileVersionHash: hashWorkflowContent(original),
+      });
+      expect(await Bun.file(join(dir, "workflows", "worklog.workflow.md")).text()).toBe(original);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows PUT when the registry name is missing but the overlay file exists", async () => {
+    const pair = await initOverlayPairForHttp();
+    try {
+      const original = await Bun.file(
+        join(pair.overlay, "workflows", "worklog.workflow.md"),
+      ).text();
+      const registry = {
+        ...registryOf(workflowDefinition({
+          sourcePath: "agents-org/workflows/worklog.workflow.md",
+          sourceRoot: "overlay",
+        })),
+        get: () => undefined,
+        all: () => [],
+      } as unknown as WorkflowRegistry;
+      const next = validMarkdown("worklog", "from overlay file");
+      const response = await handleWorkflowPut(
+        "worklog",
+        jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
+          markdown: next,
+          expectedVersionHash: hashWorkflowContent(original),
+        }),
+        baseDeps({ registry, projectRoot: pair.junior }),
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json() as {
+        versionHash: string;
+        sourceRoot: string;
+        overlayCommitted: boolean;
+      };
+      expect(body.sourceRoot).toBe("overlay");
+      expect(body.overlayCommitted).toBe(true);
+      expect(body.versionHash).toBe(hashWorkflowContent(next));
+      expect(await Bun.file(join(pair.overlay, "workflows", "worklog.workflow.md")).text())
+        .toBe(next);
+    } finally {
+      rmSync(pair.root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("commits a public edit and returns the new file hash", async () => {
+    const dir = await initJuniorRepo();
+    try {
+      mkdirSync(join(dir, "workflows"), { recursive: true });
+      const original = validMarkdown();
+      writeFileSync(join(dir, "workflows", "worklog.workflow.md"), original);
+      await git(dir, ["add", "--", "workflows/worklog.workflow.md"]);
+      await git(dir, ["commit", "-m", "public workflow"]);
+      const next = validMarkdown("worklog", "edited from dashboard");
+      const response = await handleWorkflowPut(
+        "worklog",
+        jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
+          markdown: next,
+          expectedVersionHash: hashWorkflowContent(original),
+        }),
+        baseDeps({ projectRoot: dir }),
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json() as {
+        versionHash: string;
+        sourceRoot: string;
+        overlayCommitted: boolean;
+        commit: { sha: string; branch: string; repo: string };
+      };
+      expect(body.sourceRoot).toBe("public");
+      expect(body.overlayCommitted).toBe(false);
+      expect(body.versionHash).toBe(hashWorkflowContent(next));
+      expect(body.commit.branch).toBe("main");
+      expect(body.commit.repo).toBe("junior");
+      expect(await Bun.file(join(dir, "workflows", "worklog.workflow.md")).text()).toBe(next);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a public workflow with 201", async () => {
+    const dir = await initJuniorRepo();
+    try {
+      const markdown = validMarkdown("newlog");
+      const response = await handleWorkflowCreate(
+        jsonWriteReq("POST", "http://127.0.0.1/api/workflows", {
+          name: "newlog",
+          markdown,
+          sourceRoot: "public",
+        }),
+        baseDeps({ projectRoot: dir }),
+      );
+      expect(response.status).toBe(201);
+      const body = await response.json() as {
+        name: string;
+        versionHash: string;
+        sourcePath: string;
+      };
+      expect(body.name).toBe("newlog");
+      expect(body.sourcePath).toBe("workflows/newlog.workflow.md");
+      expect(body.versionHash).toBe(hashWorkflowContent(markdown));
+      expect(await Bun.file(join(dir, "workflows", "newlog.workflow.md")).text()).toBe(markdown);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a name collision in the chosen root", async () => {
+    const dir = tempDir();
+    try {
+      writeFileSync(join(dir, "workflows", "worklog.workflow.md"), validMarkdown());
+      const response = await handleWorkflowCreate(
+        jsonWriteReq("POST", "http://127.0.0.1/api/workflows", {
+          name: "worklog",
+          markdown: validMarkdown(),
+          sourceRoot: "public",
+        }),
+        baseDeps({ projectRoot: dir }),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "workflow already exists" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("allows overlay create when a public file already exists", async () => {
+    const pair = await initOverlayPairForHttp();
+    try {
+      writeFileSync(join(pair.junior, "workflows", "worklog.workflow.md"), validMarkdown());
+      await git(pair.junior, ["add", "--", "workflows/worklog.workflow.md"]);
+      await git(pair.junior, ["commit", "-m", "public"]);
+      rmSync(join(pair.overlay, "workflows", "worklog.workflow.md"));
+      await git(pair.overlay, ["add", "--", "workflows/worklog.workflow.md"]);
+      await git(pair.overlay, ["commit", "-m", "remove overlay"]);
+
+      const markdown = validMarkdown("worklog", "overlay override");
+      const response = await handleWorkflowCreate(
+        jsonWriteReq("POST", "http://127.0.0.1/api/workflows", {
+          name: "worklog",
+          markdown,
+          sourceRoot: "overlay",
+        }),
+        baseDeps({ projectRoot: pair.junior }),
+      );
+      expect(response.status).toBe(201);
+      const body = await response.json() as { sourceRoot: string; overlayCommitted: boolean };
+      expect(body.sourceRoot).toBe("overlay");
+      expect(body.overlayCommitted).toBe(true);
+    } finally {
+      rmSync(pair.root, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("refuses public create when an overlay already exists", async () => {
+    const dir = tempDir();
+    try {
+      mkdirSync(join(dir, "agents-org", "workflows"), { recursive: true });
+      writeFileSync(join(dir, "agents-org", "workflows", "worklog.workflow.md"), validMarkdown());
+      const response = await handleWorkflowCreate(
+        jsonWriteReq("POST", "http://127.0.0.1/api/workflows", {
+          name: "worklog",
+          markdown: validMarkdown(),
+          sourceRoot: "public",
+        }),
+        baseDeps({ projectRoot: dir }),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "overlay shadows this name" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an invalid create name and a missing sourceRoot", async () => {
+    const missingRoot = await handleWorkflowCreate(
+      jsonWriteReq("POST", "http://127.0.0.1/api/workflows", {
+        name: "worklog",
+        markdown: validMarkdown(),
+      }),
+      baseDeps(),
+    );
+    expect(missingRoot.status).toBe(400);
+    expect(await missingRoot.json()).toEqual({ error: "sourceRoot is required" });
+
+    const badName = await handleWorkflowCreate(
+      jsonWriteReq("POST", "http://127.0.0.1/api/workflows", {
+        name: "Nope",
+        markdown: validMarkdown(),
+        sourceRoot: "public",
+      }),
+      baseDeps(),
+    );
+    expect(badName.status).toBe(400);
+    expect(await badName.json()).toEqual({ error: "invalid workflow name" });
+  });
+
+  it("returns 403 for create/edit when the dashboard actor is not an admin", async () => {
+    const deps = baseDeps({
+      sessionManager: {
+        isAdmin: async () => false,
+        isExplicitAdmin: async () => false,
+      },
+    });
+    const created = await handleWorkflowCreate(
+      jsonWriteReq("POST", "http://127.0.0.1/api/workflows", {
+        name: "worklog",
+        markdown: validMarkdown(),
+        sourceRoot: "public",
+      }),
+      deps,
+    );
+    expect(created.status).toBe(403);
+    const updated = await handleWorkflowPut(
+      "worklog",
+      jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
+        markdown: validMarkdown(),
+      }),
+      deps,
+    );
+    expect(updated.status).toBe(403);
+  });
+
+  it("returns 409 when the target repo is detached", async () => {
+    const dir = await initJuniorRepo();
+    try {
+      mkdirSync(join(dir, "workflows"), { recursive: true });
+      writeFileSync(join(dir, "workflows", "worklog.workflow.md"), validMarkdown());
+      await git(dir, ["add", "--", "workflows/worklog.workflow.md"]);
+      await git(dir, ["commit", "-m", "workflow"]);
+      await git(dir, ["checkout", "--detach"]);
+      const response = await handleWorkflowPut(
+        "worklog",
+        jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
+          markdown: validMarkdown("worklog", "nope"),
+          commitHereAnyway: true,
+        }),
+        baseDeps({ projectRoot: dir }),
+      );
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as { error: string }).error).toBe("detached-head");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -407,9 +732,9 @@ describe("workflow nested routing", () => {
     server = startHttpServer(stubServerDeps());
     const base = `http://127.0.0.1:${server.port}`;
 
-    const postList = await fetch(`${base}/api/workflows`, { method: "POST" });
-    expect(postList.status).toBe(405);
-    expect(await postList.json()).toEqual({ error: "method not allowed" });
+    const postName = await fetch(`${base}/api/workflows/worklog`, { method: "POST" });
+    expect(postName.status).toBe(405);
+    expect(await postName.json()).toEqual({ error: "method not allowed" });
 
     const getReload = await fetch(`${base}/api/workflows/reload`);
     expect(getReload.status).toBe(405);
@@ -428,6 +753,82 @@ function jsonReq(body: Record<string, unknown>): Request {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+function jsonWriteReq(
+  method: string,
+  url: string,
+  body: Record<string, unknown>,
+): Request {
+  return new Request(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function validMarkdown(name = "worklog", body = "Do the thing."): string {
+  return [
+    "---",
+    `name: ${name}`,
+    "enabled: true",
+    "ownerSlackUserIds: []",
+    "triggers:",
+    "  - type: command",
+    `    command: ${name}`,
+    "outputs:",
+    "  - type: docs",
+    `    path: data/workflow-runs/${name}`,
+    "permissions:",
+    "  tools:",
+    "    - docs.write",
+    "---",
+    body,
+  ].join("\n");
+}
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "junior-wf-http-"));
+  mkdirSync(join(dir, "workflows"), { recursive: true });
+  return dir;
+}
+
+async function initJuniorRepo(): Promise<string> {
+  const dir = mkdtempSync(join(tmpdir(), "junior-wf-http-repo-"));
+  await git(dir, ["init", "-b", "main"]);
+  await git(dir, ["config", "user.name", "t"]);
+  await git(dir, ["config", "user.email", "t@t.test"]);
+  await git(dir, ["config", "commit.gpgsign", "false"]);
+  writeFileSync(join(dir, "README.md"), "junior\n");
+  await git(dir, ["add", "--", "README.md"]);
+  await git(dir, ["commit", "-m", "init"]);
+  return dir;
+}
+
+async function initOverlayPairForHttp(): Promise<{
+  root: string;
+  junior: string;
+  overlay: string;
+}> {
+  const junior = await initJuniorRepo();
+  const overlay = join(junior, "agents-org");
+  mkdirSync(join(overlay, "workflows"), { recursive: true });
+  await git(overlay, ["init", "-b", "main"]);
+  await git(overlay, ["config", "user.name", "t"]);
+  await git(overlay, ["config", "user.email", "t@t.test"]);
+  await git(overlay, ["config", "commit.gpgsign", "false"]);
+  writeFileSync(join(overlay, "workflows", "worklog.workflow.md"), validMarkdown());
+  await git(overlay, ["add", "--", "workflows/worklog.workflow.md"]);
+  await git(overlay, ["commit", "-m", "overlay"]);
+  writeFileSync(
+    join(junior, ".gitmodules"),
+    '[submodule "agents-org"]\n\tpath = agents-org\n\turl = ./agents-org\n',
+  );
+  mkdirSync(join(junior, "workflows"), { recursive: true });
+  await git(junior, ["add", "--", ".gitmodules", "agents-org"]);
+  await git(junior, ["commit", "-m", "add overlay"]);
+  await git(overlay, ["checkout", "-B", "main"]);
+  return { root: junior, junior, overlay };
 }
 
 function workflowDefinition(
@@ -460,6 +861,9 @@ function registryOf(definition: WorkflowDefinition): WorkflowRegistry {
       definitions: new Map([[definition.name, definition]]),
       errors: [],
     }),
+    pauseReloads: () => undefined,
+    resumeReloads: async () => undefined,
+    validationContext: () => ({ repos: [], builtInCommands: new Set<string>() }),
   } as unknown as WorkflowRegistry;
 }
 

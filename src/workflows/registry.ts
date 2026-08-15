@@ -38,6 +38,7 @@ export class WorkflowRegistry {
   private listeners: Array<(event: WorkflowRegistryEvent) => void> = [];
   private watchers: FSWatcher[] = [];
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private reloadsPaused = false;
 
   constructor(options: WorkflowRegistryOptions) {
     this.roots = options.roots ?? [
@@ -65,6 +66,23 @@ export class WorkflowRegistry {
 
   getErrors(): WorkflowValidationError[] {
     return [...this.errors];
+  }
+
+  validationContext(): { repos: RepoConfig[]; builtInCommands: Set<string> } {
+    return { repos: this.repos, builtInCommands: this.builtInCommands };
+  }
+
+  pauseReloads(): void {
+    this.reloadsPaused = true;
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+  }
+
+  async resumeReloads(): Promise<void> {
+    this.reloadsPaused = false;
+    await this.reload();
   }
 
   snapshot(): WorkflowRegistrySnapshot {
@@ -174,6 +192,7 @@ export class WorkflowRegistry {
   }
 
   private scheduleReload(rootPath: string): void {
+    if (this.reloadsPaused) return;
     if (this.reloadTimer) clearTimeout(this.reloadTimer);
     log.info(
       "workflow",

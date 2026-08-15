@@ -35,7 +35,9 @@ import { handleLogs } from "./routes/logs.ts";
 import { handleMemoryList, handleMemoryProjection, handleMemoryRead, handleMemoryRecall } from "./routes/memory.ts";
 import { handleDevServers } from "./routes/dev-server.ts";
 import {
+  handleWorkflowCreate,
   handleWorkflowDetail,
+  handleWorkflowPut,
   handleWorkflowReload,
   handleWorkflowRun,
   handleWorkflowStart,
@@ -124,6 +126,7 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
     auditStore,
     slackPoster,
     projectRoot,
+    repos,
   };
 
   const server = Bun.serve({
@@ -243,6 +246,9 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
             case "dev-server":
               return await handleDevServers(devServerManager, devServerQueue, repos);
             case "workflows":
+              if (req.method === "POST") {
+                return await handleWorkflowCreate(req, workflowDeps);
+              }
               return await handleWorkflows(
                 workflowRegistry,
                 workflowStore,
@@ -250,6 +256,9 @@ export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.ser
                 projectRoot,
               );
             case "workflow":
+              if (req.method === "PUT") {
+                return await handleWorkflowPut(route.name, req, workflowDeps);
+              }
               return await handleWorkflowDetail(route.name, workflowDeps);
             case "workflow-run":
               return await handleWorkflowRun(route.name, req, workflowDeps);
