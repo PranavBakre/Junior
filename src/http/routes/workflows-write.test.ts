@@ -455,6 +455,24 @@ describe("workflow create/edit routes", () => {
     }
   });
 
+  it("returns 400 when PUT omits expectedVersionHash", async () => {
+    const dir = tempDir();
+    try {
+      writeFileSync(join(dir, "workflows", "worklog.workflow.md"), validMarkdown());
+      const response = await handleWorkflowPut(
+        "worklog",
+        jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
+          markdown: validMarkdown("worklog", "new"),
+        }),
+        baseDeps({ projectRoot: dir }),
+      );
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "expectedVersionHash is required" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns 409 when expectedVersionHash does not match the on-disk file", async () => {
     const dir = tempDir();
     try {
@@ -552,6 +570,39 @@ describe("workflow create/edit routes", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("pauses and resumes registry reloads around a successful PUT", async () => {
+    const dir = await initJuniorRepo();
+    try {
+      mkdirSync(join(dir, "workflows"), { recursive: true });
+      const original = validMarkdown();
+      writeFileSync(join(dir, "workflows", "worklog.workflow.md"), original);
+      await git(dir, ["add", "--", "workflows/worklog.workflow.md"]);
+      await git(dir, ["commit", "-m", "public workflow"]);
+      const calls: string[] = [];
+      const registry = {
+        ...registryOf(workflowDefinition()),
+        pauseReloads: () => {
+          calls.push("pause");
+        },
+        resumeReloads: async () => {
+          calls.push("resume");
+        },
+      } as unknown as WorkflowRegistry;
+      const response = await handleWorkflowPut(
+        "worklog",
+        jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
+          markdown: validMarkdown("worklog", "wrapped"),
+          expectedVersionHash: hashWorkflowContent(original),
+        }),
+        baseDeps({ registry, projectRoot: dir }),
+      );
+      expect(response.status).toBe(200);
+      expect(calls).toEqual(["pause", "resume"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("creates a public workflow with 201", async () => {
     const dir = await initJuniorRepo();
@@ -708,6 +759,7 @@ describe("workflow create/edit routes", () => {
         "worklog",
         jsonWriteReq("PUT", "http://127.0.0.1/api/workflows/worklog", {
           markdown: validMarkdown("worklog", "nope"),
+          expectedVersionHash: hashWorkflowContent(validMarkdown()),
           commitHereAnyway: true,
         }),
         baseDeps({ projectRoot: dir }),

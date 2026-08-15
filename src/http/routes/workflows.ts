@@ -152,6 +152,7 @@ export async function handleWorkflowDetail(
       sourcePath,
       fileVersionHash,
       loadedVersionHash,
+      overlayExists: existsSync(join(projectRoot, OVERLAY_WORKFLOW_ROOT, `${name}.workflow.md`)),
     },
     git: await probeWorkflowGitDetail(disk, sourceRoot, projectRoot),
     runtimeUsesFile: Boolean(
@@ -433,7 +434,17 @@ export async function handleWorkflowPut(
   }
 
   const expected = body.expectedVersionHash;
-  if (typeof expected === "string" && expected !== fileVersionHash) {
+  if (typeof expected !== "string" || !expected) {
+    await recordAudit(deps, {
+      actor,
+      action: "workflow.update",
+      targetId: name,
+      result: "error",
+      error: "expectedVersionHash is required",
+    });
+    return Response.json({ error: "expectedVersionHash is required" }, { status: 400 });
+  }
+  if (expected !== fileVersionHash) {
     await recordAudit(deps, {
       actor,
       action: "workflow.update",
@@ -476,6 +487,7 @@ export async function handleWorkflowPut(
     commitMessage: readOptionalString(body.commitMessage),
     status: 200,
     definition: validated,
+    expectedVersionHash: expected,
   });
 }
 
@@ -1104,47 +1116,63 @@ async function commitWorkflowMutation(input: {
   commitMessage: string | undefined;
   status: number;
   definition: WorkflowDefinition;
+  expectedVersionHash?: string;
 }): Promise<Response> {
   const projectRoot = input.deps.projectRoot ?? process.cwd();
   const ctx = validationContext(input.deps);
-  input.deps.registry.pauseReloads();
-  try {
-    const result = await writeDashboardWorkflow({
-      projectRoot,
-      sourceRoot: input.sourceRoot,
-      name: input.name,
-      markdown: input.markdown,
-      message: defaultWorkflowCommitMessage({
-        kind: input.kind,
-        name: input.name,
+  const run = async () => {
+    input.deps.registry.pauseReloads();
+    let restoreFailed = false;
+    try {
+      const result = await writeDashboardWorkflow({
+        projectRoot,
         sourceRoot: input.sourceRoot,
-        sourcePath: input.sourcePath,
+        name: input.name,
+        markdown: input.markdown,
+        message: defaultWorkflowCommitMessage({
+          kind: input.kind,
+          name: input.name,
+          sourceRoot: input.sourceRoot,
+          sourcePath: input.sourcePath,
+          actor: input.actor,
+          commitMessage: input.commitMessage,
+        }),
         actor: input.actor,
-        commitMessage: input.commitMessage,
-      }),
-      actor: input.actor,
-      repos: ctx.repos,
-      builtInCommands: ctx.builtInCommands,
-    });
-    if (!result.ok) {
-      const status = result.code === "overlay-root-missing" ||
-          result.code === "not-a-repo" ||
-          result.code === "path-outside-repo"
-        ? 400
-        : 409;
-      await recordAudit(input.deps, {
-        actor: input.actor,
-        action: input.action,
-        targetId: input.name,
-        request: { sourceRoot: input.sourceRoot },
-        result: "error",
-        error: result.code,
+        repos: ctx.repos,
+        builtInCommands: ctx.builtInCommands,
+        expectedVersionHash: input.expectedVersionHash,
       });
-      return Response.json(
-        { error: result.code, detail: result.detail },
-        { status },
-      );
-    }
+      if (!result.ok) {
+        restoreFailed = result.code === "restore-failed";
+        if (result.code === "invalid-workflow") {
+          await recordAudit(input.deps, {
+            actor: input.actor,
+            action: input.action,
+            targetId: input.name,
+            request: { sourceRoot: input.sourceRoot },
+            result: "error",
+            error: "invalid workflow",
+          });
+          return invalidWorkflowResponse(new Error(result.detail), input.sourcePath);
+        }
+        const status = result.code === "overlay-root-missing" ||
+            result.code === "not-a-repo" ||
+            result.code === "path-outside-repo"
+          ? 400
+          : 409;
+        await recordAudit(input.deps, {
+          actor: input.actor,
+          action: input.action,
+          targetId: input.name,
+          request: { sourceRoot: input.sourceRoot },
+          result: "error",
+          error: result.code,
+        });
+        return Response.json(
+          { error: result.code, detail: result.detail },
+          { status },
+        );
+      }
 
     const slackTs = await postWorkflowNotice(
       input.deps,
@@ -1173,19 +1201,24 @@ async function commitWorkflowMutation(input: {
       "dashboard",
       `dashboard action=${input.action} name=${input.name} result=${parentFailed ? "partial" : "ok"}`,
     );
-    return Response.json({
-      name: result.name,
-      sourcePath: result.sourcePath,
-      sourceRoot: result.sourceRoot,
-      versionHash: result.versionHash,
-      overlayCommitted: result.overlayCommitted,
-      commit: result.commit,
-      parentPointerCommitted: result.parentPointerCommitted,
-      parentPointer: result.parentPointer,
-    }, { status: input.status });
-  } finally {
-    await input.deps.registry.resumeReloads();
+      return Response.json({
+        name: result.name,
+        sourcePath: result.sourcePath,
+        sourceRoot: result.sourceRoot,
+        versionHash: result.versionHash,
+        overlayCommitted: result.overlayCommitted,
+        commit: result.commit,
+        parentPointerCommitted: result.parentPointerCommitted,
+        parentPointer: result.parentPointer,
+      }, { status: input.status });
+    } finally {
+      await input.deps.registry.resumeReloads({ reload: !restoreFailed });
+    }
+  };
+  if (typeof input.deps.registry.withWriteLock === "function") {
+    return input.deps.registry.withWriteLock(run);
   }
+  return run();
 }
 
 function tryValidateMarkdown(input: {

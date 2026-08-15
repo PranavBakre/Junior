@@ -156,9 +156,58 @@ describe("commitWorkflowFile", () => {
     expect(result).toMatchObject({ ok: false, code: "git-failed" });
     expect(await fileText(repo, "workflows/worklog.workflow.md")).toBe(original);
   });
+
+  it("re-reads expectedVersionHash immediately before write", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, "workflows"), { recursive: true });
+    const original = validMarkdown();
+    writeFileSync(join(repo, "workflows", "worklog.workflow.md"), original);
+    await git(repo, ["add", "--", "workflows/worklog.workflow.md"]);
+    await git(repo, ["commit", "-m", "workflow"]);
+    const concurrent = validMarkdown("worklog", "someone else wrote this");
+    writeFileSync(join(repo, "workflows", "worklog.workflow.md"), concurrent);
+    const result = await commitWorkflowFile({
+      repoRoot: repo,
+      allowedRoots: [repo],
+      relativePath: "workflows/worklog.workflow.md",
+      markdown: validMarkdown("worklog", "clobber"),
+      message: "nope",
+      expectedVersionHash: hashWorkflowContent(original),
+    });
+    expect(result).toMatchObject({ ok: false, code: "version-hash-mismatch" });
+    expect(await fileText(repo, "workflows/worklog.workflow.md")).toBe(concurrent);
+  });
+
+  it("returns invalid-workflow instead of git-failed for schema errors", async () => {
+    const repo = await initRepo();
+    const result = await commitWorkflowFile({
+      repoRoot: repo,
+      allowedRoots: [repo],
+      relativePath: "workflows/worklog.workflow.md",
+      markdown: "---\nname: worklog\nenabled: true\nownerSlackUserIds: []\n---\nno schema",
+      message: "nope",
+    });
+    expect(result).toMatchObject({ ok: false, code: "invalid-workflow" });
+    expect(existsSync(join(repo, "workflows", "worklog.workflow.md"))).toBe(false);
+  });
 });
 
 describe("writeDashboardWorkflow overlay parent pointer", () => {
+  it("refuses overlay writes when agents-org is detached", async () => {
+    const { junior, overlay, overlayFile, original } = await initOverlayPair();
+    await git(overlay, ["checkout", "--detach"]);
+    const result = await writeDashboardWorkflow({
+      projectRoot: junior,
+      sourceRoot: "overlay",
+      name: "worklog",
+      markdown: validMarkdown("worklog", "overlay update"),
+      message: "workflow(worklog): update from dashboard",
+      repos: [],
+    });
+    expect(result).toMatchObject({ ok: false, code: "detached-head" });
+    expect(await Bun.file(overlayFile).text()).toBe(original);
+  }, 15_000);
+
   it("does not write the overlay when parent preflight fails", async () => {
     const { junior, overlayFile, original } = await initOverlayPair();
     await git(junior, ["checkout", "--detach"]);

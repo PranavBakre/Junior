@@ -97,18 +97,56 @@ describe("WorkflowRegistry", () => {
         ],
         debounceMs: 20,
       });
-      await registry.reload();
+      let reloads = 0;
+      registry.onEvent((event) => {
+        if (event.type === "reloaded") reloads += 1;
+      });
+      await registry.startWatching();
       expect(registry.get("worklog")?.description).toBe("overlay");
+      const afterStart = reloads;
 
       registry.pauseReloads();
+      registry.pauseReloads();
       await Bun.write(overlayPath, "---\nname: mismatch\nenabled: true\n---\nbroken");
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(reloads).toBe(afterStart);
       expect(registry.get("worklog")?.description).toBe("overlay");
       expect(registry.getErrors()).toHaveLength(0);
 
       await registry.resumeReloads();
+      expect(reloads).toBe(afterStart);
+      expect(registry.getErrors()).toHaveLength(0);
+
+      await registry.resumeReloads();
+      expect(reloads).toBe(afterStart + 1);
       expect(registry.get("worklog")?.description).toBe("overlay");
       expect(registry.getErrors()).toHaveLength(1);
+      registry.stopWatching();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips reload when resumeReloads({ reload: false })", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "junior-workflows-"));
+    try {
+      const overlayRoot = join(dir, "agents-org", "workflows");
+      const overlayPath = join(overlayRoot, "worklog.workflow.md");
+      await mkdir(overlayRoot, { recursive: true });
+      await Bun.write(overlayPath, workflowFile({
+        description: "overlay",
+        command: "private-worklog",
+      }));
+      const registry = new WorkflowRegistry({
+        repos,
+        roots: [{ path: overlayRoot, sourceRoot: "overlay" }],
+      });
+      await registry.reload();
+      registry.pauseReloads();
+      await Bun.write(overlayPath, "---\nname: mismatch\nenabled: true\n---\nbroken");
+      await registry.resumeReloads({ reload: false });
+      expect(registry.get("worklog")?.description).toBe("overlay");
+      expect(registry.getErrors()).toHaveLength(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

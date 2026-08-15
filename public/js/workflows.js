@@ -363,8 +363,10 @@ function renderEditorBanners(extra) {
   const el = $("wf-banners");
   if (!el) return;
   const banners = extra ? extra.slice() : [];
-  if (wfEditor.mode === "edit" && wfEditor.sourceRoot === "overlay") {
+  if (wfEditor.mode === "edit" && wfEditor.sourceRoot === "public" && wfEditor.overlayExists) {
     banners.push("An overlay is active; editing the public file will not change runtime.");
+  } else if (wfEditor.mode === "edit" && wfEditor.sourceRoot === "overlay") {
+    banners.push("An overlay is active; runtime loads this overlay file.");
   }
   if (wfEditor.runtimeUsesFile === false) {
     banners.push(
@@ -451,6 +453,7 @@ async function openWorkflowEditor(name) {
     sourceRoot: source.sourceRoot || "public",
     fileVersionHash: source.fileVersionHash || "",
     loadedVersionHash: source.loadedVersionHash || null,
+    overlayExists: Boolean(source.overlayExists || source.sourceRoot === "overlay"),
     runtimeUsesFile: res.data.runtimeUsesFile !== false,
     git: git,
     parentGit: git.parent || null,
@@ -506,7 +509,7 @@ async function saveWorkflowEditor() {
       commitHereAnyway: $("wf-anyway").checked,
     };
     if (wfEditor.mode === "create") payload.name = name;
-    if (wfEditor.mode === "edit" && wfEditor.fileVersionHash) {
+    if (wfEditor.mode === "edit") {
       payload.expectedVersionHash = wfEditor.fileVersionHash;
     }
     const path = wfEditor.mode === "create"

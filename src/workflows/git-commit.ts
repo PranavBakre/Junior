@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { realpathSync } from "node:fs";
 import type { RepoConfig } from "../config.ts";
@@ -25,6 +25,9 @@ export type WorkflowGitCommitCode =
   | "rebasing"
   | "unresolved-conflicts"
   | "nothing-to-commit"
+  | "invalid-workflow"
+  | "version-hash-mismatch"
+  | "restore-failed"
   | "git-failed";
 
 export type WorkflowGitCommitResult =
@@ -50,6 +53,7 @@ export type WorkflowGitCommitInput = {
   repos?: RepoConfig[];
   builtInCommands?: Set<string>;
   sourceRoot?: WorkflowSourceRoot;
+  expectedVersionHash?: string;
 };
 
 export type DashboardWorkflowWriteInput = {
@@ -62,6 +66,7 @@ export type DashboardWorkflowWriteInput = {
   actor?: string;
   repos: RepoConfig[];
   builtInCommands?: Set<string>;
+  expectedVersionHash?: string;
 };
 
 export type DashboardWorkflowWriteResult =
@@ -281,10 +286,21 @@ export async function commitWorkflowFile(
       builtInCommands: input.builtInCommands,
     });
   } catch (err) {
-    return { ok: false, code: "git-failed", detail: formatError(err) };
+    return { ok: false, code: "invalid-workflow", detail: formatError(err) };
   }
 
   const existedAtHead = await pathExistsAtHead(preflight.toplevel, relativePath);
+  if (input.expectedVersionHash != null) {
+    const onDisk = existsSync(abs) ? readFileSync(abs, "utf8") : "";
+    const currentHash = onDisk ? hashWorkflowContent(onDisk) : "";
+    if (currentHash !== input.expectedVersionHash) {
+      return {
+        ok: false,
+        code: "version-hash-mismatch",
+        detail: "on-disk file changed since the editor loaded",
+      };
+    }
+  }
   mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(abs, input.markdown);
 
@@ -292,12 +308,12 @@ export async function commitWorkflowFile(
     allowFail: true,
   });
   if (add.code !== 0) {
-    await restoreWorkflowPath(preflight.toplevel, relativePath, existedAtHead);
-    return {
-      ok: false,
-      code: "git-failed",
-      detail: add.stderr.trim() || "git add failed",
-    };
+    return failAfterWrite(
+      preflight.toplevel,
+      relativePath,
+      existedAtHead,
+      add.stderr.trim() || "git add failed",
+    );
   }
 
   const commit = await git(preflight.toplevel, [
@@ -312,12 +328,9 @@ export async function commitWorkflowFile(
     relativePath,
   ], { allowFail: true });
   if (commit.code !== 0) {
-    await restoreWorkflowPath(preflight.toplevel, relativePath, existedAtHead);
     const detail = (commit.stderr || commit.stdout).trim() || "git commit failed";
-    if (/nothing to commit/i.test(detail)) {
-      return { ok: false, code: "nothing-to-commit", detail };
-    }
-    return { ok: false, code: "git-failed", detail };
+    const code = /nothing to commit/i.test(detail) ? "nothing-to-commit" as const : "git-failed" as const;
+    return failAfterWrite(preflight.toplevel, relativePath, existedAtHead, detail, code);
   }
 
   const sha = (await git(preflight.toplevel, ["rev-parse", "HEAD"])).stdout.trim();
@@ -388,7 +401,7 @@ export async function writeDashboardWorkflow(
       builtInCommands: input.builtInCommands,
     });
   } catch (err) {
-    return { ok: false, code: "git-failed", detail: formatError(err) };
+    return { ok: false, code: "invalid-workflow", detail: formatError(err) };
   }
 
   const allowedRoots = allowedGitRoots(input.projectRoot);
@@ -438,6 +451,7 @@ export async function writeDashboardWorkflow(
       repos: input.repos,
       builtInCommands: input.builtInCommands,
       sourceRoot: "overlay",
+      expectedVersionHash: input.expectedVersionHash,
     });
     if (!committed.ok) return committed;
 
@@ -502,6 +516,7 @@ export async function writeDashboardWorkflow(
     repos: input.repos,
     builtInCommands: input.builtInCommands,
     sourceRoot: "public",
+    expectedVersionHash: input.expectedVersionHash,
   });
   if (!committed.ok) return committed;
   return {
@@ -600,14 +615,29 @@ async function pathExistsAtHead(cwd: string, relativePath: string): Promise<bool
   return result.code === 0;
 }
 
+async function failAfterWrite(
+  cwd: string,
+  relativePath: string,
+  existedAtHead: boolean,
+  detail: string,
+  code: "git-failed" | "nothing-to-commit" = "git-failed",
+): Promise<WorkflowGitCommitResult> {
+  const restored = await restoreWorkflowPath(cwd, relativePath, existedAtHead);
+  if (!restored.ok) {
+    return { ok: false, code: "restore-failed", detail: restored.detail };
+  }
+  return { ok: false, code, detail };
+}
+
 // Restore from HEAD, not the index: a failed commit leaves the new bytes staged.
 async function restoreWorkflowPath(
   cwd: string,
   relativePath: string,
   existedAtHead: boolean,
-): Promise<void> {
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const abs = join(cwd, relativePath);
   if (existedAtHead) {
-    await git(cwd, [
+    const restore = await git(cwd, [
       "restore",
       "--source=HEAD",
       "--staged",
@@ -615,11 +645,34 @@ async function restoreWorkflowPath(
       "--",
       relativePath,
     ], { allowFail: true });
-    return;
+    if (restore.code !== 0) {
+      return {
+        ok: false,
+        detail: restore.stderr.trim() || "git restore failed",
+      };
+    }
+    const head = await git(cwd, ["show", `HEAD:${relativePath}`], { allowFail: true });
+    if (head.code !== 0) {
+      return { ok: false, detail: head.stderr.trim() || "could not read HEAD copy" };
+    }
+    const current = existsSync(abs) ? readFileSync(abs, "utf8") : "";
+    if (current !== head.stdout) {
+      return { ok: false, detail: "restore left dirty bytes on disk" };
+    }
+    return { ok: true };
   }
   await git(cwd, ["reset", "--", relativePath], { allowFail: true });
-  const abs = join(cwd, relativePath);
-  if (existsSync(abs)) unlinkSync(abs);
+  if (existsSync(abs)) {
+    try {
+      unlinkSync(abs);
+    } catch (err) {
+      return { ok: false, detail: formatError(err) };
+    }
+  }
+  if (existsSync(abs)) {
+    return { ok: false, detail: "failed to delete uncommitted new file" };
+  }
+  return { ok: true };
 }
 
 async function commitPaths(cwd: string, sha: string): Promise<string[]> {
