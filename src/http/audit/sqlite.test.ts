@@ -70,4 +70,20 @@ describe("SqliteDashboardAuditStore", () => {
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.action).toBe("session.stop");
   });
+
+  it("counts matching rows without applying the list cap", async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await store.record({
+        at: 100 + index,
+        actor: "dashboard-operator",
+        action: index === 0 ? "session.stop" : "session.continue",
+        targetType: "session",
+        targetId: `thread-${index}`,
+        result: "ok",
+      });
+    }
+    expect(await store.count()).toBe(3);
+    expect(await store.count({ action: "session.continue" })).toBe(2);
+    expect(await store.count({ from: 101, to: 102 })).toBe(2);
+  });
 });

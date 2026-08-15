@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { InMemorySessionStore } from "../../session/store/memory.ts";
 import { createSession } from "../../session/types.ts";
+import type { NormalizedUsage } from "../../usage/normalize.ts";
+import { InMemoryUsageStore } from "../../usage/store/memory.ts";
 import { handleSessionDetail, handleSessions } from "./sessions.ts";
 
 function seededSession() {
@@ -87,6 +89,38 @@ describe("handleSessions", () => {
     expect(body.sessions[0]!.slackPermalink).toBeUndefined();
     expect(body.sessions[0]!.hasWorktree).toBe(true);
   });
+
+  it("summarizes spend from the requested threads only", async () => {
+    const store = new InMemorySessionStore();
+    const session = createSession("1712345678.123456", "C123");
+    await store.set(session.threadId, session);
+    const usageStore = new InMemoryUsageStore();
+    await usageStore.add(usageEvent({
+      sourceId: `${session.threadId}:default:1`,
+      threadId: session.threadId,
+      inputTokens: 8,
+      outputTokens: 3,
+      costUsd: 0.02,
+    }));
+    await usageStore.add(usageEvent({
+      sourceId: "other:default:1",
+      threadId: "other-thread",
+      inputTokens: 100,
+      outputTokens: 50,
+      costUsd: 1,
+    }));
+
+    const response = await handleSessions(store, usageStore);
+    const body = await response.json() as {
+      sessions: Array<{ spend: Record<string, number> }>;
+    };
+    expect(body.sessions[0]!.spend).toEqual({
+      inputTokens: 8,
+      outputTokens: 3,
+      costUsd: 0.02,
+      turns: 1,
+    });
+  });
 });
 
 describe("handleSessionDetail", () => {
@@ -151,3 +185,30 @@ describe("handleSessionDetail", () => {
     });
   });
 });
+
+function usageEvent(overrides: Partial<NormalizedUsage> = {}): NormalizedUsage {
+  return {
+    sourceKind: "session-turn",
+    sourceId: "thread-1:default:1",
+    threadId: "thread-1",
+    channelId: "C123",
+    agentName: "default",
+    provider: "opencode",
+    providerSessionId: null,
+    pipelineRunId: null,
+    assignmentId: null,
+    workflowName: null,
+    workflowRunId: null,
+    inputTokens: 1,
+    outputTokens: 1,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    totalTokens: 2,
+    costUsd: null,
+    costEstimatedUsd: null,
+    numTurns: 1,
+    raw: {},
+    occurredAt: Date.now(),
+    ...overrides,
+  };
+}

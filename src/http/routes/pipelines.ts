@@ -1,6 +1,9 @@
 import { isAbsolute } from "node:path";
 import type { PipelineRuntimeMode } from "../../config.ts";
-import { resolvePipelineArtifactPath } from "../../pipelines/artifacts.ts";
+import {
+  PIPELINE_ARTIFACT_ROOT,
+  resolvePipelineArtifactPath,
+} from "../../pipelines/artifacts.ts";
 import type { PipelineStore } from "../../pipelines/store/interface.ts";
 import type {
   Assignment,
@@ -50,7 +53,7 @@ export async function handlePipelines(
 
   const [runs, openCount] = await Promise.all([
     listVisibleRuns(store, { status, kind, limit, includeDefault }),
-    store.countOpenRuns(),
+    countVisibleOpenRuns(store, { kind, includeDefault }),
   ]);
 
   const pipelines = await Promise.all(
@@ -70,13 +73,14 @@ export async function handlePipelineArtifact(
   if (!run) return Response.json({ error: "pipeline not found" }, { status: 404 });
 
   const ref = params.get("ref") ?? "";
-  if (isRejectedArtifactRef(ref)) {
+  const relative = toRunRelativeArtifactRef(runId, ref);
+  if (relative == null || isRejectedRelativeArtifactRef(relative)) {
     return Response.json({ error: "invalid artifact ref" }, { status: 400 });
   }
 
   const resolved = resolvePipelineArtifactPath({
     runId,
-    relativePath: ref,
+    relativePath: relative,
     rootDir: options.rootDir,
   });
   if (!resolved.ok) {
@@ -121,6 +125,22 @@ async function listVisibleRuns(
   return [...product, ...bug]
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, filter.limit);
+}
+
+async function countVisibleOpenRuns(
+  store: PipelineStore,
+  filter: {
+    kind?: PipelineRun["kind"];
+    includeDefault: boolean;
+  },
+): Promise<number> {
+  if (filter.kind) return store.countOpenRuns({ kind: filter.kind });
+  if (filter.includeDefault) return store.countOpenRuns();
+  const [product, bug] = await Promise.all([
+    store.countOpenRuns({ kind: "product" }),
+    store.countOpenRuns({ kind: "bug" }),
+  ]);
+  return product + bug;
 }
 
 async function projectRunSummary(
@@ -422,17 +442,26 @@ function latestDispatches(
   return result;
 }
 
-function isRejectedArtifactRef(ref: string): boolean {
+function toRunRelativeArtifactRef(runId: string, ref: string): string | null {
   const trimmed = ref.trim();
+  if (!trimmed) return null;
+  const prefix = `${PIPELINE_ARTIFACT_ROOT}/${runId}/`;
+  if (trimmed.startsWith(prefix)) return trimmed.slice(prefix.length);
+  if (trimmed.startsWith(`${PIPELINE_ARTIFACT_ROOT}/`)) return null;
+  return trimmed;
+}
+
+function isRejectedRelativeArtifactRef(relative: string): boolean {
   return (
-    trimmed === "" ||
-    isAbsolute(trimmed) ||
-    trimmed.includes("..") ||
-    trimmed.startsWith("data/pipelines/")
+    relative === "" ||
+    isAbsolute(relative) ||
+    relative.includes("..") ||
+    relative.startsWith(`${PIPELINE_ARTIFACT_ROOT}/`)
   );
 }
 
 function isReadableArtifactRef(runId: string, ref: string): boolean {
-  if (isRejectedArtifactRef(ref)) return false;
-  return resolvePipelineArtifactPath({ runId, relativePath: ref }).ok;
+  const relative = toRunRelativeArtifactRef(runId, ref);
+  if (relative == null || isRejectedRelativeArtifactRef(relative)) return false;
+  return resolvePipelineArtifactPath({ runId, relativePath: relative }).ok;
 }

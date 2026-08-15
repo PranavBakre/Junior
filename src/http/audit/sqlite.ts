@@ -116,6 +116,21 @@ export class SqliteDashboardAuditStore implements DashboardAuditStore {
     return rows.map(rowToEntry);
   }
 
+  async count(filter: {
+    action?: string;
+    targetType?: string;
+    from?: number;
+    to?: number;
+  } = {}): Promise<number> {
+    const { where, params } = auditWhere(filter);
+    const row = this.db
+      .query<{ count: number }, Array<string | number>>(
+        `SELECT COUNT(*) AS count FROM dashboard_audit ${where}`,
+      )
+      .get(...params);
+    return row?.count ?? 0;
+  }
+
   async deleteOlderThan(at: number): Promise<number> {
     const result = this.db
       .query("DELETE FROM dashboard_audit WHERE at < ?")
@@ -144,6 +159,36 @@ export class SqliteDashboardAuditStore implements DashboardAuditStore {
         ON dashboard_audit (at DESC)
     `);
   }
+}
+
+function auditWhere(filter: {
+  action?: string;
+  targetType?: string;
+  from?: number;
+  to?: number;
+}): { where: string; params: Array<string | number> } {
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+  if (filter.action != null) {
+    clauses.push("action = ?");
+    params.push(filter.action);
+  }
+  if (filter.targetType != null) {
+    clauses.push("target_type = ?");
+    params.push(filter.targetType);
+  }
+  if (filter.from != null) {
+    clauses.push("at >= ?");
+    params.push(filter.from);
+  }
+  if (filter.to != null) {
+    clauses.push("at <= ?");
+    params.push(filter.to);
+  }
+  return {
+    where: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+    params,
+  };
 }
 
 function rowToEntry(row: AuditRow): DashboardAuditEntry {

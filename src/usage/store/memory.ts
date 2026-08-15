@@ -1,7 +1,7 @@
 import { mergeUsage } from "../merge.ts";
 import type { NormalizedUsage, UsageEvent, UsageSourceKind } from "../normalize.ts";
-import { groupUsageEvents } from "./aggregate.ts";
-import type { UsageGroupBy, UsageGroupResult, UsageStore } from "./interface.ts";
+import { groupUsageEvents, summarizeEventsByThread } from "./aggregate.ts";
+import type { UsageBucket, UsageGroupBy, UsageGroupResult, UsageStore } from "./interface.ts";
 
 export class InMemoryUsageStore implements UsageStore {
   private events = new Map<string, UsageEvent>();
@@ -43,6 +43,28 @@ export class InMemoryUsageStore implements UsageStore {
   }): Promise<UsageGroupResult> {
     const events = await this.list({ from: input.from, to: input.to });
     return groupUsageEvents(events, input.groupBy);
+  }
+
+  async count(filter: {
+    from?: number;
+    to?: number;
+    threadId?: string;
+    sourceKind?: UsageSourceKind;
+  } = {}): Promise<number> {
+    let total = 0;
+    for (const event of this.events.values()) {
+      if (matchesFilter(event, filter)) total += 1;
+    }
+    return total;
+  }
+
+  async summarizeByThread(threadIds: string[]): Promise<UsageBucket[]> {
+    if (threadIds.length === 0) return [];
+    const wanted = new Set(threadIds);
+    const events = [...this.events.values()].filter(
+      (event) => event.threadId != null && wanted.has(event.threadId),
+    );
+    return summarizeEventsByThread(events, threadIds);
   }
 
   async deleteOlderThan(occurredAt: number): Promise<number> {

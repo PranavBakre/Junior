@@ -34,10 +34,10 @@ export async function handleHealth(
   const todayStart = startOfLocalDay();
   const now = Date.now();
   const eventsToday = extras.usageStore
-    ? (await extras.usageStore.list({ from: todayStart, to: now })).length
+    ? await extras.usageStore.count({ from: todayStart, to: now })
     : 0;
   const writesToday = extras.auditStore
-    ? (await extras.auditStore.list({ from: todayStart, to: now, limit: 500 })).length
+    ? await extras.auditStore.count({ from: todayStart, to: now })
     : 0;
 
   return Response.json({

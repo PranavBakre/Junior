@@ -204,4 +204,69 @@ describe("SqliteUsageStore", () => {
     expect(await store.get("session-turn", "old")).toBeUndefined();
     expect(await store.get("session-turn", "fresh")).toBeDefined();
   });
+
+  it("counts matching rows without listing them", async () => {
+    await store.add(usage({
+      sourceId: "t1:a",
+      threadId: "t1",
+      occurredAt: 100,
+    }));
+    await store.add(usage({
+      sourceId: "t1:b",
+      threadId: "t1",
+      occurredAt: 200,
+    }));
+    await store.add(usage({
+      sourceId: "t2:a",
+      threadId: "t2",
+      occurredAt: 300,
+    }));
+
+    expect(await store.count()).toBe(3);
+    expect(await store.count({ threadId: "t1" })).toBe(2);
+    expect(await store.count({ from: 150, to: 250 })).toBe(1);
+  });
+
+  it("summarizes spend for requested threads only", async () => {
+    await store.add(usage({
+      sourceId: "t1:a",
+      threadId: "t1",
+      inputTokens: 10,
+      outputTokens: 2,
+      costUsd: 0.1,
+    }));
+    await store.add(usage({
+      sourceId: "t1:b",
+      threadId: "t1",
+      inputTokens: 5,
+      outputTokens: 1,
+      costUsd: 0.05,
+    }));
+    await store.add(usage({
+      sourceId: "t2:a",
+      threadId: "t2",
+      inputTokens: 99,
+      outputTokens: 9,
+    }));
+
+    const buckets = await store.summarizeByThread(["t1", "missing"]);
+    expect(buckets[0]).toMatchObject({
+      key: "t1",
+      label: "t1",
+      turns: 2,
+      inputTokens: 15,
+      outputTokens: 3,
+      costEstimatedUsd: 0,
+    });
+    expect(buckets[0]!.costUsd).toBeCloseTo(0.15);
+    expect(buckets[1]).toEqual({
+      key: "missing",
+      label: "missing",
+      turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      costEstimatedUsd: 0,
+    });
+  });
 });

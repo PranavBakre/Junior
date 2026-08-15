@@ -27,6 +27,15 @@ export class InMemoryDashboardAuditStore implements DashboardAuditStore {
     return rows.slice(0, limit);
   }
 
+  async count(filter: {
+    action?: string;
+    targetType?: string;
+    from?: number;
+    to?: number;
+  } = {}): Promise<number> {
+    return this.entries.filter((entry) => matchesFilter(entry, filter)).length;
+  }
+
   async deleteOlderThan(at: number): Promise<number> {
     const before = this.entries.length;
     this.entries = this.entries.filter((entry) => entry.at >= at);

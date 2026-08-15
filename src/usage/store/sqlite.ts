@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { mergeUsage } from "../merge.ts";
 import type { NormalizedUsage, UsageEvent, UsageSourceKind } from "../normalize.ts";
 import { groupUsageEvents } from "./aggregate.ts";
-import type { UsageGroupBy, UsageGroupResult, UsageStore } from "./interface.ts";
+import type { UsageBucket, UsageGroupBy, UsageGroupResult, UsageStore } from "./interface.ts";
 
 type UsageRow = {
   id: string;
@@ -171,6 +171,75 @@ export class SqliteUsageStore implements UsageStore {
     return groupUsageEvents(events, input.groupBy);
   }
 
+  async count(filter: {
+    from?: number;
+    to?: number;
+    threadId?: string;
+    sourceKind?: UsageSourceKind;
+  } = {}): Promise<number> {
+    const { where, params } = usageWhere(filter);
+    const row = this.db
+      .query<{ count: number }, Array<string | number>>(
+        `SELECT COUNT(*) AS count FROM usage_events ${where}`,
+      )
+      .get(...params);
+    return row?.count ?? 0;
+  }
+
+  async summarizeByThread(threadIds: string[]): Promise<UsageBucket[]> {
+    const unique = [...new Set(threadIds)];
+    if (unique.length === 0) return [];
+    const byThread = new Map<string, UsageBucket>();
+    const chunkSize = 400;
+    for (let offset = 0; offset < unique.length; offset += chunkSize) {
+      const chunk = unique.slice(offset, offset + chunkSize);
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.db
+        .query<
+          {
+            key: string;
+            turns: number;
+            inputTokens: number;
+            outputTokens: number;
+            costUsd: number;
+          },
+          string[]
+        >(
+          `SELECT thread_id AS key,
+                  COUNT(*) AS turns,
+                  COALESCE(SUM(input_tokens), 0) AS inputTokens,
+                  COALESCE(SUM(output_tokens), 0) AS outputTokens,
+                  COALESCE(SUM(cost_usd), 0) AS costUsd
+           FROM usage_events
+           WHERE thread_id IN (${placeholders})
+           GROUP BY thread_id`,
+        )
+        .all(...chunk);
+      for (const row of rows) {
+        byThread.set(row.key, {
+          key: row.key,
+          label: row.key,
+          turns: row.turns,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          costUsd: row.costUsd,
+          costEstimatedUsd: 0,
+        });
+      }
+    }
+    return unique.map((threadId) =>
+      byThread.get(threadId) ?? {
+        key: threadId,
+        label: threadId,
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        costEstimatedUsd: 0,
+      },
+    );
+  }
+
   async deleteOlderThan(occurredAt: number): Promise<number> {
     const result = this.db
       .query("DELETE FROM usage_events WHERE occurred_at < ?")
@@ -238,6 +307,36 @@ export class SqliteUsageStore implements UsageStore {
         ON usage_events (workflow_name, occurred_at)
     `);
   }
+}
+
+function usageWhere(filter: {
+  from?: number;
+  to?: number;
+  threadId?: string;
+  sourceKind?: UsageSourceKind;
+}): { where: string; params: Array<string | number> } {
+  const clauses: string[] = [];
+  const params: Array<string | number> = [];
+  if (filter.from != null) {
+    clauses.push("occurred_at >= ?");
+    params.push(filter.from);
+  }
+  if (filter.to != null) {
+    clauses.push("occurred_at <= ?");
+    params.push(filter.to);
+  }
+  if (filter.threadId != null) {
+    clauses.push("thread_id = ?");
+    params.push(filter.threadId);
+  }
+  if (filter.sourceKind != null) {
+    clauses.push("source_kind = ?");
+    params.push(filter.sourceKind);
+  }
+  return {
+    where: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+    params,
+  };
 }
 
 function rowToEvent(row: UsageRow): UsageEvent {

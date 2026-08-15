@@ -183,18 +183,26 @@ describe("handlePipelines", () => {
     });
 
     const hidden = await handlePipelines(store, new URLSearchParams());
-    const hiddenBody = await hidden.json() as { pipelines: Array<{ id: string }> };
+    const hiddenBody = await hidden.json() as {
+      pipelines: Array<{ id: string }>;
+      openCount: number;
+    };
     expect(hiddenBody.pipelines.map((run) => run.id)).toEqual(["product-1"]);
+    expect(hiddenBody.openCount).toBe(1);
 
     const included = await handlePipelines(
       store,
       new URLSearchParams("includeDefault=1"),
     );
-    const includedBody = await included.json() as { pipelines: Array<{ id: string }> };
+    const includedBody = await included.json() as {
+      pipelines: Array<{ id: string }>;
+      openCount: number;
+    };
     expect(includedBody.pipelines.map((run) => run.id).sort()).toEqual([
       "default-1",
       "product-1",
     ]);
+    expect(includedBody.openCount).toBe(2);
 
     const onlyDefault = await handlePipelines(
       store,
@@ -202,10 +210,12 @@ describe("handlePipelines", () => {
     );
     const onlyDefaultBody = await onlyDefault.json() as {
       pipelines: Array<{ id: string; kind: string }>;
+      openCount: number;
     };
     expect(onlyDefaultBody.pipelines).toEqual([
       expect.objectContaining({ id: "default-1", kind: "default" }),
     ]);
+    expect(onlyDefaultBody.openCount).toBe(1);
   });
 
   it("projects lease, full outbox without payload, and attempt-scoped gates", async () => {
@@ -298,14 +308,20 @@ describe("handlePipelines", () => {
 
   it("rejects artifact path traversal and missing artifacts", async () => {
     const store = new InMemoryPipelineStore();
-    const run = makeRun();
-    await store.createRunWithAssignment({
-      run,
-      assignment: makeAssignment(run.id, "root", null, "system", "build"),
-    });
+    const run = makeRun("run-art");
+    const assignment = makeAssignment(run.id, "root", null, "system", "build");
+    assignment.artifactRefs = [
+      "notes/spec.md",
+      `data/pipelines/${run.id}/notes/spec.md`,
+    ];
+    await store.createRunWithAssignment({ run, assignment });
     const rootDir = mkdtempSync(join(tmpdir(), "junior-pipeline-art-"));
     try {
-      for (const ref of ["../secret", "/etc/passwd", "data/pipelines/run-1/spec.md"]) {
+      for (const ref of [
+        "../secret",
+        "/etc/passwd",
+        "data/pipelines/other-run/notes/spec.md",
+      ]) {
         const rejected = await handlePipelineArtifact(
           store,
           run.id,
@@ -318,26 +334,43 @@ describe("handlePipelines", () => {
       const missing = await handlePipelineArtifact(
         store,
         run.id,
-        new URLSearchParams({ ref: "spec.md" }),
+        new URLSearchParams({ ref: "notes/spec.md" }),
         { rootDir },
       );
       expect(missing.status).toBe(404);
 
-      const dest = join(rootDir, "data", "pipelines", run.id);
+      const dest = join(rootDir, "data", "pipelines", run.id, "notes");
       mkdirSync(dest, { recursive: true });
       writeFileSync(join(dest, "spec.md"), "# spec\n");
-      const found = await handlePipelineArtifact(
-        store,
-        run.id,
-        new URLSearchParams({ ref: "spec.md" }),
-        { rootDir },
+
+      for (const ref of [
+        "notes/spec.md",
+        `data/pipelines/${run.id}/notes/spec.md`,
+      ]) {
+        const found = await handlePipelineArtifact(
+          store,
+          run.id,
+          new URLSearchParams({ ref }),
+          { rootDir },
+        );
+        expect(found.status).toBe(200);
+        expect(await found.json()).toMatchObject({
+          ref,
+          content: "# spec\n",
+          truncated: false,
+        });
+      }
+
+      const detail = await handlePipelines(store, new URLSearchParams(), run.id);
+      const detailBody = await detail.json() as {
+        pipeline: { artifacts: Array<{ ref: string; readable: boolean }> };
+      };
+      expect(detailBody.pipeline.artifacts).toEqual(
+        expect.arrayContaining([
+          { ref: "notes/spec.md", readable: true },
+          { ref: `data/pipelines/${run.id}/notes/spec.md`, readable: true },
+        ]),
       );
-      expect(found.status).toBe(200);
-      expect(await found.json()).toMatchObject({
-        ref: "spec.md",
-        content: "# spec\n",
-        truncated: false,
-      });
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }

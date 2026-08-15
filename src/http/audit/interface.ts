@@ -44,6 +44,12 @@ export interface DashboardAuditStore {
     to?: number;
     limit?: number;
   }): Promise<DashboardAuditEntry[]>;
+  count(filter?: {
+    action?: string;
+    targetType?: string;
+    from?: number;
+    to?: number;
+  }): Promise<number>;
   deleteOlderThan(at: number): Promise<number>;
   close?(): void;
 }

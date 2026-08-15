@@ -63,6 +63,35 @@ export function groupUsageEvents(
   };
 }
 
+export function summarizeEventsByThread(
+  events: UsageEvent[],
+  threadIds: string[],
+): UsageBucket[] {
+  const wanted = new Set(threadIds);
+  const buckets = new Map<string, UsageBucket>();
+  for (const threadId of wanted) {
+    buckets.set(threadId, {
+      key: threadId,
+      label: threadId,
+      turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      costEstimatedUsd: 0,
+    });
+  }
+  for (const event of events) {
+    if (event.threadId == null) continue;
+    const bucket = buckets.get(event.threadId);
+    if (!bucket) continue;
+    bucket.turns += 1;
+    bucket.inputTokens += event.inputTokens ?? 0;
+    bucket.outputTokens += event.outputTokens ?? 0;
+    bucket.costUsd += event.costUsd ?? 0;
+  }
+  return [...buckets.values()];
+}
+
 function groupKey(event: UsageEvent, groupBy: UsageGroupBy): string {
   switch (groupBy) {
     case "day":

@@ -143,14 +143,8 @@ async function spendByThreadId(
   for (const threadId of threadIds) result.set(threadId, EMPTY_SPEND);
   if (!usageStore || threadIds.length === 0) return result;
 
-  const grouped = await usageStore.groupBy({
-    from: 0,
-    to: Date.now(),
-    groupBy: "session",
-  });
-  const wanted = new Set(threadIds);
-  for (const bucket of grouped.buckets) {
-    if (!wanted.has(bucket.key)) continue;
+  const buckets = await usageStore.summarizeByThread(threadIds);
+  for (const bucket of buckets) {
     result.set(bucket.key, {
       inputTokens: bucket.inputTokens,
       outputTokens: bucket.outputTokens,
