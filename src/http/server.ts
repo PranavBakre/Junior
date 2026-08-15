@@ -41,6 +41,22 @@ import { log } from "../logger.ts";
 const PUBLIC_DIR = path.resolve(import.meta.dir, "../../public");
 const startedAt = new Date().toISOString();
 
+/** Resolve `/js/*` and leftover `/assets/*` under `public/`, or null if unsafe. */
+export function resolvePublicStaticPath(pathname: string): string | null {
+  if (!pathname.startsWith("/js/") && !pathname.startsWith("/assets/")) return null;
+  const relative = decodeURIComponent(pathname.slice(1));
+  if (
+    !relative ||
+    relative.includes("\0") ||
+    relative.split("/").some((part) => part === "" || part === "." || part === "..")
+  ) {
+    return null;
+  }
+  const resolved = path.resolve(PUBLIC_DIR, relative);
+  if (!resolved.startsWith(PUBLIC_DIR + path.sep)) return null;
+  return resolved;
+}
+
 export interface HttpServerDeps {
   store: SessionStore;
   config: Config;
@@ -59,7 +75,7 @@ export interface HttpServerDeps {
   runbookCatalog?: CatalogStore;
 }
 
-export function startHttpServer(deps: HttpServerDeps): void {
+export function startHttpServer(deps: HttpServerDeps): ReturnType<typeof Bun.serve> {
   const {
     store,
     config,
@@ -138,16 +154,8 @@ export function startHttpServer(deps: HttpServerDeps): void {
         }
 
         if (url.pathname.startsWith("/js/") || url.pathname.startsWith("/assets/")) {
-          const relative = decodeURIComponent(url.pathname.slice(1));
-          if (
-            !relative ||
-            relative.includes("\0") ||
-            relative.split("/").some((part) => part === "" || part === "." || part === "..")
-          ) {
-            return new Response("not found", { status: 404 });
-          }
-          const resolved = path.resolve(PUBLIC_DIR, relative);
-          if (!resolved.startsWith(PUBLIC_DIR + path.sep)) {
+          const resolved = resolvePublicStaticPath(url.pathname);
+          if (!resolved) {
             return new Response("not found", { status: 404 });
           }
           const file = Bun.file(resolved);
@@ -259,4 +267,5 @@ export function startHttpServer(deps: HttpServerDeps): void {
     "boot",
     `HTTP dashboard listening on http://127.0.0.1:${server.port}`,
   );
+  return server;
 }

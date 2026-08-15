@@ -8,7 +8,8 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `startHttpServer(deps)` | `server.ts` | Bun.serve on 127.0.0.1:port; routes API + serves `public/index.html` |
+| `startHttpServer(deps)` | `server.ts` | Bun.serve on 127.0.0.1:port; routes API + serves `public/index.html`, `public/js/*`, leftover `public/assets/*` |
+| `resolvePublicStaticPath(pathname)` | `server.ts` | Resolves `/js/*` and leftover `/assets/*` under `public/`; rejects `..`, `.`, empty segments, and null bytes |
 | `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore?, pipelineStore, resolveSlackPermalink?, usageStore, auditStore, runbookCatalog? }` |
 | `handleHealth(store, config, startedAt, extras?)` | `routes/health.ts` | `GET /api/health` — uptime, session counts, agent counts, repo list, `pipeline.runtimeMode`, spend/audit today counters |
 | `handleSessions(store, usageStore?)` | `routes/sessions.ts` | `GET /api/sessions` — allowlist projection + numeric pending + spend summary |
@@ -26,7 +27,7 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 | `handleMemoryRead(filePath)` | `routes/memory.ts` | `GET /api/memory/:path` — read a doc file (path-traversal guarded) |
 | `handleMemoryRecall(store, params)` | `routes/memory.ts` | `GET /api/memory/recall` — semantic claim recall without recording dashboard usage |
 | `handleMemoryProjection(store, params?)` | `routes/memory.ts` | `GET /api/memory/projection` — 3D PCA + spread + KNN projection for the memory galaxy; memoised per claim set, `?refresh=1` rebuilds |
-| `resumeCmd(provider, sessionId, resumeCwd)` | `public/index.html` | Renders provider-correct Claude, OpenCode, or Codex resume commands from detail `resumeCwd`. |
+| `resumeCmd(provider, sessionId, resumeCwd)` | `public/js/threads.js` | Renders provider-correct Claude, OpenCode, or Codex resume commands from detail `resumeCwd`. |
 | `projectClaims(claims, k?, spread?)` | `projection.ts` | PCA to 3D (power iteration + deflation) → separation relaxation → cosine KNN edges |
 
 ## Routes
@@ -52,6 +53,8 @@ GET /api/memory/<path>      → handleMemoryRead
 GET /api/memory/recall      → handleMemoryRecall (503 if unavailable)
 GET /api/memory/projection  → handleMemoryProjection (503 if unavailable)
     ?refresh=1                force a rebuild instead of the memoised result
+GET /js/*                  → public/js/* (text/javascript, Cache-Control: no-cache)
+GET /assets/*              → leftover public/assets/* (same headers; three.* and pipeline-worker stay dedicated)
 GET /assets/three.module.js → locally served pinned Three.js module
 GET /assets/three.core.min.js → locally served pinned Three.js core module
 GET /assets/pipeline-worker.js → locally served pipeline worker
@@ -67,6 +70,7 @@ Binds `127.0.0.1`. No CORS headers — same-origin from `public/index.html`. Don
 
 - Logs: `date` must match `^\d{4}-\d{2}-\d{2}$` exactly.
 - Memory: rejects `..` and absolute paths; verifies resolved path stays inside `docs/`.
+- Dashboard JS/assets: `resolvePublicStaticPath` rejects empty/`.`/`..` segments and null bytes, then requires the resolved path stay inside `public/`.
 
 ### Memory galaxy projection
 
