@@ -2,7 +2,7 @@
 
 Multi-agent dispatch layer: registry of agent Slack identities, trusted catalog/orchestrator-worker classification, legacy compatibility rules, and the universal message router that parses `!<agent>` and `!devserver` directives and routes each to the right session slice.
 
-> **Current status (2026-07-21):** Core identities are `default`, `lead`, `reproducer`, `review`, and `echo`; private overlay agents are loaded from `agents-org`. `thinker` is retained only for compatibility with old sessions. See [`agent-catalog.md`](agent-catalog.md) for the trusted role registry.
+> **Current status (2026-08-15):** Core identities are `default`, `lead`, `reproducer`, `review`, and `echo`; private overlay agents are loaded from `agents-org`. `thinker` is retained only for compatibility with resumed old sessions. See [`agent-catalog.md`](agent-catalog.md) for the trusted role registry.
 
 ## Code Index
 
@@ -56,7 +56,7 @@ AgentDispatcher.handleMessage(event)
 
 ### Orchestrator vs Worker
 
-Orchestrators (`lead`, `default`, `junior`) may emit any registered worker directive. Workers are constrained by the trusted catalog; the legacy `WORKER_DISPATCH_ALLOW` entry (`thinker → {review, reproducer}`) exists only for resumed pre-merge sessions. Disallowed worker directives are stripped and the message is re-routed to the orchestrator as plain text.
+Orchestrators (`lead`, `default`, `junior`) may emit any registered worker directive. Legacy Slack directive routing still uses `WORKER_DISPATCH_ALLOW` (the `thinker → {review, reproducer}` entry exists only for resumed pre-merge sessions); typed pipeline handoffs use the trusted catalog graph. Disallowed worker directives are stripped and the message is re-routed to the orchestrator as plain text.
 
 ### Self-bot routing
 

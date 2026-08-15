@@ -1,5 +1,11 @@
 # Adaptive Bug Pipeline
 
+> **Status (2026-08-15):** The durable bug runtime now ships three typed modes
+> (`expected-behavior`, `focused-debug`, and `full-investigation`) with
+> mode-specific evidence and risk policy. The named path table and lead
+> decision guidance below remain design guidance; they are not separate runtime
+> states or automatic agent-routing labels.
+
 ## Problem
 
 The current bug pipeline is too rigid. Lead and the worker agents treat the pipeline as a fixed state machine: intake, observability, reproduction, thinker, review, validation, merge. That produces a consistent audit trail, but it also makes Junior spend time on steps that cannot change the decision.

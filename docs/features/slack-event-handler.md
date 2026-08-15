@@ -72,7 +72,13 @@ interface SlackMessageEvent {
   command: string | null;    // null if not in KNOWN_COMMANDS
   files?: { url; name; mimetype }[];
   isSelfBot?: boolean;       // true when bot_id matched selfBotId
+  botId?: string;            // raw Slack bot_id, including foreign bots
   botUsername?: string;      // event.username, when present
+  mentionsJunior?: boolean;  // own mention was present before stripping
+  dedupeKey?: string;        // per-dispatch key for fan-out
+  pipelineInvocation?: PipelineInvocationRef; // trusted internal dispatch metadata
+  attributionUserId?: string; // trusted human author for internal dispatch
+  conversationalText?: string; // raw human text for follow-up policy
 }
 ```
 
@@ -92,7 +98,7 @@ Drop rules, `threadId` extraction, structured event passed to session manager. N
 
 ### Iteration 2: Command parsing (shipped)
 
-`parseCommand` strips `!<word>` from message start when the word is in `KNOWN_COMMANDS`. See [thread-commands.md](thread-commands.md) for the command set and admin gating (`!reset`, `!mute`, `!unmute`, `!agent`).
+`parseCommand` strips `!<word>` from message start when the word is in `KNOWN_COMMANDS`. See [thread-commands.md](thread-commands.md) for the command set and admin gating (`!reset`, `!mute`, `!unmute`, `!clear`, and `!driver`).
 
 ### Iteration 3: DM, edits, files, and action surfaces (shipped)
 

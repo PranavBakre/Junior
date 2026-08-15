@@ -101,9 +101,10 @@ So the invariant has to be enforced at the type/CLI level, not inferred:
 
 - An ordinary claim insert **requires** a non-null `embedding`. `upsertClaim`
   rejects an insert that has neither an embedding nor an explicit bypass, rather
-  than silently storing an unguardable, unrecallable row. (A claim with no
-  embedding is already invisible to cosine-only recall — the guard gap and the
-  recall gap are the same defect.)
+  than silently storing a row the semantic near-duplicate guard cannot compare.
+  An explicitly bypassed embedding-less claim remains available to the current
+  exact-token recall channel, but it cannot participate in vector recall or
+  cosine-based deduplication.
 - `add-claim` without `--embedding` either embeds via the provider before
   calling the store, or fails with a message naming `--skip-dedup`.
 
@@ -322,8 +323,9 @@ Code index: [memory-system-v3.md](../code_index/memory-system-v3.md).
 2. **COALESCE preservation covers more than the three value columns.**
    `last_used_at` is included (erasing it resets the fade clock — the same decay
    signal the counters feed) and so are `embedding`/`embed_model`/`dim` (erasing
-   the vector makes the row both unguardable and unrecallable, which is the
-   defect this document opens with). `repo`, `tags`, `source_episode`, and
+   the vector makes the row unguardable by semantic deduplication and removes it
+   from vector recall, even though exact-token recall can still surface it).
+   `repo`, `tags`, `source_episode`, and
    `active` keep caller-declared `excluded.` semantics — they are scope
    declarations, not accumulated value.
 3. **The re-scan trigger includes archived rows.** The document says re-scan "on

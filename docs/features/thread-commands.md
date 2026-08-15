@@ -13,7 +13,7 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 
 ## Full Vision
 
-- `!reset <agent|all>` — Clear one agent's slice of the session, or the whole thread. Bare `!reset` is rejected with usage help so admins don't accidentally nuke an active reproducer/thinker turn. (admin only)
+- `!reset <agent|all>` — Clear one agent's slice of the session, or the whole thread. Bare `!reset` returns usage help for an admin; non-admins are denied before argument parsing and receive only the ❌ reaction. (admin only)
 - `!clear` — Archive the full thread to markdown on disk, then delete all Junior bot messages from the thread. Session state is untouched. (admin only)
 - `!status` — Show session state (agent type, worktree, busy/idle, last activity, pending messages count)
 - `!build [prompt]` — Set agent to build, create worktree if needed, run prompt
@@ -32,7 +32,7 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 - `!provider <name>` — Switch the thread's runner provider (`claude`,
   `opencode`, `opencode-sdk`, or `codex-app-server`)
 - `!stop` — Stop the active runner/driver
-- `!driver <headless|tmux>` — Select Claude's driver mode for the thread
+- `!driver <headless|tmux>` — Select Claude's driver mode for the thread (admin only)
 - `!workflow ...` / `!workflows` — Inspect and control dynamic workflows
 
 ## Admin-only commands

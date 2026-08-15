@@ -8,7 +8,7 @@ Pluggable backing store for `ThreadSession` state plus the admin registry. SQLit
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `SessionStore` (interface) | `interface.ts` | `get / set / delete / getAll / getRecent / updateActivity / extraAdmins` |
+| `SessionStore` (interface) | `interface.ts` | `get / set / delete / getAll / getRecent / updateActivity / extraAdmins`, plus CAS-safe `mutateThread` / `mutateAgent` and `removeAgentSession` |
 | `createSessionStore(config)` | `factory.ts` | Picks `InMemorySessionStore` or `SqliteSessionStore(config.session.sqlitePath)` |
 | `InMemorySessionStore` | `memory.ts` | `Map<threadId, ThreadSession>` backed; `extraAdmins()` always returns empty |
 | `SqliteSessionStore(dbPath)` | `sqlite.ts` | `bun:sqlite` with WAL; creates parent dir; exposes `close()` |
@@ -21,7 +21,8 @@ CREATE TABLE sessions (
   thread_id     TEXT PRIMARY KEY,
   json          TEXT NOT NULL,      -- whole ThreadSession blob
   last_activity INTEGER NOT NULL,
-  status        TEXT NOT NULL
+  status        TEXT NOT NULL,
+  state_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_sessions_last_activity ON sessions(last_activity);
 CREATE INDEX idx_sessions_status        ON sessions(status);
@@ -29,9 +30,15 @@ CREATE INDEX idx_sessions_status        ON sessions(status);
 CREATE TABLE agent_sessions (
   thread_id     TEXT NOT NULL,
   agent_name    TEXT NOT NULL,
+  provider      TEXT DEFAULT 'claude',
   session_id    TEXT,
+  session_cwd   TEXT,
   status        TEXT DEFAULT 'idle',
   last_activity INTEGER,
+  state_version INTEGER NOT NULL DEFAULT 0,
+  pending_json  TEXT,
+  pid           INTEGER,
+  tmux_session_name TEXT,
   PRIMARY KEY (thread_id, agent_name),
   FOREIGN KEY (thread_id) REFERENCES sessions(thread_id)
 );
@@ -51,7 +58,7 @@ SessionManager.set(threadId, session)
   │
   ├── normalizeSession(session)           ← migration safety
   ├── UPSERT into sessions (json blob)
-  └── syncAgentSessions(threadId, ...)    ← txn: DELETE + bulk INSERT into agent_sessions
+  └── syncAgentSessions(threadId, ...)    ← transactionally upserts durable agent rows
 
 SessionManager.get(threadId)
   │
@@ -64,7 +71,13 @@ SessionManager.get(threadId)
 
 ### Hybrid blob + columns
 
-The full `ThreadSession` lives as JSON in `sessions.json`. `agent_sessions` mirrors per-agent slices so they can be queried and updated independently (the dashboard's `/api/sessions` and `getRecent` reads benefit). `set()` rewrites both atomically per thread.
+The full `ThreadSession` lives as JSON in the `sessions` table. `agent_sessions`
+mirrors per-agent slices so they can be queried and updated independently (the
+dashboard's `/api/sessions` and `getRecent` reads benefit). `set()` rewrites
+both atomically per thread. Semantic mutations use `state_version` compare and
+set with bounded retries, preventing concurrent Slack workers from clobbering
+each other's updates. Agent provider, cwd, pending buffer, pid, and tmux name
+are rehydrated from their dedicated columns.
 
 ### Pending messages survive restarts but go stale
 

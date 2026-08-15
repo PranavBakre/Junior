@@ -53,7 +53,8 @@ CREATE TABLE sessions (
   thread_id      TEXT PRIMARY KEY,
   json           TEXT NOT NULL,
   last_activity  INTEGER NOT NULL,
-  status         TEXT NOT NULL
+  status         TEXT NOT NULL,
+  state_version  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_sessions_last_activity ON sessions(last_activity);
 CREATE INDEX idx_sessions_status ON sessions(status);
@@ -65,9 +66,15 @@ CREATE INDEX idx_sessions_status ON sessions(status);
 CREATE TABLE agent_sessions (
   thread_id      TEXT NOT NULL,
   agent_name     TEXT NOT NULL,
+  provider       TEXT DEFAULT 'claude',
   session_id     TEXT,
+  session_cwd    TEXT,
   status         TEXT DEFAULT 'idle',
   last_activity  INTEGER,
+  state_version  INTEGER NOT NULL DEFAULT 0,
+  pending_json   TEXT,
+  pid            INTEGER,
+  tmux_session_name TEXT,
   PRIMARY KEY (thread_id, agent_name),
   FOREIGN KEY (thread_id) REFERENCES sessions(thread_id)
 );
@@ -80,9 +87,10 @@ CREATE TABLE admins (
 );
 ```
 
-- `sessions.json` holds the full `ThreadSession` — including `muted`, `worktreePaths` (per-repo worktrees keyed by repo name), `defaultAgent` (the `!agent` override), and ephemeral `pendingMessages` (accepted as stale on restart per rule 11).
+- The `json` column in `sessions` holds the full `ThreadSession` — including `muted`, `worktreePaths` (per-repo worktrees keyed by repo name), `defaultAgent` (the `!agent` override), provider/driver metadata, and ephemeral `pendingMessages` (accepted as stale on restart per rule 11).
 - `last_activity` and `status` on `sessions` are denormalized for cheap queries (home window, orphan scan).
-- `agent_sessions` is the source of truth for each agent's `sessionId`, `status`, and `lastActivity`. `set()` resyncs the rows in a transaction; `get()`/`getAll()`/`getRecent()` reload them and overlay the JSON blob's `agentSessions` map (preserving in-memory-only fields `pendingMessages` and `pid`).
+- `agent_sessions` is the source of truth for each agent's provider/session/cwd, status, last activity, pending buffer, pid, and tmux name. `set()` upserts the rows in a transaction; `get()`/`getAll()`/`getRecent()` reload them and overlay the JSON blob's `agentSessions` map.
+- `state_version` supports compare-and-set mutations. `mutateThread` and `mutateAgent` retry bounded conflicts; `removeAgentSession` explicitly deletes a worker row (snapshots no longer delete missing rows implicitly).
 - Migration story: schema is additive. `CREATE TABLE IF NOT EXISTS` brings up new tables on existing DBs. Field-level additions to `ThreadSession` are backfilled on read by `normalizeSession` (including `leadSessionId`, `agentSessions`, `worktreePaths`, and `muted`). Breaking changes require an explicit operator migration or a fresh local DB.
 
 PRAGMAs: `journal_mode=WAL`, `synchronous=NORMAL`. Standard for a single-writer SQLite embedded in a Bun server.
@@ -97,6 +105,9 @@ interface SessionStore {
   getAll(): Promise<Map<string, ThreadSession>>;
   getRecent(sinceMs: number): Promise<Map<string, ThreadSession>>;
   updateActivity(threadId): Promise<void>;
+  mutateThread(threadId, mutator): Promise<ThreadSession>;
+  mutateAgent(threadId, agentName, mutator): Promise<ThreadSession>;
+  removeAgentSession(threadId, agentName): Promise<void>;
   // Slack user IDs of admins beyond the env-var bootstrap. Memory store
   // returns empty; sqlite queries the `admins` table on every call.
   extraAdmins(): Promise<Set<string>>;

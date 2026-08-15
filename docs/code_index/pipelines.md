@@ -20,10 +20,12 @@ disabled by default (`PIPELINE_RUNTIME_MODE=off`) and can run in `shadow` or
 
 ## Runtime contract
 
-`off` leaves legacy Slack routing unchanged. `shadow` records eligible starts
-without dispatching or mutating legacy ownership. `active` enables typed
-controllers, assignments, recovery, and optional GitHub reconciliation. The
-config loader rejects product/bug flags unless the mode is `active`.
+`off` leaves legacy Slack routing unchanged. `shadow` keeps typed product/bug
+controller starts and handoff conversion disabled while allowing explicitly
+shadow-safe tool/reconciliation records; it never dispatches assignments or
+delivers GitHub wakes. `active` enables typed controllers, assignments,
+recovery, and optional GitHub reconciliation. The config loader rejects
+product/bug flags unless the mode is `active`.
 
 Assignments use leases and idempotency keys. The outbox is at-least-once, so
 consumers and outcome writes must remain idempotent; version/CAS checks prevent

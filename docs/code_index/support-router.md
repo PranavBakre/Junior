@@ -7,7 +7,7 @@ directives and pipeline-aware routing.
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `SupportRouter` / `AgentDispatcher` | `src/support/router.ts` | Routes messages, resolves persistent agents, starts turns, and coordinates pipeline mode. |
+| `AgentDispatcher` | `src/support/router.ts` | Routes messages, resolves persistent agents, starts turns, and coordinates pipeline mode. (There is no separate `SupportRouter` class.) |
 | Directive parsing | `src/support/directives.ts` | Parses persistent-agent directives and their arguments. |
 | Pipeline guard | `src/support/pipeline-guard.ts` | Keeps legacy routing and typed pipeline ownership consistent. |
 | Agent identities | `src/support/agents.ts` | Public identity catalog and private overlay reload. |

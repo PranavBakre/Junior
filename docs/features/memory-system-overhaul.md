@@ -1,6 +1,6 @@
 # Memory System Overhaul
 
-> **Superseded — kept as the investigation & evidence record.** The canonical design is now [memory-lesson-store.md](memory-lesson-store.md). This document's layered FTS+tags+RRF+vector+edges pipeline was the *exploration*; measurement (the recall-eval harness and the real codex-log replay) led to a much simpler conclusion — a curated, embedded lesson store with no edge graph. Read this for the evidence, the Engram analysis, the eval methodology, and the measured baselines it pioneered; read [memory-lesson-store.md](memory-lesson-store.md) for what we actually build.
+> **Superseded — kept as the investigation & evidence record.** The canonical design is now [memory-system-v3.md](memory-system-v3.md). This document's layered FTS+tags+RRF+vector+edges pipeline was the *exploration*; measurement (the recall-eval harness and the real codex-log replay) led to a much simpler conclusion — a curated, embedded claim store with no edge graph. Read this for the evidence, the Engram analysis, the eval methodology, and the measured baselines it pioneered; read [memory-system-v3.md](memory-system-v3.md) for what we actually build.
 
 ## Problem
 

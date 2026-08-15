@@ -1,6 +1,6 @@
 # Dynamic Workflows
 
-> **Current status (2026-07-21):** Shipped. The registry, SQLite state/run store, hot reload, scheduler, Slack commands, and localhost dashboard endpoint are live. Current definitions include `worklog`, `release-notes`, `memory-consolidation`, `memory-dedup-sweep`, and `worktree-prune`; private overlays may add or override definitions.
+> **Current status (2026-08-15):** Shipped. The registry, SQLite state/run store, hot reload, scheduler, Slack commands, and localhost dashboard endpoint are live. Current definitions include `worklog`, `release-notes`, `memory-consolidation`, `memory-dedup-sweep`, `slack-archive-maintenance`, and `worktree-prune`; private overlays may add or override definitions. `slack-archive-maintenance` is a native deterministic handler, not an agent-run workflow.
 
 ## Problem
 
@@ -88,7 +88,7 @@ Fields:
 | `outputs` | yes | At least one output. Docs output must stay under `data/workflow-runs/<workflow>`. |
 | `permissions` | yes | Capability declaration used by workflow validation and runtime prompts. `repos` may be omitted to use all configured repos, or listed to narrow access. |
 | `runner` | no | Optional agent execution step. Runner workflows execute from `/tmp/junior-utility`; workflow definitions are trusted config, not a sandbox boundary. `idleTimeoutMs` and `maxIdleInterrupts` opt into the CLI SIGINT/resume fallback for silent runner processes. |
-| `fallback` | no | Reserved for future fallback modes. |
+| `fallback` | no | Optional deterministic fallback declaration (`mode: deterministic-summary`) accepted by the schema; no current workflow uses it as a runner fallback. |
 | `concurrency` | no | `skip` by default. `parallel` is allowed for workflows that can overlap safely. |
 
 Trigger schema:
@@ -250,6 +250,16 @@ recoverable only from provenance. Committing is an explicit operator action —
 `bun run src/memory/cli.ts dedup-sweep --apply`, with the bot stopped so it does
 not contend for the WAL writer. See
 [claim-dedup-write-guard.md](claim-dedup-write-guard.md).
+
+## Slack Archive Maintenance Workflow
+
+`slack-archive-maintenance` is a weekly native workflow
+(`workflows/slack-archive-maintenance.workflow.md`). It calls
+`runSlackArchiveMaintenance()` in-process to synchronize approved Slack
+history, embed changed messages, and atomically republish the ANN index. It is
+scheduled for Sunday 03:17 Asia/Kolkata and can also be run with
+`!slack-archive-maintenance`; it has no runner prompt and writes only its
+workflow artifact.
 
 ### Runner idle interrupt fallback
 

@@ -11,7 +11,11 @@ Junior currently assumes Claude Code is the only local coding agent. The executi
 We want Junior to be able to run Codex as well, without forking the whole app or making Slack/session code understand every provider's native event format.
 
 **Who has this problem:** Anyone who wants to choose Codex for a Junior thread, channel, or agent type.
-**What happens today:** Junior always calls `spawnClaude()` and parses Claude stream-json.
+**What happens today:** Junior selects `claude`, `opencode`, `opencode-sdk`, or
+`codex-app-server` through `src/runners/index.ts`. Each adapter owns its native
+flags/protocol and maps events into the shared runner contract consumed by
+sessions and Slack. `opencode` is the default; Codex app-server is selected with
+`RUNNER_PROVIDER=codex-app-server`.
 **Painful part:** Codex has equivalents for the core runner features, but its CLI flags, JSONL stream schema, permissions model, and MCP configuration are different enough that it is not a drop-in replacement.
 **"Finally" moment:** Junior can run either Claude or Codex behind the same session manager contract, while Slack still gets useful live status updates and final responses.
 

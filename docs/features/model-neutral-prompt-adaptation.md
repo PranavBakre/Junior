@@ -1,5 +1,10 @@
 # Model-Neutral Prompt Adaptation
 
+> **Status (2026-08-15):** Historical implementation record. The PR-numbered
+> audit below describes the rollout that established the current prompt and
+> provider wiring; for live behavior, use [`agent-routing.md`](agent-routing.md),
+> [`agent-catalog.md`](../code_index/agent-catalog.md), and the provider code.
+
 ## Problem
 
 Junior's original prompts assumed Claude Code backed by very strong, large-context Opus-class models. Those prompts leaned on long prose, implicit operational judgment, and large injected context. That worked when the model could hold many rules at once and infer the action behind a Slack message.
@@ -15,7 +20,8 @@ This is a prompt/runtime-behavior project, not a Codex-provider project. OpenCod
 
 OpenCode-specific constraint: Junior now has an OpenCode-specific prompt surface. PR #32 added `.opencode/agents/*`, `opencode.json` instruction wiring, OpenCode tool-use parsing, and duplicate Slack-post suppression. [PranavBakre/Junior#31](https://github.com/PranavBakre/Junior/pull/31) separately explored generated `agent.build.prompt` overrides. The overhaul must reconcile those two approaches instead of letting static OpenCode agents and generated OpenCode prompts drift apart.
 
-Current main after PR #32:
+Historical state after PR #32 (the source audit below is not a current-status
+checklist):
 
 - `.opencode/agents/{lead,thinker,reproducer,review,build,frontend,architect,pm}.md` exists as a first OpenCode agent overlay, but it is not the Junior Slack runtime source of truth unless the generator explicitly reads or mirrors it.
 - `opencode.json` now carries no prompt instructions; OpenCode runtime receives `core.md` only through generated `agent.build.prompt`.

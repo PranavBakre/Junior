@@ -67,7 +67,11 @@ The remaining indexes are listed by module in `docs/code_index/`.
 
 Active proposals (designed, not implemented):
 
-None right now. The claim dedup write guard, pre-recall synthesis, and task
+- [Operator dashboard redesign](features/operator-dashboard-redesign.md):
+  continue sessions, pipeline swimlane, spend ledger, Git-backed workflow
+  edits, and a runbook viewer on the localhost console.
+
+The claim dedup write guard, pre-recall synthesis, and task
 routes all graduated out of this list — they are shipped and listed under
 [current runtime surfaces](#current-runtime-surfaces).
 

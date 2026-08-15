@@ -9,7 +9,11 @@
 When a Slack thread needs to edit code in a target repo (example-backend, example-frontend), it needs its own git worktree so concurrent threads don't collide on file state. The worktree manager creates, tracks, and cleans up worktrees in target repos — not in junior's own workspace.
 
 **Who has this problem:** Any thread that does code work on a shared repo.
-**What happens today:** Threads with a target repo receive sibling worktrees; bug-pipeline intake can register one per routed repo, and the dev-server manager owns a dedicated sibling slot. Dirty worktrees are preserved during cleanup.
+**What happens today:** Threads with a target repo receive sibling worktrees;
+bug-pipeline intake can register one per routed repo, and the dev-server manager
+owns a dedicated sibling slot. Session cleanup does not remove worktrees yet;
+explicit removal is forceful, so callers must dirty-check first. This preserves
+both clean and dirty worktrees after a stale session row is deleted.
 **Painful part:** Worktree lifecycle. Creating is easy. Knowing when to create (not every thread needs one), cleaning up safely (check for uncommitted changes), and handling edge cases (stale branches, dangling worktrees from crashed processes) is hard.
 **"Finally" moment:** Two Slack threads edit example-backend simultaneously. Neither sees the other's changes. Both can commit and push independently.
 
@@ -20,7 +24,9 @@ When a Slack thread needs to edit code in a target repo (example-backend, exampl
 - Track worktree path per session
 - Deferred creation: only create when thread actually needs to edit code
 - Check worktree exists before resuming (may have been cleaned up)
-- Clean up stale worktrees: remove after 24h inactivity if clean, warn if dirty
+- Check stale worktrees for cleanup, but keep them on disk until an explicit
+  caller performs the dirty-check and removal (automatic session cleanup does
+  not currently remove worktrees)
 - Support multiple target repos (thread specifies which repo)
 - Support custom base ref per thread (`!branch staging`)
 

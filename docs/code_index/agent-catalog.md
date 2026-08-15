@@ -35,8 +35,11 @@ metadata; TypeScript parses, validates, and enforces that catalog.
 - Runtime policy enforces this across providers: Claude disallows `Agent`,
   OpenCode denies `task` and registers no subagents, and generated Codex config
   disables the `multi_agent` feature.
-- Private overlay roles are dispatchable only after their identity metadata is
-  loaded from `agents-org`.
+- Private overlay roles are available to the trusted catalog after their
+  operational metadata loads from `agents-org`. Only Slack-facing overlay
+  roles need `username` plus `iconEmoji`/`imageUrl` identity metadata; internal
+  pipeline targets such as `pm`, `architect`, `build`, and `frontend` may be
+  catalogued without a Slack identity.
 
 The old standalone `thinker` and public `lead.md` definitions are retired.
 References in older feature plans describe the former two-phase design; the

@@ -76,10 +76,10 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
 
 ## Configuration
 
-- `.mcp.json` defines the local `slack-bot` server as `{ "type": "http", "url": "http://localhost:3456/mcp" }` and also carries the optional hosted Figma and Notion MCP entries.
+- `.mcp.json` documents the local `slack-bot` endpoint and optional hosted Figma/Notion entries. Claude receives a generated per-session MCP config under `data/mcp-configs/`; OpenCode and Codex receive equivalent generated provider config. All normal worktree and Junior-root runs get the local Slack MCP; explicit utility `session.cwd` runs do not.
 - `.claude/settings.json` grants `mcp__slack-bot__*` permissions
 - Port configurable via `MCP_PORT` env var (default 3456)
-- `--mcp-config` flag injected by `spawner.ts` when cwd differs from project root (worktree scenarios)
+- `--mcp-config` flag injected by `spawner.ts` for every non-utility Claude run (not only when cwd differs from project root)
 - OpenCode receives the same `slack-bot` MCP through generated
   `OPENCODE_CONFIG_CONTENT` for all normal runs, including initial lead intake
   from Junior's project root. Explicit `session.cwd` utility runs still skip
@@ -228,7 +228,7 @@ MCP wiring by design. Those runs access the store through the v3 CLI
 
 ## Cut List (true v2)
 
-- MCP server authentication (currently open on localhost — fine for single-machine deployment)
+- Network transport authentication (the HTTP listeners remain loopback-only; sensitive tools require a signed per-spawn run context, but a local process with filesystem access can still reach the endpoint)
 - Canvas/bookmark tools (low priority, not used in current workflows)
 - Scheduled message tools (use Slack's built-in scheduling instead)
 - Reactions tool (Claude can use the bash tool + curl as a workaround)

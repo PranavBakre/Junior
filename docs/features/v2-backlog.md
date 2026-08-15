@@ -4,7 +4,7 @@ Features explicitly deferred from MVP. To be scoped when MVP is running.
 
 ## Admin Dashboard (DONE)
 
-**Status:** Completed as the [HTTP Dashboard](./http-dashboard.md). Surfaces live sessions, dev-server queue, logs, and docs.
+**Status:** Completed as the [HTTP Dashboard](./http-dashboard.md). Surfaces live sessions, dev-server queue, workflows/pipelines, logs, docs, profiles, and memory projections.
 
 ## Batch User Resolution in Thread Context
 

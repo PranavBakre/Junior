@@ -188,18 +188,26 @@ Shipped in `src/memory/pre-recall.ts`, `src/session/manager.ts`,
 
 **The bounds that were left as "explicit caps" in the proposal.**
 
+The shipped constants are larger than the original proposal's starting values:
+each derived query recalls at most 20 claims (with two procedure slots), up to
+20 merged candidates reach synthesis, each candidate is truncated to 600
+characters, and the merged candidate text is capped at 12,000 characters.
+The request is capped at 1,200 characters and fallback emits at most three
+claims. These are the current values in `src/memory/pre-recall.ts`; do not use
+the historical 3/12/6,000 values from earlier drafts.
+
 | Cap | Value | Why |
 |---|---|---|
-| Claims recalled per derived query | 8 | Was 3; the model now filters, so retrieval can be more generous. |
-| Candidates reaching the prompt | 12 | Two derived queries can merge to 16; the merged set needs its own ceiling. |
+| Claims recalled per derived query | 20 | The model (when enabled) filters a generous set; two slots are reserved for procedures. |
+| Candidates reaching the prompt | 20 | Two derived queries can merge to 40; the merged set has its own ceiling. |
 | Characters per claim | 600 | Truncated with `…`. Claim text has no schema ceiling. |
-| Total candidate characters | 6 000 | 12 × 600 = 7 200, so the ceiling is reachable and actually drops the lowest-scoring candidates. |
+| Total candidate characters | 12 000 | 20 × 600 = 12 000; the ceiling is reachable when all candidates are at the per-claim cap. |
 | Request characters in the prompt | 1 200 | The proposal capped the *claims*; the request is untrusted-length too, so it is capped as well or the prompt is still unbounded. |
-| Raw claims on fallback | 3, each ≥ 0.55 **cosine** | Matches the previous per-query recall limit; the floor is new (see below). |
+| Raw claims on fallback | 3, each with cosine ≥ 0.55 **or** exact-token coverage ≥ 0.75 | The independently calibrated lexical channel can rescue identifiers and exact wording that embeddings miss. |
 | Lines emitted | 5, 500 chars each | The block is injected into every turn's prompt. Applies to synthesized and fallback lines alike. |
 
-**The fallback needs a relevance floor.** `recallClaims` is `slice(0, limit)`
-over cosine × weight with no threshold, and `deriveRecallQueries` returns `[]`
+**The fallback needs a relevance floor.** `recallClaims` returns a bounded hybrid
+ranking with no eligibility threshold, and `deriveRecallQueries` returns `[]`
 only for whitespace — where the old extractor deliberately returned `[]` for
 chit-chat. So a candidate set is essentially never empty. Without a floor,
 "thanks, that worked" plus an unavailable subprocess emits three arbitrary
@@ -208,11 +216,12 @@ through the fallback the exact decay pathology `recordUsage: false` closed at
 retrieval. The floor applies **only** to the fallback — synthesis has a model
 doing the filtering.
 
-**The floor is on cosine, not on `score`.** `score = cosine × weight`
-(`sqlite.ts`), so thresholding `score` lets a claim's *value* set its
+**The semantic floor is on cosine, not on `score`.** Thresholding the fused
+ranking score would let a claim's *value* set its
 *relevance* bar: cosine ≥ 0.50 at weight 1.0, but ≥ 0.83 at weight 0.6. That is
 backwards — a low-weight, exactly-on-topic claim is what the fallback exists to
-surface.
+surface. Independently, lexical coverage ≥ 0.75 may admit an exact-token hit
+whose cosine is weak; candidates clearing neither channel remain ineligible.
 
 Measured against the live corpus (2636 active claims, 2626 with embeddings)
 using each claim's own embedding as a probe and taking its best OTHER match — a
@@ -234,9 +243,9 @@ gap is not a tail case. Over 376 probes:
 comparison — both sides are stored vectors. The floor's own cost has to be
 measured in query space; see below.)
 
-Ranking stays on `score`, so weight still orders relevant candidates — it just
-no longer decides eligibility. A null cosine (no query vector, or a claim
-without an embedding) is ineligible: unmeasurable relevance is not relevance.
+Ranking stays on the fused `score`, so weight still orders relevant candidates
+— it just no longer decides eligibility. A null cosine (no query vector, or a
+claim without an embedding) can qualify only through the lexical floor.
 
 **Calibrate the value against the NOISE distribution, not the paraphrase one.**
 The table above only bounds what a floor *costs*; by itself it would justify any
@@ -302,6 +311,7 @@ is worth being precise about which edge each one holds:
 | Test | Holds | Notes |
 |---|---|---|
 | `FALLBACK_MIN_COSINE` corridor assertion | both edges | Runs in CI, no provider needed. Asserts the constant against the field numbers above: `> 0.500` (noise ceiling) and `< 0.585` (paraphrase p5). |
+| strong lexical-hit fixture | lexical rescue | Pins the independent `FALLBACK_MIN_LEXICAL` path when cosine is below its floor. |
 | hashing end-to-end fixtures | lower edge | Incidental — the fixture cosines happen to bracket (0.500, 0.761]. Do not "clean up" as a stub artifact; that is what the corridor assertion is insurance against. |
 | `describe.skipIf(!RUN_LOCAL)("fallback floor …")` | upper edge | Real semantics, `RUN_LOCAL_EMBED_TEST=1`. Its five-claim fixture has no conversational surface area, so chit-chat only reaches ~0.31 there versus ~0.50 live — it would still pass at 0.45. It reliably catches a floor raised past real relevance (paraphrase measured at `topcos=0.611`), not one lowered into the noise. |
 
@@ -431,7 +441,9 @@ attempt (`topcos=-`).
 ## Dependencies
 
 - [Memory v3](memory-system-v3.md) — `recallClaims`, the embedding provider, and
-  the `recordUsage` contract (pre-recall is production recall and *should* record).
+  the `recordUsage` contract. Pre-recall passes `recordUsage: false` while
+  selecting candidates, then marks only emitted/contributing claim ids; direct
+  `memory_recall` calls retain the default usage recording.
 - [Session management](session-management.md) — the call site and the turn
   lifecycle the signal hangs off.
 - [Slack event handler](slack-event-handler.md) — reaction add/remove plumbing.

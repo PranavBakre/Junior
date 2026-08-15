@@ -13,8 +13,8 @@ execution, persistence, and dashboard projection.
 | `WorkflowScheduler` | `src/workflows/scheduler.ts` | Computes due work, persists scheduler state, and tracks live per-workflow run counts for operator projections. |
 | `WorkflowExecutor` | `src/workflows/executor.ts` | Runs a validated workflow step through the configured runner boundary. |
 | Controller | `src/workflows/controller.ts` | Coordinates registry, scheduler, executor, and store. |
-| Store | `src/workflows/store.ts` | Persists workflow definitions/runs and their state. |
-| Types | `src/workflows/types.ts` | Workflow definition, run, step, and execution contracts. |
+| Store | `src/workflows/store.ts` | Persists workflow state and run history; definitions remain file-backed in the registry. |
+| Types | `src/workflows/types.ts` | Workflow definition, trigger/output, state, run, and execution contracts. |
 
 ## Definitions
 
@@ -24,6 +24,8 @@ The current repository definitions are:
 - `workflows/memory-dedup-sweep.workflow.md` (native, report-only — see
   [claim-dedup-write-guard.md](../features/claim-dedup-write-guard.md))
 - `workflows/release-notes.workflow.md`
+- `workflows/slack-archive-maintenance.workflow.md` (native, deterministic
+  Slack archive/index maintenance)
 - `workflows/worklog.workflow.md`
 - `workflows/worktree-prune.workflow.md`
 

@@ -1,6 +1,6 @@
 # Code Index: HTTP Dashboard
 
-Localhost-only HTTP server for operator inspection (sessions, dev-servers, workflows, logs, docs, and memory projections). Off by default; enabled via `HTTP_DASHBOARD_PORT`. Binds 127.0.0.1 and intentionally has no auth; do not expose it beyond a trusted local operator environment.
+Localhost-only HTTP server for operator inspection (sessions, dev-servers, workflows, pipelines, logs, docs, profiles, and memory projections). Off by default; enabled via `HTTP_DASHBOARD_PORT`. Binds 127.0.0.1 and intentionally has no auth; do not expose it beyond a trusted local operator environment.
 
 ## Code Index
 
@@ -9,12 +9,13 @@ Localhost-only HTTP server for operator inspection (sessions, dev-servers, workf
 | Symbol | File | Purpose |
 |---|---|---|
 | `startHttpServer(deps)` | `server.ts` | Bun.serve on 127.0.0.1:port; routes API + serves `public/index.html` |
-| `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore? }` |
+| `HttpServerDeps` | `server.ts` | `{ store, config, devServerManager, devServerQueue, repos, workflowRegistry, workflowScheduler, workflowStore, memoryStore?, profileStore?, pipelineStore, resolveSlackPermalink? }` |
 | `handleHealth(store, config, startedAt)` | `routes/health.ts` | `GET /api/health` — uptime, session counts, agent counts, repo list |
 | `handleSessions(store)` | `routes/sessions.ts` | `GET /api/sessions` — list (strips worktreePath, systemPrompt, cwd, pid, slackIdentity, pendingMessages flattened to count) |
 | `handleSessionDetail(store, threadId, resolveSlackPermalink?)` | `routes/sessions.ts` | `GET /api/sessions/:threadId` — full session JSON plus a best-effort Slack permalink |
 | `handleDevServers(manager, queue, repos)` | `routes/dev-server.ts` | `GET /api/dev-server` — per-repo state, idle TTL remaining, queue depth |
 | `handleWorkflows(registry, store, scheduler)` | `routes/workflows.ts` | `GET /api/workflows` — definitions, persisted state, recent runs, registry errors, and live scheduler-derived display status |
+| `handlePipelines(store, params, runId?)` | `routes/pipelines.ts` | `GET /api/pipelines` and `GET /api/pipelines/:runId` — pipeline run summaries/detail with filters and assignment/artifact state |
 | `handleLogs(searchParams)` | `routes/logs.ts` | `GET /api/logs?date=YYYY-MM-DD` — parses daily log file (strict date regex prevents path traversal) |
 | `handleProfiles(store, params)` | `routes/profiles.ts` | `GET /api/profiles` — read-only profile list/filter; never bumps `last_used_at` |
 | `handleMemoryList()` | `routes/memory.ts` | `GET /api/memory` — list files under `docs/` |
@@ -33,6 +34,8 @@ GET /api/sessions           → handleSessions
 GET /api/sessions/<id>      → handleSessionDetail
 GET /api/dev-server         → handleDevServers
 GET /api/workflows          → handleWorkflows
+GET /api/pipelines          → handlePipelines
+GET /api/pipelines/<runId>  → handlePipelines (detail)
 GET /api/logs?date=...      → handleLogs
 GET /api/profiles[?kind=…]  → handleProfiles
 GET /api/memory             → handleMemoryList
@@ -40,6 +43,9 @@ GET /api/memory/<path>      → handleMemoryRead
 GET /api/memory/recall      → handleMemoryRecall (503 if unavailable)
 GET /api/memory/projection  → handleMemoryProjection (503 if unavailable)
     ?refresh=1                force a rebuild instead of the memoised result
+GET /assets/three.module.js → locally served pinned Three.js module
+GET /assets/three.core.min.js → locally served pinned Three.js core module
+GET /assets/pipeline-worker.js → locally served pipeline worker
 ```
 
 ## Key Concepts
@@ -84,5 +90,5 @@ overlays on that single graph scene.
 
 ## Dependencies
 
-- **Uses**: `Bun.serve`, `SessionStore`, `DevServerManager`, `DevServerQueue`, `WorkflowRegistry`, `WorkflowScheduler`, `WorkflowStore`, optional `MemoryStore` and `ProfileStore`, `RepoConfig`, `logger`
+- **Uses**: `Bun.serve`, `SessionStore`, `DevServerManager`, `DevServerQueue`, `WorkflowRegistry`, `WorkflowScheduler`, `WorkflowStore`, `PipelineStore`, optional `MemoryStore` and `ProfileStore`, optional Slack permalink resolver, `RepoConfig`, `logger`
 - **Used by**: `src/index.ts` (gated on `config.http.enabled`)

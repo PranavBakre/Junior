@@ -1,6 +1,9 @@
 # Code Index: Session Management
 
-Core orchestrator: routes Slack messages to Claude, manages the buffer/drain state machine (per-thread for lead/default, per-agent for workers), composes prompts with context, dispatches slash commands, and tracks session state.
+Core orchestrator: routes Slack messages through the normalized runner boundary,
+manages the buffer/drain state machine (per-thread for lead/default, per-agent
+for workers), composes prompts with context, dispatches `!` commands, and tracks
+session state.
 
 ## Code Index
 
@@ -22,8 +25,8 @@ Core orchestrator: routes Slack messages to Claude, manages the buffer/drain sta
 
 | Callback | When |
 |---|---|
-| `onResponse(session, text)` | Claude turn complete; duplicate Slack-tool posts are suppressed first, then `prepareSlackResponse` runs sentinel handling |
-| `onEvent(session, event)` | Each stream-json event (status updates) |
+| `onResponse(session, text)` | Runner turn complete; duplicate Slack-tool posts are suppressed first, then `prepareSlackResponse` runs sentinel handling |
+| `onEvent(session, event)` | Each normalized runner event (status updates) |
 | `onMessageBuffered(event)` | Message buffered while busy → `eyes` reaction |
 | `onCommandResponse(event, text)` | Command (`!status`, `!help`, etc.) returns text |
 | `onReaction(event, emoji)` | Used for admin-denied commands (`x` reaction) |
@@ -40,7 +43,8 @@ Core orchestrator: routes Slack messages to Claude, manages the buffer/drain sta
 interface ThreadSession {
   threadId: string;
   channel: string;
-  sessionId: string | null;                // current run's session ID
+  provider?: RunnerProvider;               // thread override; config is fallback
+  sessionId: string | null;                // current run's native session ID
   leadSessionId: string | null;            // pinned to lead's resume target across re-routes
   agentSessions: Record<string, AgentSession>;  // per-worker state
   worktreePath: string | null;             // single-repo flow
@@ -58,6 +62,7 @@ interface ThreadSession {
   model: string | null;
   cwd: string | null;                       // utility-command override
   pid: number | null;
+  driverMode: "headless" | "tmux";
   lastActivity: number; createdAt: number;
   lastError: { type, message, timestamp } | null;
   defaultAgent?: "junior" | "lead" | null;  // thread-level !agent override
@@ -93,7 +98,7 @@ idle ──[msg]──► busy ──[exit, no pending]──► done|failed
 
 ## Commands
 
-Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, continue), `repo`, `branch`, `agent`, `cancel`, `reset` (admin), `status`, `help`, `quiet`/`normal`/`verbose`, `adhoc`/`bugs` (calendar tasks via haiku + cwd override), `mute`/`unmute` (admin). See `thread-commands.md`.
+Handled in `handleCommand`: `build`, `frontend`, `architect`, `pm` (set `agentType`, continue), `repo`, `branch`, `agent`, `provider`, `cancel`, `reset` (admin), `clear` (admin), `status`, `help`, `quiet`/`normal`/`verbose`, `adhoc`/`bugs` (calendar tasks via haiku + cwd override), `mute`/`unmute` (admin), `stop`, and `driver` (admin). See `thread-commands.md`.
 
 ## Prompt Composition (in `runRunnerWithAgent`)
 
@@ -127,5 +132,5 @@ Handled in `handleCommand`: `build`, `frontend`, `architect` (set `agentType`, c
 
 ## Dependencies
 
-- **Uses**: `claude/spawner`, `lifecycle/timeout`, `slack/thread-context` (preamble, mention resolution), `slack/files` (image download), `agents/router`, `agents/loader` (context profile), `worktree/manager`, `support/agents` (identity, dispatch-allow), `session/store`
+- **Uses**: `runners` (provider selection and normalized events), `lifecycle/timeout`, `slack/thread-context` (preamble, mention resolution), `slack/files` (image download), `agents/router`, `agents/loader` (context profile), `worktree/manager`, `support/agents` (identity, dispatch-allow), `session/store`
 - **Used by**: `support/router` (`AgentDispatcher` routes here), `index.ts` (wiring), `lifecycle/shutdown` + `lifecycle/cleanup`

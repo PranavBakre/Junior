@@ -5,13 +5,16 @@
 When Claude is working (running tools, reading files, writing code), the Slack thread is silent. Users don't know if it's thinking, stuck, or almost done. The bot needs to parse Claude's streaming events and post meaningful status updates to Slack — not every event, but enough to show progress.
 
 **Who has this problem:** Users watching a Slack thread waiting for Claude to respond.
-**What happens today:** Nothing — silence until the final response.
+**What happens today:** Normalized runner events drive per-agent status pills
+through `SlackResponder`; tool/message updates are debounced to one edit per
+second, then the final response is sanitized, split, and posted (or suppressed
+when it is empty, sentinel-only, or an exact duplicate of an MCP Slack post).
 **Painful part:** Too many updates = spam. Too few = "is it dead?" Finding the right granularity. Also: Slack rate limits (~1 msg/sec per channel) mean we can't post every tool call.
 **"Finally" moment:** User sees "reading src/auth.ts...", "running tests...", "editing 3 files..." as Claude works, then gets the final response. Feels like watching someone work.
 
 ## Full Vision
 
-- Parse stream-json events in real-time
+- Parse provider-native streams in adapters and consume normalized runner events in real-time
 - Post a single "status" message in the thread that gets edited as work progresses
 - Status shows: current tool being used, file being read/edited, command being run
 - Final response replaces or follows the status message

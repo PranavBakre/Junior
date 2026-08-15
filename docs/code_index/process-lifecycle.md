@@ -10,9 +10,9 @@ Timeout guards, graceful shutdown, stale session cleanup, orphan detection, and 
 |---|---|---|
 | `withTimeout(handle, timeoutMs, onTimeout?)` | `timeout.ts` | Wraps `SpawnHandle`; kills + resolves with `error: "Process timed out..."` after timeout |
 | workflow runner idle recovery | `src/workflows/executor.ts` | For workflow runner configs with `idleTimeoutMs`, sends SIGINT after a silent period, SIGKILL after 10s grace if needed, then respawns with provider-native resume and a continuation prompt up to `maxIdleInterrupts`. |
-| `setupGracefulShutdown(manager, store, devServerManager?)` | `shutdown.ts` | SIGINT/SIGTERM handler — `resetSession` busy threads, `killAll` dev servers, hard exit after 30s |
+| `setupGracefulShutdown(manager, devServerManager?, extraShutdown?)` | `shutdown.ts` | SIGINT/SIGTERM handler — terminates active runner trees, kills managed dev servers and runs optional teardown, hard exit after 30s |
 | `cleanupStaleSessions(store, staleTimeoutMs)` | `cleanup.ts` | Deletes stale idle sessions; skips top-level busy/draining and rows with any busy persistent agent |
-| `checkOrphanedSessions(store)` | `health.ts` | Marks `busy` sessions/agents idle when their pid is dead. Scans top-level pid + every `agentSessions[*].pid`. |
+| `checkOrphanedSessions(store)` | `health.ts` | Marks a dead top-level runner idle, but marks dead persistent agents `failed` and records an interruption error. Scans top-level pid + every `agentSessions[*].pid`. |
 | `isPidAlive(pid)` | `process-utils.ts` | `process.kill(pid, 0)` returns true if ESRCH not thrown |
 | `isPortHeld(port)` | `process-utils.ts` | Non-blocking TCP connect probe on `127.0.0.1:<port>`, 3s timeout |
 | `DevServerManager` | `dev-server.ts` | Per-repo dev-server lifecycle: spawn, branch switch via `git fetch + reset --hard`, readiness probe, idle TTL sweep, kill (SIGINT → SIGKILL with 5s grace) |

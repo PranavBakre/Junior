@@ -20,6 +20,7 @@ src/http/
     ├── dev-server.ts      -- DevServerManager + DevServerQueue state
     ├── logs.ts            -- tail logs/<date>.log with tag/level filters
     ├── profiles.ts        -- read-only person/repo/project/situation browser
+    ├── pipelines.ts       -- read-only product/bug pipeline run + assignment views
     └── memory.ts          -- docs browser + claim recall + galaxy projection
 ```
 
@@ -41,11 +42,13 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 | Endpoint | Returns |
 |---|---|
 | `GET /` | `public/index.html` (dashboard UI) |
-| `GET /api/health` | `{ status, uptime, startedAt, sessions: {total,busy,idle,draining,errors}, agents: {total,busy}, repos[] }` |
+| `GET /api/health` | `{ status, uptime, startedAt, sessions: {total,busy,idle,draining,errors}, agents: {total,busy}, repos[], pipeline: {runtimeMode, bugPipelineEnabled, productPipelineEnabled, githubReconcileEnabled, githubEventWakeEnabled, sessionsWithActiveRun} }` |
 | `GET /api/sessions` | Sessions sorted by `lastActivity` desc, with filtered projection and a reshaped `agents[]` array per session |
 | `GET /api/sessions/:threadId` | Full `ThreadSession` plus a best-effort Slack permalink for the detail view |
-| `GET /api/dev-server` | Per-repo `{ running, pid, branch, startedAt, lastUsedAt, idleMsRemaining, holder, waiters }` plus top-level `idleTtlMs` |
+| `GET /api/dev-server` | Per-repo `{ devCommand, devPort, readyUrl, running, pid, branch, startedAt, lastUsedAt, idleMsRemaining, holder, waiters }` plus top-level `idleTtlMs` |
 | `GET /api/workflows` | Definitions, persisted scheduler state, five recent runs, registry errors, and a live `displayStatus` from scheduler activity |
+| `GET /api/pipelines` | Pipeline run summaries, filterable by `status` (`active|waiting|needs-human|terminal`) and `kind` (`default|product|bug`), with assignment/artifact state |
+| `GET /api/pipelines/:runId` | One pipeline run with its assignment and artifact detail |
 | `GET /api/logs?date=YYYY-MM-DD&tail=N&tag=&level=` | Parsed entries from `logs/<date>.log` |
 | `GET /api/profiles[?kind=person|repo|project|situation]` | Derived profiles plus per-kind counts; inspection does not bump recall usage |
 | `GET /api/memory` | List of `docs/**/*.md` paths |
@@ -54,6 +57,10 @@ Junior is intentionally insecure as a networked product. The dashboard assumes a
 | `GET /api/memory/projection[?refresh=1]` | `{ points[{id,x,y,z,kind,text,tags,repo,weight,createdAt,lastUsedAt}], edges[{a,b,sim}], facets{tags,kinds,repos} }` |
 
 `OPTIONS *` returns 204 (preflight handler kept for browsers that probe; no CORS headers attached). Unknown paths return JSON `{ error: "not found" }` 404. Handler exceptions log to the `http` tag and return JSON 500 — the bot does not die on a route bug.
+
+The server also serves the locally pinned Three.js modules and pipeline worker
+under `/assets/`; these are fixed allowlisted paths, not a general static-file
+server.
 
 ## Memory galaxy
 
@@ -105,6 +112,8 @@ HTTP_DASHBOARD_PORT=4567  # positive integer 1-65535. Unset = disabled.
 - **`WorkflowScheduler`.** `/api/workflows` uses the scheduler's process-local
   active-run count for `displayStatus`. Persisted run history remains historical
   evidence and is not treated as a liveness signal after restart.
+- **`PipelineStore`.** `/api/pipelines` reads durable product/bug pipeline
+  state; the route is read-only and does not dispatch or mutate runs.
 - **`logs/<date>.log`.** Written by `src/logger.ts`. The route is read-only and parses the same line format the logger emits (`<iso> [LEVEL] [tag] message`).
 - **`docs/`.** Read-only doc browser, scoped to the project's `docs/` directory.
 

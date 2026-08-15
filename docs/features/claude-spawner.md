@@ -2,7 +2,7 @@
 
 ## Role
 
-Execution layer between [session-management](session-management.md) and the `claude` CLI. Given a session and a prompt, it builds args, spawns the process, streams output back to listeners, and resolves a final `SpawnResult` on exit.
+Execution layer between [session-management](session-management.md) and the `claude` CLI. Given a session and a prompt, it builds policy-aware args, spawns a detached process with isolated settings/MCP, streams output back to listeners, and resolves a provider-neutral `SpawnResult` on exit.
 
 ## Public surface
 
@@ -14,22 +14,24 @@ Session manager calls `spawnClaude`, subscribes via `onEvent` (consumed by [stre
 
 ## Arg building (`args.ts`)
 
-Always: `-p <prompt>`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode` (from config).
+Always: `-p <prompt>`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode` (from the resolved agent policy). Production runs also use `--strict-mcp-config` and `--setting-sources project` unless explicitly disabled.
 
 Conditional:
 - `--resume <id>` if `session.sessionId` is set
 - `--append-system-prompt` if `session.systemPrompt` (composed upstream by [agent-routing](agent-routing.md) — spawner does not load agent files)
-- `--model` from `session.model ?? config.defaultModel`
-- `--mcp-config <path>` only when an mcp config path is passed in
+- `--model` from the resolved Claude model override or config default
+- `--allowedTools` / `--disallowedTools` / `--add-dir` from the resolved agent policy and assignment-scoped skill
+- `--max-budget-usd` and `--permission-prompt-tool` when configured
+- `--mcp-config <path>` for non-utility runs, pointing to a generated per-session config
 
 ## Spawn (`spawner.ts`)
 
 - `cwd` precedence: `session.cwd` (utility commands) -> `session.worktreePath` (per-thread worktree, see [worktree-manager](worktree-manager.md)) -> `targetRepoCwd` -> `process.cwd()`
 - If `session.cwd` is set, it's `mkdirSync`'d first (e.g. `/tmp/junior-utility` for `!adhoc` / `!bugs`). This keeps utility commands away from any project `CLAUDE.md`.
-- `--mcp-config` points at junior's `.mcp.json` (so worktrees can reach the slack-bot MCP server, see [mcp-server](mcp-server.md)). Skipped when `session.cwd` is an override — utility commands rely on cloud integrations, not local MCP.
+- `--mcp-config` points at Junior's generated per-session config (so worktrees can reach the slack-bot MCP server, see [mcp-server](mcp-server.md)). It is skipped when `session.cwd` is an override — utility commands rely on cloud integrations, not local MCP.
 - Env passed to child: `JUNIOR_SPAWNED=1`, `SLACK_CHANNEL`, `SLACK_THREAD_TS`, `JUNIOR_AGENT_NAME`, optional `JUNIOR_SLACK_USERNAME` plus optional `JUNIOR_SLACK_ICON_EMOJI` or `JUNIOR_SLACK_ICON_URL` (per-agent identity for [mcp-server](mcp-server.md) postings, see [thread-context](thread-context.md)), and `SLACK_BOT_TOKEN` when provided.
 
-Process is `Bun.spawn(["claude", ...args])` with piped stdout/stderr. `kill()` forwards to the child; lifecycle (timeout, zombie cleanup) lives in [process-lifecycle](process-lifecycle.md).
+Process is `Bun.spawn(["claude", ...args])` with piped stdout/stderr, ignored stdin, and `detached: true` so process-tree cleanup can signal wrapper descendants. `kill()` signals the process tree; lifecycle (timeout, zombie cleanup) lives in [process-lifecycle](process-lifecycle.md).
 
 ## Stream parsing (`parser.ts`, `types.ts`)
 
@@ -50,4 +52,4 @@ On `proc.exited`:
 
 ## Configuration
 
-From `config.claude`: `maxTurns`, `permissionMode`, `defaultModel`. Per-session overrides on `ThreadSession`: `sessionId`, `systemPrompt`, `model`, `worktreePath`, `cwd`, `channel`, `threadId`, `activeAgentName`.
+From `config.claude`: `maxTurns`, `permissionMode`, `defaultModel`, `strictMcp`, `settingSources`, `approvalEnabled`, `maxBudgetUsd`, and `baselineEnabled`. Per-session overrides on `ThreadSession`: `sessionId`, `sessionCwd`, `systemPrompt`, `model`/`modelClaude`, `agentPermissions`, `activeSkill`, `worktreePath`, `cwd`, `channel`, `threadId`, and `activeAgentName`.

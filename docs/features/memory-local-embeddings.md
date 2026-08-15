@@ -4,28 +4,40 @@
 
 ## Problem
 
+> **Historical framing below.** The original proposal assumed an OpenAI-first
+> rollout. The shipped system now uses the local provider for all production
+> claim embeddings; retain the provider-shape and cache notes below as design
+> history, but use [memory-system-v3.md](memory-system-v3.md) for current
+> runtime behavior.
+
 The memory overhaul starts with OpenAI API embeddings because that is the fastest path to a working semantic recall channel. Long term, Junior may still need local embeddings for privacy, offline operation, cost control, or independence from API availability.
 
 This doc keeps the local-provider design separate from the main overhaul so it does not block the first vector implementation.
 
-## Relationship To The Overhaul
+## Relationship To The Overhaul (historical proposal)
 
-Primary plan:
+The original plan was:
 
 - [Memory System Overhaul](memory-system-overhaul.md) owns the retrieval architecture, embedding cache, RRF fusion, vector candidate channel, eval, and latency gates.
-- This doc owns the future local embedding provider.
+- This doc owns the proposed future local embedding provider.
 
-The local provider must plug into the same `memory_embedding` table and provider interface. It should not change recall semantics.
+The original proposal expected a `memory_embedding` cache table and a provider
+interface without changing recall semantics. The shipped v3 implementation
+stores claim vectors directly on `claim`; see `memory-system-v3.md` and the
+code index for the current schema.
 
 ## Decision
 
-Local embeddings are a follow-up provider, not the first implementation.
+The original decision was to make local embeddings a follow-up provider, not
+the first implementation. That decision is superseded: local embeddings are
+now the production provider, with `hashing` reserved for tests/dev.
 
 Provider order for the full system:
 
-1. `hashing` provider for deterministic tests and zero-dependency fallback.
-2. `openai` provider for the first real semantic recall implementation.
-3. `local` provider for offline/private operation once the recall pipeline is proven.
+1. `hashing` provider for deterministic tests and zero-dependency fixtures.
+2. `local` provider for production semantic recall and offline/private operation.
+
+There is no shipped `openai` embedding provider in `src/memory/embedding/`.
 
 ## Local Provider Shapes
 

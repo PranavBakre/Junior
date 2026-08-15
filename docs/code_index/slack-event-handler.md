@@ -9,7 +9,7 @@ Slack Bolt app setup, event filtering (with self-bot directive escape hatch), ho
 | Symbol | File | Purpose |
 |---|---|---|
 | `createSlackApp(config)` | `app.ts` | Bolt app with Socket Mode + `ignoreSelf: false` (lead's self-bot directives must be observed) |
-| `registerEventHandlers(app, onMessage, store?, selfBotId?, selfUserId?, autoTriggerChannels?)` | `events.ts` | Wires `message` + `app_mention` handlers with filtering |
+| `registerEventHandlers(app, onMessage, store?, selfBotId?, selfUserId?, autoTriggerChannels?, onArchiveMessage?, archiveApprovedChannels?)` | `events.ts` | Wires `message` + `app_mention` handlers with filtering and optional passive Slack-archive capture |
 | `isForeignBotThinking(text)` | `events.ts` | Detects sibling Claude bots' streaming "✽ Thinking..." messages — drop those |
 | `extractFiles(event)` (private) | `events.ts` | Pulls `{ url_private_download, name, mimetype }` from `event.files` |
 | `registerHomeTab(app, store, windowMs)` | `home.ts` | `app_home_opened` listener |
@@ -20,7 +20,7 @@ Slack Bolt app setup, event filtering (with self-bot directive escape hatch), ho
 
 | Type | File | Shape |
 |---|---|---|
-| `SlackMessageEvent` | `events.ts` | `{ threadId, channel, user, text, ts, command, files?, isSelfBot?, botUsername?, dedupeKey? }` |
+| `SlackMessageEvent` | `events.ts` | `{ threadId, channel, user, text, ts, command, files?, isSelfBot?, botId?, botUsername?, mentionsJunior?, dedupeKey?, pipelineInvocation?, attributionUserId?, conversationalText? }` |
 | `SlackFileAttachment` | `events.ts` | `{ url, name, mimetype }` |
 | `OnMessageCallback` | `events.ts` | `(event: SlackMessageEvent) => void` |
 

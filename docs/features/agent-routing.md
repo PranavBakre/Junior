@@ -1,11 +1,19 @@
 # Agent Routing
 
+> **Current status (2026-08-15):** Shipped. The layered resolver, selected
+> common profiles, support-channel `lead` alias, provider-neutral catalog
+> checks, and per-agent context flags are live. The iteration sections below
+> are retained as implementation history rather than a statement that routing
+> is still hardcoded or generic.
+
 ## Problem
 
 Different Slack threads need different Claude Code personalities. A thread asking Claude to build a backend feature needs the `build` agent definition (knows the monorepo architecture, CRUD conventions, auth middleware). A thread asking for a PR review needs the `review` agent (diagnostic, posts inline GitHub comments). The bot needs to pick the right agent definition and inject it into the Claude process.
 
 **Who has this problem:** The session manager — it needs to know which agent to use for each thread.
-**What happens today:** Nothing — all threads would get the same generic Claude.
+**Current behavior:** Session routing resolves an agent definition through the
+target-repository → private overlay → public fallback chain, composes its
+selected common profile, and passes the prompt to the selected runner.
 **Painful part:** Agent definitions live in the TARGET repo's `.claude/agents/` (not in junior). The bot needs to read them from the right repo, compose them with thread-specific context, and pass them to Claude. Also: when should the agent type change mid-thread?
 **"Finally" moment:** `!build fix the auth middleware` → Claude responds like a senior backend engineer who knows the Example Org monorepo. `!review PR #4900` → Claude responds like a thorough code reviewer who posts inline GitHub comments.
 

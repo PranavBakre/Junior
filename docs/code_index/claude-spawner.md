@@ -9,7 +9,7 @@ Spawns `claude -p` as a child process, parses stream-json output, and collects s
 | Symbol | File | Purpose |
 |---|---|---|
 | `spawnClaude(session, prompt, config, targetRepoCwd?, botToken?, agentIdentity?)` | `spawner.ts` | Spawn CLI process, stream events, return `SpawnHandle` |
-| `buildClaudeArgs(session, prompt, config, mcpConfigPath?)` | `args.ts` | Build CLI arg array from session state |
+| `buildClaudeArgs(session, prompt, config, cwd, mcpConfigPath?, skillAddDir?)` | `args.ts` | Build CLI arg array from session state, effective policy, and optional assignment skill |
 | `createStreamParser()` | `parser.ts` | Returns `{ feed(chunk): StreamEvent[] }` — buffers partial lines, validates JSON, drops malformed/unknown |
 
 ### Types
@@ -30,7 +30,7 @@ the app-facing result and handle types live in `src/runners/types.ts`.
 buildClaudeArgs(session, prompt, config, mcpConfigPath?)
   │
   ▼
-Bun.spawn(["claude", ...args], { cwd, env })
+Bun.spawn(["claude", ...args], { cwd, env, stdin: "ignore", detached: true })
   │
   ├── stdout ──► StreamParser.feed(chunk) ──► StreamEvent[]
   │     ├── system+init  ──► capture sessionId
@@ -61,12 +61,21 @@ Bun.spawn(["claude", ...args], { cwd, env })
 
 ### MCP config injection
 
-Module-private constant `PROJECT_MCP_CONFIG` resolves to junior's `.mcp.json`. Passed as `--mcp-config` when `cwd` differs from project root AND `session.cwd` is not set. Utility-command spawns (`session.cwd` set) skip MCP — they use cloud integrations, not the local slack-bot MCP.
+`spawner.ts` writes a per-session generated MCP config under `data/mcp-configs/`.
+It is passed for every non-utility run (including Junior-root runs), and utility
+commands with explicit `session.cwd` skip Junior's local MCP wiring. The args
+also add `--strict-mcp-config` and project `--setting-sources` by default so
+developer-global MCP/settings cannot leak into a run. Human-gated agents can
+opt into the Slack approval tool; assignment-scoped skills use `--add-dir`.
 
 ### CLI flags
 
-Always: `-p`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode`.
-Conditional: `--resume <sessionId>`, `--append-system-prompt`, `--model`, `--mcp-config`.
+Always: `-p`, `--output-format stream-json`, `--verbose`, `--max-turns`,
+`--permission-mode`, and (unless disabled) the Junior baseline system prompt.
+Conditional: `--resume <sessionId>` when the native session cwd matches,
+agent system prompts, `--model`, `--allowedTools`, `--disallowedTools`,
+`--add-dir`, `--max-budget-usd`, `--permission-prompt-tool`, `--mcp-config`,
+`--strict-mcp-config`, and `--setting-sources`.
 
 ## Dependencies
 

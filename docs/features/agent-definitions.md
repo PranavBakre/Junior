@@ -1,11 +1,20 @@
 # Agent Definitions
 
+> **Current status (2026-08-15):** Shipped. `AgentRouter` and the trusted
+> catalog load public, private-overlay, and target-repository definitions at
+> runtime; the iteration sections below are retained as implementation history
+> and future cut-list context.
+
 ## Problem
 
 The spawned Claude Code instances need personality and context. A bare `claude -p "fix auth"` with no system prompt produces generic output that doesn't know the repo conventions, doesn't follow the coding rules, doesn't have the right reviewer style. Agent definitions are the markdown files that turn generic Claude into Scotty (backend engineer), Bones (code reviewer), or Uhura (frontend engineer).
 
 **Who has this problem:** Every thread that uses an agent type.
-**What happens today:** example-backend already has 10+ agent definitions in `.claude/agents/`. They work when running Claude Code directly. But the Slack bot needs to load, compose, and inject them.
+**Current behavior:** Junior loads target-repository definitions when present,
+then the private `agents-org` overlay, then its public fallback definitions;
+it composes the selected common profile and injects the result into the
+provider session. Target-repository operational metadata cannot widen the
+trusted catalog.
 **Painful part:** Agent definitions for Example Org repos live in THOSE repos. Junior should not duplicate them. But junior needs its own agents for: (a) generic tasks not tied to a specific repo, (b) developing the bot itself, (c) fallback when target repo has no matching agent.
 **"Finally" moment:** `!build` in a example-backend thread → loads example-backend's build.md agent. `!review` in a junior thread → loads junior's own review.md agent. No duplication. No drift.
 
@@ -18,8 +27,8 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 | `default.md` | The one Junior orchestrator. Handles broad Slack asks; in support channels (session marker `lead`, aliased to this file) also runs the bug pipeline via the `bug-pipeline` common preamble. `lead.md`/`thinker.md` were folded into this file + `common/bug-pipeline.md` in the 3-way merge. |
 | `reproducer.md` | Two-phase Playwright walker — reproduces the bug, then validates the fix. |
 | `review.md` | Code reviewer (6-pass methodology, inline GitHub comments). |
-| `build.md` | Generic backend builder — also the Task-dispatched worker the orchestrator hands fixes to. |
-| `frontend.md` | Generic frontend builder — also the Task-dispatched worker for UI fixes. |
+| `build.md` | Generic backend builder — also the durable-assignment worker the orchestrator hands fixes to. |
+| `frontend.md` | Generic frontend builder — also the durable-assignment worker for UI fixes. |
 | `architect.md` | System architect — specs, data models, state machines. |
 | `pm.md` | Product manager — scoping, iterations, scope cuts. |
 | `common/bug-pipeline.md` | Shared preamble — the merged bug-pipeline playbook (Phase 1 hypotheses + Phase 2 scoping + silence allow-list + merge flow). Appended only to support-channel (`lead`) sessions. |
@@ -41,7 +50,7 @@ Contains org-specific agents and common preamble files that don't belong in the 
 4. No agent (generic Claude with the common preamble alone)
 
 **Loading order for common preamble:**
-1. Exclusive tier — target repo's `.claude/agents/common/*.md` **OR** Junior's public `.claude/agents/common/*.md` (target wins if non-empty; never both).
+1. Per-file fallback tier — for each selected common profile name, the target repo's `.claude/agents/common/<name>.md` wins when present; otherwise Junior's public `.claude/agents/common/<name>.md` supplies that file.
 2. Additive tier — org overlay's `<orgAgentsDir>/common/*.md` (always appended when overlay is configured).
 
 **Per-agent context profile:**

@@ -19,7 +19,7 @@ Resolves agent definitions across a layered search chain (target repo → privat
 | Type | File | Shape |
 |---|---|---|
 | `AgentContextProfile` | `loader.ts` | `{ identity, slack, workspace, threadHistory, agentState: boolean }` |
-| `AgentDefinition` | `loader.ts` | `{ name, description, tools, model, common, prompt, context, username, iconEmoji }` |
+| `AgentDefinition` | `loader.ts` | `{ name, description, tools, model, modelClaude, common, prompt, context (including threadHistoryLimit), permissions, username, iconEmoji, imageUrl }` |
 
 ## Resolution flow
 
