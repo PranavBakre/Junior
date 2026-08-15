@@ -563,32 +563,17 @@ export async function handleWorkflowCreate(
 
   const overlayRel = join(OVERLAY_WORKFLOW_ROOT, `${name}.workflow.md`);
   const publicRel = join(PUBLIC_WORKFLOW_ROOT, `${name}.workflow.md`);
-  const overlayExists = existsSync(join(projectRoot, overlayRel));
-  const publicExists = existsSync(join(projectRoot, publicRel));
-  if (sourceRoot === "public" && overlayExists) {
+  const earlyCollision = createCollision(projectRoot, name, sourceRoot);
+  if (earlyCollision) {
     await recordAudit(deps, {
       actor,
       action: "workflow.create",
       targetId: name,
       result: "error",
-      error: "overlay shadows this name",
+      error: earlyCollision.error,
     });
-    return Response.json({ error: "overlay shadows this name" }, { status: 409 });
+    return Response.json({ error: earlyCollision.error }, { status: 409 });
   }
-  if (
-    (sourceRoot === "public" && publicExists) ||
-    (sourceRoot === "overlay" && overlayExists)
-  ) {
-    await recordAudit(deps, {
-      actor,
-      action: "workflow.create",
-      targetId: name,
-      result: "error",
-      error: "workflow already exists",
-    });
-    return Response.json({ error: "workflow already exists" }, { status: 409 });
-  }
-
   const sourcePath = sourceRoot === "overlay" ? overlayRel : publicRel;
   const ctx = validationContext(deps);
   const validated = tryValidateMarkdown({
@@ -644,6 +629,7 @@ export async function handleWorkflowCreate(
     commitMessage: readOptionalString(body.commitMessage),
     status: 201,
     definition: validated,
+    expectedVersionHash: "",
   });
 }
 
@@ -1124,6 +1110,24 @@ async function commitWorkflowMutation(input: {
     input.deps.registry.pauseReloads();
     let restoreFailed = false;
     try {
+      if (input.kind === "create") {
+        const collision = createCollision(
+          projectRoot,
+          input.name,
+          input.sourceRoot,
+        );
+        if (collision) {
+          await recordAudit(input.deps, {
+            actor: input.actor,
+            action: input.action,
+            targetId: input.name,
+            request: { sourceRoot: input.sourceRoot },
+            result: "error",
+            error: collision.error,
+          });
+          return Response.json({ error: collision.error }, { status: 409 });
+        }
+      }
       const result = await writeDashboardWorkflow({
         projectRoot,
         sourceRoot: input.sourceRoot,
@@ -1144,6 +1148,17 @@ async function commitWorkflowMutation(input: {
       });
       if (!result.ok) {
         restoreFailed = result.code === "restore-failed";
+        if (result.code === "version-hash-mismatch" && input.kind === "create") {
+          await recordAudit(input.deps, {
+            actor: input.actor,
+            action: input.action,
+            targetId: input.name,
+            request: { sourceRoot: input.sourceRoot },
+            result: "error",
+            error: "workflow already exists",
+          });
+          return Response.json({ error: "workflow already exists" }, { status: 409 });
+        }
         if (result.code === "invalid-workflow") {
           await recordAudit(input.deps, {
             actor: input.actor,
@@ -1264,6 +1279,29 @@ function readMarkdown(body: Record<string, unknown>): string | Response {
 
 function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function createCollision(
+  projectRoot: string,
+  name: string,
+  sourceRoot: WorkflowSourceRoot,
+): { error: string } | null {
+  const overlayExists = existsSync(
+    join(projectRoot, OVERLAY_WORKFLOW_ROOT, `${name}.workflow.md`),
+  );
+  const publicExists = existsSync(
+    join(projectRoot, PUBLIC_WORKFLOW_ROOT, `${name}.workflow.md`),
+  );
+  if (sourceRoot === "public" && overlayExists) {
+    return { error: "overlay shadows this name" };
+  }
+  if (
+    (sourceRoot === "public" && publicExists) ||
+    (sourceRoot === "overlay" && overlayExists)
+  ) {
+    return { error: "workflow already exists" };
+  }
+  return null;
 }
 
 function existingRealpath(path: string): string {

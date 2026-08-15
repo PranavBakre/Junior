@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Config } from "../../config.ts";
 import { InMemoryDashboardAuditStore } from "../audit/memory.ts";
 import { hashWorkflowContent } from "../../workflows/definition.ts";
-import type { WorkflowRegistry } from "../../workflows/registry.ts";
+import { WorkflowRegistry } from "../../workflows/registry.ts";
 import { WorkflowScheduler } from "../../workflows/scheduler.ts";
 import { InMemoryWorkflowStore } from "../../workflows/store.ts";
 import type { WorkflowDefinition } from "../../workflows/types.ts";
@@ -630,6 +630,37 @@ describe("workflow create/edit routes", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("serializes overlapping creates of the same name", async () => {
+    const dir = await initJuniorRepo();
+    try {
+      mkdirSync(join(dir, "workflows"), { recursive: true });
+      const registry = new WorkflowRegistry({
+        repos: [],
+        roots: [{ path: join(dir, "workflows"), sourceRoot: "public" }],
+      });
+      await registry.reload();
+      const deps = baseDeps({ registry, projectRoot: dir });
+      const req = () =>
+        jsonWriteReq("POST", "http://127.0.0.1/api/workflows", {
+          name: "newlog",
+          markdown: validMarkdown("newlog"),
+          sourceRoot: "public",
+        });
+      const [first, second] = await Promise.all([
+        handleWorkflowCreate(req(), deps),
+        handleWorkflowCreate(req(), deps),
+      ]);
+      const statuses = [first.status, second.status].sort((a, b) => a - b);
+      expect(statuses).toEqual([201, 409]);
+      const bodies = await Promise.all([first.json(), second.json()]) as Array<{
+        error?: string;
+      }>;
+      expect(bodies.some((body) => body.error === "workflow already exists")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("refuses a name collision in the chosen root", async () => {
     const dir = tempDir();
