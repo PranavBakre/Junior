@@ -1,0 +1,198 @@
+/* =================== copy / resume =================== */
+function resumeCmd(provider, sessionId, resumeCwd) {
+  if (!sessionId) return null;
+  const r = provider === "claude"
+    ? "claude --resume " + sessionId
+    : provider === "codex" || provider === "codex-app-server"
+      ? "codex resume " + sessionId
+      : "opencode --session " + sessionId;
+  return resumeCwd ? "cd " + resumeCwd + " && " + r : r;
+}
+function cmdRow(cmd) {
+  if (!cmd) return '<div class="faint" style="margin-top:8px">no session id</div>';
+  return (
+    '<div class="cmd-row"><code title="' + esc(cmd) + '">' + esc(cmd) + "</code>" +
+    '<button class="copy-btn" type="button" data-cmd="' + esc(cmd) + '">copy</button></div>'
+  );
+}
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".copy-btn");
+  if (!btn) return;
+  await copyText(btn.dataset.cmd || "");
+  btn.textContent = "copied";
+  btn.classList.add("copied");
+  setTimeout(() => { btn.textContent = "copy"; btn.classList.remove("copied"); }, 1500);
+});
+
+/* =================== threads =================== */
+function renderThreadChips() {
+  const counts = { all: sessions.length, busy: 0, idle: 0, draining: 0, error: 0 };
+  for (const s of sessions) {
+    if (s.status === "busy") counts.busy++;
+    else if (s.status === "draining") counts.draining++;
+    else if (s.status === "idle") counts.idle++;
+    if (isErrorSession(s)) counts.error++;
+  }
+  const keys = ["all", "busy", "idle", "draining", "error"];
+  $("th-chips").innerHTML = keys.map((k) =>
+    '<span class="chip' + (thFilter === k ? " on" : "") + '" data-f="' + k + '">' +
+    k + " · " + counts[k] + "</span>"
+  ).join("");
+}
+
+function renderThreads() {
+  renderThreadChips();
+  const rows = sessions.filter((t) => {
+    if (thFilter === "error") {
+      if (!isErrorSession(t)) return false;
+    } else if (thFilter !== "all" && t.status !== thFilter) {
+      return false;
+    }
+    if (thQuery) {
+      const hay = ((t.channel || "") + " " + t.threadId + " " + (t.targetRepo || "")).toLowerCase();
+      if (!hay.includes(thQuery)) return false;
+    }
+    return true;
+  });
+  if (rows.length === 0) {
+    $("th-list").innerHTML = '<div class="empty">' +
+      (sessions.length === 0 ? "No active threads." : "No threads match.") + "</div>";
+    return;
+  }
+  $("th-list").innerHTML = rows.map((t) => {
+    const agents = (t.agents || []).map((a) =>
+      '<span class="apill ' + esc(a.status) + '">' + esc(a.agentName) + " · " + esc(a.status) + "</span>"
+    ).join("") || '<span class="faint" style="font-size:11.5px">no agents</span>';
+    const err = t.lastError
+      ? '<div class="err-inline">✕ ' + esc(t.lastError.type) + ": " + esc(t.lastError.message) + "</div>"
+      : "";
+    const stuck = t.status === "busy" && t.lastActivity && Date.now() - t.lastActivity > STUCK_MS
+      ? ' <span class="apill busy">silent ' + ago(t.lastActivity) + "</span>"
+      : "";
+    const pend = pendingCount(t.pendingMessages);
+    return (
+      '<div class="th-row" data-open-thread="' + esc(t.threadId) + '">' +
+      '<div><div class="chan">' + esc(t.channel || "—") +
+      (t.muted ? ' <span class="apill">muted</span>' : "") +
+      (t.dormant ? ' <span class="apill">dormant</span>' : "") + "</div>" +
+      '<div class="tid">' + esc(t.threadId) + "</div>" +
+      '<div class="meta">' + esc(t.targetRepo || "no repo") +
+      (t.baseRef ? " · " + esc(t.baseRef) : "") +
+      (t.agentType ? " · " + esc(t.agentType) : "") + "</div>" + err + "</div>" +
+      "<div>" + pill(t.status) + stuck +
+      (pend ? '<div class="meta" style="margin-top:4px">' + pend + " buffered</div>" : "") + "</div>" +
+      '<div class="agents-cell">' + agents + "</div>" +
+      '<div class="last">' + ago(t.lastActivity) + " ago</div></div>"
+    );
+  }).join("");
+}
+
+$("th-chips").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  thFilter = chip.dataset.f;
+  renderThreads();
+});
+$("th-search").addEventListener("input", (e) => {
+  thQuery = e.target.value.toLowerCase();
+  renderThreads();
+});
+$("th-list").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-open-thread]");
+  if (row) openDrawer(row.dataset.openThread);
+});
+
+async function openDrawer(threadId) {
+  drawerThreadId = threadId;
+  $("drawer").innerHTML = '<button class="close" type="button" id="drawer-close">esc</button><div class="empty">loading…</div>';
+  $("drawer").classList.add("open");
+  $("drawer-scrim").classList.add("open");
+  $("drawer-close").addEventListener("click", closeDrawer);
+
+  const res = await safeFetch("/api/sessions/" + encodeURIComponent(threadId));
+  if (drawerThreadId !== threadId) return;
+  if (!res.ok || !res.data || !res.data.session) {
+    $("drawer").innerHTML =
+      '<button class="close" type="button" id="drawer-close">esc</button>' +
+      '<div class="empty">Failed to load session detail.</div>';
+    $("drawer-close").addEventListener("click", closeDrawer);
+    return;
+  }
+  const t = res.data.session;
+  const provider = t.provider || "opencode";
+  const cwd = t.resumeCwd || null;
+  const leadId = t.leadSessionId || t.sessionId;
+  const agents = Array.isArray(t.agents) ? t.agents : [];
+  const pend = pendingCount(t.pendingMessages);
+  const slackAction = (t.slackPermalink || res.data.slackPermalink)
+    ? '<a class="slack-action" href="' + esc(t.slackPermalink || res.data.slackPermalink) +
+      '" target="_blank" rel="noopener noreferrer">Open thread in Slack <span aria-hidden="true">↗</span></a>'
+    : "";
+
+  const agentHtml = agents.length
+    ? agents.map((a) => {
+        const ap = a.provider || provider;
+        const acwd = cwd;
+        return (
+          '<div class="agent-card"><div class="top"><b>' + esc(a.agentName) + "</b>" + pill(a.status) +
+          '<span class="apill" style="margin-left:auto">' + esc(ap) + "</span></div>" +
+          '<div class="meta">sid <code>' + esc(a.sessionId || "—") + "</code><br/>last activity " +
+          ago(a.lastActivity) + " ago" +
+          (pendingCount(a.pendingMessages) ? " · " + pendingCount(a.pendingMessages) + " buffered" : "") +
+          "</div>" +
+          cmdRow(resumeCmd(ap, a.sessionId, acwd)) + "</div>"
+        );
+      }).join("")
+    : '<div class="faint">no agent sessions yet</div>';
+
+  $("drawer").innerHTML =
+    '<button class="close" type="button" id="drawer-close">esc</button>' +
+    "<h3>" + esc(t.channel || "thread") + "</h3>" +
+    '<div class="mono" style="font-size:11px;color:var(--accent)">' + esc(t.threadId) + "</div>" +
+    slackAction +
+    '<div style="margin-top:10px">' + pill(t.status) +
+    (pend ? ' <span class="apill">' + pend + " buffered</span>" : "") +
+    (t.muted ? ' <span class="apill">muted</span>' : "") +
+    (t.dormant ? ' <span class="apill">dormant</span>' : "") + "</div>" +
+    (t.lastError
+      ? '<div class="err-inline" style="margin-top:10px">✕ ' + esc(t.lastError.type) + ": " +
+        esc(t.lastError.message) + "</div>"
+      : "") +
+    '<div class="kv">' +
+    '<span class="k">lead session</span><code>' + esc(leadId || "—") + "</code>" +
+    '<span class="k">provider</span><span>' + esc(provider) + "</span>" +
+    '<span class="k">agent type</span><span>' + esc(t.agentType || "—") + "</span>" +
+    '<span class="k">target repo</span><span>' + esc(t.targetRepo || "—") +
+    (t.baseRef ? " @ " + esc(t.baseRef) : "") + "</span>" +
+    '<span class="k">worktree</span><span>' + (t.hasWorktree ? "yes" : "no") + "</span>" +
+    '<span class="k">resume cwd</span><span class="mono" style="font-size:11px">' +
+    esc(t.resumeCwd || "—") + "</span>" +
+    '<span class="k">last activity</span><span>' + ago(t.lastActivity) + " ago</span>" +
+    '<span class="k">driver</span><span>' + esc(t.driverMode || "—") + "</span>" +
+    "</div>" +
+    '<h3 class="sect">Resume lead session (' + esc(provider) + ")</h3>" +
+    cmdRow(resumeCmd(provider, leadId, cwd)) +
+    '<h3 class="sect">Agent sessions · ' + agents.length + "</h3>" + agentHtml;
+
+  $("drawer-close").addEventListener("click", closeDrawer);
+}
+
+function closeDrawer() {
+  drawerThreadId = null;
+  $("drawer").classList.remove("open");
+  $("drawer-scrim").classList.remove("open");
+}
+$("drawer-scrim").addEventListener("click", closeDrawer);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });

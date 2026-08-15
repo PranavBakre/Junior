@@ -137,6 +137,31 @@ export function startHttpServer(deps: HttpServerDeps): void {
           return new Response("Pipeline worker not found", { status: 404 });
         }
 
+        if (url.pathname.startsWith("/js/") || url.pathname.startsWith("/assets/")) {
+          const relative = decodeURIComponent(url.pathname.slice(1));
+          if (
+            !relative ||
+            relative.includes("\0") ||
+            relative.split("/").some((part) => part === "" || part === "." || part === "..")
+          ) {
+            return new Response("not found", { status: 404 });
+          }
+          const resolved = path.resolve(PUBLIC_DIR, relative);
+          if (!resolved.startsWith(PUBLIC_DIR + path.sep)) {
+            return new Response("not found", { status: 404 });
+          }
+          const file = Bun.file(resolved);
+          if (await file.exists()) {
+            return new Response(file, {
+              headers: {
+                "Content-Type": "text/javascript; charset=utf-8",
+                "Cache-Control": "no-cache",
+              },
+            });
+          }
+          return new Response("not found", { status: 404 });
+        }
+
         if (url.pathname === "/api/health") {
           return await handleHealth(store, config, startedAt, {
             usageStore,

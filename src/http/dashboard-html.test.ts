@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 describe("dashboard resume commands", () => {
   it("uses the CLI that owns each provider session", async () => {
-    const html = await Bun.file(resolve(import.meta.dirname, "../../public/index.html")).text();
+    const html = await Bun.file(resolve(import.meta.dirname, "../../public/js/threads.js")).text();
     const source = html.match(/function resumeCmd\(provider, sessionId, resumeCwd\) \{[\s\S]*?\n\}/)?.[0];
     expect(source).toBeDefined();
     const resumeCmd = new Function(`${source}; return resumeCmd;`)() as (
