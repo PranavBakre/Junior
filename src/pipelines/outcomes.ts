@@ -545,7 +545,6 @@ function authenticateAssignment(
 
   // Orchestrators that own the run may report on behalf of any assignment.
   const isOrch =
-    caller === "lead" ||
     caller === "default" ||
     caller === "junior" ||
     caller === run.ownerAgent ||

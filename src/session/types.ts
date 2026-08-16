@@ -199,8 +199,8 @@ export interface ThreadSession {
   lastActivity: number;
   lastError: { type: string; message: string; timestamp: number } | null;
   createdAt: number;
-  /** Thread-specific default agent override. When set, overrides channel default (e.g., lead in support channels). */
-  defaultAgent?: "junior" | "lead" | null;
+  /** Thread-specific default agent override. When set, overrides channel default. */
+  defaultAgent?: "junior" | null;
   /**
    * Which Claude driver runs this thread's turns. "headless" is the
    * historical default (`claude -p` per turn, billed as API credits under
@@ -212,8 +212,8 @@ export interface ThreadSession {
   /** Deterministic tmux session name for the top-level agent. Null until first tmux turn. */
   tmuxSessionName: string | null;
   /**
-   * Which top-level agent owns the thread's tmux session — "lead" for support
-   * channels, "default" elsewhere. Persisted alongside `tmuxSessionName` so
+   * Which top-level agent owns the thread's tmux session. Persisted alongside
+   * `tmuxSessionName` so
    * reconciliation/eviction can address the right (threadId, agentName) key
    * without guessing. Null until the first tmux turn.
    */
@@ -234,7 +234,7 @@ export interface ThreadSession {
   supersededTurnGeneration?: string | null;
   /** Completion won the publication race; later follow-ups must buffer. */
   activeTurnCompletionClaimed?: boolean;
-  /** Number of automatic lead-pipeline guard continuations attempted for the current turn. */
+  /** Number of automatic pipeline-guard continuations attempted for the current turn. */
   pipelineGuardRetryCount?: number;
   /**
    * Compare-and-set version for concurrent thread-session updates. Incremented

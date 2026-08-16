@@ -31,7 +31,7 @@ describe("parseAgentDirectives", () => {
 });
 
 describe("AgentDispatcher", () => {
-  it("routes unprefixed support-channel messages to lead", async () => {
+  it("routes unprefixed support-channel messages to Junior", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
@@ -41,8 +41,7 @@ describe("AgentDispatcher", () => {
 
     await router.handleMessage(makeEvent({ text: "plain bug" }));
 
-    expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
-    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 
@@ -92,9 +91,8 @@ describe("AgentDispatcher", () => {
     );
 
     // Reproducer may not dispatch review (WORKER_DISPATCH_ALLOW is empty after
-    // the thinker merge) — the directive is stripped and re-routed to lead.
-    expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
-    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    // the thinker merge) — the directive is stripped and re-routed to Junior.
+    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 
@@ -162,7 +160,7 @@ describe("AgentDispatcher", () => {
     expect(targets).toContain("reproducer");
   });
 
-  it("forwards worker no-directive responses to lead", async () => {
+  it("forwards worker no-directive responses to Junior", async () => {
     const managerMock = {
       handleMessage: mock(async (_event: SlackMessageEvent) => {}),
       handleLeadMessage: mock(async (_event: SlackMessageEvent) => {}),
@@ -178,8 +176,7 @@ describe("AgentDispatcher", () => {
       }),
     );
 
-    expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
-    expect(managerMock.handleMessage).not.toHaveBeenCalled();
+    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 
@@ -463,8 +460,8 @@ describe("AgentDispatcher !devserver interception", () => {
 
     await router.handleMessage(makeEvent({ channel: "CBUGS", text: "plain bug message" }));
 
-    // Routed to lead (support channel, no directive).
-    expect(managerMock.handleLeadMessage).toHaveBeenCalledTimes(1);
+    // Routed to Junior (support channel, no directive).
+    expect(managerMock.handleMessage).toHaveBeenCalledTimes(1);
     expect(managerMock.handleAgentMessage).not.toHaveBeenCalled();
   });
 });

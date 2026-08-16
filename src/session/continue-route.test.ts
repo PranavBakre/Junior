@@ -7,10 +7,10 @@ function sessionWith(overrides: Parameters<typeof Object.assign>[1] = {}) {
 }
 
 describe("resolveContinueRoute", () => {
-  it("routes lead to the top-level lead handle", () => {
+  it("maps legacy lead requests to the top-level default handle", () => {
     expect(resolveContinueRoute("lead", sessionWith())).toEqual({
       kind: "top-level",
-      handle: "lead",
+      handle: "default",
     });
   });
 
@@ -31,7 +31,7 @@ describe("resolveContinueRoute", () => {
   it("uses defaultAgent then activeAgentName then default when the request is missing", () => {
     expect(resolveContinueRoute(undefined, sessionWith({ defaultAgent: "lead" }))).toEqual({
       kind: "top-level",
-      handle: "lead",
+      handle: "default",
     });
     expect(resolveContinueRoute(undefined, sessionWith({
       defaultAgent: "junior",
@@ -42,7 +42,7 @@ describe("resolveContinueRoute", () => {
     });
     expect(resolveContinueRoute(undefined, sessionWith({ activeAgentName: "lead" }))).toEqual({
       kind: "top-level",
-      handle: "lead",
+      handle: "default",
     });
     expect(resolveContinueRoute(undefined, sessionWith())).toEqual({
       kind: "top-level",

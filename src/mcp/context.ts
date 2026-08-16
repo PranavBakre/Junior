@@ -202,7 +202,7 @@ function safeEqualHex(a: string, b: string): boolean {
   }
 }
 
-function topLevelAgentForSession(session: ThreadSession): "lead" | "default" {
-  if (session.defaultAgent === "lead" || session.agentType === "lead") return "lead";
+function topLevelAgentForSession(session: ThreadSession): "default" {
+  void session;
   return "default";
 }

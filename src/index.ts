@@ -171,12 +171,12 @@ const responder = new SlackResponder(app);
 pipelineAudit = ({ channelId, threadId, text }) =>
   responder.postResponse(channelId, threadId, text).then(() => undefined);
 const autoTriggerChannels = new Set(Object.keys(config.channelDefaults));
-// Only channels whose default agent is "lead" go through the support router —
-// other auto-trigger channels (e.g., a build channel default) keep the
-// existing single-session path.
+// Configured default-agent channels are support channels. They use the same
+// Junior orchestrator as every other channel; the channel classification only
+// enables support-specific routing and pipeline guards.
 const supportChannels = new Set(
   Object.entries(config.channelDefaults)
-    .filter(([, def]) => def.agentType === "lead")
+    .filter(([, def]) => def.agentType === "default" || def.agentType === "junior")
     .map(([channel]) => channel),
 );
 const supportRouter = new AgentDispatcher(sessionManager, supportChannels, {
@@ -258,7 +258,7 @@ const workflowController = new WorkflowController({
 
 sessionManager.onResponse = async (session, response) => {
   const prepared = prepareSlackResponseWithActions(response);
-  const agentName = session.activeAgentName ?? "lead";
+  const agentName = session.activeAgentName ?? "default";
   log.info(
     "response",
     `thread=${session.threadId} agent=${agentName} len=${response.length} willPost=${prepared !== null} actions=${prepared?.actions.length ?? 0}`,
@@ -309,7 +309,7 @@ sessionManager.onResponse = async (session, response) => {
 };
 
 sessionManager.onEvent = (session, event) => {
-  const agentName = session.activeAgentName ?? "lead";
+  const agentName = session.activeAgentName ?? "default";
   if (event.type === "init") {
     log.info("session", `thread=${session.threadId} agent=${agentName} provider=${event.provider} sessionId=${event.sessionId}`);
   }
@@ -368,7 +368,7 @@ sessionManager.onTurnReaction = (action, channel, messageTs, emoji) => {
 };
 
 sessionManager.onError = (session, error) => {
-  const agentName = session.activeAgentName ?? "lead";
+  const agentName = session.activeAgentName ?? "default";
   log.error("error", `thread=${session.threadId} agent=${agentName} ${error ?? "Unknown error"}`);
   const safeError = sanitizeErrorForSlack(error);
   responder.deleteStatus(session.channel, session.threadId, agentName);

@@ -1018,7 +1018,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
       }
 
       const session = await sessionManager.getSession(runContext.threadId);
-      const callerInvocation = runContext.agent === "default" || runContext.agent === "lead"
+      const callerInvocation = runContext.agent === "default"
         ? session?.activePipelineInvocation
         : session?.agentSessions?.[runContext.agent]?.activePipelineInvocation;
       if (pipelineRuntime && callerInvocation) {

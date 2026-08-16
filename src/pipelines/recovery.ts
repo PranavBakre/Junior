@@ -145,14 +145,12 @@ export async function reconcileStalePipelineAssignments(input: {
       if (assignment.status !== "pending" && assignment.status !== "leased") {
         continue;
       }
-      const ownerBusy = assignment.targetAgent === "lead" ||
-          assignment.targetAgent === "default" || assignment.targetAgent === "junior"
+      const ownerBusy = assignment.targetAgent === "default" || assignment.targetAgent === "junior"
         ? session.status === "busy" || session.status === "draining"
         : session.agentSessions?.[assignment.targetAgent]?.status === "busy";
       if (ownerBusy) continue;
       const activeInvocation =
-        assignment.targetAgent === "lead" ||
-          assignment.targetAgent === "default" || assignment.targetAgent === "junior"
+        assignment.targetAgent === "default" || assignment.targetAgent === "junior"
           ? session.activePipelineInvocation
           : session.agentSessions?.[assignment.targetAgent]
             ?.activePipelineInvocation;

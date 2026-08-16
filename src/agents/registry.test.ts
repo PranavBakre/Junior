@@ -38,7 +38,6 @@ describe("trusted agent catalog", () => {
         "feature-metrics",
         "frontend",
         "github-access",
-        "lead",
         "onboard-member",
         "onboarding",
         "oogway",
@@ -53,9 +52,9 @@ describe("trusted agent catalog", () => {
   it("resolves aliases and symbolic orchestrator", () => {
     expect(canonicalAgentName("junior")).toBe("default");
     expect(resolveAgentManifest("junior")?.name).toBe("default");
-    expect(resolveOrchestratorName("support")).toBe("lead");
+    expect(resolveOrchestratorName("support")).toBe("default");
     expect(resolveOrchestratorName("default")).toBe("default");
-    expect(resolveHandoffTarget("orchestrator", "support")).toBe("lead");
+    expect(resolveHandoffTarget("orchestrator", "support")).toBe("default");
     expect(resolveHandoffTarget("orchestrator", "default")).toBe("default");
   });
 
@@ -68,7 +67,6 @@ describe("trusted agent catalog", () => {
       "review",
       "reproducer",
       "default",
-      "lead",
       "onboard-member",
     ]) {
       const manifest = resolveAgentManifest(name);
@@ -90,7 +88,6 @@ describe("handoff graph", () => {
     expect(registryAllowsHandoff("pm", "build")).toBe(true);
     expect(registryAllowsHandoff("pm", "frontend")).toBe(true);
     expect(registryAllowsHandoff("pm", "orchestrator", "support")).toBe(true);
-    expect(registryAllowsHandoff("pm", "lead", "support")).toBe(true);
     expect(registryAllowsHandoff("pm", "default", "default")).toBe(true);
     expect(registryAllowsHandoff("pm", "review")).toBe(false);
 
@@ -129,7 +126,7 @@ describe("handoff graph", () => {
   });
 
   it("lets orchestrators fan out to workers", () => {
-    for (const orch of ["default", "lead", "junior"]) {
+    for (const orch of ["default", "junior"]) {
       expect(registryAllowsHandoff(orch, "build")).toBe(true);
       expect(registryAllowsHandoff(orch, "review")).toBe(true);
       expect(registryAllowsHandoff(orch, "pm")).toBe(true);
@@ -219,14 +216,12 @@ describe("capabilities", () => {
 
   it("grants pipeline starts only to trusted orchestrators", () => {
     expect(hasCapability("default", "pipeline-run-start")).toBe(true);
-    expect(hasCapability("lead", "pipeline-run-start")).toBe(true);
     expect(hasCapability("junior", "pipeline-run-start")).toBe(true);
     expect(hasCapability("build", "pipeline-run-start")).toBe(false);
     expect(hasCapability("review", "pipeline-run-start")).toBe(false);
   });
 
   it("classifies orchestrators", () => {
-    expect(isCatalogOrchestrator("lead")).toBe(true);
     expect(isCatalogOrchestrator("default")).toBe(true);
     expect(isCatalogOrchestrator("junior")).toBe(true);
     expect(isCatalogOrchestrator("build")).toBe(false);

@@ -4,15 +4,10 @@ import { loadAgentDefinition } from "./loader.ts";
 import type { AgentDefinition } from "./loader.ts";
 
 /**
- * Session agent names that resolve to another agent's definition file. `lead`
- * and `thinker` retired as standalone agents in the 3-way orchestrator merge:
- * both now use `default.md`. `lead` survives only as a support-channel session
- * marker (prod CHANNEL_DEFAULTS) — the alias keeps that marker working without
- * a config migration, and composeSystemPrompt layers the bug-pipeline preamble
- * on top for those sessions.
+ * `thinker` retired as a standalone agent and resolves to `default.md` for
+ * persisted pre-merge sessions.
  */
 const AGENT_DEFINITION_ALIASES: Record<string, string> = {
-  lead: "default",
   thinker: "default",
 };
 
@@ -87,7 +82,6 @@ export class AgentRouter {
         : session.activeAgentName ?? rawName;
     const isTopLevelOrchestrator =
       authorizationName === "default" ||
-      authorizationName === "lead" ||
       authorizationName === "junior" ||
       authorizationName === "thinker";
 
@@ -99,8 +93,8 @@ export class AgentRouter {
       commonProfile.push("pipeline-start");
     }
 
-    // Support-channel sessions (marker "lead", plus resumed pre-merge "thinker"
-    // sessions) run the bug pipeline. Append the pipeline preambles AFTER the
+    // Active bug runs (plus resumed pre-merge "thinker" sessions) receive the
+    // bug-pipeline contracts. Append the pipeline preambles AFTER the
     // agent's declared profile so they participate like any other common name:
     // readProfileMarkdownFiles resolves them through the target-repo → public
     // tiers, and the org overlay tier can supplement or override them by the
@@ -109,7 +103,6 @@ export class AgentRouter {
     // there — the lean default profile deliberately omits them for casual
     // threads. Casual "default" sessions get none of this.
     if (
-      rawName === "lead" ||
       rawName === "thinker" ||
       (isTopLevelOrchestrator && session.activePipelineKind === "bug")
     ) {

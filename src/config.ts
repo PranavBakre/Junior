@@ -398,7 +398,7 @@ export function loadConfig(): Config {
     channelDefaults: parseChannelDefaults(
       optional(
         "CHANNEL_DEFAULTS",
-        '{"C05557KKV37":{"agentType":"lead"}}',
+        '{"C05557KKV37":{"agentType":"default"}}',
       ),
     ),
     adminSlackUserId: process.env.ADMIN_SLACK_USER_ID?.trim() || null,

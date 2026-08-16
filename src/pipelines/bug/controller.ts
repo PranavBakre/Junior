@@ -82,7 +82,7 @@ export type CreateBugRunInput = {
   riskClass?: RiskClass | null;
   deadlineAt?: number | null;
   runId?: string;
-  /** Initial target: debug → lead/orchestrator; reproducer → reproducer. */
+  /** Initial target: debug → Junior/default; reproducer → reproducer. */
   targetAgent?: string;
   provenance?: PipelineStartProvenance;
   /** Exact authenticated default assignment being promoted. */
@@ -149,8 +149,8 @@ export async function createBugRun(
   const runId = input.runId ?? crypto.randomUUID();
   const targetAgent =
     input.targetAgent ??
-    (input.startKind === "reproducer" ? "reproducer" : "lead");
-  const ownerAgent = input.ownerAgent ?? "lead";
+    (input.startKind === "reproducer" ? "reproducer" : "default");
+  const ownerAgent = input.ownerAgent ?? "default";
 
   const run: BugRun = {
     id: runId,
@@ -337,8 +337,8 @@ async function promoteDefaultToBug(
     likelyExpected: input.likelyExpected,
   });
   const targetAgent = input.targetAgent ??
-    (input.startKind === "reproducer" ? "reproducer" : "lead");
-  const ownerAgent = input.ownerAgent ?? "lead";
+    (input.startKind === "reproducer" ? "reproducer" : "default");
+  const ownerAgent = input.ownerAgent ?? "default";
   const childId = crypto.randomUUID();
   const child = {
     id: childId,
@@ -1062,7 +1062,6 @@ function assignmentMatchesGitHubEventType(
     case "github.pr.checks_changed":
       return (
         objective.includes("check") ||
-        assignment.targetAgent === "lead" ||
         assignment.targetAgent === "default"
       );
     case "github.pr.merged":
@@ -1070,7 +1069,6 @@ function assignmentMatchesGitHubEventType(
         return (
           objective.includes("dev") ||
           run.phase === "dev-merge" ||
-          assignment.targetAgent === "lead" ||
           assignment.targetAgent === "default"
         );
       }
@@ -1078,12 +1076,11 @@ function assignmentMatchesGitHubEventType(
         return (
           objective.includes("main") ||
           run.phase === "main-merge-gate" ||
-          assignment.targetAgent === "lead" ||
           assignment.targetAgent === "default"
         );
       }
       return (
-        assignment.targetAgent === "lead" || assignment.targetAgent === "default"
+        assignment.targetAgent === "default"
       );
     case "github.pr.review_decision_changed":
       return (
@@ -1103,7 +1100,6 @@ function assignmentMatchesGitHubEventType(
     case "github.pr.reopened":
     case "github.pr.base_changed":
       return (
-        assignment.targetAgent === "lead" ||
         assignment.targetAgent === "default" ||
         assignment.targetAgent === "review"
       );

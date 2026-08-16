@@ -222,7 +222,7 @@ function isTargetBusy(
   targetAgent: string,
 ): boolean {
   if (!session) return false;
-  if (targetAgent === "lead" || targetAgent === "default" || targetAgent === "junior") {
+  if (targetAgent === "default" || targetAgent === "junior") {
     return session.status === "busy";
   }
   const agent = session.agentSessions?.[targetAgent];

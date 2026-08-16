@@ -20,7 +20,7 @@ describe("resolveDispatchAgent", () => {
     ).toBe("default");
   });
 
-  it("routes review make-fix to the lead orchestrator session in support channels", () => {
+  it("routes review make-fix to Junior in support channels", () => {
     expect(
       resolveDispatchAgent(
         {
@@ -35,7 +35,7 @@ describe("resolveDispatchAgent", () => {
         },
         new Set(["C-BUGS"]),
       ),
-    ).toBe("lead");
+    ).toBe("default");
   });
 
   it("leaves other dispatch actions unchanged", () => {

@@ -10,7 +10,7 @@ export interface BugPipelineState {
   slackThread?: string;
 }
 
-export type LeadPipelineValidation =
+export type OrchestratorPipelineValidation =
   | { action: "allow"; state?: BugPipelineState }
   | { action: "continue"; state: BugPipelineState; reason: string; prompt: string }
   | { action: "blocker"; state: BugPipelineState; reason: string; message: string };
@@ -36,8 +36,8 @@ export function validateLeadPipelineResponse(
   response: string,
   supportChannels: Set<string>,
   retryCount: number,
-): LeadPipelineValidation {
-  if (session.activeAgentName !== "lead") return { action: "allow" };
+): OrchestratorPipelineValidation {
+  if (session.activeAgentName !== "default") return { action: "allow" };
   if (!supportChannels.has(session.channel)) return { action: "allow" };
 
   const state = findBugPipelineState(session);
@@ -53,8 +53,8 @@ export function validateLeadPipelineResponse(
   }
 
   const reason = STATEFUL_WORKER_DONE_RE.test(trimmed)
-    ? "lead returned stateless observability worker output"
-    : `lead did not advance bug pipeline from status=${state.status}`;
+    ? "Junior returned stateless observability worker output"
+    : `Junior did not advance bug pipeline from status=${state.status}`;
 
   if (retryCount > 0) {
     return {
@@ -62,7 +62,7 @@ export function validateLeadPipelineResponse(
       state,
       reason,
       message: [
-        `Blocker: lead could not advance bug ${state.bugId ?? "(unknown)"} after observability.`,
+        `Blocker: Junior could not advance bug ${state.bugId ?? "(unknown)"} after observability.`,
         `Reason: ${reason}.`,
         "Needs human review before continuing.",
       ].join("\n"),
@@ -89,7 +89,7 @@ function buildContinuationPrompt(
   reason: string,
 ): string {
   return [
-    "Your previous lead turn ended before advancing the bug pipeline.",
+    "Your previous Junior turn ended before advancing the bug pipeline.",
     `Guard reason: ${reason}.`,
     `Bug: ${state.product ?? "unknown"}/${state.bugId ?? "unknown"} status=${state.status ?? "unknown"}.`,
     "",

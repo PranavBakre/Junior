@@ -194,7 +194,7 @@ export function registerEventHandlers(
     // channels keep the legacy self-filter to avoid ordinary response loops.
     // Exception: self-bot messages that contain a `!<persistent-agent>`
     // directive line are let through so an orchestrator (default Junior or
-    // lead) can hand off to a worker from any channel — the directive is the
+    // Junior can hand off to a worker from any channel — the directive is the
     // explicit intent signal, so it's no longer "incidental self-bot chatter".
     if (isSelfBot && !isAutoTrigger && !hasDirective) {
       logDrop("self-bot", evMeta);

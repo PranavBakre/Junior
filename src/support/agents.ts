@@ -11,8 +11,8 @@ import { log } from "../logger.ts";
 import type { AgentIdentity } from "../session/types.ts";
 
 /**
- * Core agents — part of the open-source architecture. Orchestrators (lead,
- * default) and bug-pipeline workers (reproducer, review) plus the
+ * Core agents — part of the open-source architecture. Junior's default
+ * orchestrator and bug-pipeline workers (reproducer, review) plus the
  * echo debug agent. Identities live in code because these names are
  * referenced from junior's source (special-cases in `manager.ts`, the
  * `isOrchestratorAgent` set, attribution-suffix logic, etc.) — they're part
@@ -26,13 +26,9 @@ import type { AgentIdentity } from "../session/types.ts";
 export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   // Default Junior — the bot's main face, responds to @mentions in any channel.
   // No iconEmoji: uses the Slack app's configured profile picture instead of
-  // overriding it with an emoji. Workers and lead use emoji to distinguish
-  // their posts from default Junior.
+  // overriding it with an emoji. Workers use emoji to distinguish their posts
+  // from Junior.
   default: { username: "Junior" },
-  // Lead — the bug-pipeline orchestrator. Keeps the Junior brand association
-  // but disambiguates from default Junior so `agentForUsername` can resolve
-  // self-bot posts back to the right role.
-  lead: { username: "Junior (Lead)", iconEmoji: ":face_with_cowboy_hat:" },
   reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
   echo: { username: "Echo", iconEmoji: ":speech_balloon:" },
@@ -119,13 +115,11 @@ export async function loadOverlayIdentities(dirPath: string): Promise<void> {
 }
 
 /**
- * Orchestrator agents — they may dispatch any registered worker. Both share
- * the same dispatch power; they differ in slack identity and which channels
- * route to them. The check at the router layer (and dispatch-allow block) uses
- * this set, so adding a new orchestrator is one edit, not a hunt across files.
+ * Orchestrator agents may dispatch any registered worker. The check at the
+ * router layer (and dispatch-allow block) uses this set, so adding a new
+ * orchestrator is one edit, not a hunt across files.
  */
 const ORCHESTRATOR_AGENTS: ReadonlySet<string> = new Set([
-  "lead",
   "default",
   "junior",
 ]);
@@ -155,7 +149,7 @@ export function agentForUsername(username?: string): string | null {
 /**
  * Worker → worker dispatches that bypass the orchestrator-only invariant.
  *
- * The orchestrator (lead/default) always dispatches anything. Workers normally
+ * Junior always dispatches anything. Workers normally
  * can't dispatch — their directives are stripped and the message is re-routed
  * to the orchestrator as plain text. Empty since the 3-way merge retired
  * thinker: the orchestrator now runs Phase 1/2 itself and emits `!reproducer` /
@@ -242,11 +236,11 @@ export function canDispatch(
 }
 
 /**
- * Persistent agents this agent may dispatch via `!<agent>`. Lead may dispatch
+ * Persistent agents this agent may dispatch via `!<agent>`. Junior may dispatch
  * any registered persistent agent; workers are restricted to
  * WORKER_DISPATCH_ALLOW. Returns an empty array for agents with no dispatch
- * capability — they should re-route requests through lead (e.g. via plain
- * commentary that lead's next turn reads).
+ * capability — they should re-route requests through Junior (e.g. via plain
+ * commentary that Junior's next turn reads).
  *
  * Legacy-authoritative for Slack routing. Pipeline code should prefer
  * `canDispatch` + the trusted catalog handoff graph.
@@ -255,7 +249,7 @@ export function dispatchableAgentsFor(agentName: string): string[] {
   ensureShadowResolve();
 
   if (isOrchestratorAgent(agentName)) {
-    // Orchestrators (lead, default Junior) may dispatch any registered worker.
+    // Junior may dispatch any registered worker.
     // Exclude self, the other orchestrator, and echo.
     return Object.keys(AGENT_IDENTITIES).filter(
       (name) => !isOrchestratorAgent(name) && name !== "echo",
@@ -296,7 +290,7 @@ export function shadowResolveAgentCatalog(): void {
       );
     }
   }
-  for (const name of ["lead", "default", "junior"] as const) {
+  for (const name of ["default", "junior"] as const) {
     if (isOrchestratorAgent(name) && !isCatalogOrchestrator(name) && name !== "junior") {
       divergences.push(
         `legacy orchestrator "${name}" missing from trusted catalog`,
@@ -310,7 +304,7 @@ export function shadowResolveAgentCatalog(): void {
   // Identity coverage: catalog roles that post to Slack should have identities.
   // Product roles (pm/architect/build/frontend) intentionally may lack public
   // Slack identities — they are internal/pipeline dispatch targets.
-  const slackFacing = new Set(["default", "lead", "review", "reproducer"]);
+  const slackFacing = new Set(["default", "review", "reproducer"]);
   for (const name of slackFacing) {
     if (!AGENT_IDENTITIES[name]) {
       divergences.push(`slack-facing catalog agent "${name}" missing AGENT_IDENTITIES entry`);
@@ -363,7 +357,7 @@ export function buildDispatchAllowBlock(agentName: string): string {
   const lines = ["<dispatch-allow>"];
   if (allowed.length === 0) {
     lines.push(
-      "You may NOT emit `!<agent>` directives. Any directive you write will be stripped by the router and re-routed to lead as plain text. If you need another agent to act, describe what you need in your Slack message — lead reads the thread and decides whether to dispatch.",
+      "You may NOT emit `!<agent>` directives. Any directive you write will be stripped by the router and re-routed to Junior as plain text. If you need another agent to act, describe what you need in your Slack message — Junior reads the thread and decides whether to dispatch.",
     );
   } else {
     lines.push(

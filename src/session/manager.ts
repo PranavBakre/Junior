@@ -514,10 +514,6 @@ export class SessionManager {
     return false;
   }
 
-  async handleLeadMessage(event: SlackMessageEvent): Promise<void> {
-    await this.runSingleSession(event, "lead");
-  }
-
   async handleAgentMessage(
     event: SlackMessageEvent,
     agentName: string,
@@ -529,9 +525,6 @@ export class SessionManager {
     event: SlackMessageEvent,
     agentName: string,
   ): Promise<DashboardInjectResult> {
-    if (agentName === "lead") {
-      return this.runSingleSession(event, "lead");
-    }
     if (agentName === "default") {
       return this.runSingleSession(event, "default");
     }
@@ -597,15 +590,12 @@ export class SessionManager {
     return { status: "accepted" };
   }
 
-  // Generic single-session path for "default" (any-channel @mentions) and the
-  // bug-pipeline "lead" agent. Both run at the top level of the thread session
-  // (using session.status / session.sessionId / session.pendingMessages) rather
-  // than per-agent state. The only differences are the slack identity, the
-  // composed system prompt, and the persistent-agent state block — all keyed
-  // off agentName downstream.
+  // Generic single-session path for Junior. It runs at the top level of the
+  // thread session (session.status / session.sessionId / pendingMessages),
+  // rather than in a per-agent state slice.
   private async runSingleSession(
     event: SlackMessageEvent,
-    agentName: "lead" | "default",
+    agentName: "default",
   ): Promise<DashboardInjectResult> {
     // Deduplicate: Slack fires both `message` and `app_mention` for @mentions
     const dedupeKey = event.dedupeKey ?? event.ts;
@@ -906,9 +896,9 @@ export class SessionManager {
       if (session.driverMode === "tmux") {
         const tmux = this.driverFor("tmux");
         if (session.tmuxSessionName) {
-          // topLevelTmuxAgent is "lead" in support channels and "default" elsewhere
+          // The top-level tmux session always belongs to Junior.
           // — pick from the row, not a literal, or non-support channels leak.
-          await tmux.close(threadId, session.topLevelTmuxAgent ?? "lead").catch(() => undefined);
+          await tmux.close(threadId, session.topLevelTmuxAgent ?? "default").catch(() => undefined);
         }
         for (const agentSession of Object.values(session.agentSessions ?? {})) {
           if (agentSession.tmuxSessionName) {
@@ -977,7 +967,7 @@ export class SessionManager {
    * Reset a single agent's slice of a thread session, leaving other agents'
    * state intact. Returns true if the agent had state to clear.
    *
-   * "lead"/"default" live on the parent ThreadSession (sessionId,
+   * `default` lives on the parent ThreadSession (sessionId,
    * leadSessionId, pendingMessages); everything else lives in
    * agentSessions[agentName].
    */
@@ -993,7 +983,7 @@ export class SessionManager {
     }
 
     let touched = false;
-    if (agentName === "lead" || agentName === "default") {
+    if (agentName === "default") {
       if (
         session.sessionId ||
         session.leadSessionId ||
@@ -1111,7 +1101,7 @@ export class SessionManager {
         if (!arg) {
           this.onCommandResponse?.(
             event,
-            "Usage: `!reset <agent>` (e.g. `!reset lead`, `!reset reproducer`) or `!reset all` to clear the entire thread session.",
+            "Usage: `!reset <agent>` (e.g. `!reset default`, `!reset reproducer`) or `!reset all` to clear the entire thread session.",
           );
           return true;
         }
@@ -1228,7 +1218,7 @@ export class SessionManager {
           "`!architect` — Architect agent (continues to runner)",
           "`!repo <name>` — Set target repository",
           "`!branch <ref>` — Set base branch ref",
-          "`!agent <junior|lead>` — Set thread default agent",
+          "`!agent junior` — Set thread default agent",
           "`!provider <claude|opencode|opencode-sdk|codex-app-server>` — Set runner provider for this thread",
           "`!cancel` — Kill running process, keep session",
           "`!reset <agent|all>` — Reset one agent's state, or the whole thread (admin only)",
@@ -1323,13 +1313,8 @@ export class SessionManager {
             s.defaultAgent = "junior";
           });
           this.onCommandResponse?.(event, "Thread default set to *Junior*. Future messages will go to Junior instead of the channel default.");
-        } else if (agentName === "lead") {
-          await this.mutateSession(session.threadId, (s) => {
-            s.defaultAgent = "lead";
-          });
-          this.onCommandResponse?.(event, "Thread default set to *Lead*. Future messages will go to the support lead.");
         } else {
-          this.onCommandResponse?.(event, `Unknown agent "${agentName}". Use \`!agent junior\` or \`!agent lead\`.`);
+          this.onCommandResponse?.(event, `Unknown agent "${agentName}". Use \`!agent junior\`.`);
         }
         return true;
       }
@@ -1364,8 +1349,8 @@ export class SessionManager {
 
         const currentProvider = session.provider ?? this.config.runner.provider;
         // A native session can live in any of three slots: the thread-level
-        // sessionId, the lead session id, or any persistent agent session
-        // (reproducer/review/lead/etc). Switching provider while ANY of
+        // sessionId, the legacy top-level session id, or any persistent agent
+        // session (reproducer/review/etc). Switching provider while ANY of
         // these is set leaves mixed-provider state in one thread — the new
         // provider drives fresh dispatches while existing agents continue
         // resuming against the old provider. Block all three.
@@ -1476,7 +1461,7 @@ export class SessionManager {
         if (session.driverMode === "tmux") {
           if (session.tmuxSessionName) {
             await outgoing
-              .close(session.threadId, session.topLevelTmuxAgent ?? "lead")
+              .close(session.threadId, session.topLevelTmuxAgent ?? "default")
               .catch(() => undefined);
           }
           for (const agentSession of Object.values(session.agentSessions ?? {})) {
@@ -1564,7 +1549,7 @@ export class SessionManager {
     senderUserId?: string,
     expectedHandle?: SpawnHandle,
   ): Promise<void> {
-    const isTopLevel = agentName === "lead" || agentName === "default";
+    const isTopLevel = agentName === "default";
     const reservationKey = this.handleKey(session.threadId, agentName);
     const assertRunOwnership = () => {
       if (expectedHandle && this.handles.get(reservationKey) !== expectedHandle) {
@@ -1999,7 +1984,7 @@ export class SessionManager {
       // acceptance criteria, evidence/artifact refs, and exact causal handoff.
       // Replaying the Slack conversation beside that contract duplicates
       // Junior's dispatch context and makes workers reinterpret stale
-      // discussion. Junior/lead and direct worker turns keep their declared
+      // discussion. Junior and direct worker turns keep their declared
       // thread-history profile.
       const usesCompiledWorkerContext = Boolean(pipelineInvocation && !isTopLevel);
       const contextProfile: AgentContextProfile = usesCompiledWorkerContext
@@ -2008,7 +1993,7 @@ export class SessionManager {
 
       // Apply agent-declared model override to the session so the spawner
       // picks it up (session.model ?? config.defaultModel).
-      // Only top-level agents (lead/default) persist the override to the
+      // Only the top-level Junior agent persists the override to the
       // stored session; persistent workers carry it on runSession only so
       // the override is re-evaluated each turn from the agent definition.
       if (agentDefinition?.model) {
@@ -2219,7 +2204,7 @@ export class SessionManager {
           // from the user's message. Specialist-tagged guidance gets the first
           // pass; pre-recall falls back to untagged guidance when this is empty.
           trustedTags:
-            agentName === "default" || agentName === "lead"
+            agentName === "default"
               ? undefined
               : [agentName],
         });
@@ -2701,7 +2686,7 @@ export class SessionManager {
     } finally {
       // One clear for every terminal path — response posted, spawn failure,
       // timeout/hard kill, cancellation, and the suppressed-response case
-      // (NO_SLACK_MESSAGE, silent lead turn) that posts nothing at all and is
+      // (NO_SLACK_MESSAGE, silent Junior turn) that posts nothing at all and is
       // therefore the easiest to leave marked forever.
       if (progressMessageTs) {
         this.markTurnProgress(session.channel, progressMessageTs, "remove");
@@ -2727,7 +2712,7 @@ export class SessionManager {
     if (this.handles.get(handleKey) !== ownHandle) return null;
     const fresh = await this.store.get(session.threadId);
     if (!fresh) return null;
-    const isTopLevel = agentName === "lead" || agentName === "default";
+    const isTopLevel = agentName === "default";
     const invocation = isTopLevel
       ? fresh.activePipelineInvocation
       : fresh.agentSessions?.[agentName]?.activePipelineInvocation;
@@ -3001,7 +2986,7 @@ export class SessionManager {
   ): Promise<void> {
     try {
       await this.mutateSession(threadId, (fresh) => {
-        if (agentName === "lead" || agentName === "default") {
+        if (agentName === "default") {
           if (fresh.status === "busy") {
             fresh.pid = pid;
           }
@@ -3029,7 +3014,7 @@ export class SessionManager {
   ): Promise<void> {
     try {
       await this.mutateSession(threadId, (fresh) => {
-        if (agentName === "lead" || agentName === "default") {
+        if (agentName === "default") {
           if (fresh.status === "busy" || fresh.status === "draining") {
             fresh.sessionId = sessionId;
             fresh.leadSessionId = sessionId;
@@ -3063,7 +3048,7 @@ export class SessionManager {
     const session = await this.mutateSession(threadId, (fresh) => {
       // mutateThread may re-run this callback after a CAS conflict.
       invalidated = false;
-      if (agentName === "lead" || agentName === "default") {
+      if (agentName === "default") {
         const currentSessionId = fresh.leadSessionId ?? fresh.sessionId;
         if (currentSessionId !== expectedSessionId) return;
         invalidated = true;
@@ -3096,7 +3081,7 @@ export class SessionManager {
     fallbackPrompt: string,
   ): Promise<string> {
     if (!this.pipelineStore) return fallbackPrompt;
-    const invocation = agentName === "lead" || agentName === "default"
+    const invocation = agentName === "default"
       ? session.activePipelineInvocation
       : session.agentSessions?.[agentName]?.activePipelineInvocation;
     if (!invocation) return fallbackPrompt;
@@ -3156,7 +3141,7 @@ export class SessionManager {
     invocationCwd?: string,
     statelessSkillInvocation = false,
   ): Promise<void> {
-    const isTopLevel = agentName === "lead" || agentName === "default";
+    const isTopLevel = agentName === "default";
     const agentIdentity = identityForAgent(agentName);
     const handleKey = this.handleKey(session.threadId, agentName);
 
@@ -3211,7 +3196,7 @@ export class SessionManager {
     if (!runWasSuperseded && !result.error && isTopLevel && result.response) {
       const supportChannels = new Set(
         Object.entries(this.config.channelDefaults)
-          .filter(([, def]) => def.agentType === "lead")
+          .filter(([, def]) => def.agentType === "default" || def.agentType === "junior")
           .map(([channel]) => channel),
       );
       const validation = validateLeadPipelineResponse(
@@ -3631,7 +3616,7 @@ export class SessionManager {
         this.config.runner.provider,
         this.config.claude.defaultDriver,
       );
-      // Apply channel-level default agent type (e.g. #bugs-backlog → lead)
+      // Apply the channel-level default agent type.
       const channelDefault = this.config.channelDefaults[event.channel];
       if (channelDefault) {
         session.agentType = channelDefault.agentType;
@@ -3691,7 +3676,7 @@ export class SessionManager {
     if ((this.config.pipeline?.runtimeMode ?? "off") !== "active") return false;
 
     const durableTarget =
-      agentName === "default" && session.agentType && session.agentType !== "lead"
+      agentName === "default" && session.agentType
         ? session.agentType
         : agentName;
     const explicitReviewRepoRefs = durableTarget === "review"
@@ -3950,16 +3935,6 @@ export class SessionManager {
     agentName: string,
     agentIdentity?: AgentIdentity,
   ): ThreadSession {
-    if (agentName === "lead") {
-      return {
-        ...session,
-        sessionId: session.leadSessionId ?? session.sessionId,
-        provider: session.provider ?? this.config.runner.provider,
-        activeAgentName: agentName,
-        slackIdentity: agentIdentity,
-        agentType: "lead",
-      };
-    }
     if (agentName === "default") {
       return {
         ...session,
@@ -4054,7 +4029,7 @@ export class SessionManager {
     const sections: string[] = [];
     if (systemPrompt) sections.push(systemPrompt);
     if (identity) {
-      const isOrchestrator = agentName === "lead" || agentName === "default";
+      const isOrchestrator = agentName === "default";
       const iconInstruction = identity.iconEmoji
         ? `When posting through slack_send_message, pass username="${identity.username}" and icon_emoji="${identity.iconEmoji}".`
         : identity.imageUrl
@@ -4063,7 +4038,7 @@ export class SessionManager {
       const identityPrompt = [
         `You are the "${agentName}" agent in this Slack thread.`,
         iconInstruction,
-        // Orchestrators (lead, default Junior) post as Junior's voice and
+        // Junior posts as the orchestrator's voice and
         // don't append a "by <agent>" suffix — that's a worker convention so
         // humans can tell workers' posts apart from the orchestrator's.
         isOrchestrator

@@ -201,7 +201,7 @@ export async function pipelineStartRun(
   }
   if (active?.kind === "default" && active.status !== "terminal") {
     const invocation =
-      runContext.agent === "default" || runContext.agent === "lead"
+      runContext.agent === "default"
         ? session.activePipelineInvocation
         : session.agentSessions?.[runContext.agent]?.activePipelineInvocation;
     if (!invocation || invocation.runId !== active.id) {
@@ -254,7 +254,7 @@ export async function pipelineStartRun(
     sourceMessageTs,
   };
   const exactSourceAssignmentId = active?.kind === "default"
-    ? (runContext.agent === "default" || runContext.agent === "lead"
+    ? (runContext.agent === "default"
         ? session.activePipelineInvocation?.assignmentId
         : session.agentSessions?.[runContext.agent]?.activePipelineInvocation
           ?.assignmentId)
@@ -413,7 +413,6 @@ function authorizeAssignmentAction(
   const ownsAssignment = caller === target;
   const isOrch =
     caller === owner ||
-    caller === "lead" ||
     caller === "default" ||
     caller === "junior";
 
@@ -569,7 +568,7 @@ export async function pipelineReportOutcome(
   }
   const session = await runtime.sessionStore.get(runContext.threadId);
   const caller = canonicalAgentName(runContext.agent) ?? runContext.agent;
-  const invocation = caller === "default" || caller === "lead"
+  const invocation = caller === "default"
     ? session?.activePipelineInvocation
     : session?.agentSessions?.[caller]?.activePipelineInvocation;
   if (
@@ -738,7 +737,7 @@ export async function pipelineDispatchAgent(
     return textResult({ ok: false, reason: "thread session not found" }, true);
   }
   const caller = canonicalAgentName(runContext.agent) ?? runContext.agent;
-  const invocation = caller === "default" || caller === "lead"
+  const invocation = caller === "default"
     ? session.activePipelineInvocation
     : session.agentSessions?.[caller]?.activePipelineInvocation;
   if (!invocation) {
@@ -1027,7 +1026,7 @@ export async function pipelineDispatchSkill(
     return textResult({ ok: false, reason: dispatchCapability.reason }, true);
   }
 
-  const invocation = caller === "default" || caller === "lead"
+  const invocation = caller === "default"
     ? session.activePipelineInvocation
     : session.agentSessions?.[caller]?.activePipelineInvocation;
   if (!invocation) {

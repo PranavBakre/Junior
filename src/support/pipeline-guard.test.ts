@@ -11,8 +11,8 @@ const supportChannels = new Set([CHANNEL]);
 
 function makeSession(): ThreadSession {
   const session = createSession(THREAD, CHANNEL);
-  session.activeAgentName = "lead";
-  session.agentType = "lead";
+  session.activeAgentName = "default";
+  session.agentType = "default";
   return session;
 }
 

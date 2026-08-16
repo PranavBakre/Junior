@@ -1,8 +1,7 @@
 /**
  * Trusted agent registry — resolve operational roles by name.
  *
- * Symbolic `orchestrator` resolves to `lead` for support/bug runs and
- * `default` elsewhere. Target-repo definitions cannot widen trusted
+ * Symbolic `orchestrator` resolves to `default` in every context. Target-repo definitions cannot widen trusted
  * operational fields (permission intent, capabilities, handoff edges).
  *
  * @see src/agents/manifest.ts for trusted-frontmatter compilation and trust boundaries
@@ -62,12 +61,13 @@ export function resolveAgentManifest(name: string): AgentManifest | null {
 }
 
 /**
- * Symbolic `orchestrator` → `lead` for support/bug runs, `default` elsewhere.
+ * Symbolic `orchestrator` → `default` in every context.
  */
 export function resolveOrchestratorName(
   context: OrchestratorContext = "default",
-): "lead" | "default" {
-  return context === "support" ? "lead" : "default";
+): "default" {
+  void context;
+  return "default";
 }
 
 /**

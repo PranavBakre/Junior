@@ -170,7 +170,7 @@ export class SlackResponder {
     channel: string,
     threadTs: string,
     text: string,
-    agentName: string = "lead",
+    agentName: string = "default",
   ): Promise<void> {
     const key = this.statusKey(threadTs, agentName);
     const existing = this.statusMessages.get(key);
@@ -293,7 +293,7 @@ export class SlackResponder {
   async deleteStatus(
     channel: string,
     threadTs: string,
-    agentName: string = "lead",
+    agentName: string = "default",
   ): Promise<void> {
     const key = this.statusKey(threadTs, agentName);
 

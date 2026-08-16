@@ -8,7 +8,7 @@ export function sessionTurnSourceId(
   agentName: string,
   postedTs?: string,
 ): string {
-  const isTopLevel = agentName === "lead" || agentName === "default";
+  const isTopLevel = agentName === "default";
   const invocationTs = postedTs ?? session.currentMessageTs ?? undefined;
   const turnKey =
     (isTopLevel ? session.activeTopLevelMessageTs : undefined)

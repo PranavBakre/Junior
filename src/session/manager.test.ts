@@ -573,10 +573,10 @@ describe("SessionManager", () => {
     expect(mockSpawnFn).toHaveBeenCalledTimes(1);
   });
 
-  it("routes a CHANNEL_DEFAULTS lead through a default run owned by lead", async () => {
+  it("routes a support-channel default through a default run owned by Junior", async () => {
     const pipelineStore = new InMemoryPipelineStore();
     manager = createTestManager(store, cloneConfig({
-      channelDefaults: { C123: { agentType: "lead" } },
+      channelDefaults: { C123: { agentType: "default" } },
       pipeline: {
         runtimeMode: "active",
         legacyDirectivesEnabled: true,
@@ -587,15 +587,15 @@ describe("SessionManager", () => {
     }));
     manager.pipelineStore = pipelineStore;
 
-    await manager.handleLeadMessage(makeEvent({ text: "investigate this support request" }));
+    await manager.handleMessage(makeEvent({ text: "investigate this support request" }));
     await waitFor(() => mockSpawnFn.mock.calls.length === 1);
 
     const run = await pipelineStore.getRunByThread("thread-1");
     const assignments = run ? await pipelineStore.listAssignments(run.id) : [];
     const session = await store.get("thread-1");
     expect(run?.kind).toBe("default");
-    expect(run?.ownerAgent).toBe("lead");
-    expect(assignments[0]?.targetAgent).toBe("lead");
+    expect(run?.ownerAgent).toBe("default");
+    expect(assignments[0]?.targetAgent).toBe("default");
     expect(session?.activePipelineInvocation).toMatchObject({
       runId: run?.id,
       assignmentId: assignments[0]?.id,
@@ -1706,26 +1706,6 @@ describe("SessionManager", () => {
     expect(mockSpawnFn.mock.calls[1]?.[1]).toContain("late short follow-up");
   });
 
-  it("buffers rather than interrupting when a different top-level agent owns the slot", async () => {
-    const enabled = cloneConfig({
-      session: {
-        ...testConfig.session,
-        shortFollowupInterruptEnabled: true,
-        shortFollowupMaxLength: 240,
-      },
-    });
-    manager = createTestManager(store, enabled);
-
-    await manager.handleLeadMessage(makeEvent({ text: "Lead owns this turn" }));
-    await manager.handleMessage(
-      makeEvent({ text: "same person, different route", ts: "1234567890.223456" }),
-    );
-
-    expect(mockSpawnFn).toHaveBeenCalledTimes(1);
-    expect(currentHandle.kill).not.toHaveBeenCalled();
-    expect((await store.get("thread-1"))?.pendingMessages).toHaveLength(1);
-  });
-
   it("creates an independent persistent agent session", async () => {
     const responses: Array<{ agentName?: string; username?: string; response: string }> = [];
     manager.onResponse = (session, response) => {
@@ -1803,7 +1783,7 @@ describe("SessionManager", () => {
     const responses: string[] = [];
     manager.onResponse = (_session, response) => responses.push(response);
 
-    await manager.handleLeadMessage(makeEvent({ text: "route this" }));
+    await manager.handleMessage(makeEvent({ text: "route this" }));
     leadHandle._complete("!review handle this internally", "lead-session-1");
 
     await waitFor(() => mockSpawnFn.mock.calls.length === 2);
@@ -1839,7 +1819,7 @@ describe("SessionManager", () => {
     const responses: string[] = [];
     manager.onResponse = (_session, response) => responses.push(response);
 
-    await manager.handleLeadMessage(makeEvent({ text: "route this" }));
+    await manager.handleMessage(makeEvent({ text: "route this" }));
     leadHandle._complete(
       "!review first review prompt\n!review second review prompt",
       "lead-session-1",
@@ -1878,7 +1858,7 @@ describe("SessionManager", () => {
     const responses: string[] = [];
     manager.onResponse = (_session, response) => responses.push(response);
 
-    await manager.handleLeadMessage(makeEvent({ text: "route this" }));
+    await manager.handleMessage(makeEvent({ text: "route this" }));
     leadHandle._complete(
       "!review review the PR\n!reproducer validate the branch",
       "lead-session-1",
@@ -1999,7 +1979,7 @@ describe("SessionManager", () => {
       );
 
       const supportConfig = cloneConfig({
-        channelDefaults: { "C-BUGS": { agentType: "lead" } },
+        channelDefaults: { "C-BUGS": { agentType: "default" } },
       });
       const handle1 = createMockHandle();
       const handle2 = createMockHandle();
@@ -2015,7 +1995,7 @@ describe("SessionManager", () => {
       const responses: string[] = [];
       manager.onResponse = (_session, response) => responses.push(response);
 
-      await manager.handleLeadMessage(
+      await manager.handleMessage(
         makeEvent({ channel: "C-BUGS", text: "bug report" }),
       );
       handle1._complete(
@@ -2024,7 +2004,7 @@ describe("SessionManager", () => {
 
       await waitFor(() => mockSpawnFn.mock.calls.length === 2);
       expect(responses).toEqual([]);
-      expect(mockSpawnFn.mock.calls[1][1]).toContain("Your previous lead turn ended before advancing");
+      expect(mockSpawnFn.mock.calls[1][1]).toContain("Your previous Junior turn ended before advancing");
       expect(mockSpawnFn.mock.calls[1][1]).toContain("Previous invalid response");
 
       handle2._complete("!reproducer reproduce as affected member");
@@ -2062,7 +2042,7 @@ describe("SessionManager", () => {
       const handles: MockHandle[] = [];
       const localManager = new SessionManager(
         localStore,
-        cloneConfig({ channelDefaults: { "C-BUGS": { agentType: "lead" } } }),
+        cloneConfig({ channelDefaults: { "C-BUGS": { agentType: "default" } } }),
         () => {
           const handle = createMockHandle();
           handles.push(handle);
@@ -2078,7 +2058,7 @@ describe("SessionManager", () => {
         return null;
       };
 
-      await localManager.handleLeadMessage(
+      await localManager.handleMessage(
         makeEvent({ channel: "C-BUGS", text: "bug report" }),
       );
       await waitFor(() => handles.length === 1);
@@ -4765,9 +4745,9 @@ describe("typed pipeline settlement", () => {
       repoRefs: ["junior"],
     }));
     await pipelineStore.createAssignment(makeAssignmentCreate({
-      id: "asg-reset-lead",
-      targetAgent: "lead",
-      idempotencyKey: "asg-reset-lead-key",
+      id: "asg-reset-default",
+      targetAgent: "default",
+      idempotencyKey: "asg-reset-default-key",
     }));
     const handles: MockHandle[] = [];
     const manager = new SessionManager(sessionStore, testConfig, () => {
@@ -4801,24 +4781,24 @@ describe("typed pipeline settlement", () => {
 
     await manager.handleAgentMessage(makeEvent({
       text: "implement",
-      dedupeKey: "pipeline-outbox:reset-lead",
+      dedupeKey: "pipeline-outbox:reset-default",
       pipelineInvocation: {
         runId: "run-1",
-        assignmentId: "asg-reset-lead",
-        dispatchKey: "reset-lead",
+        assignmentId: "asg-reset-default",
+        dispatchKey: "reset-default",
         outcomeCountAtDispatch: 0,
         retryCount: 0,
       },
-    }), "lead");
+    }), "default");
     await waitFor(() => handles.length === 1);
-    handles[0]!._complete("", "lead-session", [], {
+    handles[0]!._complete("", "default-session", [], {
       status: "incomplete",
       reason: "max_turns",
       retryable: true,
     });
     await waitFor(() => worktreeChecks === 2);
     await manager.handleMessage(
-      makeEvent({ command: "reset", text: "all", ts: "reset-lead" }),
+      makeEvent({ command: "reset", text: "all", ts: "reset-default" }),
     );
     releaseSetup();
     await new Promise((resolve) => setTimeout(resolve, 10));

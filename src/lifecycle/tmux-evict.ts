@@ -39,7 +39,7 @@ export async function evictIdleTmuxSessions(
       if (opts.skipBusy && session.status === "busy") continue;
       if (now - session.lastActivity <= opts.ttlMs) continue;
 
-      const topAgent = session.topLevelTmuxAgent ?? "lead";
+      const topAgent = session.topLevelTmuxAgent ?? "default";
       try {
         await driver.close(threadId, topAgent);
       } catch (err) {

@@ -259,20 +259,6 @@ describe("AgentRouter overlay", () => {
     expect(def!.prompt).toBe("PUBLIC ONLY");
   });
 
-  it("aliases the lead session marker to the default agent definition", async () => {
-    await fs.writeFile(
-      path.join(fallbackDir, "default.md"),
-      `---\nname: default\ncommon: core\n---\n\nDEFAULT BODY`,
-    );
-
-    const router = new AgentRouter([], fallbackDir, orgDir);
-    const def = await router.resolveAgent(makeSession({ agentType: "lead" }));
-
-    expect(def).not.toBeNull();
-    expect(def!.name).toBe("default");
-    expect(def!.prompt).toBe("DEFAULT BODY");
-  });
-
   it("aliases the retired thinker marker to the default agent definition", async () => {
     await fs.writeFile(
       path.join(fallbackDir, "default.md"),
@@ -286,7 +272,7 @@ describe("AgentRouter overlay", () => {
     expect(def!.prompt).toBe("DEFAULT BODY");
   });
 
-  it("appends pipeline preambles for lead/thinker sessions but not default sessions", async () => {
+  it("appends pipeline preambles for active bug runs", async () => {
     await fs.writeFile(
       path.join(fallbackDir, "default.md"),
       `---\nname: default\ncommon: core\n---\n\nDEFAULT BODY`,
@@ -306,20 +292,16 @@ describe("AgentRouter overlay", () => {
 
     const router = new AgentRouter([], fallbackDir, orgDir);
 
-    // Support-channel session (marker "lead") gets the pipeline preambles —
-    // merge-workflow and runtime-environment ride along because the pipeline's
-    // merge step and dev-server/bug-folder contracts live there — after the
-    // declared profile (core).
-    const leadPrompt = await router.composeSystemPrompt(
-      makeSession({ agentType: "lead" }),
+    const bugPrompt = await router.composeSystemPrompt(
+      makeSession({ agentType: "default", activeAgentName: "default", activePipelineKind: "bug" }),
     );
-    expect(leadPrompt).toContain("# public core");
-    expect(leadPrompt).toContain("# BUG PIPELINE PLAYBOOK");
-    expect(leadPrompt).toContain("# MERGE WORKFLOW RULES");
-    expect(leadPrompt).toContain("# RUNTIME ENVIRONMENT");
-    expect(leadPrompt).toContain("DEFAULT BODY");
-    expect(leadPrompt!.indexOf("# public core")).toBeLessThan(
-      leadPrompt!.indexOf("# BUG PIPELINE PLAYBOOK"),
+    expect(bugPrompt).toContain("# public core");
+    expect(bugPrompt).toContain("# BUG PIPELINE PLAYBOOK");
+    expect(bugPrompt).toContain("# MERGE WORKFLOW RULES");
+    expect(bugPrompt).toContain("# RUNTIME ENVIRONMENT");
+    expect(bugPrompt).toContain("DEFAULT BODY");
+    expect(bugPrompt!.indexOf("# public core")).toBeLessThan(
+      bugPrompt!.indexOf("# BUG PIPELINE PLAYBOOK"),
     );
 
     // Resumed pre-merge "thinker" sessions get the same pipeline preambles.

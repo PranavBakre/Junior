@@ -24,31 +24,28 @@ describe("dispatchableAgentsFor", () => {
     cleanupKeys.length = 0;
   });
 
-  it("lets lead dispatch every worker except itself, default, and echo", () => {
-    const allowed = dispatchableAgentsFor("lead");
+  it("lets Junior dispatch every worker except itself and echo", () => {
+    const allowed = dispatchableAgentsFor("default");
     expect(allowed).toContain("review");
     expect(allowed).toContain("reproducer");
     expect(allowed).not.toContain("thinker"); // retired in the 3-way merge
-    expect(allowed).not.toContain("lead");
     expect(allowed).not.toContain("default");
     expect(allowed).not.toContain("echo");
   });
 
-  it("includes overlay-registered workers in lead's allow-list once registered", () => {
+  it("includes overlay-registered workers in Junior's allow-list once registered", () => {
     cleanupKeys.push("overlay-worker-test");
     registerAgentIdentity("overlay-worker-test", {
       username: "OverlayTest",
       iconEmoji: ":test_tube:",
     });
-    expect(dispatchableAgentsFor("lead")).toContain("overlay-worker-test");
+    expect(dispatchableAgentsFor("default")).toContain("overlay-worker-test");
   });
 
-  it("gives default Junior the same full dispatch power as lead", () => {
-    const leadAllowed = dispatchableAgentsFor("lead").sort();
+  it("gives the Junior alias the same full dispatch power as default", () => {
     const defaultAllowed = dispatchableAgentsFor("default").sort();
     const juniorAllowed = dispatchableAgentsFor("junior").sort();
-    expect(defaultAllowed).toEqual(leadAllowed);
-    expect(juniorAllowed).toEqual(leadAllowed);
+    expect(juniorAllowed).toEqual(defaultAllowed);
   });
 
   it("keeps thinker's legacy allow-list (resumed pre-merge sessions)", () => {
@@ -66,22 +63,11 @@ describe("dispatchableAgentsFor", () => {
 });
 
 describe("identity / username collision (the footgun this guards)", () => {
-  it("lead and default Junior have different slack usernames", () => {
-    expect(AGENT_IDENTITIES.lead.username).not.toBe(
-      AGENT_IDENTITIES.default.username,
-    );
-  });
-
-  it("agentForUsername resolves 'Junior' to default, not lead", () => {
+  it("agentForUsername resolves Junior to default", () => {
     expect(agentForUsername("Junior")).toBe("default");
   });
 
-  it("agentForUsername resolves 'Junior (Lead)' to lead", () => {
-    expect(agentForUsername("Junior (Lead)")).toBe("lead");
-  });
-
-  it("isOrchestratorAgent recognises both orchestrators and rejects workers", () => {
-    expect(isOrchestratorAgent("lead")).toBe(true);
+  it("isOrchestratorAgent recognises Junior and rejects workers", () => {
     expect(isOrchestratorAgent("default")).toBe(true);
     expect(isOrchestratorAgent("junior")).toBe(true);
     expect(isOrchestratorAgent("thinker")).toBe(false);
@@ -123,7 +109,6 @@ describe("canDispatch (catalog-preferring)", () => {
 
   it("resolves symbolic orchestrator by context", () => {
     expect(canDispatch("pm", "orchestrator", "support")).toBe(true);
-    expect(canDispatch("pm", "lead", "support")).toBe(true);
     expect(canDispatch("pm", "default", "default")).toBe(true);
   });
 
@@ -146,7 +131,6 @@ describe("canDispatch (catalog-preferring)", () => {
       iconEmoji: ":test_tube:",
     });
     try {
-      expect(canDispatch("lead", key)).toBe(true);
       expect(canDispatch("default", key)).toBe(true);
     } finally {
       delete AGENT_IDENTITIES[key];
@@ -174,21 +158,13 @@ describe("buildDispatchAllowBlock", () => {
     const block = buildDispatchAllowBlock("review");
     expect(block).toContain("<dispatch-allow>");
     expect(block).toContain("may NOT emit");
-    expect(block).toContain("re-routed to lead");
+    expect(block).toContain("re-routed to Junior");
     expect(block).not.toContain("`reproducer`");
   });
 
   it("emits a deny-all block for reproducer", () => {
     const block = buildDispatchAllowBlock("reproducer");
     expect(block).toContain("may NOT emit");
-  });
-
-  it("lists every dispatchable agent for lead", () => {
-    const block = buildDispatchAllowBlock("lead");
-    expect(block).toContain("`review`");
-    expect(block).toContain("`reproducer`");
-    expect(block).not.toContain("`thinker`");
-    expect(block).not.toContain("may NOT emit");
   });
 
   it("lists every dispatchable core agent for default Junior too", () => {
@@ -228,13 +204,13 @@ describe("registerAgentIdentity", () => {
   });
 
   it("refuses to overwrite a core agent identity", () => {
-    const before = AGENT_IDENTITIES.lead;
-    const ok = registerAgentIdentity("lead", {
-      username: "HijackedLead",
+    const before = AGENT_IDENTITIES.default;
+    const ok = registerAgentIdentity("default", {
+      username: "HijackedJunior",
       iconEmoji: ":skull:",
     });
     expect(ok).toBe(false);
-    expect(AGENT_IDENTITIES.lead).toEqual(before);
+    expect(AGENT_IDENTITIES.default).toEqual(before);
   });
 });
 

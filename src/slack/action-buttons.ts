@@ -94,7 +94,7 @@ async function handleDispatch(
   const action = record.action;
   if (action.type !== "dispatch_agent") return;
   const targetAgent = resolveDispatchAgent(record, supportChannels);
-  if (!isPersistentAgent(targetAgent) && targetAgent !== "lead" && targetAgent !== "default") {
+  if (!isPersistentAgent(targetAgent) && targetAgent !== "default") {
     throw new Error(`unknown agent: ${targetAgent}`);
   }
 
@@ -129,14 +129,14 @@ async function handleDispatch(
 
 export function resolveDispatchAgent(
   record: Pick<SlackActionRecord, "action" | "channelId">,
-  supportChannels: ReadonlySet<string> | undefined,
+  _supportChannels: ReadonlySet<string> | undefined,
 ): string {
   const action = record.action;
   if (action.type !== "dispatch_agent") return "";
   if (action.id === "review:make-fix") {
-    // Support channels route the fix back to the bug-pipeline orchestrator
-    // session (marker "lead"); everywhere else it's the default Junior session.
-    return supportChannels?.has(record.channelId) ? "lead" : "default";
+    // Every channel uses the default Junior orchestrator. Support-channel
+    // classification still governs pipeline behavior after dispatch.
+    return "default";
   }
   return action.agent;
 }

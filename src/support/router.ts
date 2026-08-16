@@ -128,11 +128,11 @@ export function parseDevserverDirective(line: string): DevserverDirective | null
  *   agents. Works in any channel — `!review` in #junior creates a review
  *   persistent-agent session in that thread, same as in #bugs-backlog.
  * - If no directives, fall through to the existing single-session manager.
- *   In support channels (channelDefaults.agentType === "lead"), lead is the
- *   default recipient; non-support channels keep their existing behavior.
+ *   In support channels, Junior is the default recipient; non-support channels
+ *   keep their existing behavior.
  *
- * The lead-only-dispatch invariant + self-loop break + worker-can't-dispatch
- * guards apply only when the channel is a support channel (where lead exists).
+ * The orchestrator-only-dispatch invariant + self-loop break + worker-can't-
+ * dispatch guards apply only in support channels.
  */
 export class AgentDispatcher {
   private manager: SessionManager;
@@ -206,19 +206,19 @@ export class AgentDispatcher {
       if (!event.isSelfBot) {
         await this.tryCreateBugRunOnExplicitStart(event, []);
       }
-      // Worker self-bot (non-orchestrator) without directives: forward to lead
-      // in support channels so it can decide next step. In non-support
-      // channels there's no lead — fall through to the regular session manager.
+      // Worker self-bot (non-orchestrator) without directives: forward to
+      // Junior in support channels so it can decide the next step. In
+      // non-support channels, fall through to the regular session manager.
       if (event.isSelfBot && isSupport) {
-        await this.manager.handleLeadMessage({
+        await this.manager.handleMessage({
           ...event,
-          dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
+          dedupeKey: event.dedupeKey ?? `${event.ts}:default`,
         });
         return;
       }
       // Human (or non-self-bot) with no directives.
       // Check if thread has a custom default agent set via !agent command.
-      let targetAgent: "lead" | "junior" = isSupport ? "lead" : "junior";
+      let targetAgent: "default" | "junior" = isSupport ? "default" : "junior";
       if (this.sessionStore) {
         const session = await this.sessionStore.get(event.threadId);
         if (session?.defaultAgent) {
@@ -226,7 +226,7 @@ export class AgentDispatcher {
         }
       }
 
-      if (targetAgent !== "lead" && looksLikePrReviewRequest(event.text)) {
+      if (targetAgent !== "default" && looksLikePrReviewRequest(event.text)) {
         await this.manager.handleAgentMessage({
           ...event,
           dedupeKey: event.dedupeKey ?? `${event.ts}:review:auto`,
@@ -234,14 +234,14 @@ export class AgentDispatcher {
         return;
       }
 
-      if (targetAgent === "lead") {
-        await this.manager.handleLeadMessage({
+      if (targetAgent === "default") {
+        await this.manager.handleMessage({
           ...event,
-          dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
+          dedupeKey: event.dedupeKey ?? `${event.ts}:default`,
         });
       } else {
         // Junior (default) or non-support channel: generic single-session
-        // Claude (no lead identity, no persistent-agent state block, no
+        // Claude (no special identity, no persistent-agent state block, no
         // orchestrator system prompt).
         await this.manager.handleMessage(event);
       }
@@ -249,13 +249,13 @@ export class AgentDispatcher {
     }
 
     // Has directives.
-    // Orchestrators (lead, default Junior) may emit anything; workers may emit
+    // Junior may emit anything; workers may emit
     // only the dispatches in WORKER_DISPATCH_ALLOW (currently empty — no
     // worker→worker chain since the thinker merge).
-    // Other worker directives are stripped and the message re-routes to lead
-    // as plain text so lead can decide what to do with the unauthorised
-    // attempt. Unknown self-bots are treated as workers with no allow-list.
-    // In non-support channels there's no lead to forward to — drop to avoid
+    // Other worker directives are stripped and the message re-routes to Junior
+    // as plain text so it can decide what to do with the unauthorised attempt.
+    // Unknown self-bots are treated as workers with no allow-list. In
+    // non-support channels there is no support orchestrator to forward to — drop to avoid
     // loops.
     let dispatchableDirectives = directives;
     if (event.isSelfBot && !isOrchestratorAgent(sourceAgent)) {
@@ -266,9 +266,9 @@ export class AgentDispatcher {
         sourceAgent ? workerMayDispatch(sourceAgent, d.agentName) : false,
       );
       if (allowed.length === 0) {
-        await this.manager.handleLeadMessage({
+        await this.manager.handleMessage({
           ...event,
-          dedupeKey: event.dedupeKey ?? `${event.ts}:lead`,
+          dedupeKey: event.dedupeKey ?? `${event.ts}:default`,
         });
         return;
       }

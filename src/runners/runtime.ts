@@ -128,7 +128,7 @@ export function buildRunnerEnv(
     JUNIOR_SPAWNED: "1",
     SLACK_CHANNEL: session.channel,
     SLACK_THREAD_TS: session.threadId,
-    JUNIOR_AGENT_NAME: session.activeAgentName ?? "lead",
+    JUNIOR_AGENT_NAME: session.activeAgentName ?? "default",
     ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
   };
   // MCP_CONTEXT_SECRET authenticates the agent identity embedded in MCP URLs.

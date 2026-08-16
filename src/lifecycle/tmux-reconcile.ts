@@ -42,7 +42,7 @@ export async function reconcileTmuxSessions(
         if (safeToAdopt) {
           await driver.adoptExistingSession({
             threadId,
-            agentName: session.topLevelTmuxAgent ?? "lead",
+            agentName: session.topLevelTmuxAgent ?? "default",
             cwd,
             tmuxSessionName: session.tmuxSessionName,
             sessionId: session.sessionId,

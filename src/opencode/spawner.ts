@@ -87,7 +87,7 @@ export function spawnOpenCode(
     permission: config.permission,
     // OpenCode receives MCP via generated config, not Claude's project
     // .mcp.json. Keep the utility cwd carve-out (calendar/cloud utilities rely
-    // on their own integrations), but all normal Junior/lead/worker runs need
+    // on their own integrations), but all normal Junior/worker runs need
     // Slack MCP even when cwd is Junior's project root so intake can call
     // register_worktree before any worktree exists.
     mcp: session.cwd ? null : config.mcp,
