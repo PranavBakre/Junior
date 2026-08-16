@@ -66,6 +66,17 @@ The bug-pipeline + dev-server fields are optional. Repos that only need the `!re
 
 The MCP tool `mcp__slack-bot__register_worktree({ thread_id, repo, branch? })` (in `src/mcp/slack-server.ts`) wraps `createWorktree` for lead's intake and persists the resulting path into `session.worktreePaths[repo]` via the session store using the refetch-then-mutate pattern.
 
+## Deterministic prune script
+
+`scripts/worktree-prune.ts` is the programmatic cleanup path used by the
+`worktree-prune` workflow. It loads `REPOS` and calls
+`src/worktree/prune.ts`, which fetches and resolves each configured default
+base, parses porcelain worktree records, and removes only secondary worktrees
+that are unlocked, present, merged, clean, and free of ignored dotenv files.
+It never deletes branches and reports every skip or command failure. Ignored
+dotenv files, visible changes, and any other preservation-sensitive state stay
+for the workflow's small review/reporting phase.
+
 ## Iterations
 
 ### Iteration 0: Create and remove (~20 min)

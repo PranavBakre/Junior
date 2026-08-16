@@ -46,6 +46,10 @@ the bounded outward message remains safe for Slack delivery.
 
 Before delegated setup, Junior requires 2 GiB of free space by default (`WORKTREE_SETUP_MIN_FREE_BYTES` overrides it). A script failure after `git worktree add` triggers rollback of the registered worktree and its branch; the surfaced stdout/stderr tails are capped independently.
 
+`scripts/worktree-prune.ts` runs the deterministic prune engine directly
+from `REPOS`, so workflows can perform the routine Git work in one process and
+leave only preservation exceptions and reporting to the runner.
+
 ## Key Concepts
 
 ### Sibling path, NOT under `.claude/`
