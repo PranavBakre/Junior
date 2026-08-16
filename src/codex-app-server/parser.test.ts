@@ -59,6 +59,49 @@ describe("createCodexAppServerEventMapper", () => {
     expect(mapper.response).toBe("Hello world");
   });
 
+  it("uses the matching tokenUsage.last update when turn completion has no usage", () => {
+    const mapper = createCodexAppServerEventMapper();
+    const events = [
+      {
+        method: "thread/tokenUsage/updated",
+        params: {
+          threadId: "thr_1",
+          turnId: "turn_1",
+          tokenUsage: {
+            total: { totalTokens: 999 },
+            last: {
+              totalTokens: 30,
+              inputTokens: 10,
+              cachedInputTokens: 5,
+              cacheWriteInputTokens: 2,
+              outputTokens: 13,
+              reasoningOutputTokens: 4,
+            },
+          },
+        },
+      },
+      {
+        method: "turn/completed",
+        params: { threadId: "thr_1", turn: { id: "turn_1" } },
+      },
+    ].flatMap((event) => mapper.map(event));
+
+    expect(events).toEqual([
+      { type: "init", provider: "codex-app-server", sessionId: "thr_1" },
+      {
+        type: "done",
+        provider: "codex-app-server",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 13,
+          cache_read_input_tokens: 5,
+          cache_creation_input_tokens: 2,
+          total_tokens: 30,
+        },
+      },
+    ]);
+  });
+
   it("maps completed agentMessage items as responses", () => {
     const mapper = createCodexAppServerEventMapper();
     const events = [

@@ -64,6 +64,27 @@ describe("normalizeRunnerUsage", () => {
     });
   });
 
+  it("preserves Codex app-server cache fields and provider total", () => {
+    const usage = normalizeRunnerUsage(
+      {
+        input_tokens: 10,
+        output_tokens: 13,
+        cache_read_input_tokens: 5,
+        cache_creation_input_tokens: 2,
+        total_tokens: 30,
+      },
+      { ...meta, provider: "codex-app-server" },
+    );
+
+    expect(usage).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 13,
+      cacheReadTokens: 5,
+      cacheWriteTokens: 2,
+      totalTokens: 30,
+    });
+  });
+
   it("maps OpenCode { input, output } tokens", () => {
     const usage = normalizeRunnerUsage(
       { input: 2, output: 3 },

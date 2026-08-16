@@ -70,6 +70,8 @@ export function normalizeRunnerUsage(
   } else if (provider === "codex-app-server" || provider === "codex") {
     inputTokens = readNumber(usage.input_tokens);
     outputTokens = readNumber(usage.output_tokens);
+    cacheReadTokens = readNumber(usage.cache_read_input_tokens);
+    cacheWriteTokens = readNumber(usage.cache_creation_input_tokens);
   } else {
     const tokens = asRecord(usage.tokens) ?? usage;
     inputTokens = readNumber(tokens.input) ?? readNumber(tokens.input_tokens);
@@ -82,12 +84,14 @@ export function normalizeRunnerUsage(
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
-    totalTokens: sumPresent([
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      cacheWriteTokens,
-    ]),
+    totalTokens:
+      readNumber(usage.total_tokens) ??
+      sumPresent([
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+      ]),
     costUsd,
     costEstimatedUsd: null,
     numTurns,

@@ -152,6 +152,10 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
   let pendingText = "";
   let error: string | null = null;
   let warning: string | null = null;
+  // App-server emits token usage separately from turn/completed. Keep the last
+  // per-turn snapshot until the matching completion notification arrives.
+  const usageByTurnId = new Map<string, Record<string, unknown>>();
+  let latestUsage: Record<string, unknown> | undefined;
 
   function maybeInitFromParams(params: Record<string, unknown> | undefined): RunnerEvent[] {
     if (sessionId || !params) return [];
@@ -198,6 +202,16 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
         return events;
       }
 
+      if (notification.method === "thread/tokenUsage/updated") {
+        const usage = tokenUsageForTurn(params);
+        if (usage) {
+          latestUsage = usage;
+          const turnId = stringValue(params?.turnId);
+          if (turnId) usageByTurnId.set(turnId, usage);
+        }
+        return events;
+      }
+
       if (notification.method === "item/started" || notification.method === "item/completed") {
         if (notification.method === "item/completed") {
           const text = completedItemAgentMessageText(params);
@@ -229,7 +243,13 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
           });
           pendingText = "";
         }
-        const usage = asRecord(params?.usage) ?? asRecord(asRecord(params?.turn)?.usage);
+        const turnId = stringValue(asRecord(params?.turn)?.id) ?? stringValue(params?.turnId);
+        const usage =
+          asRecord(params?.usage) ??
+          asRecord(asRecord(params?.turn)?.usage) ??
+          (turnId ? usageByTurnId.get(turnId) : undefined) ??
+          latestUsage;
+        if (turnId) usageByTurnId.delete(turnId);
         events.push({
           type: "done",
           provider: "codex-app-server",
@@ -240,6 +260,33 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
       return events;
     },
   };
+}
+
+/**
+ * Convert the app-server's camelCase `tokenUsage.last` payload into the
+ * normalized runner wire shape. `total` is thread cumulative; `last` is the
+ * just-finished turn and is therefore the only safe ledger input.
+ */
+function tokenUsageForTurn(
+  params: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const last = asRecord(asRecord(params?.tokenUsage)?.last);
+  if (!last) return undefined;
+
+  const usage: Record<string, unknown> = {};
+  const fields: Array<[string, string]> = [
+    ["inputTokens", "input_tokens"],
+    ["outputTokens", "output_tokens"],
+    ["cachedInputTokens", "cache_read_input_tokens"],
+    ["cacheWriteInputTokens", "cache_creation_input_tokens"],
+    ["totalTokens", "total_tokens"],
+  ];
+  for (const [source, target] of fields) {
+    const value = last[source];
+    if (typeof value === "number" && Number.isFinite(value)) usage[target] = value;
+  }
+
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 function parseLine(line: string): CodexJsonRpcNotification | null {

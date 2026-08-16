@@ -155,7 +155,7 @@ Attribution Slack body is `*Dashboard continue*` plus a `>`-quoted preview so `c
 
 ### Spend and audit retention
 
-`usage_events` 90 days, `dashboard_audit` 180 days, both swept by `cleanupOperationalTables` from the existing cleanup interval and `bun run cleanup`. Capture is inside `SessionManager` (session turns, including quiet) and once per workflow run from `SpawnResult`.
+`usage_events` 90 days, `dashboard_audit` 180 days, both swept by `cleanupOperationalTables` from the existing cleanup interval and `bun run cleanup`. Capture is inside `SessionManager` (session turns, including quiet) and once per workflow run from `SpawnResult`. For Codex app-server, the adapter retains the matching `thread/tokenUsage/updated.tokenUsage.last` snapshot until `turn/completed`, because completion payloads do not include usage.
 
 ### Path traversal guards
 
