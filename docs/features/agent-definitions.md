@@ -31,10 +31,7 @@ trusted catalog.
 | `frontend.md` | Generic frontend builder — also the durable-assignment worker for UI fixes. |
 | `architect.md` | System architect — specs, data models, state machines. |
 | `pm.md` | Product manager — scoping, iterations, scope cuts. |
-| `common/bug-pipeline.md` | Shared preamble — the merged bug-pipeline playbook (Phase 1 hypotheses + Phase 2 scoping + silence allow-list + merge flow). Appended only while Junior has an active bug run. |
-| `common/building-philosophy.md` | Shared preamble — generic building principles. |
-| `common/merge-workflow.md` | Shared preamble — generic merge invariants (admin token, 3-way, branch from main). Org-specifics live in the overlay. |
-| `common/runtime-environment.md` | Shared preamble — generic runtime rules (image-reading, repo-locations meta-rule, MCP tool list, bug folder layout). Org-specifics live in the overlay. |
+| `support/skills/<name>/SKILL.md` | Canonical shared playbooks. The agent `common:` profile reads these skills after any target-repo override; the org common overlay remains additive for private policy. This keeps one source for Claude, OpenCode, and Codex. |
 
 **Private org overlay (`agents-org/`, mounted as a private submodule):**
 

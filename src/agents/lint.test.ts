@@ -4,10 +4,11 @@ import fs from "node:fs/promises";
 
 const agentsDir = path.resolve(import.meta.dir, "../../.claude/agents");
 const commonDir = path.join(agentsDir, "common");
+const supportSkillsDir = path.resolve(import.meta.dir, "../../support/skills");
 
 // Persistent workers still lint their own .md output templates. The
 // orchestrator's bug-pipeline playbook (formerly split across lead.md +
-// thinker.md) now lives in common/bug-pipeline.md and is linted separately.
+// thinker.md) is a canonical support skill and is linted separately.
 const BUG_PIPELINE_AGENTS = ["reproducer", "review"];
 const PUBLIC_AGENT_THREAD_HISTORY_LIMIT = 20;
 const ALL_PUBLIC_AGENTS = [
@@ -157,10 +158,10 @@ describe("prompt lint", () => {
     });
   });
 
-  describe("common/bug-pipeline.md carries the merged orchestrator playbook", () => {
+  describe("bug-pipeline skill carries the merged orchestrator playbook", () => {
     it.each(BUG_PIPELINE_COMMON_MARKERS)("contains marker %p", async (marker) => {
       const content = await fs.readFile(
-        path.join(commonDir, "bug-pipeline.md"),
+        path.join(supportSkillsDir, "bug-pipeline", "SKILL.md"),
         "utf-8",
       );
       expect(content).toContain(marker);

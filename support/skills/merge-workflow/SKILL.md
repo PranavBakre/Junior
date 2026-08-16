@@ -1,3 +1,8 @@
+---
+name: merge-workflow
+description: Apply Junior's generic branch, pull-request, review, and merge invariants when delivery work reaches GitHub.
+---
+
 # Merge & PR workflow (generic invariants)
 
 These rules apply to any junior-spawned agent that creates branches, opens PRs, or merges code. They are not optional. Org-specific specifics (exact token names, credential paths, repo lists, multi-stage release flows) are appended below this section when an org context is configured; treat the appended block as authoritative and these generic rules as the baseline.

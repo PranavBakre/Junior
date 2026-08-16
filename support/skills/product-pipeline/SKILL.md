@@ -1,3 +1,8 @@
+---
+name: product-pipeline
+description: Coordinate an active Junior product pipeline through feature delivery, verification, and durable stage outcomes.
+---
+
 # Product pipeline (feature delivery)
 
 Appended only when an active ProductRun is bound to the thread. Runtime phase, assignment, revision digest, and PR registrations are authoritative — do not infer stage from filesystem layout or Slack position. Report a typed outcome: `continue_self | handoff | wait | escalate | complete`.

@@ -1,7 +1,6 @@
 ---
 name: building-philosophy
-description: Shared principles for all builder agents
-type: common
+description: Apply Junior's shared engineering principles for scoped implementation, verification, and delivery work.
 ---
 
 # Building Philosophy

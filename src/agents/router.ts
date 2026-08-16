@@ -1,4 +1,5 @@
 import type { RepoConfig } from "../config.ts";
+import { resolve } from "node:path";
 import type { ThreadSession } from "../session/types.ts";
 import { loadAgentDefinition } from "./loader.ts";
 import type { AgentDefinition } from "./loader.ts";
@@ -10,6 +11,11 @@ import type { AgentDefinition } from "./loader.ts";
 const AGENT_DEFINITION_ALIASES: Record<string, string> = {
   thinker: "default",
 };
+
+const SUPPORT_SKILL_ROOT = resolve(
+  import.meta.dirname ?? ".",
+  "../../support/skills",
+);
 
 function resolveDefinitionName(rawName: string): string {
   return AGENT_DEFINITION_ALIASES[rawName] ?? rawName;
@@ -23,10 +29,9 @@ function resolveDefinitionName(rawName: string): string {
  *   2. org overlay dir (private submodule mount, if configured)
  *   3. fallback dir (junior's public .claude/agents)
  *
- * Common preamble files are selected by each agent's `common:` profile and
- * load in declared order:
- *   - selected files from target repo common, falling back per file to public
- *   - then matching org overlay common files append additively
+ * Shared playbooks are canonical skills selected by each agent's `common:`
+ * profile. They load in declared order, with target-repo common overrides and
+ * org-overlay additions retained for local policy.
  */
 export class AgentRouter {
   private repos: RepoConfig[];
@@ -133,6 +138,7 @@ export class AgentRouter {
       names: commonProfile,
       primaryDir: targetCommonDir,
       fallbackDir: `${this.fallbackAgentsDir}/common`,
+      skillDir: SUPPORT_SKILL_ROOT,
     });
     preambleParts.push(...baseFiles.contents);
     addLoadedStems(loadedCommonStems, baseFiles.foundStems);
@@ -146,6 +152,7 @@ export class AgentRouter {
         names: commonProfile,
         primaryDir: orgCommonDir,
         fallbackDir: null,
+        skillDir: null,
       });
       preambleParts.push(...orgFiles.contents);
       addLoadedStems(loadedCommonStems, orgFiles.foundStems);
@@ -174,6 +181,7 @@ interface ReadProfileMarkdownFilesOptions {
   names: string[];
   primaryDir: string | null;
   fallbackDir: string | null;
+  skillDir: string | null;
 }
 
 interface ReadProfileMarkdownFilesResult {
@@ -196,7 +204,11 @@ async function readProfileMarkdownFiles(
     const searchDirs = [options.primaryDir, options.fallbackDir].filter(
       (dir): dir is string => Boolean(dir),
     );
-    const content = await readFirstExistingMarkdownFile(searchDirs, stem);
+    const content = await readFirstExistingMarkdownFile(
+      searchDirs,
+      stem,
+      options.skillDir,
+    );
     if (content !== null) {
       contents.push(content);
       foundStems.add(stem);
@@ -209,9 +221,16 @@ async function readProfileMarkdownFiles(
 async function readFirstExistingMarkdownFile(
   dirPaths: string[],
   stem: string,
+  skillDir: string | null,
 ): Promise<string | null> {
   for (const dirPath of dirPaths) {
     const content = await readMarkdownFileIfExists(`${dirPath}/${stem}.md`);
+    if (content !== null) return content;
+  }
+  if (skillDir) {
+    const content = await readMarkdownFileIfExists(
+      `${skillDir}/${stem}/SKILL.md`,
+    );
     if (content !== null) return content;
   }
   return null;

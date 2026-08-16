@@ -1,3 +1,8 @@
+---
+name: pipeline-start
+description: Promote an ordinary Junior task into a durable product or bug pipeline when coordinated execution is warranted.
+---
+
 # Deliberate pipeline upgrade
 
 Every ordinary task already has a lightweight `default` run. Deliberately

@@ -1,3 +1,8 @@
+---
+name: orchestrator-dispatch
+description: Route Junior orchestration work into durable, bounded agent assignments. Use for dispatch, handoff, parallelization, and Slack control-plane decisions.
+---
+
 # Orchestrator dispatch contract
 
 Use dispatch to reduce context load and wall-clock time. Do not carry independent work in one large turn when another agent can own a bounded slice.

@@ -1,3 +1,8 @@
+---
+name: runtime-environment
+description: Use Junior runtime environment facts, MCP boundaries, and bug-worktree conventions for active delivery work.
+---
+
 # Runtime environment
 
 Static facts. Do NOT spend tool calls discovering these.

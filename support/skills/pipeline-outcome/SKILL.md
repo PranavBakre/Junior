@@ -1,3 +1,8 @@
+---
+name: pipeline-outcome
+description: Report durable Junior pipeline outcomes, continuations, handoffs, waits, escalations, and completion.
+---
+
 # Durable run contract
 
 Every ordinary task is backed by a `kind: default` run and an exact
