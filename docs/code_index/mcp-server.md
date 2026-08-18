@@ -30,7 +30,7 @@ operations using the bot token and signed run context.
 | `agent_search` | Junior internal | — | `query`, `include_public`, `include_private`, `limit` |
 | `reload_agent_registry` | Junior internal | — | — |
 | `slack_send_dm` | Slack Web API | `user_id`, `text` | identity fields |
-| `agent_dispatch` | Junior internal | agent, prompt, thread context | repo refs, `workspace_mode: repo-less` for Mongo-only reads, synthetic user/timestamp |
+| `agent_dispatch` | Junior internal | agent, prompt, thread context | repo refs; automatic repo-less isolation for Mongo-read agents with no repo, optional explicit `workspace_mode`; synthetic user/timestamp |
 | `memory_recall` / `memory_add` / `memory_consolidate` | Memory v3 | tool-specific | filters/options; `fact_kinds` exposes procedure/routing/curated-fact subtypes |
 | `runbook_select` | Runbooks + Memory v3 | `request` | Select reviewed runbook; on miss perform procedure-memory recall |
 | `github_read_pr_review_state` / `github_post_review` | Fixed GitHub API surface | review-specific | inline comments |

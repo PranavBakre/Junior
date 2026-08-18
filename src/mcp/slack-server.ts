@@ -989,7 +989,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         artifact_refs: z.array(z.string()).optional().describe("Durable artifact references inherited by the child assignment"),
         acceptance_criteria: z.array(z.string()).optional().describe("Acceptance criteria for the child assignment"),
         repo_refs: z.array(z.string().min(1).max(200)).max(20).optional().describe("Repositories to validate and atomically bind to the durable run before dispatch"),
-        workspace_mode: z.enum(["managed", "repo-less"]).optional().describe("Use repo-less only for a read-only MongoDB lookup that does not need repository files; managed is the default."),
+        workspace_mode: z.enum(["managed", "repo-less"]).optional().describe("MongoDB-read agents automatically use repo-less mode when no repository is bound. Set managed for repository code or migrations, or repo-less explicitly for a bounded read."),
         channel_id: z.string().optional().describe("Deprecated; authenticated channel is derived from signed context"),
         thread_ts: z.string().optional().describe("Deprecated; authenticated thread is derived from signed context"),
         user_id: z.string().optional().describe("User id to record on the synthetic internal event (default: mcp-internal)"),
