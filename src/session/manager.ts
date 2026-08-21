@@ -860,6 +860,26 @@ export class SessionManager {
     return touched;
   }
 
+  private async cancelThreadPipeline(threadId: string): Promise<boolean> {
+    if (!this.pipelineStore) return false;
+    const session = await this.store.get(threadId);
+    const runId = session?.activeRunId ?? session?.activePipelineRunId;
+    if (!session || !runId) return false;
+    const result = await this.pipelineStore.cancelRun(runId, "Cancelled by user with !stop");
+    await this.mutateSession(threadId, (s) => {
+      s.activeRunId = null;
+      s.activePipelineRunId = null;
+      s.activePipelineKind = null;
+      s.activePipelineInvocation = null;
+      s.pendingMessages = s.pendingMessages.filter((message) => !message.pipelineInvocation || message.pipelineInvocation.runId !== runId);
+      for (const agentSession of Object.values(s.agentSessions ?? {})) {
+        if (agentSession.activePipelineInvocation?.runId === runId) agentSession.activePipelineInvocation = null;
+        agentSession.pendingMessages = agentSession.pendingMessages.filter((message) => !message.pipelineInvocation || message.pipelineInvocation.runId !== runId);
+      }
+    });
+    return result.cancelled;
+  }
+
   async getSession(threadId: string): Promise<ThreadSession | undefined> {
     return this.store.get(threadId);
   }
@@ -1067,15 +1087,9 @@ export class SessionManager {
   ): Promise<boolean> {
     switch (event.command) {
       case "cancel": {
-        let killed = 0;
-        for (const [key, handle] of this.handles) {
-          if (!key.startsWith(`${session.threadId}:`)) continue;
-          handle.kill();
-          this.handles.delete(key);
-          killed++;
-        }
+        const pipelineCancelled = await this.cancelThreadPipeline(session.threadId);
+        const killed = await this.interruptThread(session.threadId);
         await this.mutateSession(session.threadId, (s) => {
-          s.status = "idle";
           s.pid = null;
           s.pendingMessages = [];
           for (const agentSession of Object.values(s.agentSessions ?? {})) {
@@ -1086,7 +1100,9 @@ export class SessionManager {
         });
         this.onCommandResponse?.(
           event,
-          killed === 0 ? "Nothing running." : `Cancelled (${killed} process${killed === 1 ? "" : "es"}).`,
+          pipelineCancelled
+            ? `Pipeline fully cancelled. Cancelled (${killed} process${killed === 1 ? "" : "es"}).`
+            : killed === 0 ? "Nothing running." : `Cancelled (${killed} process${killed === 1 ? "" : "es"}).`,
         );
         return true;
       }
@@ -1423,8 +1439,14 @@ export class SessionManager {
       }
 
       case "stop": {
+        const pipelineCancelled = await this.cancelThreadPipeline(session.threadId);
         const touched = await this.interruptThread(session.threadId);
-        this.onCommandResponse?.(event, formatStopReply(touched));
+        this.onCommandResponse?.(
+          event,
+          pipelineCancelled
+            ? `Pipeline fully cancelled. ${formatStopReply(touched)}`
+            : formatStopReply(touched),
+        );
         return true;
       }
 

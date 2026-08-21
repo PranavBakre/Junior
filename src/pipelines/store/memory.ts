@@ -226,6 +226,53 @@ export class InMemoryPipelineStore implements PipelineStore {
     return this.getRun(id);
   }
 
+  async cancelRun(runId: string, reason: string) {
+    const run = this.runs.get(runId);
+    const empty = {
+      cancelled: false,
+      assignmentsCancelled: 0,
+      outboxDeadLettered: 0,
+      devServerJobsCancelled: 0,
+      githubResourcesDeactivated: 0,
+    };
+    if (!run || run.status === "terminal") return empty;
+
+    const now = this.clock.now();
+    run.status = "terminal";
+    run.phase = "abandoned";
+    run.terminalOutcome = "abandoned";
+    run.terminalReason = reason;
+    run.stateVersion += 1;
+    run.updatedAt = now;
+    this.runs.set(runId, cloneRun(run));
+
+    let assignmentsCancelled = 0;
+    for (const [id, assignment] of this.assignments) {
+      if (assignment.runId !== runId || ["completed", "failed", "cancelled"].includes(assignment.status)) continue;
+      this.assignments.set(id, { ...assignment, status: "cancelled", leaseOwner: null, leaseExpiresAt: null, updatedAt: now });
+      assignmentsCancelled++;
+    }
+    let outboxDeadLettered = 0;
+    for (const [id, record] of this.outbox) {
+      if (record.runId !== runId || ["delivered", "failed", "dead"].includes(record.status)) continue;
+      this.outbox.set(id, { ...record, status: "dead", leaseOwner: null, leaseExpiresAt: null, lastError: reason });
+      outboxDeadLettered++;
+    }
+    let devServerJobsCancelled = 0;
+    for (const [id, job] of this.devServerJobs) {
+      if (job.runId !== runId || isTerminalDevServerStatus(job.status)) continue;
+      this.devServerJobs.set(id, { ...job, status: "cancelled", leaseOwner: null, leaseExpiresAt: null, releasedAt: now, releaseReason: reason, updatedAt: now });
+      devServerJobsCancelled++;
+    }
+    let githubResourcesDeactivated = 0;
+    for (const [id, association] of this.pipelineGithub) {
+      if (association.runId !== runId || !association.active) continue;
+      this.pipelineGithub.set(id, { ...association, active: false, updatedAt: now });
+      githubResourcesDeactivated++;
+    }
+    return { cancelled: true, assignmentsCancelled, outboxDeadLettered, devServerJobsCancelled, githubResourcesDeactivated };
+  }
+
   async expandRunRepoRefs(runId: string, repoRefs: string[]): Promise<PipelineRun> {
     const run = this.runs.get(runId);
     if (!run) throw new Error(`pipeline run not found: ${runId}`);

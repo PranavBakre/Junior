@@ -37,6 +37,14 @@ describe("parseCommand", () => {
     });
   });
 
+  it("treats unambiguous standalone stop requests as !stop", () => {
+    for (const text of ["stop", "stop.", "stop. exit this conversation", "stop the pipeline", "cancel the pipeline"]) {
+      expect(parseCommand(text)).toEqual({ command: "stop", text: "" });
+    }
+    expect(parseCommand("don't stop")).toEqual({ command: null, text: "don't stop" });
+    expect(parseCommand("stop after review")).toEqual({ command: null, text: "stop after review" });
+  });
+
   it("handles empty string", () => {
     expect(parseCommand("")).toEqual({
       command: null,

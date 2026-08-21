@@ -2361,6 +2361,33 @@ describe("SessionManager", () => {
       );
       expect((await store.get("thread-1"))!.status).toBe("idle");
     });
+
+    it("!stop terminalizes and detaches the thread's durable pipeline", async () => {
+      const pipelineStore = new InMemoryPipelineStore();
+      manager.pipelineStore = pipelineStore;
+      await pipelineStore.createRun(makeProductRun({ id: "run-stop", threadId: "thread-1" }));
+      await pipelineStore.createAssignment(makeAssignmentCreate({ id: "asg-stop", runId: "run-stop" }));
+      await pipelineStore.enqueueOutbox({
+        id: "wake-stop", runId: "run-stop", assignmentId: "asg-stop",
+        eventType: "assignment.dispatch", payload: {}, idempotencyKey: "wake-stop-key",
+      });
+      await manager.handleMessage(makeEvent({ text: "go" }));
+      const session = (await store.get("thread-1"))!;
+      session.activeRunId = "run-stop";
+      session.activePipelineRunId = "run-stop";
+      session.activePipelineKind = "product";
+      await store.set("thread-1", session);
+      const onCmd = mock((_e: SlackMessageEvent, _r: string) => {});
+      manager.onCommandResponse = onCmd;
+
+      await manager.handleMessage(makeEvent({ command: "stop", text: "", ts: "ts-stop-pipeline" }));
+
+      expect(await pipelineStore.getRun("run-stop")).toMatchObject({ status: "terminal", terminalOutcome: "abandoned" });
+      expect(await pipelineStore.getAssignment("asg-stop")).toMatchObject({ status: "cancelled" });
+      expect((await pipelineStore.listOutbox("run-stop"))[0]?.status).toBe("dead");
+      expect(await store.get("thread-1")).toMatchObject({ activeRunId: null, activePipelineRunId: null, activePipelineKind: null });
+      expect(onCmd.mock.calls[0]?.[1]).toContain("Pipeline fully cancelled");
+    });
   });
 
   describe("!reset", () => {

@@ -17,6 +17,7 @@ disabled by default (`PIPELINE_RUNTIME_MODE=off`) and can run in `shadow` or
 | Slack/`!status` summary | `src/pipelines/projection.ts` | Human-readable `projectRunSummary` for Slack status. Not the dashboard HTTP projector. |
 | Dashboard operator projection | `src/http/routes/pipelines.ts` | List + detail + artifact read. Hides `kind=default` unless `includeDefault=1` or `kind=default`. Detail expands leases, full-run outbox (payload stripped), attempt-scoped gates, GitHub resources, dev-server jobs, artifact refs. |
 | Retention cleanup | `src/pipelines/gc.ts` | Pipeline retention GC (`PIPELINE_RETENTION_DAYS`). |
+| Full cancellation | `PipelineStore.cancelRun`, `SessionManager` `!stop` handling | Atomically abandons the run, cancels live assignments/jobs, dead-letters pending or leased wakes, deactivates GitHub tracking, clears session invocation state, and interrupts runner handles. |
 | Legacy bridge | `src/pipelines/legacy-directives.ts`, `src/support/pipeline-guard.ts` | Safely maps selected legacy directives while preserving existing routing. |
 | MCP tools | `src/pipelines/tools.ts` | Runner-facing pipeline read/write tools with scope and idempotency checks. |
 
