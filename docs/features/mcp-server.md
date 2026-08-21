@@ -120,10 +120,13 @@ human-input recovery assignment can retry an escalated run with corrected
 `repo_refs`; default runs resume to `working`, while typed runs require an
 explicit legal `to_phase`.
 
-For a bounded MongoDB read, a target with the `mongodb-read` capability may be
-dispatched with `workspace_mode: "repo-less"`. That assignment receives only
-the MongoDB capability envelope, an empty mutation scope, and no target-repo
-worktree; code or migration work continues to require managed mode.
+For a bounded MongoDB read, a target with the `mongodb-read` capability is
+automatically dispatched repo-less when the run and dispatch contain no
+repository refs and `workspace_mode` is omitted. The caller may also request
+`workspace_mode: "repo-less"` explicitly. That assignment receives only the
+MongoDB capability envelope, an empty mutation scope, and no target-repo
+worktree. Explicit `workspace_mode: "managed"`, or any bound/requested
+repository ref, preserves managed worktree behavior for code and migrations.
 
 ### WhatsApp tools
 

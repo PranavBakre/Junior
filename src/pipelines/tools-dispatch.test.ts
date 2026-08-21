@@ -137,12 +137,13 @@ describe("durable agent_dispatch", () => {
     };
     await sessions.set(THREAD, session);
 
-    const result = body(await pipelineDispatchAgent({
+    const runtime: PipelineToolRuntime = {
       store,
       sessionStore: sessions,
       runtimeMode: "active",
       githubTrackingEnabled: false,
-    }, {
+    };
+    const context = {
       agent: "default",
       channel: CHANNEL,
       threadId: THREAD,
@@ -150,7 +151,19 @@ describe("durable agent_dispatch", () => {
       assignmentId: started.assignment.id,
       dispatchKey: "repo-less-dispatch",
       signed: true,
-    }, {
+    } as const;
+    const invalidRepoLess = body(await pipelineDispatchAgent(runtime, context, {
+      target_agent: "build",
+      objective: "Implement the scoped change",
+      mode: "delegate",
+      reason: "The plan is ready",
+      idempotency_key: "invalid-repo-less-build",
+      workspace_mode: "repo-less",
+    }));
+    expect(invalidRepoLess.ok).toBe(false);
+    expect(invalidRepoLess.reason).toContain("without the mongodb-read capability");
+
+    const result = body(await pipelineDispatchAgent(runtime, context, {
       target_agent: "build",
       objective: "Implement the scoped change",
       mode: "delegate",
@@ -172,7 +185,7 @@ describe("durable agent_dispatch", () => {
     expect(await store.listAssignments(started.run.id)).toHaveLength(1);
   });
 
-  it("dispatches a MongoDB-only assignment without provisioning a repository", async () => {
+  it("automatically dispatches a MongoDB-only assignment without provisioning a repository", async () => {
     const store = new InMemoryPipelineStore();
     const sessions = new InMemorySessionStore();
     const started = await createDefaultRun(
@@ -214,7 +227,6 @@ describe("durable agent_dispatch", () => {
       mode: "delegate",
       reason: "The answer requires a production read",
       idempotency_key: "member-roadmap-read",
-      workspace_mode: "repo-less",
     }));
 
     expect(result.ok).toBe(true);
@@ -225,6 +237,88 @@ describe("durable agent_dispatch", () => {
       mutationScope: [],
       contextRefs: expect.arrayContaining(["workspace-mode:repo-less"]),
     });
+  });
+
+  it("preserves managed worktree behavior for MongoDB agents when explicitly requested or repo-backed", async () => {
+    async function setup(dispatchKey: string, repoRefs: string[] = []) {
+      const store = new InMemoryPipelineStore();
+      const sessions = new InMemorySessionStore();
+      const started = await createDefaultRun(
+        { store },
+        {
+          channelId: CHANNEL,
+          threadId: THREAD,
+          objective: "inspect data while working in the repository",
+          messageTs: "1700000000.105",
+          targetAgent: "default",
+          repoRefs,
+        },
+      );
+      const session = createSession(THREAD, CHANNEL);
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey,
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+      await sessions.set(THREAD, session);
+      return { store, sessions, started };
+    }
+
+    const managed = await setup("managed-mongo");
+    const rejected = body(await pipelineDispatchAgent({
+      store: managed.store,
+      sessionStore: managed.sessions,
+      runtimeMode: "active",
+      githubTrackingEnabled: false,
+    }, {
+      agent: "default",
+      channel: CHANNEL,
+      threadId: THREAD,
+      runId: managed.started.run.id,
+      assignmentId: managed.started.assignment.id,
+      dispatchKey: "managed-mongo",
+      signed: true,
+    }, {
+      target_agent: "db-executioner",
+      objective: "Run a migration from the managed repository",
+      mode: "delegate",
+      reason: "Repository execution is required",
+      idempotency_key: "managed-mongo",
+      workspace_mode: "managed",
+    }));
+    expect(rejected.ok).toBe(false);
+    expect(rejected.reason).toContain("retry agent_dispatch with repo_refs");
+
+    const repoBacked = await setup("repo-backed-mongo", ["GrowthX-Club/gx-backend"]);
+    const accepted = body(await pipelineDispatchAgent({
+      store: repoBacked.store,
+      sessionStore: repoBacked.sessions,
+      runtimeMode: "active",
+      githubTrackingEnabled: false,
+    }, {
+      agent: "default",
+      channel: CHANNEL,
+      threadId: THREAD,
+      runId: repoBacked.started.run.id,
+      assignmentId: repoBacked.started.assignment.id,
+      dispatchKey: "repo-backed-mongo",
+      signed: true,
+    }, {
+      target_agent: "db-executioner",
+      objective: "Inspect data in the context of the repository",
+      mode: "delegate",
+      reason: "Repository context is already bound",
+      idempotency_key: "repo-backed-mongo",
+    }));
+    expect(accepted.ok).toBe(true);
+    expect(await repoBacked.store.getAssignment(accepted.targetAssignmentId as string))
+      .toMatchObject({
+        targetAgent: "db-executioner",
+        capabilityRefs: [],
+        mutationScope: ["worktree-code"],
+      });
   });
 
   it("dispatches the repo-less onboarding agent without repository refs", async () => {

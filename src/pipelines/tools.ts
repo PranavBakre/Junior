@@ -769,8 +769,8 @@ export async function pipelineDispatchAgent(
       true,
     );
   }
-  const repoLessAssignment = args.workspace_mode === "repo-less";
-  if (repoLessAssignment && !hasCapability(target, "mongodb-read")) {
+  const explicitlyRepoLess = args.workspace_mode === "repo-less";
+  if (explicitlyRepoLess && !hasCapability(target, "mongodb-read")) {
     return textResult(
       {
         ok: false,
@@ -785,6 +785,11 @@ export async function pipelineDispatchAgent(
   const effectiveRepoRefs = [
     ...new Set([...run.repoRefs, ...requestedRepoRefs]),
   ];
+  const repoLessAssignment = explicitlyRepoLess ||
+    (args.workspace_mode === undefined &&
+      effectiveRepoRefs.length === 0 &&
+      requiresManagedWorktree(target) &&
+      hasCapability(target, "mongodb-read"));
   if (runtime.repos) {
     const resolution = resolvePipelineRepos(runtime.repos, effectiveRepoRefs);
     if (resolution.unresolvedRefs.length > 0) {
