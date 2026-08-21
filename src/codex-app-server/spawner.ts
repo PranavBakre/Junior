@@ -145,19 +145,27 @@ export function spawnCodexAppServer(
     }
 
     if ("id" in message && typeof message.id === "number" && typeof message.method === "string") {
-      if (message.method.includes("requestApproval")) {
+      const method = message.method;
+      if (isApprovalRequestMethod(method)) {
         void requestSlackApproval({
           channel: session.channel,
           threadTs: session.threadId,
           agent: session.activeAgentName ?? session.agentType ?? "default",
-          toolName: approvalToolName(message.method, message.params),
+          toolName: approvalToolName(method, message.params),
           input: message.params,
-        }).then(
-          (approved) => respond(message.id as number, { approved }),
-          () => respond(message.id as number, { approved: false }),
-        );
+        }).then((approved) => {
+          respond(
+            message.id as number,
+            approvalResponse(method, message.params, approved),
+          );
+        }, () => {
+          respond(
+            message.id as number,
+            approvalResponse(method, message.params, false),
+          );
+        });
       } else {
-        respond(message.id, responseForServerRequest(message.method));
+        respond(message.id, responseForServerRequest(method));
       }
       return;
     }
@@ -409,6 +417,35 @@ function responseForServerRequest(method: string): Record<string, unknown> {
 function approvalToolName(method: string, params: unknown): string {
   const payload = record(params);
   return stringValue(payload?.command) ?? stringValue(payload?.toolName) ?? method;
+}
+
+const APPROVAL_REQUEST_METHODS = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/permissions/requestApproval",
+]);
+
+function isApprovalRequestMethod(method: string): boolean {
+  return APPROVAL_REQUEST_METHODS.has(method);
+}
+
+function approvalResponse(
+  method: string,
+  params: unknown,
+  approved: boolean,
+): Record<string, unknown> {
+  if (method === "item/commandExecution/requestApproval" ||
+      method === "item/fileChange/requestApproval") {
+    return { decision: approved ? "accept" : "decline" };
+  }
+  if (method === "item/permissions/requestApproval") {
+    const requested = record(params)?.permissions;
+    return {
+      permissions: approved && isRecord(requested) ? requested : {},
+      scope: "turn",
+    };
+  }
+  return {};
 }
 
 async function consumeStdout(

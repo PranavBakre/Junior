@@ -27,6 +27,13 @@ describe("Slack approval bridge", () => {
     const store = {
       createMany: mock(async (records: CreateSlackActionRecord[]) => {
         rows.push(...records);
+        const allow = records.find((row) =>
+          row.action.type === "request_permission" && row.action.decision === "allow"
+        );
+        if (allow?.action.type !== "request_permission") {
+          throw new Error("missing allow action");
+        }
+        expect(resolvePendingApproval(allow.action.approvalToken, "allow")).toBe(true);
       }),
     } as unknown as SlackActionStore;
     const postMessage = mock(async () => ({ ok: true, ts: "10.20" }));
@@ -40,16 +47,32 @@ describe("Slack approval bridge", () => {
       toolName: "exec_command",
       input: { cmd: "git fetch" },
     });
-    await Bun.sleep(5);
-    expect(rows).toHaveLength(2);
-    const allow = rows.find((row) =>
-      row.action.type === "request_permission" && row.action.decision === "allow"
-    );
-    expect(allow).toBeDefined();
-    if (allow?.action.type !== "request_permission") throw new Error("missing allow action");
-    expect(resolvePendingApproval(allow.action.approvalToken, "allow")).toBe(true);
-
     expect(await pending).toBe(true);
+    expect(rows).toHaveLength(2);
     expect(postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans up the pending resolver when action storage fails", async () => {
+    let approvalToken = "";
+    const store = {
+      createMany: mock(async (records: CreateSlackActionRecord[]) => {
+        const action = records[0]?.action;
+        if (action?.type === "request_permission") approvalToken = action.approvalToken;
+        throw new Error("store unavailable");
+      }),
+    } as unknown as SlackActionStore;
+    const client = {
+      chat: { postMessage: mock(async () => ({ ok: true, ts: "10.20" })) },
+    } as unknown as WebClient;
+    configureSlackApprovalBridge(client, store);
+
+    expect(await requestSlackApproval({
+      channel: "C01",
+      threadTs: "1.2",
+      agent: "default",
+      toolName: "exec_command",
+    })).toBe(false);
+    expect(approvalToken).not.toBe("");
+    expect(resolvePendingApproval(approvalToken, "allow")).toBe(false);
   });
 });

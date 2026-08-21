@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,10 +6,15 @@ import type { Config } from "../config.ts";
 import { createSession } from "../session/types.ts";
 import { resolveCodexModel, spawnCodexAppServer } from "./spawner.ts";
 import { resolveTrustedSkill } from "../skills/registry.ts";
+import { configureSlackApprovalBridge } from "../mcp/slack-approval-bridge.ts";
+import { resolvePendingApproval } from "../mcp/approval.ts";
+import type { CreateSlackActionRecord, SlackActionStore } from "../slack/action-store.ts";
+import type { WebClient } from "@slack/web-api";
 
 const originalCodexBin = process.env.CODEX_BIN;
 
 afterEach(() => {
+  configureSlackApprovalBridge(undefined, undefined);
   if (originalCodexBin == null) {
     delete process.env.CODEX_BIN;
   } else {
@@ -18,6 +23,73 @@ afterEach(() => {
 });
 
 describe("spawnCodexAppServer", () => {
+  const approvalCases = [
+    {
+      method: "item/commandExecution/requestApproval",
+      params: { command: "git fetch" },
+      expected: { decision: "accept" },
+    },
+    {
+      method: "item/fileChange/requestApproval",
+      params: { reason: "edit source" },
+      expected: { decision: "accept" },
+    },
+    {
+      method: "item/permissions/requestApproval",
+      params: { permissions: { network: { enabled: true } } },
+      expected: {
+        permissions: { network: { enabled: true } },
+        scope: "turn",
+      },
+    },
+  ] as const;
+
+  for (const approvalCase of approvalCases) {
+    it(`returns the protocol response for ${approvalCase.method}`, async () => {
+      const fakeCodex = installFakeCodex(approvalFakeCodexScript(
+        approvalCase.method,
+        approvalCase.params,
+      ));
+      process.env.CODEX_BIN = fakeCodex.command;
+      const store = {
+        createMany: mock(async (records: CreateSlackActionRecord[]) => {
+          const allow = records.find((row) =>
+            row.action.type === "request_permission" && row.action.decision === "allow"
+          );
+          if (allow?.action.type !== "request_permission") {
+            throw new Error("missing allow action");
+          }
+          resolvePendingApproval(allow.action.approvalToken, "allow");
+        }),
+      } as unknown as SlackActionStore;
+      const client = {
+        chat: { postMessage: mock(async () => ({ ok: true, ts: "10.20" })) },
+      } as unknown as WebClient;
+      configureSlackApprovalBridge(client, store);
+
+      try {
+        const session = createSession("thread-approval", "C01");
+        session.provider = "codex-app-server";
+        const config = {
+          ...testConfig,
+          codex: {
+            ...testConfig.codex,
+            isolatedHomePath: join(fakeCodex.root, "codex-home"),
+          },
+        };
+        const result = await spawnCodexAppServer(session, "needs approval", config).result;
+        expect(result.error).toBeNull();
+
+        const messages = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
+          .trim().split("\n").map((line) => JSON.parse(line));
+        const response = messages.find((message) => message.id === 900 && !message.method);
+        expect(response).toEqual({ jsonrpc: "2.0", id: 900, result: approvalCase.expected });
+      } finally {
+        fakeCodex.cleanup();
+      }
+    });
+  }
+
   it("fails pending JSON-RPC requests when the process exits before responding", async () => {
     const fakeCodex = installFakeCodex();
     process.env.CODEX_BIN = fakeCodex.command;
@@ -272,6 +344,57 @@ rl.on("line", (line) => {
       jsonrpc: "2.0",
       method: "turn/completed",
       params: { thread: { id: "thread-created" }, finalResponse: "done after fallback" },
+    });
+    setTimeout(() => process.exit(0), 10);
+  }
+});
+`;
+}
+
+function approvalFakeCodexScript(
+  method: string,
+  extraParams: Record<string, unknown>,
+): string {
+  return `#!/usr/bin/env node
+const fs = require("node:fs");
+const readline = require("node:readline");
+const root = __ROOT__;
+const requestsPath = root + "/requests.jsonl";
+const rl = readline.createInterface({ input: process.stdin });
+const method = ${JSON.stringify(method)};
+const extraParams = ${JSON.stringify(extraParams)};
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+
+rl.on("line", (line) => {
+  const request = JSON.parse(line);
+  fs.appendFileSync(requestsPath, JSON.stringify(request) + "\\n");
+  if (request.method === "initialize") {
+    send({ jsonrpc: "2.0", id: request.id, result: {} });
+  } else if (request.method === "thread/start") {
+    send({ jsonrpc: "2.0", id: request.id, result: { thread: { id: "thread-created" } } });
+  } else if (request.method === "turn/start") {
+    send({ jsonrpc: "2.0", id: request.id, result: { turn: { id: "turn-created" } } });
+    send({
+      jsonrpc: "2.0",
+      id: 900,
+      method,
+      params: {
+        threadId: "thread-created",
+        turnId: "turn-created",
+        itemId: "item-approval",
+        startedAtMs: 1,
+        ...extraParams,
+        ...(method === "item/permissions/requestApproval" ? { cwd: process.cwd() } : {}),
+      },
+    });
+  } else if (request.id === 900) {
+    send({
+      jsonrpc: "2.0",
+      method: "turn/completed",
+      params: { thread: { id: "thread-created" }, finalResponse: "done" },
     });
     setTimeout(() => process.exit(0), 10);
   }

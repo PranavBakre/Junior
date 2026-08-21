@@ -37,8 +37,12 @@ contracts.
 Native `requestApproval` server callbacks are not auto-denied. The provider
 posts a scoped Allow/Deny action in the originating Slack thread, waits on the
 same in-process resolver used by Claude's permission tool, and returns the
-human decision to app-server. Missing context, post/store errors, timeouts, and
-handler failures all deny the request.
+human decision using the exact callback schema: command and file callbacks
+return `decision`, while permissions callbacks return the granted requested
+`permissions` for the current turn. The pending resolver is registered before
+the message or action records can become clickable. Missing context, post/store
+errors, timeouts, and handler failures all deny the request and clear the
+resolver.
 
 Codex continuity is provider-native and optional. Durable session, workflow,
 pipeline, and artifact state remains authoritative when a process or provider

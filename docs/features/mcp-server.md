@@ -91,9 +91,12 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   `OPENCODE_MIXPANEL_MCP_ENABLED=false`.
 - Human-gated Codex app-server commands use the same blocking Slack Allow/Deny
   actions and pending-approval registry as Claude's permission prompt tool.
-  Missing Slack context, delivery/storage errors, expiry, or handler failure
-  defaults to denial; the adapter no longer unconditionally rejects native
-  `requestApproval` callbacks.
+  The registry entry exists before a prompt can become actionable, preventing
+  immediate clicks from racing resolver setup. Exact app-server callback
+  methods retain their native response contracts (`decision` for command/file,
+  requested `permissions` for permissions). Missing Slack context,
+  delivery/storage errors, expiry, or handler failure defaults to denial and
+  resolver cleanup.
 - MongoDB MCP uses `MDB_MCP_CONNECTION_STRING` from the process environment.
   `.env.example` includes a placeholder; real values belong only in local
   `.env` or secret managers. Junior exposes a shared read-only HTTP proxy at

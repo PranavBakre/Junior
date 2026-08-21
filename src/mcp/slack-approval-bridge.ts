@@ -1,5 +1,8 @@
 import type { WebClient } from "@slack/web-api";
-import { registerPendingApproval } from "./approval.ts";
+import {
+  cancelPendingApproval,
+  registerPendingApproval,
+} from "./approval.ts";
 import type { SlackActionStore } from "../slack/action-store.ts";
 import { buildActionBlocks } from "../slack/responder.ts";
 import type { SlackActionButtonSpec } from "../slack/formatting.ts";
@@ -61,26 +64,37 @@ export async function requestSlackApproval(options: {
       style: action.style,
     })),
   );
-  const posted = await slackClient.chat.postMessage({
-    channel: options.channel,
-    thread_ts: options.threadTs,
-    text,
-    blocks,
-  } as Parameters<WebClient["chat"]["postMessage"]>[0]);
-  if (!posted.ts) return false;
+  // Register before the Slack message can become clickable. In particular,
+  // createMany implementations may expose/resolve the actions synchronously.
+  const pendingDecision = registerPendingApproval(approvalToken);
+  try {
+    const posted = await slackClient.chat.postMessage({
+      channel: options.channel,
+      thread_ts: options.threadTs,
+      text,
+      blocks,
+    } as Parameters<WebClient["chat"]["postMessage"]>[0]);
+    if (!posted.ts) {
+      cancelPendingApproval(approvalToken);
+      return false;
+    }
 
-  await actionStore.createMany(
-    buttons.map(({ action, token }) => ({
-      token,
-      channelId: options.channel,
-      threadTs: options.threadTs,
-      messageTs: posted.ts!,
-      messageText: text,
-      action,
-      sourceAgent: options.agent,
-    })),
-  );
-  return (await registerPendingApproval(approvalToken)) === "allow";
+    await actionStore.createMany(
+      buttons.map(({ action, token }) => ({
+        token,
+        channelId: options.channel,
+        threadTs: options.threadTs,
+        messageTs: posted.ts!,
+        messageText: text,
+        action,
+        sourceAgent: options.agent,
+      })),
+    );
+    return (await pendingDecision) === "allow";
+  } catch {
+    cancelPendingApproval(approvalToken);
+    return false;
+  }
 }
 
 function renderInput(input: unknown): string {
