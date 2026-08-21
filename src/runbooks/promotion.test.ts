@@ -75,13 +75,27 @@ describe("runbook promotion", () => {
   describe("recordSuccessfulExecution", () => {
     it("first execution creates a tracking entry", () => {
       const evidence = makeEvidence({ intentFingerprint: "fp-create-1" });
-      recordSuccessfulExecution(evidence);
+      recordSuccessfulExecution(evidence, "Grant six months of membership");
 
       const candidate = getCandidate("fp-create-1");
       expect(candidate).toBeDefined();
       expect(candidate!.occurrenceCount).toBe(1);
       expect(candidate!.status).toBe("tracking");
       expect(candidate!.evidenceRefs).toContain(evidence.runId);
+      expect(candidate!.normalizedIntent).toBe("grant six months of membership");
+    });
+
+    it("backfills a legacy candidate intent from a later execution", () => {
+      const fingerprint = "fp-backfill-intent";
+      recordSuccessfulExecution(makeEvidence({ intentFingerprint: fingerprint }));
+      recordSuccessfulExecution(
+        makeEvidence({ intentFingerprint: fingerprint }),
+        "Grant six months of membership",
+      );
+
+      expect(getCandidate(fingerprint)?.normalizedIntent).toBe(
+        "grant six months of membership",
+      );
     });
 
     it("second execution increments count and links evidence", () => {

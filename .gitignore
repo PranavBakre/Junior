@@ -24,6 +24,9 @@ data/
 # it does NOT match the src/memory/profiles/ source code.)
 /memory/profiles/
 
+# Notion PDF export output — contains real internal content, never tracked.
+/notion-export*/
+
 # Support config (operator-specific, never tracked)
 support/repo-routing.yaml
 support/admin-credentials.yaml
