@@ -53,6 +53,12 @@ function stripAsidePrefix(text: string): string {
 
 export function parseCommand(text: string): ParsedCommand {
   if (!text.startsWith("!")) {
+    // Treat only unambiguous standalone human stop instructions as control
+    // plane input. This intentionally does not match conversational text such
+    // as "don't stop" or "stop after review".
+    if (/^(?:stop|cancel)(?:(?:[.!]\s*|\s+)(?:the\s+pipeline|exit\s+this\s+conversation))?[.!]?$/i.test(text.trim())) {
+      return { command: "stop", text: "" };
+    }
     return { command: null, text };
   }
 

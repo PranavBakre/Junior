@@ -45,6 +45,29 @@ describe("SqlitePipelineStore", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("fully cancels a run and all durable continuation work", async () => {
+    await store.createRun(makeProductRun());
+    await store.createAssignment(makeAssignmentCreate());
+    await store.enqueueOutbox({
+      id: "wake-1", runId: "run-1", assignmentId: "asg-1",
+      eventType: "assignment.dispatch", payload: {}, idempotencyKey: "wake-key",
+    });
+
+    expect(await store.cancelRun("run-1", "user stopped thread")).toMatchObject({
+      cancelled: true, assignmentsCancelled: 1, outboxDeadLettered: 1,
+    });
+    expect(await store.getRun("run-1")).toMatchObject({
+      status: "terminal", phase: "abandoned", terminalOutcome: "abandoned",
+      terminalReason: "user stopped thread", stateVersion: 1,
+    });
+    expect(await store.getAssignment("asg-1")).toMatchObject({ status: "cancelled", leaseOwner: null });
+    expect(await store.listOutbox("run-1")).toEqual([
+      expect.objectContaining({ status: "dead", leaseOwner: null }),
+    ]);
+    expect((await store.cancelRun("run-1", "again")).cancelled).toBe(false);
+  });
+
+
   it("expands run repository refs atomically and idempotently", async () => {
     await store.createRun(makeDefaultRun({ repoRefs: ["GrowthX-Club/junior"] }));
     const expanded = await store.expandRunRepoRefs("default-run-1", [

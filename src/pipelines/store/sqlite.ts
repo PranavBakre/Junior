@@ -1030,6 +1030,22 @@ export class SqlitePipelineStore implements PipelineStore {
     return row ? runFromRow(row) : undefined;
   }
 
+  async cancelRun(runId: string, reason: string) {
+    const cancel = this.db.transaction(() => {
+      const run = this.db.query<RunRow, [string]>("SELECT * FROM pipeline_runs WHERE id = ?").get(runId);
+      const empty = { cancelled: false, assignmentsCancelled: 0, outboxDeadLettered: 0, devServerJobsCancelled: 0, githubResourcesDeactivated: 0 };
+      if (!run || run.status === "terminal") return empty;
+      const now = this.clock.now();
+      this.db.query(`UPDATE pipeline_runs SET status = 'terminal', phase = 'abandoned', terminal_outcome = 'abandoned', terminal_reason = ?, state_version = state_version + 1, updated_at = ? WHERE id = ? AND status != 'terminal'`).run(reason, now, runId);
+      const assignments = this.db.query(`UPDATE pipeline_assignments SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE run_id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`).run(now, runId);
+      const outbox = this.db.query(`UPDATE pipeline_outbox SET status = 'dead', lease_owner = NULL, lease_expires_at = NULL, last_error = ? WHERE run_id = ? AND status NOT IN ('delivered', 'failed', 'dead')`).run(reason, runId);
+      const jobs = this.db.query(`UPDATE dev_server_jobs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, released_at = ?, release_reason = ?, updated_at = ? WHERE run_id = ? AND status NOT IN ('released', 'failed', 'cancelled', 'deadline')`).run(now, reason, now, runId);
+      const github = this.db.query(`UPDATE pipeline_github_resources SET active = 0, updated_at = ? WHERE run_id = ? AND active = 1`).run(now, runId);
+      return { cancelled: true, assignmentsCancelled: assignments.changes, outboxDeadLettered: outbox.changes, devServerJobsCancelled: jobs.changes, githubResourcesDeactivated: github.changes };
+    });
+    return cancel.immediate();
+  }
+
   async expandRunRepoRefs(runId: string, repoRefs: string[]): Promise<PipelineRun> {
     const tx = this.db.transaction(() => {
       const row = this.db

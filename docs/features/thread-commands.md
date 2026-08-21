@@ -31,7 +31,11 @@ Users need to control thread behavior beyond just sending messages. Reset a brok
 - `!help` — List available commands
 - `!provider <name>` — Switch the thread's runner provider (`claude`,
   `opencode`, `opencode-sdk`, or `codex-app-server`)
-- `!stop` — Stop the active runner/driver
+- `!stop` — Stop every active runner/driver and atomically abandon the thread's durable pipeline, cancelling assignments, queued wakes, dev-server jobs, and GitHub reconciliation
+
+The same full cancellation is applied by `!cancel` and by unambiguous standalone
+requests such as `stop`, `stop. exit this conversation`, or `cancel the pipeline`.
+Longer conversational phrases are left to normal routing to avoid false stops.
 - `!driver <headless|tmux>` — Select Claude's driver mode for the thread (admin only)
 - `!workflow ...` / `!workflows` — Inspect and control dynamic workflows
 

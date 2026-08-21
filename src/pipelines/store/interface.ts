@@ -48,6 +48,18 @@ export interface PipelineStore {
   countOpenRuns(filter?: { kind?: PipelineRun["kind"] }): Promise<number>;
 
   /**
+   * Atomically abandon a live run and disable every durable continuation.
+   * Idempotent: cancelling an already-terminal run reports no changes.
+   */
+  cancelRun(runId: string, reason: string): Promise<{
+    cancelled: boolean;
+    assignmentsCancelled: number;
+    outboxDeadLettered: number;
+    devServerJobsCancelled: number;
+    githubResourcesDeactivated: number;
+  }>;
+
+  /**
    * Atomically create a run + initial assignment (and optional seed events).
    * Rolls back entirely on failure so no assignment-less active run remains.
    */
