@@ -1668,6 +1668,10 @@ export class SessionManager {
       const pipelineRole = activeSkill || repoLessAssignment
         ? "utility"
         : resolveAgentManifest(agentName)?.role;
+      const assignmentNeedsWorktree = pipelineAssignmentRequiresWorktree(
+        agentName,
+        activePipelineAssignment?.mutationScope,
+      );
       if (pipelineRole === "utility") {
         _log.info(
           "manager",
@@ -1719,7 +1723,7 @@ export class SessionManager {
           );
         }
         if (pipelineRepos.length === 0) {
-          if (pipelineAgentRequiresWorktree(agentName)) {
+          if (assignmentNeedsWorktree) {
             throw new Error(
               `Pipeline ${activePipelineRun.id.slice(0, 8)} cannot run ${agentName} assignment ${pipelineInvocation.assignmentId.slice(0, 8)} without a configured repository and isolated worktree. Add a repository to the run or use !reset after preserving any work.`,
             );
@@ -1733,6 +1737,19 @@ export class SessionManager {
             // A prior utility command may have pinned the thread to an
             // arbitrary cwd. Repo-less pipeline work belongs in Junior's
             // workspace, not that stale override.
+            fresh.cwd = null;
+          });
+        } else if (!assignmentNeedsWorktree) {
+          _log.info(
+            "manager",
+            `pipeline.workspace.skip thread=${session.threadId} run=${activePipelineRun.id} assignment=${pipelineInvocation.assignmentId} agent=${agentName} reason=assignment-does-not-require-worktree`,
+          );
+          session = await this.mutateSession(session.threadId, (fresh) => {
+            assertRunOwnership();
+            // Repository references describe the durable run's scope; they do
+            // not by themselves authorize or require a checkout. Orchestrator
+            // and planner assignments stay in Junior's control-plane workspace
+            // until they hand work to a repo-bound worker.
             fresh.cwd = null;
           });
         } else {
@@ -4247,8 +4264,14 @@ export class SessionManager {
   }
 }
 
-function pipelineAgentRequiresWorktree(agentName: string): boolean {
-  return requiresManagedWorktree(agentName);
+function pipelineAssignmentRequiresWorktree(
+  agentName: string,
+  mutationScope: readonly string[] | undefined,
+): boolean {
+  return (
+    requiresManagedWorktree(agentName) ||
+    mutationScope?.includes("worktree-code") === true
+  );
 }
 
 const defaultSpawnRunnerForRuntime: SpawnRunnerFn =

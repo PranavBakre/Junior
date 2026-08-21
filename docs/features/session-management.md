@@ -66,7 +66,12 @@ Worker terminal states: done (clean) | failed (spawn/setup error).
 
 For every run the manager:
 
-1. Creates a worktree if `targetRepo` is set and one doesn't exist (always, not just for `build`/`frontend`). Failure clears `targetRepo` for the run so cwd never lands in the shared origin repo.
+1. For durable pipeline turns, creates worktrees only when the active assignment
+   requires a managed checkout (repo-bound role or `worktree-code` mutation
+   scope). Durable repo refs describe run scope but do not force orchestrator or
+   planner assignments into worktrees. Outside a pipeline, an explicit
+   `targetRepo` still creates/reuses a worktree so cwd never lands in the shared
+   origin repo. Failure clears `targetRepo` for the run.
 2. Resolves the agent definition to pick a context profile (see [agent-routing.md](agent-routing.md)).
 3. Builds the prompt: full preamble (workspace, thread context, persistent-agent state, image paths) on the first turn; on resumed turns only the workspace block, gated by the agent's context profile. `--resume` carries identity/history.
 4. Composes the system prompt: agent definition + per-agent Slack identity (`username`, `icon_emoji`, attribution suffix) + dispatch allow-list (which `!<agent>` directives this agent may emit).

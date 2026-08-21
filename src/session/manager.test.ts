@@ -1342,6 +1342,58 @@ describe("SessionManager", () => {
     expect((await store.get("thread-1"))?.cwd).toBeNull();
   });
 
+  it("does not provision referenced repos for an orchestration-only assignment", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    await pipelineStore.createRun(
+      makeProductRun({
+        id: "run-orchestrator-repos",
+        threadId: "thread-1",
+        repoRefs: ["GrowthX-Club/junior"],
+      }),
+    );
+    await pipelineStore.createAssignment(
+      makeAssignmentCreate({
+        id: "assignment-orchestrator-repos",
+        runId: "run-orchestrator-repos",
+        targetAgent: "default",
+        mutationScope: [],
+      }),
+    );
+    manager.pipelineStore = pipelineStore;
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getWorktreePath: () => "/tmp/should-not-be-created",
+      worktreeExists: mock(async () => false),
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+    const existing = createSession("thread-1", "C123");
+    existing.activePipelineRunId = "run-orchestrator-repos";
+    existing.activePipelineKind = "product";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(
+      makeEvent({
+        text: "inspect the request and decide the next action",
+        pipelineInvocation: {
+          runId: "run-orchestrator-repos",
+          assignmentId: "assignment-orchestrator-repos",
+          dispatchKey: "dispatch-orchestrator-repos",
+          outcomeCountAtDispatch: 0,
+          retryCount: 0,
+        },
+      }),
+      "default",
+    );
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(createWorktree).not.toHaveBeenCalled();
+    const runSession = mockSpawnFn.mock.calls[0]![0];
+    expect(runSession.worktreePath).toBeNull();
+    expect(runSession.targetRepo).toBeNull();
+    expect(runSession.cwd).toBeNull();
+  });
+
   it("keeps human turns usable after a repo-less build assignment escalates", async () => {
     const pipelineStore = new InMemoryPipelineStore();
     await pipelineStore.createRun(
@@ -4872,6 +4924,7 @@ describe("typed pipeline settlement", () => {
     await pipelineStore.createAssignment(makeAssignmentCreate({
       id: "asg-reset-default",
       targetAgent: "default",
+      mutationScope: ["worktree-code"],
       idempotencyKey: "asg-reset-default-key",
     }));
     const handles: MockHandle[] = [];
