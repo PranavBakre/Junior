@@ -109,7 +109,7 @@ export async function requestSlackApproval(options: {
     actionsStored = true;
     if (options.signal?.aborted) cancel();
     const approved = (await pendingDecision) === "allow";
-    if (options.signal?.aborted) {
+    if (!approved) {
       await disableApprovalActions(client, store, options.channel, messageTs, text, true);
     }
     return approved;
