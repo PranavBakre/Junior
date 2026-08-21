@@ -38,6 +38,24 @@ describe("resolveDispatchAgent", () => {
     ).toBe("default");
   });
 
+  it("routes review merge actions with the retired lead identity to default", () => {
+    expect(
+      resolveDispatchAgent(
+        {
+          channelId: "C-JUNIOR",
+          action: {
+            id: "review:merge-gxt-admin",
+            label: "Merge via gxt-admin",
+            type: "dispatch_agent",
+            agent: "lead",
+            prompt: "merge the review-approved PR",
+          },
+        },
+        new Set(["C-BUGS"]),
+      ),
+    ).toBe("default");
+  });
+
   it("leaves other dispatch actions unchanged", () => {
     expect(
       resolveDispatchAgent(

@@ -181,6 +181,19 @@ export class WorktreeManager {
   }
 
   /**
+   * Refresh remote refs from the configured repository checkout.
+   *
+   * Managed worktrees share Git metadata with that checkout. Sandboxed
+   * providers intentionally cannot write the shared `.git` directory, so the
+   * server owns the pre-turn fetch and workers consume refreshed origin refs.
+   */
+  async syncRepo(repoName: string): Promise<void> {
+    const repo = this.getRepo(repoName);
+    if (!repo) throw new Error(`Unknown repo: ${repoName}`);
+    await this.runGit(["fetch", "origin", "--prune"], repo.path);
+  }
+
+  /**
    * Check if a worktree has uncommitted changes.
    */
   async isWorktreeDirty(worktreePath: string): Promise<boolean> {

@@ -133,9 +133,13 @@ export function resolveDispatchAgent(
 ): string {
   const action = record.action;
   if (action.type !== "dispatch_agent") return "";
-  if (action.id === "review:make-fix") {
-    // Every channel uses the default Junior orchestrator. Support-channel
-    // classification still governs pipeline behavior after dispatch.
+  if (
+    action.id === "review:make-fix" ||
+    action.id === "review:merge-gxt-admin"
+  ) {
+    // Every channel uses the default Junior orchestrator. This also preserves
+    // review-generated actions that still carry the retired `lead` identity.
+    // Support-channel classification governs pipeline behavior after dispatch.
     return "default";
   }
   return action.agent;

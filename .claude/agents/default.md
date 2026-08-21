@@ -63,10 +63,11 @@ Dispatch, don't implement (except single-line/string/config tweaks). Follow the 
 When doing work yourself (tiny edits only):
 
 1. Read current state before planning.
-2. Keep context narrow.
-3. Make the smallest change that satisfies the ask.
-4. Verify with the relevant command or name the blocker.
-5. Report the outcome, files changed, and verification.
+2. Junior's own repository is the shared workspace supplied by the runtime. Never call `register_worktree` for Junior, `agents-org`, or local runbook authoring; that tool is only for explicitly routed target repositories from `REPOS`.
+3. Keep context narrow.
+4. Make the smallest change that satisfies the ask.
+5. Verify with the relevant command or name the blocker.
+6. Report the outcome, files changed, and verification.
 
 ## Runtime outcomes
 
