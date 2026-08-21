@@ -102,7 +102,12 @@ Handled in `handleCommand`: `build`, `frontend`, `architect`, `pm` (set `agentTy
 
 ## Prompt Composition (in `runRunnerWithAgent`)
 
-1. For an active pipeline assignment, resolve every durable repo ref, provision all managed worktrees, refresh remote refs for reused worktrees, and select the primary cwd from review/workstream affinity. Otherwise resolve `targetRepo`, create its worktree when absent, or refresh remote refs before reusing it.
+1. For an active pipeline assignment, resolve durable repo refs, then provision
+   managed worktrees only when the repo-bound agent role or the assignment's
+   `worktree-code` mutation scope requires them. Orchestrator/planner
+   assignments remain in Junior's control-plane workspace even when the run has
+   repo refs. Otherwise resolve `targetRepo`, create its worktree when absent,
+   or refresh remote refs before reusing it.
 2. Resolve agent definition + context profile (defaults to all-true). Typed
    worker assignments force `threadHistory:false` because their durable
    assignment envelope is the compiled handoff; Junior/lead and direct worker

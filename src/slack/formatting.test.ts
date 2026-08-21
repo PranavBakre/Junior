@@ -164,6 +164,14 @@ describe("formatToolStatuses", () => {
     const result = formatToolStatuses(makeAssistantEvent([{}]));
     expect(result).toEqual(["Using Unknown"]);
   });
+
+  it("suppresses durable control-plane bookkeeping", () => {
+    expect(formatRunnerToolStatuses([
+      makeToolEvent({ name: "pipeline_report_outcome" }),
+      makeToolEvent({ name: "mcp__slack-bot__agent_dispatch" }),
+      makeToolEvent({ name: "Read", input: { file_path: "src/auth.ts" } }),
+    ])).toEqual(["Reading `src/auth.ts`"]);
+  });
 });
 
 describe("extractRunnerMessageText", () => {

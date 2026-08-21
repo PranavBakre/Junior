@@ -18,7 +18,8 @@ export function formatRunnerToolStatuses(
   events: RunnerEvent | RunnerEvent[],
 ): string[] {
   const toolEvents = (Array.isArray(events) ? events : [events]).filter(
-    (event): event is RunnerEventTool => event.type === "tool",
+    (event): event is RunnerEventTool =>
+      event.type === "tool" && !isInternalControlTool(event.name),
   );
   const taskBlocks = toolEvents.filter((event) => event.name === "Task");
   const otherBlocks = toolEvents.filter((event) => event.name !== "Task");
@@ -33,6 +34,19 @@ export function formatRunnerToolStatuses(
 
   statuses.push(...otherBlocks.map(formatToolEvent));
   return statuses;
+}
+
+/** Durable control-plane bookkeeping is not useful live Slack status. */
+function isInternalControlTool(name: string): boolean {
+  const normalized = name.replaceAll("-", "_").toLowerCase();
+  return [
+    "pipeline_report_outcome",
+    "pipeline_get_state",
+    "pipeline_run_check",
+    "pipeline_write_artifact",
+    "agent_dispatch",
+    "skill_dispatch",
+  ].some((suffix) => normalized.endsWith(suffix));
 }
 
 /**
