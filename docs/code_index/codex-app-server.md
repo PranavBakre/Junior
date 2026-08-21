@@ -42,7 +42,10 @@ return `decision`, while permissions callbacks return the granted requested
 `permissions` for the current turn. The pending resolver is registered before
 the message or action records can become clickable. Missing context, post/store
 errors, timeouts, and handler failures all deny the request and clear the
-resolver.
+resolver. Each pending approval is also owned by the provider process: process
+exit or an explicit stop aborts the resolver, disables any stored actions, and
+removes the Slack buttons before a late click can grant access. JSON-RPC
+responses are not written after the process enters a terminal state.
 
 Codex continuity is provider-native and optional. Durable session, workflow,
 pipeline, and artifact state remains authoritative when a process or provider

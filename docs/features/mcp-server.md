@@ -96,7 +96,9 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   methods retain their native response contracts (`decision` for command/file,
   requested `permissions` for permissions). Missing Slack context,
   delivery/storage errors, expiry, or handler failure defaults to denial and
-  resolver cleanup.
+  resolver cleanup. Codex process exit and explicit stop also cancel the
+  approval, disable its stored actions, and remove its buttons; a delayed Slack
+  decision cannot outlive the provider process that requested it.
 - MongoDB MCP uses `MDB_MCP_CONNECTION_STRING` from the process environment.
   `.env.example` includes a placeholder; real values belong only in local
   `.env` or secret managers. Junior exposes a shared read-only HTTP proxy at

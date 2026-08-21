@@ -24,8 +24,12 @@ export async function requestSlackApproval(options: {
   agent: string;
   toolName: string;
   input?: unknown;
+  signal?: AbortSignal;
 }): Promise<boolean> {
-  if (!slackClient || !actionStore) return false;
+  if (!slackClient || !actionStore || options.signal?.aborted) return false;
+
+  const client = slackClient;
+  const store = actionStore;
 
   const approvalToken = crypto.randomUUID();
   const preview = renderInput(options.input);
@@ -67,8 +71,14 @@ export async function requestSlackApproval(options: {
   // Register before the Slack message can become clickable. In particular,
   // createMany implementations may expose/resolve the actions synchronously.
   const pendingDecision = registerPendingApproval(approvalToken);
+  let messageTs: string | null = null;
+  let actionsStored = false;
+  const cancel = () => {
+    cancelPendingApproval(approvalToken);
+  };
+  options.signal?.addEventListener("abort", cancel, { once: true });
   try {
-    const posted = await slackClient.chat.postMessage({
+    const posted = await client.chat.postMessage({
       channel: options.channel,
       thread_ts: options.threadTs,
       text,
@@ -78,8 +88,14 @@ export async function requestSlackApproval(options: {
       cancelPendingApproval(approvalToken);
       return false;
     }
+    messageTs = posted.ts;
+    if (options.signal?.aborted) {
+      cancel();
+      await disableApprovalActions(client, store, options.channel, messageTs, text, false);
+      return false;
+    }
 
-    await actionStore.createMany(
+    await store.createMany(
       buttons.map(({ action, token }) => ({
         token,
         channelId: options.channel,
@@ -90,11 +106,52 @@ export async function requestSlackApproval(options: {
         sourceAgent: options.agent,
       })),
     );
-    return (await pendingDecision) === "allow";
+    actionsStored = true;
+    if (options.signal?.aborted) cancel();
+    const approved = (await pendingDecision) === "allow";
+    if (options.signal?.aborted) {
+      await disableApprovalActions(client, store, options.channel, messageTs, text, true);
+    }
+    return approved;
   } catch {
-    cancelPendingApproval(approvalToken);
+    cancel();
+    if (messageTs) {
+      await disableApprovalActions(
+        client,
+        store,
+        options.channel,
+        messageTs,
+        text,
+        actionsStored,
+      );
+    }
     return false;
+  } finally {
+    options.signal?.removeEventListener("abort", cancel);
   }
+}
+
+async function disableApprovalActions(
+  client: WebClient,
+  store: SlackActionStore,
+  channel: string,
+  messageTs: string,
+  text: string,
+  actionsStored: boolean,
+): Promise<void> {
+  await Promise.allSettled([
+    ...(actionsStored
+      ? [Promise.resolve().then(() => store.disableMessageActions(channel, messageTs))]
+      : []),
+    Promise.resolve().then(() =>
+      client.chat.update({
+        channel,
+        ts: messageTs,
+        text,
+        blocks: [],
+      })
+    ),
+  ]);
 }
 
 function renderInput(input: unknown): string {

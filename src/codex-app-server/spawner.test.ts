@@ -90,6 +90,69 @@ describe("spawnCodexAppServer", () => {
     });
   }
 
+  it("cancels an outstanding approval when app-server exits", async () => {
+    const fakeCodex = installFakeCodex(exitingApprovalFakeCodexScript());
+    process.env.CODEX_BIN = fakeCodex.command;
+    const rows: CreateSlackActionRecord[] = [];
+    const disabled: Array<[string, string]> = [];
+    const store = {
+      createMany: mock(async (records: CreateSlackActionRecord[]) => {
+        rows.push(...records);
+      }),
+      disableMessageActions: mock(async (channel: string, messageTs: string) => {
+        disabled.push([channel, messageTs]);
+      }),
+    } as unknown as SlackActionStore;
+    const update = mock(async () => ({ ok: true }));
+    const client = {
+      chat: {
+        postMessage: mock(async () => ({ ok: true, ts: "10.20" })),
+        update,
+      },
+    } as unknown as WebClient;
+    configureSlackApprovalBridge(client, store);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const session = createSession("thread-approval-exit", "C01");
+      session.provider = "codex-app-server";
+      const config = {
+        ...testConfig,
+        codex: {
+          ...testConfig.codex,
+          isolatedHomePath: join(fakeCodex.root, "codex-home"),
+        },
+      };
+      await spawnCodexAppServer(session, "needs approval", config).result;
+      await Bun.sleep(25);
+
+      expect(rows).toHaveLength(2);
+      const allow = rows.find((row) =>
+        row.action.type === "request_permission" && row.action.decision === "allow"
+      );
+      if (allow?.action.type !== "request_permission") {
+        throw new Error("missing allow action");
+      }
+      expect(resolvePendingApproval(allow.action.approvalToken, "allow")).toBe(false);
+      expect(disabled).toEqual([["C01", "10.20"]]);
+      expect(update).toHaveBeenCalledWith({
+        channel: "C01",
+        ts: "10.20",
+        text: expect.any(String),
+        blocks: [],
+      });
+      const messages = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
+        .trim().split("\n").map((line) => JSON.parse(line));
+      expect(messages.some((message) => message.id === 900 && !message.method)).toBe(false);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      fakeCodex.cleanup();
+    }
+  });
+
   it("fails pending JSON-RPC requests when the process exits before responding", async () => {
     const fakeCodex = installFakeCodex();
     process.env.CODEX_BIN = fakeCodex.command;
@@ -397,6 +460,45 @@ rl.on("line", (line) => {
       params: { thread: { id: "thread-created" }, finalResponse: "done" },
     });
     setTimeout(() => process.exit(0), 10);
+  }
+});
+`;
+}
+
+function exitingApprovalFakeCodexScript(): string {
+  return `#!/usr/bin/env node
+const fs = require("node:fs");
+const readline = require("node:readline");
+const root = __ROOT__;
+const requestsPath = root + "/requests.jsonl";
+const rl = readline.createInterface({ input: process.stdin });
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+
+rl.on("line", (line) => {
+  const request = JSON.parse(line);
+  fs.appendFileSync(requestsPath, JSON.stringify(request) + "\\n");
+  if (request.method === "initialize") {
+    send({ jsonrpc: "2.0", id: request.id, result: {} });
+  } else if (request.method === "thread/start") {
+    send({ jsonrpc: "2.0", id: request.id, result: { thread: { id: "thread-created" } } });
+  } else if (request.method === "turn/start") {
+    send({ jsonrpc: "2.0", id: request.id, result: { turn: { id: "turn-created" } } });
+    send({
+      jsonrpc: "2.0",
+      id: 900,
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread-created",
+        turnId: "turn-created",
+        itemId: "item-approval",
+        startedAtMs: 1,
+        command: "git fetch",
+      },
+    });
+    setTimeout(() => process.exit(17), 20);
   }
 });
 `;

@@ -91,6 +91,8 @@ export function spawnCodexAppServer(
   let activeTurnId: string | null = null;
   let processKilled = false;
   let processExitError: Error | null = null;
+  let acceptsServerResponses = true;
+  const approvalControllers = new Set<AbortController>();
 
   const emit = (event: RunnerEvent) => {
     events.push(event);
@@ -126,16 +128,34 @@ export function spawnCodexAppServer(
     proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   };
 
-  const respond = (id: number, result: Record<string, unknown>) => {
-    proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+  const respond = (id: number, result: Record<string, unknown>): boolean => {
+    if (!acceptsServerResponses || processExitError) return false;
+    try {
+      const write = proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+      if (write instanceof Promise) {
+        void write.catch((err) => {
+          terminatePending(err instanceof Error ? err : new Error(String(err)));
+        });
+      }
+      return true;
+    } catch (err) {
+      terminatePending(err instanceof Error ? err : new Error(String(err)));
+      return false;
+    }
+  };
+
+  const terminatePending = (err: Error) => {
+    acceptsServerResponses = false;
+    processExitError ??= err;
+    for (const controller of approvalControllers) controller.abort();
+    approvalControllers.clear();
+    rejectPending(pending, processExitError);
   };
 
   proc.exited.then((exitCode) => {
-    processExitError = new Error(`Codex app-server exited before replying to pending requests (exit ${exitCode})`);
-    rejectPending(pending, processExitError);
+    terminatePending(new Error(`Codex app-server exited before replying to pending requests (exit ${exitCode})`));
   }).catch(() => {
-    processExitError = new Error("Codex app-server exited before replying to pending requests");
-    rejectPending(pending, processExitError);
+    terminatePending(new Error("Codex app-server exited before replying to pending requests"));
   });
 
   const stdoutDone = consumeStdout(proc.stdout, (message) => {
@@ -147,12 +167,15 @@ export function spawnCodexAppServer(
     if ("id" in message && typeof message.id === "number" && typeof message.method === "string") {
       const method = message.method;
       if (isApprovalRequestMethod(method)) {
+        const controller = new AbortController();
+        approvalControllers.add(controller);
         void requestSlackApproval({
           channel: session.channel,
           threadTs: session.threadId,
           agent: session.activeAgentName ?? session.agentType ?? "default",
           toolName: approvalToolName(method, message.params),
           input: message.params,
+          signal: controller.signal,
         }).then((approved) => {
           respond(
             message.id as number,
@@ -163,6 +186,8 @@ export function spawnCodexAppServer(
             message.id as number,
             approvalResponse(method, message.params, false),
           );
+        }).finally(() => {
+          approvalControllers.delete(controller);
         });
       } else {
         respond(message.id, responseForServerRequest(method));
@@ -290,6 +315,9 @@ export function spawnCodexAppServer(
       listeners.push(cb);
     },
     kill: (signal) => {
+      acceptsServerResponses = false;
+      for (const controller of approvalControllers) controller.abort();
+      approvalControllers.clear();
       if (
         signal === "SIGINT" &&
         config.codex.appServerContinuityEnabled &&
