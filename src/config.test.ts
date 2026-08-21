@@ -112,7 +112,7 @@ describe("loadConfig runner providers", () => {
     expect(config.codex).toEqual({
       mode: "app-server",
       model: null,
-      reasoningEffort: "medium",
+      reasoningEffort: "low",
       timeoutMs: 300000,
       sandbox: "workspace-write",
       askForApproval: "never",

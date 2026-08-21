@@ -149,7 +149,7 @@ interface Config {
 | `OPENCODE_MONGODB_MCP_ENABLED` | no | `true` | includes the optional MongoDB MCP entry |
 | `CODEX_MODE` | no | `app-server` | `app-server` or `cli`; app-server is the implemented Codex provider path |
 | `CODEX_MODEL` | no | unset | Codex model override |
-| `CODEX_REASONING_EFFORT` | no | `medium` | Codex model reasoning effort |
+| `CODEX_REASONING_EFFORT` | no | `low` | Codex model reasoning effort |
 | `CODEX_TIMEOUT_MS` | no | `300000` | Codex turn timeout |
 | `CODEX_SANDBOX` | no | `workspace-write` | Codex sandbox policy |
 | `CODEX_ASK_FOR_APPROVAL` | no | `never` | Codex approval policy |

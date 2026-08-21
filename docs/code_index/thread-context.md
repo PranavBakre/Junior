@@ -57,6 +57,11 @@ User(Name <@U123>): their message [shared image: screenshot.png]
 
 `runClaudeWithAgent` injects the full preamble on first turn (when there's no `sessionId` yet) and only the workspace block on resumed turns. The workspace safety rule ("don't edit the bare repo") is cheap insurance that's worth re-asserting every turn.
 
+The workspace block also states that Junior refreshed remote refs before the
+turn. Sandboxed workers inspect the configured `origin/*` base and do not run
+`git fetch`, because linked worktrees keep fetch metadata in the off-limits
+shared checkout.
+
 ### Multi-repo workspace format
 
 Bug-pipeline threads have `worktreePaths: Record<repoName, path>`. The multi-repo block lists each repo's worktree, bare repo (off-limits), branch (`slack/<threadId>`), and base ref, plus a numbered RULES list that forbids editing outside the worktrees and running dev servers directly (`!devserver` is the supported path).

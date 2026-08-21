@@ -20,6 +20,8 @@ import {
 } from "../pipelines/store/test-helpers.ts";
 import { fakeClock } from "../time/clock.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
+import { mapClaudeRunPolicy } from "../claude/policy.ts";
+import { compileOpenCodePermission } from "../runners/policy.ts";
 
 // --- Mock setup ---
 
@@ -125,14 +127,17 @@ function createTestManager(
 
 function attachExistingPipelineWorktree(
   manager: InstanceType<typeof SessionManager>,
-): void {
+): ReturnType<typeof mock> {
   const worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+  const syncRepo = mock(async () => {});
   manager.worktreeManager = {
     getWorktreePath: () => worktreePath,
     worktreeExists: mock(async () => true),
+    syncRepo,
     createWorktree: mock(async () => worktreePath),
     getBranchName: () => "slack/thread-1",
   } as unknown as WorktreeManager;
+  return syncRepo;
 }
 
 /**
@@ -824,8 +829,10 @@ describe("SessionManager", () => {
   it("resumes a reviewer when its provider session cwd matches the worktree", async () => {
     const reviewWorktree = mkdtempSync(join(tmpdir(), "junior-review-worktree-"));
     writeFileSync(join(reviewWorktree, "package-lock.json"), "{}");
+    const syncRepo = mock(async () => {});
     manager.worktreeManager = {
       createWorktree: mock(async () => reviewWorktree),
+      syncRepo,
       getBranchName: () => "slack/thread-1",
     } as unknown as WorktreeManager;
     const existing = createSession("thread-1", "C123");
@@ -854,6 +861,7 @@ describe("SessionManager", () => {
 
     expect(mockSpawnFn.mock.calls[0][0].sessionId).toBe("review-in-worktree");
     expect(mockSpawnFn.mock.calls[0][0].sessionCwd).toBe(reviewWorktree);
+    expect(syncRepo).toHaveBeenCalledWith("frontend");
     rmSync(reviewWorktree, { recursive: true, force: true });
   });
 
@@ -4286,17 +4294,105 @@ describe("typed pipeline settlement", () => {
       assignmentCapabilities: ["mongodb-read"],
       agentPermissions: {
         intent: "mcp-only",
-        mcp: ["mongodb"],
+        mcp: ["slack-bot", "mongodb"],
       },
     });
-    expect(spawnedSessions[0]?.agentPermissions?.tools).toEqual([
-      "mcp__mongodb__aggregate",
-      "mcp__mongodb__collection-schema",
-      "mcp__mongodb__count",
-      "mcp__mongodb__find",
-      "mcp__mongodb__list-collections",
-      "mcp__mongodb__list-databases",
-    ]);
+    expect(spawnedSessions[0]?.agentPermissions?.tools).toEqual(
+      expect.arrayContaining([
+        "mcp__slack-bot__pipeline_get_state",
+        "mcp__slack-bot__pipeline_report_outcome",
+        "mcp__mongodb__aggregate",
+        "mcp__mongodb__collection-schema",
+        "mcp__mongodb__count",
+        "mcp__mongodb__find",
+        "mcp__mongodb__list-collections",
+        "mcp__mongodb__list-databases",
+      ]),
+    );
+  });
+
+  it("preserves trusted Mixpanel and pipeline MCP access for repo-less feature-metrics assignments", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ repoRefs: [] }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-feature-metrics",
+      targetAgent: "feature-metrics",
+      capabilityRefs: ["mongodb-read"],
+      contextRefs: ["workspace-mode:repo-less"],
+      mutationScope: [],
+      objective: "read daily landing-page views",
+      idempotencyKey: "asg-feature-metrics-key",
+    }));
+    await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+
+    const spawnedSessions: ThreadSession[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawnedSessions.push(structuredClone(runSession));
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    manager.agentRouter = {
+      resolveAgent: mock(async () => ({
+        permissions: {
+          intent: "normal",
+          mcp: ["slack-bot", "mixpanel", "mongodb"],
+          tools: [
+            "Bash",
+            "mcp__mixpanel__*",
+            "mcp__slack-bot__slack_send_message",
+            "mcp__mongodb__find",
+          ],
+        },
+        context: {
+          identity: true,
+          slack: true,
+          workspace: true,
+          threadHistory: true,
+          threadHistoryLimit: 30,
+          agentState: false,
+        },
+      })),
+      composeSystemPrompt: mock(async () => null),
+    } as unknown as NonNullable<typeof manager.agentRouter>;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "pipeline-internal",
+      text: "<pipeline-assignment>read daily landing-page views</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:feature-metrics",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-feature-metrics",
+        dispatchKey: "feature-metrics",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "feature-metrics");
+    await waitFor(() => spawnedSessions.length === 1);
+
+    expect(spawnedSessions[0]?.agentPermissions?.mcp).toEqual(
+      expect.arrayContaining(["slack-bot", "mixpanel", "mongodb"]),
+    );
+    expect(spawnedSessions[0]?.agentPermissions?.tools).toEqual(
+      expect.arrayContaining([
+        "mcp__mixpanel__*",
+        "mcp__slack-bot__pipeline_get_state",
+        "mcp__slack-bot__pipeline_report_outcome",
+      ]),
+    );
+    expect(spawnedSessions[0]?.agentPermissions?.tools).not.toContain("Bash");
+    const claudePolicy = mapClaudeRunPolicy({
+      config: testConfig.claude,
+      session: spawnedSessions[0]!,
+      cwd: "/Users/psbakre/Projects/junior",
+    });
+    expect(claudePolicy.allowedTools).toContain("mcp__mixpanel__*");
+    const openCodePolicy = compileOpenCodePermission({
+      subject: spawnedSessions[0]!,
+      cwd: "/Users/psbakre/Projects/junior",
+    }) as Record<string, string>;
+    expect(openCodePolicy["mcp__mixpanel__*"]).toBe("allow");
   });
 
   it("uses compiled assignment context without worker Slack history or recall", async () => {
@@ -4321,7 +4417,7 @@ describe("typed pipeline settlement", () => {
       return handle;
     });
     manager.pipelineStore = pipelineStore;
-    attachExistingPipelineWorktree(manager);
+    const syncRepo = attachExistingPipelineWorktree(manager);
     let threadHistoryReads = 0;
     manager.slackApp = {
       client: {
@@ -4367,6 +4463,7 @@ describe("typed pipeline settlement", () => {
       },
     }), "build");
     await waitFor(() => handles.length === 1);
+    expect(syncRepo).toHaveBeenCalledWith("junior");
 
     expect(prompts[0]).toContain("<pipeline-assignment>");
     expect(prompts[0]).not.toContain("<pre-recall>");
@@ -4697,6 +4794,7 @@ describe("typed pipeline settlement", () => {
         if (worktreeChecks === 2) await setupGate;
         return true;
       }),
+      syncRepo: mock(async () => {}),
       createWorktree: mock(async () => worktreePath),
       getBranchName: () => "slack/thread-1",
     } as unknown as WorktreeManager;
@@ -4767,6 +4865,7 @@ describe("typed pipeline settlement", () => {
         if (worktreeChecks === 2) await setupGate;
         return true;
       }),
+      syncRepo: mock(async () => {}),
       createWorktree: mock(async () => worktreePath),
       getBranchName: () => "slack/thread-1",
     } as unknown as WorktreeManager;

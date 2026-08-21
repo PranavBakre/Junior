@@ -176,6 +176,7 @@ export function buildWorkspaceBlock(
       `2. NEVER write, edit, or commit files at any bare-repo path listed above — those are the shared origin repos.`,
       `3. NEVER \`cd\` out of your worktree to do work. Read-only references to other paths are OK via absolute Read paths, but do not Edit or Write outside the worktrees.`,
       `4. NEVER run dev servers yourself — post \`!devserver <branch>\` instead.`,
+      `5. Junior refreshed remote refs before this turn. Do not run \`git fetch\` from the sandbox; inspect the refreshed base ref shown above instead.`,
       `</workspace>`,
     ].join("\n");
   }
@@ -195,6 +196,7 @@ export function buildWorkspaceBlock(
     `3. NEVER \`cd\` out of the worktree to do work. If you need to read a file from another repo for reference only, use an absolute Read path — but do not Edit or Write outside the worktree.`,
     `4. When the task is done, commit on branch \`${workspace.branchName}\` from inside the worktree, push, and open a PR. Never push directly to main.`,
     `5. If you violated any of the above by mistake, stop and report it instead of trying to "clean up" by modifying more files.`,
+    `6. Junior refreshed remote refs before this turn. Do not run \`git fetch\` from the sandbox; inspect the refreshed configured base ref instead.`,
     `</workspace>`,
   ].join("\n");
 }

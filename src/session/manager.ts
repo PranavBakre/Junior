@@ -1790,6 +1790,7 @@ export class SessionManager {
       // edit the shared origin repo path directly. (Previously this was gated on
       // agentType === "build" || "frontend", which let other agents cwd into the
       // real repo and modify it.)
+      const reusedManagedWorktree = Boolean(session.worktreePath);
       if (
         this.worktreeManager &&
         targetRepo &&
@@ -1821,6 +1822,20 @@ export class SessionManager {
           // so the spawner falls back to junior's project root instead.
           targetRepo = undefined;
         }
+      }
+
+      // Pipeline worktrees are refreshed while they are provisioned above,
+      // including every repo in a multi-repo assignment. Ordinary !repo and
+      // inferred-review turns can reuse a managed worktree directly, so sync
+      // that repository here before the workspace prompt claims refs are fresh.
+      if (
+        !pipelineInvocation &&
+        reusedManagedWorktree &&
+        this.worktreeManager &&
+        targetRepo &&
+        session.worktreePath
+      ) {
+        await this.worktreeManager.syncRepo(targetRepo.name);
       }
 
       // Build workspace context for the preamble if we have a worktree.
@@ -2024,6 +2039,33 @@ export class SessionManager {
                 tools: [...activeSkill.permissions.tools],
               }
             : undefined);
+      } else {
+        const declaredPermissions = agentDefinition?.permissions;
+        runSession.agentPermissions = {
+          intent: provider === "codex-app-server" ? "read-only" : "mcp-only",
+          mcp: [
+            ...new Set([
+              "slack-bot",
+              "mongodb",
+              ...(declaredPermissions?.mcp ?? []),
+            ]),
+          ],
+          tools: [
+            ...new Set([
+              ...(declaredPermissions?.tools.filter((tool) =>
+                tool.startsWith("mcp__")
+              ) ?? []),
+              "mcp__slack-bot__pipeline_get_state",
+              "mcp__slack-bot__pipeline_report_outcome",
+              "mcp__mongodb__aggregate",
+              "mcp__mongodb__collection-schema",
+              "mcp__mongodb__count",
+              "mcp__mongodb__find",
+              "mcp__mongodb__list-collections",
+              "mcp__mongodb__list-databases",
+            ]),
+          ],
+        };
       }
 
       // Build the prompt. When the provider will not resume a prior model
@@ -3671,6 +3713,9 @@ export class SessionManager {
     agentName: string,
     session: ThreadSession,
   ): Promise<boolean> {
+    // TODO: Persist and forward event.files through default-run outbox dispatches.
+    // The synthetic assignment event currently keeps only text/metadata, so an
+    // image attached to the original Slack message is invisible to the runner.
     if (event.dashboardContinue) return false;
     if (event.pipelineInvocation || !this.pipelineStore) return false;
     if ((this.config.pipeline?.runtimeMode ?? "off") !== "active") return false;
@@ -3994,6 +4039,7 @@ export class SessionManager {
 
     const expectedPath = manager.getWorktreePath(repoName, threadId);
     if (await manager.worktreeExists(repoName, threadId)) {
+      await manager.syncRepo(repoName);
       return expectedPath;
     }
 

@@ -76,6 +76,17 @@ describe("loadAgentDefinition", () => {
     expect(def!.context.workspace).toBe(false);
   });
 
+  it("loads feature-metrics with its scoped Mixpanel integration", async () => {
+    const def = await loadAgentDefinition(
+      path.join(agentsOrgDir, "feature-metrics.md"),
+    );
+
+    expect(def).not.toBeNull();
+    expect(def!.permissions.mcp).toEqual(
+      expect.arrayContaining(["slack-bot", "mixpanel", "mongodb"]),
+    );
+  });
+
   it("parses typed permission frontmatter", async () => {
     const tmpPath = path.join(import.meta.dir, "__test_permissions_fm.md");
     const content = `---

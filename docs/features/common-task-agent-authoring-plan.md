@@ -424,6 +424,12 @@ not three agents or duplicated memory paragraphs.
 **Done when:** an authorized user can ask Junior to make a recurring procedure
 reusable and receive a reviewable private-repo PR with no manual file authoring.
 
+Promotion evidence must carry the privacy-safe natural-language request, not
+only its fingerprint. The request supplies the candidate's normalized intent
+and deterministic runbook name. Legacy candidates recorded without intent can
+be repaired explicitly at proposal time; authoring must otherwise fail with an
+actionable error instead of attempting to generate an empty name.
+
 ### Iteration 5 — activation and catalogue projection
 
 - Detect or explicitly request merged-definition activation.

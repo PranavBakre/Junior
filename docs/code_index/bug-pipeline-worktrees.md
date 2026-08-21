@@ -7,6 +7,7 @@ This index ties the bug-pipeline worktree behavior to the worktree manager, sess
 | Symbol | File | Purpose |
 |---|---|---|
 | `WorktreeManager.createWorktree(...)` | `src/worktree/manager.ts` | Creates per-thread target-repo worktrees inline or via `worktreeSetupCommand`. |
+| `WorktreeManager.syncRepo(...)` | `src/worktree/manager.ts` | Refreshes shared remote refs before reusing a managed pipeline worktree, outside the provider sandbox. |
 | `WorktreeManager.getWorktreePath(...)` | `src/worktree/manager.ts` | Resolves `<repo.path>.junior-worktrees/slack-<threadId>`, outside the repo. |
 | `ThreadSession.worktreePaths` | `src/session/types.ts` | Stores per-repo worktree paths for multi-repo bug threads. |
 | `buildWorkspaceBlock(...)` | `src/slack/thread-context.ts` | Injects single- or multi-repo workspace safety rules into runner prompts. |
@@ -22,7 +23,7 @@ This keeps them sibling to the original repository. They are deliberately not pl
 
 ## Lifecycle
 
-1. **Acquire**: When a target-repo thread or `register_worktree` first needs a repo, `WorktreeManager` creates the worktree and runs the optional `worktreeSetupCommand`.
+1. **Acquire**: When a target-repo thread or `register_worktree` first needs a repo, `WorktreeManager` creates the worktree and runs the optional `worktreeSetupCommand`. Reused pipeline worktrees are synced by Junior before runner spawn.
 2. **Use**: `SessionManager` runs the provider from the worktree cwd; multi-repo bug threads carry all paths in `session.worktreePaths`.
 3. **Dev-server slot**: `!devserver` uses the shared queue/manager rather than letting every thread own a fixed port independently.
 4. **Cleanup**: `cleanupStaleSessions` deletes stale session rows only. Worktree deletion is a separate operation and must check `isWorktreeDirty()` before `removeWorktree()`.
