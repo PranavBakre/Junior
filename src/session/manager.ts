@@ -1790,6 +1790,7 @@ export class SessionManager {
       // edit the shared origin repo path directly. (Previously this was gated on
       // agentType === "build" || "frontend", which let other agents cwd into the
       // real repo and modify it.)
+      const reusedManagedWorktree = Boolean(session.worktreePath);
       if (
         this.worktreeManager &&
         targetRepo &&
@@ -1821,6 +1822,20 @@ export class SessionManager {
           // so the spawner falls back to junior's project root instead.
           targetRepo = undefined;
         }
+      }
+
+      // Pipeline worktrees are refreshed while they are provisioned above,
+      // including every repo in a multi-repo assignment. Ordinary !repo and
+      // inferred-review turns can reuse a managed worktree directly, so sync
+      // that repository here before the workspace prompt claims refs are fresh.
+      if (
+        !pipelineInvocation &&
+        reusedManagedWorktree &&
+        this.worktreeManager &&
+        targetRepo &&
+        session.worktreePath
+      ) {
+        await this.worktreeManager.syncRepo(targetRepo.name);
       }
 
       // Build workspace context for the preamble if we have a worktree.

@@ -20,6 +20,8 @@ import {
 } from "../pipelines/store/test-helpers.ts";
 import { fakeClock } from "../time/clock.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
+import { mapClaudeRunPolicy } from "../claude/policy.ts";
+import { compileOpenCodePermission } from "../runners/policy.ts";
 
 // --- Mock setup ---
 
@@ -827,8 +829,10 @@ describe("SessionManager", () => {
   it("resumes a reviewer when its provider session cwd matches the worktree", async () => {
     const reviewWorktree = mkdtempSync(join(tmpdir(), "junior-review-worktree-"));
     writeFileSync(join(reviewWorktree, "package-lock.json"), "{}");
+    const syncRepo = mock(async () => {});
     manager.worktreeManager = {
       createWorktree: mock(async () => reviewWorktree),
+      syncRepo,
       getBranchName: () => "slack/thread-1",
     } as unknown as WorktreeManager;
     const existing = createSession("thread-1", "C123");
@@ -857,6 +861,7 @@ describe("SessionManager", () => {
 
     expect(mockSpawnFn.mock.calls[0][0].sessionId).toBe("review-in-worktree");
     expect(mockSpawnFn.mock.calls[0][0].sessionCwd).toBe(reviewWorktree);
+    expect(syncRepo).toHaveBeenCalledWith("frontend");
     rmSync(reviewWorktree, { recursive: true, force: true });
   });
 
@@ -4335,6 +4340,7 @@ describe("typed pipeline settlement", () => {
           mcp: ["slack-bot", "mixpanel", "mongodb"],
           tools: [
             "Bash",
+            "mcp__mixpanel__*",
             "mcp__slack-bot__slack_send_message",
             "mcp__mongodb__find",
           ],
@@ -4370,11 +4376,23 @@ describe("typed pipeline settlement", () => {
     );
     expect(spawnedSessions[0]?.agentPermissions?.tools).toEqual(
       expect.arrayContaining([
+        "mcp__mixpanel__*",
         "mcp__slack-bot__pipeline_get_state",
         "mcp__slack-bot__pipeline_report_outcome",
       ]),
     );
     expect(spawnedSessions[0]?.agentPermissions?.tools).not.toContain("Bash");
+    const claudePolicy = mapClaudeRunPolicy({
+      config: testConfig.claude,
+      session: spawnedSessions[0]!,
+      cwd: "/Users/psbakre/Projects/junior",
+    });
+    expect(claudePolicy.allowedTools).toContain("mcp__mixpanel__*");
+    const openCodePolicy = compileOpenCodePermission({
+      subject: spawnedSessions[0]!,
+      cwd: "/Users/psbakre/Projects/junior",
+    }) as Record<string, string>;
+    expect(openCodePolicy["mcp__mixpanel__*"]).toBe("allow");
   });
 
   it("uses compiled assignment context without worker Slack history or recall", async () => {
