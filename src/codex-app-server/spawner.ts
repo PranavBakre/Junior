@@ -12,6 +12,7 @@ import { mapCodexRunPolicy } from "./policy.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
 import { resolveTrustedSkill } from "../skills/registry.ts";
 import { skillInvocationPrompt } from "../skills/runtime.ts";
+import { requestSlackApproval } from "../mcp/slack-approval-bridge.ts";
 
 interface JsonRpcResponse {
   id: number;
@@ -144,7 +145,20 @@ export function spawnCodexAppServer(
     }
 
     if ("id" in message && typeof message.id === "number" && typeof message.method === "string") {
-      respond(message.id, responseForServerRequest(message.method));
+      if (message.method.includes("requestApproval")) {
+        void requestSlackApproval({
+          channel: session.channel,
+          threadTs: session.threadId,
+          agent: session.activeAgentName ?? session.agentType ?? "default",
+          toolName: approvalToolName(message.method, message.params),
+          input: message.params,
+        }).then(
+          (approved) => respond(message.id as number, { approved }),
+          () => respond(message.id as number, { approved: false }),
+        );
+      } else {
+        respond(message.id, responseForServerRequest(message.method));
+      }
       return;
     }
 
@@ -385,12 +399,16 @@ function isMissingRolloutError(err: unknown): boolean {
 }
 
 function responseForServerRequest(method: string): Record<string, unknown> {
-  if (method.includes("requestApproval")) return { approved: false };
   if (method === "item/tool/requestUserInput") return { input: null };
   if (method === "mcpServer/elicitation/request") {
     return { action: "accept", content: {}, _meta: null };
   }
   return {};
+}
+
+function approvalToolName(method: string, params: unknown): string {
+  const payload = record(params);
+  return stringValue(payload?.command) ?? stringValue(payload?.toolName) ?? method;
 }
 
 async function consumeStdout(

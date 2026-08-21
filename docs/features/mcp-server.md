@@ -89,6 +89,11 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   OpenCode session is `feature-metrics`, using Mixpanel's official hosted MCP
   through `npx -y mcp-remote https://mcp.mixpanel.com/mcp`. Disable with
   `OPENCODE_MIXPANEL_MCP_ENABLED=false`.
+- Human-gated Codex app-server commands use the same blocking Slack Allow/Deny
+  actions and pending-approval registry as Claude's permission prompt tool.
+  Missing Slack context, delivery/storage errors, expiry, or handler failure
+  defaults to denial; the adapter no longer unconditionally rejects native
+  `requestApproval` callbacks.
 - MongoDB MCP uses `MDB_MCP_CONNECTION_STRING` from the process environment.
   `.env.example` includes a placeholder; real values belong only in local
   `.env` or secret managers. Junior exposes a shared read-only HTTP proxy at

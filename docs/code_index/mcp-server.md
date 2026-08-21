@@ -44,6 +44,7 @@ operations using the bot token and signed run context.
 | `.mcp.json` | Root config contains `slack-bot`, Figma, and Notion servers. Per-agent generated configs add Playwright/MongoDB as needed. |
 | `.claude/settings.json` | `permissions.allow: ["mcp__slack-bot__*"]` |
 | `src/claude/spawner.ts` | Passes `--mcp-config` for worktree spawns |
+| `src/codex-app-server/spawner.ts` | Routes native approval callbacks through the shared Slack approval bridge |
 
 ## Key Concepts
 

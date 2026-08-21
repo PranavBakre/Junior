@@ -59,6 +59,7 @@ import { registerSlackArchiveTools } from "./slack-archive-tools.ts";
 import { registerTaskRouteTools } from "../routes/tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 import { registerPendingApproval } from "./approval.ts";
+import { configureSlackApprovalBridge } from "./slack-approval-bridge.ts";
 import { prepareSlackResponseWithActions, type SlackActionButtonSpec } from "../slack/formatting.ts";
 import { buildActionBlocks, splitActionMessageText } from "../slack/responder.ts";
 import type { SlackActionStore } from "../slack/action-store.ts";
@@ -2467,6 +2468,7 @@ export function startMcpServer(
   archiveApprovedChannelIds: string[] = [],
 ): void {
   slack = new WebClient(botToken);
+  configureSlackApprovalBridge(slack, actionStore);
   sessionStore = store;
   worktreeManager = wtManager;
   sessionManager = manager;
