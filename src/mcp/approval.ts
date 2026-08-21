@@ -83,3 +83,12 @@ export function resolvePendingApproval(
   entry.resolve(decision);
   return true;
 }
+
+/**
+ * Default-deny and remove a pending approval when its Slack prompt could not be
+ * made actionable. This shares the normal resolution path so the waiter is
+ * always released and its timeout is cleared.
+ */
+export function cancelPendingApproval(token: string): boolean {
+  return resolvePendingApproval(token, "deny");
+}

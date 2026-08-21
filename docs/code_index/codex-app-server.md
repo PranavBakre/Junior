@@ -12,6 +12,7 @@ not the same as the historical standalone `src/codex` runner plan.
 | Protocol parsing | `src/codex-app-server/parser.ts` | Parses JSONL app-server messages into normalized events. |
 | Configuration | `src/codex-app-server/config.ts` | Builds app-server launch and MCP configuration. |
 | Policy | `src/codex-app-server/policy.ts` | Maps sandbox, approval, search, and agent policy to Codex options. |
+| Slack approval bridge | `src/mcp/slack-approval-bridge.ts`, `src/mcp/approval.ts` | Converts native app-server approval callbacks into blocking Slack Allow/Deny actions and defaults closed. |
 | Shared boundary | `src/runners/types.ts`, `src/runners/index.ts` | Provider-neutral `SpawnHandle`, events, resume, and provider selection. |
 
 ## Configuration
@@ -32,6 +33,21 @@ before starting or resuming a thread.
 Generated Codex config sets `[features].multi_agent = false`; provider-native
 subagents would bypass Junior's durable assignment, context, and settlement
 contracts.
+
+Native `requestApproval` server callbacks are not auto-denied. The provider
+posts a scoped Allow/Deny action in the originating Slack thread, waits on the
+same in-process resolver used by Claude's permission tool, and returns the
+human decision using the exact callback schema: command and file callbacks
+return `decision`, while permissions callbacks return the granted requested
+`permissions` for the current turn. The pending resolver is registered before
+the message or action records can become clickable. Missing context, post/store
+errors, timeouts, and handler failures all deny the request and clear the
+resolver. Each pending approval is also owned by the provider process: process
+exit or an explicit stop aborts the resolver, disables any stored actions, and
+removes the Slack buttons before a late click can grant access. JSON-RPC
+responses are not written after the process enters a terminal state. Ordinary
+approval timeout/default-deny settlement performs the same idempotent action
+disablement and button removal.
 
 Codex continuity is provider-native and optional. Durable session, workflow,
 pipeline, and artifact state remains authoritative when a process or provider

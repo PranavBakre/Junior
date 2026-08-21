@@ -12,6 +12,7 @@ import { mapCodexRunPolicy } from "./policy.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
 import { resolveTrustedSkill } from "../skills/registry.ts";
 import { skillInvocationPrompt } from "../skills/runtime.ts";
+import { requestSlackApproval } from "../mcp/slack-approval-bridge.ts";
 
 interface JsonRpcResponse {
   id: number;
@@ -90,6 +91,8 @@ export function spawnCodexAppServer(
   let activeTurnId: string | null = null;
   let processKilled = false;
   let processExitError: Error | null = null;
+  let acceptsServerResponses = true;
+  const approvalControllers = new Set<AbortController>();
 
   const emit = (event: RunnerEvent) => {
     events.push(event);
@@ -125,16 +128,34 @@ export function spawnCodexAppServer(
     proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   };
 
-  const respond = (id: number, result: Record<string, unknown>) => {
-    proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+  const respond = (id: number, result: Record<string, unknown>): boolean => {
+    if (!acceptsServerResponses || processExitError) return false;
+    try {
+      const write = proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+      if (write instanceof Promise) {
+        void write.catch((err) => {
+          terminatePending(err instanceof Error ? err : new Error(String(err)));
+        });
+      }
+      return true;
+    } catch (err) {
+      terminatePending(err instanceof Error ? err : new Error(String(err)));
+      return false;
+    }
+  };
+
+  const terminatePending = (err: Error) => {
+    acceptsServerResponses = false;
+    processExitError ??= err;
+    for (const controller of approvalControllers) controller.abort();
+    approvalControllers.clear();
+    rejectPending(pending, processExitError);
   };
 
   proc.exited.then((exitCode) => {
-    processExitError = new Error(`Codex app-server exited before replying to pending requests (exit ${exitCode})`);
-    rejectPending(pending, processExitError);
+    terminatePending(new Error(`Codex app-server exited before replying to pending requests (exit ${exitCode})`));
   }).catch(() => {
-    processExitError = new Error("Codex app-server exited before replying to pending requests");
-    rejectPending(pending, processExitError);
+    terminatePending(new Error("Codex app-server exited before replying to pending requests"));
   });
 
   const stdoutDone = consumeStdout(proc.stdout, (message) => {
@@ -144,7 +165,33 @@ export function spawnCodexAppServer(
     }
 
     if ("id" in message && typeof message.id === "number" && typeof message.method === "string") {
-      respond(message.id, responseForServerRequest(message.method));
+      const method = message.method;
+      if (isApprovalRequestMethod(method)) {
+        const controller = new AbortController();
+        approvalControllers.add(controller);
+        void requestSlackApproval({
+          channel: session.channel,
+          threadTs: session.threadId,
+          agent: session.activeAgentName ?? session.agentType ?? "default",
+          toolName: approvalToolName(method, message.params),
+          input: message.params,
+          signal: controller.signal,
+        }).then((approved) => {
+          respond(
+            message.id as number,
+            approvalResponse(method, message.params, approved),
+          );
+        }, () => {
+          respond(
+            message.id as number,
+            approvalResponse(method, message.params, false),
+          );
+        }).finally(() => {
+          approvalControllers.delete(controller);
+        });
+      } else {
+        respond(message.id, responseForServerRequest(method));
+      }
       return;
     }
 
@@ -268,6 +315,9 @@ export function spawnCodexAppServer(
       listeners.push(cb);
     },
     kill: (signal) => {
+      acceptsServerResponses = false;
+      for (const controller of approvalControllers) controller.abort();
+      approvalControllers.clear();
       if (
         signal === "SIGINT" &&
         config.codex.appServerContinuityEnabled &&
@@ -385,10 +435,43 @@ function isMissingRolloutError(err: unknown): boolean {
 }
 
 function responseForServerRequest(method: string): Record<string, unknown> {
-  if (method.includes("requestApproval")) return { approved: false };
   if (method === "item/tool/requestUserInput") return { input: null };
   if (method === "mcpServer/elicitation/request") {
     return { action: "accept", content: {}, _meta: null };
+  }
+  return {};
+}
+
+function approvalToolName(method: string, params: unknown): string {
+  const payload = record(params);
+  return stringValue(payload?.command) ?? stringValue(payload?.toolName) ?? method;
+}
+
+const APPROVAL_REQUEST_METHODS = new Set([
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/permissions/requestApproval",
+]);
+
+function isApprovalRequestMethod(method: string): boolean {
+  return APPROVAL_REQUEST_METHODS.has(method);
+}
+
+function approvalResponse(
+  method: string,
+  params: unknown,
+  approved: boolean,
+): Record<string, unknown> {
+  if (method === "item/commandExecution/requestApproval" ||
+      method === "item/fileChange/requestApproval") {
+    return { decision: approved ? "accept" : "decline" };
+  }
+  if (method === "item/permissions/requestApproval") {
+    const requested = record(params)?.permissions;
+    return {
+      permissions: approved && isRecord(requested) ? requested : {},
+      scope: "turn",
+    };
   }
   return {};
 }
