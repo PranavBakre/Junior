@@ -144,7 +144,7 @@ describe("createRunnerInvoke", () => {
     expect(seenModel).toBe(DEFAULT_CLAUDE_MODEL);
   });
 
-  it("pins the codex model + medium effort when runner=codex and neither is given", async () => {
+  it("pins the codex model + low effort when runner=codex and neither is given", async () => {
     let seenModel: string | undefined;
     let seenEffort: string | undefined;
     const invoke = createRunnerInvoke({
@@ -157,7 +157,7 @@ describe("createRunnerInvoke", () => {
     });
     await invoke("PROMPT");
     expect(seenModel).toBe(DEFAULT_CODEX_MODEL);
-    expect(seenEffort).toBe("medium");
+    expect(seenEffort).toBe("low");
   });
 
   it("forwards an explicit codex effort override", async () => {

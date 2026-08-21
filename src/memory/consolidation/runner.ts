@@ -37,7 +37,7 @@ export const DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4-pro";
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-5";
 export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 /** Codex reasoning effort when unset. */
-export const DEFAULT_CODEX_EFFORT = "medium";
+export const DEFAULT_CODEX_EFFORT = "low";
 
 /**
  * The injectable subprocess boundary: given the (schema-augmented) prompt, run a
