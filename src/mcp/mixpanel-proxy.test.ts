@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { SlackMcpRunContext } from "./context.ts";
-import { createMixpanelProxyServer, type MixpanelRegion } from "./mixpanel-proxy.ts";
+import {
+  createMixpanelProxyServer,
+  mixpanelAuthorizationHeader,
+  type MixpanelRegion,
+} from "./mixpanel-proxy.ts";
 import { MixpanelOAuthProvider } from "./mixpanel-oauth.ts";
 
 let oauthTestDir: string | null = null;
@@ -23,6 +27,12 @@ const RUN_CONTEXT: SlackMcpRunContext = {
 };
 
 describe("Mixpanel multi-region read-only proxy", () => {
+  it("uses Basic auth for documented service-account credentials", () => {
+    expect(mixpanelAuthorizationHeader("dXNlcjpzZWNyZXQ=")).toBe("Basic dXNlcjpzZWNyZXQ=");
+    expect(mixpanelAuthorizationHeader("Basic dXNlcjpzZWNyZXQ=")).toBe("Basic dXNlcjpzZWNyZXQ=");
+    expect(mixpanelAuthorizationHeader("Bearer oauth-token")).toBe("Bearer oauth-token");
+  });
+
   it("persists independent OAuth clients and tokens with restricted permissions", async () => {
     oauthTestDir = await mkdtemp(join(tmpdir(), "junior-mixpanel-oauth-"));
     process.env.MIXPANEL_MCP_OAUTH_DIR = oauthTestDir;

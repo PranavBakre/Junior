@@ -201,7 +201,7 @@ async function startMixpanelBackend(region: MixpanelRegion): Promise<MixpanelBac
   const token = tokenForRegion(region);
   const transport = token
     ? new StreamableHTTPClientTransport(new URL(REGION_URLS[region]), {
-      requestInit: { headers: { Authorization: authorizationHeader(token) } },
+      requestInit: { headers: { Authorization: mixpanelAuthorizationHeader(token) } },
     })
     : new StreamableHTTPClientTransport(new URL(REGION_URLS[region]), {
       authProvider: await MixpanelOAuthProvider.create(region),
@@ -226,8 +226,9 @@ function tokenForRegion(region: MixpanelRegion): string {
   return region === "us" ? process.env.MIXPANEL_MCP_TOKEN?.trim() ?? "" : "";
 }
 
-function authorizationHeader(token: string): string {
-  return /^Bearer\s+/i.test(token) ? token : `Bearer Basic ${token}`;
+export function mixpanelAuthorizationHeader(token: string): string {
+  if (/^(?:Bearer|Basic)\s+/i.test(token)) return token;
+  return `Basic ${token}`;
 }
 
 function mixpanelProxyError(message: string): CallToolResult {
