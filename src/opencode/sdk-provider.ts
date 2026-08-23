@@ -152,9 +152,16 @@ export function spawnOpenCodeSdk(
   botToken?: string,
   agentIdentity?: AgentIdentity,
   _imagePaths: string[] = [],
+  githubAuthEnv?: Record<string, string>,
 ): SpawnHandle {
   const provider = "opencode-sdk" as const;
-  const runtime = buildRunnerRuntime({ session, targetRepoCwd, botToken, agentIdentity });
+  const runtime = buildRunnerRuntime({
+    session,
+    targetRepoCwd,
+    botToken,
+    agentIdentity,
+    githubAuthEnv,
+  });
   const activeSkill = session.activeSkill
     ? resolveTrustedSkill(session.activeSkill.name)
     : null;

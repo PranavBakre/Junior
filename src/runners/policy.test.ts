@@ -179,6 +179,7 @@ describe("compileOpenCodePermission", () => {
     }) as Record<string, string>;
     expect(permission["mcp__*"]).toBe("deny");
     expect(permission["mcp__slack-bot__memory_recall"]).toBe("allow");
+    expect(permission["mcp__slack-bot__memory_feedback"]).toBe("allow");
     expect(permission["mcp__slack-bot__slack_read_thread"]).toBe("allow");
     expect(permission["mcp__slack-bot__github_read_pr_review_state"]).toBe("allow");
     expect(permission["mcp__slack-bot__github_post_review"]).toBe("allow");

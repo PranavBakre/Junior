@@ -13,6 +13,7 @@ import {
 import { composeBugDispatchPrompt } from "./bug/context.ts";
 import { composeProductDispatchPrompt } from "./product/context.ts";
 import { log } from "../logger.ts";
+import { pipelineLog } from "./logging.ts";
 
 /** Minimal session manager surface used for pipeline dispatch. */
 export type PipelineSessionDispatcher = {
@@ -90,7 +91,25 @@ export async function dispatchAssignment(
 ): Promise<DispatchAssignmentResult> {
   const { run, assignment } = input;
   const targetAgent = assignment.targetAgent.trim();
+  pipelineLog("info", "assignment.dispatch.started", {
+    run: run.id,
+    thread: run.threadId,
+    assignment: assignment.id,
+    source: assignment.sourceAgent,
+    target: targetAgent,
+    kind: run.kind,
+    run_status: run.status,
+    assignment_status: assignment.status,
+    attempt: assignment.attempt,
+    repo_refs: run.repoRefs.length,
+  });
   if (!targetAgent) {
+    pipelineLog("warn", "assignment.dispatch.rejected", {
+      run: run.id,
+      thread: run.threadId,
+      assignment: assignment.id,
+      reason: "empty_target_agent",
+    });
     return {
       status: "rejected",
       reason: "assignment has empty targetAgent",
@@ -105,6 +124,13 @@ export async function dispatchAssignment(
       channelId: run.channelId,
       threadId: run.threadId,
       text: `:raising_hand: *Pipeline escalate* assignment \`${assignment.id.slice(0, 8)}\` needs human: ${assignment.objective}`,
+    });
+    pipelineLog("info", "assignment.dispatch.escalated", {
+      run: run.id,
+      thread: run.threadId,
+      assignment: assignment.id,
+      target: targetAgent,
+      reason: "human_escalation",
     });
     return {
       status: "dispatched",
@@ -124,6 +150,13 @@ export async function dispatchAssignment(
         "pipeline-dispatch",
         `session read failed for ${run.threadId}: ${err instanceof Error ? err.message : String(err)}`,
       );
+      pipelineLog("warn", "assignment.dispatch.session_read_failed", {
+        run: run.id,
+        thread: run.threadId,
+        assignment: assignment.id,
+        target: targetAgent,
+        reason: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -172,6 +205,15 @@ export async function dispatchAssignment(
 
   const alwaysEnqueue = deps.alwaysEnqueue !== false;
   if (busy && !alwaysEnqueue) {
+    pipelineLog("info", "assignment.dispatch.buffered", {
+      run: run.id,
+      thread: run.threadId,
+      assignment: assignment.id,
+      target: targetAgent,
+      busy,
+      always_enqueue: alwaysEnqueue,
+      reason: "target_busy",
+    });
     return {
       status: "buffered",
       reason: "target agent is busy; assignment left pending in outbox",
@@ -188,6 +230,13 @@ export async function dispatchAssignment(
       "pipeline-dispatch",
       `dispatch failed run=${run.id} assignment=${assignment.id} target=${targetAgent}: ${message}`,
     );
+    pipelineLog("error", "assignment.dispatch.failed", {
+      run: run.id,
+      thread: run.threadId,
+      assignment: assignment.id,
+      target: targetAgent,
+      reason: message,
+    });
     return {
       status: "rejected",
       reason: `dispatch error: ${message}`,
@@ -195,6 +244,16 @@ export async function dispatchAssignment(
       assignmentId: assignment.id,
     };
   }
+
+  pipelineLog("info", "assignment.dispatch.delivered", {
+    run: run.id,
+    thread: run.threadId,
+    assignment: assignment.id,
+    source: assignment.sourceAgent,
+    target: targetAgent,
+    busy,
+    delivery: busy ? "buffered" : "dispatched",
+  });
 
   // Default runs are the invisible durability layer for ordinary messages.
   // Only explicit product/bug pipelines should add handoff chatter to Slack.

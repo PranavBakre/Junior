@@ -15,6 +15,7 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from "
 import { isAbsolute, join } from "node:path";
 import { log } from "../logger.ts";
 import type { RepoConfig } from "../config.ts";
+import { cleanGitHubEnvironment } from "../github/auth.ts";
 import { WorktreeManager } from "../worktree/manager.ts";
 import { isPidAlive, isPortHeld } from "./process-utils.ts";
 import { isProcessTreeAlive, terminateProcessTree } from "./process-tree.ts";
@@ -152,13 +153,14 @@ export class DevServerManager {
     // other worktrees. FETCH_HEAD is also tried as a fallback for local-only
     // branches that have no upstream.
     log.info("dev-server", `checkout repo=${repoName} branch=${branch} at ${worktreePath}`);
-    await runGit(["fetch", "origin"], worktreePath);
+    const githubEnv = await this.worktreeManager.getGitHubEnvironment(repoName);
+    await runGit(["fetch", "origin"], worktreePath, githubEnv);
     // Try to reset to the remote tracking branch. Fall back to local ref.
     try {
-      await runGit(["reset", "--hard", `origin/${branch}`], worktreePath);
+      await runGit(["reset", "--hard", `origin/${branch}`], worktreePath, githubEnv);
     } catch {
       // No upstream — try local ref (e.g. for branches only pushed as local).
-      await runGit(["reset", "--hard", branch], worktreePath);
+      await runGit(["reset", "--hard", branch], worktreePath, githubEnv);
     }
 
     // Spawn the dev server.
@@ -166,6 +168,7 @@ export class DevServerManager {
     log.info("dev-server", `spawn repo=${repoName} cmd=${cmdParts.join(" ")} cwd=${worktreePath}`);
     const proc = Bun.spawn(cmdParts, {
       cwd: worktreePath,
+      env: githubEnv ? { ...cleanGitHubEnvironment(), ...githubEnv } : undefined,
       stdout: "pipe",
       stderr: "pipe",
       detached: true,
@@ -456,9 +459,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Run a git command in `cwd`. Throws on non-zero exit. */
-async function runGit(args: string[], cwd: string): Promise<string> {
+async function runGit(args: string[], cwd: string, githubEnv?: Record<string, string>): Promise<string> {
   const proc = Bun.spawn(["git", ...args], {
     cwd,
+    env: githubEnv ? { ...cleanGitHubEnvironment(), ...githubEnv } : undefined,
     stdout: "pipe",
     stderr: "pipe",
   });

@@ -1,6 +1,7 @@
 import type {
   ArchiveStaleClaimsOptions,
   ArchiveStaleClaimsResult,
+  ClaimFeedbackResult,
   ClaimInput,
   ClaimRecallOptions,
   ClaimRecallResult,
@@ -77,6 +78,8 @@ export interface MemoryStore {
    * `archiveStaleClaims` (stale AND low-value) could never fade it.
    */
   markClaimsUsed(ids: string[], now: number): Promise<void>;
+  /** Increment the usefulness counter for claims an agent explicitly judged. */
+  recordClaimFeedback(ids: string[], useful: boolean): Promise<ClaimFeedbackResult[]>;
   /**
    * Decay: ARCHIVE (set `active = 0`, never delete — keep provenance) claims that
    * are BOTH stale AND low-value. Batch/offline only, never a hot-path TTL.

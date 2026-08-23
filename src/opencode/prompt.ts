@@ -8,7 +8,7 @@ export interface BuildOpenCodeAgentPromptOptions {
 
 export const OPENCODE_PROVIDER_AGENT = "build";
 
-export const FALLBACK_JUNIOR_CORE_PROMPT = [
+const STATIC_FALLBACK_JUNIOR_CORE_PROMPT = [
   "# Core operating contract",
   "",
   "## First step: infer the required action",
@@ -33,6 +33,7 @@ export const FALLBACK_JUNIOR_CORE_PROMPT = [
   "- **When surprised** - unexpected convention, unpredicted error, contradiction - recall before improvising.",
   "",
   "Empty recall → proceed; don't mention it. When corrected, or when you learn something durable, `memory_add` ONE atomic claim (repo/kind tagged) - if that tool is in your list. Standing rules live in memory, not this file. Profiles are Junior-internal - never surface one verbatim.",
+  "After using a recalled claim, call `memory_feedback` with its id and `useful: true` or `false` once you know whether it helped; do not mark claims merely because they were returned.",
   "",
   "## Communication",
   "",
@@ -61,6 +62,12 @@ export const FALLBACK_JUNIOR_CORE_PROMPT = [
   "- Any required handoff or dispatch happened.",
   "- The final response reports outcome, not intentions.",
 ].join("\n");
+
+// Keep the source-bundled prompt and the runtime fallback in lockstep when
+// Junior is run from a checkout. The static text above remains the fallback
+// for packaged deployments that omit the Markdown prompt bundle.
+export const FALLBACK_JUNIOR_CORE_PROMPT =
+  readCorePromptFile() ?? STATIC_FALLBACK_JUNIOR_CORE_PROMPT;
 
 export const OPENCODE_JUNIOR_CORE_PROMPT = readBundledCorePrompt();
 
@@ -115,16 +122,17 @@ export function buildOpenCodeAgentPrompt(
 }
 
 function readBundledCorePrompt(): string {
+  return readCorePromptFile() ?? FALLBACK_JUNIOR_CORE_PROMPT;
+}
+
+function readCorePromptFile(): string | null {
   try {
     return readFileSync(
       new URL("../../.claude/agents/common/core.md", import.meta.url),
       "utf8",
     ).trim();
-  } catch (err) {
-    console.warn(
-      `[opencode] failed to read bundled Junior core prompt; using fallback: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return FALLBACK_JUNIOR_CORE_PROMPT;
+  } catch {
+    return null;
   }
 }
 

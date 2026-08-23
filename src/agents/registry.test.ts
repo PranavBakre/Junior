@@ -38,6 +38,7 @@ describe("trusted agent catalog", () => {
         "feature-metrics",
         "frontend",
         "github-access",
+        "lead",
         "onboard-member",
         "onboarding",
         "oogway",

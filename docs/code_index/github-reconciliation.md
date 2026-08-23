@@ -15,6 +15,7 @@ webhook to keep pipeline state correct.
 | Merge-prune trigger | `src/github/prune-trigger.ts` | Extracts exact merged PR repo/branch targets for scoped worktree pruning. |
 | Review comments | `src/github/review-comments.ts` | Scopes comments to an exact head SHA and avoids duplicate writes. |
 | Types | `src/github/types.ts` | GitHub resource, review, and reconciliation contracts. |
+| Repo-scoped auth | `src/github/auth.ts`, `src/config.ts` | Resolves each configured `RepoConfig.githubUser` with `gh auth token --user`, verifies the account, and injects only that token into repo-scoped child processes. |
 
 ## Configuration
 

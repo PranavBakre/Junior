@@ -26,6 +26,7 @@ import {
 import { createRunnerInvoke } from "../memory/consolidation/runner.ts";
 import type { MemoryStore } from "../memory/store.ts";
 import type {
+  ClaimFeedbackResult,
   ClaimKind,
   ClaimRecallFilters,
   ClaimRecallResult,
@@ -1643,6 +1644,36 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
 
   registerTool(
     server,
+    "memory_feedback",
+    {
+      description:
+        "Record whether recalled memory was useful to the current turn. Call this after " +
+        "using memory_recall, once you can judge the claims. Feedback increments the " +
+        "helpful or unhelpful count for each supplied claim; retrieval alone is not feedback.",
+      inputSchema: {
+        claim_ids: z
+          .array(z.string().min(1).max(200))
+          .min(1)
+          .max(50)
+          .describe("Claim ids returned by memory_recall that share this judgment"),
+        useful: z
+          .boolean()
+          .describe("True when these claims materially helped or were correct; false otherwise"),
+      },
+    },
+    async ({ claim_ids, useful }) => {
+      return withMemoryStore(async (memory) => {
+        const result = await recordMemoryFeedback(
+          { claimIds: claim_ids, useful },
+          { store: memory },
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      });
+    },
+  );
+
+  registerTool(
+    server,
     "memory_consolidate",
     {
       description:
@@ -2059,6 +2090,36 @@ export interface MemoryToolDeps {
   store: MemoryStore;
   provider: EmbeddingProvider;
   profileStore: ProfileStore;
+}
+
+export interface MemoryFeedbackArgs {
+  claimIds: string[];
+  useful: boolean;
+}
+
+export interface MemoryFeedbackResult {
+  useful: boolean;
+  updated: ClaimFeedbackResult[];
+  unknownClaimIds: string[];
+}
+
+/** Record one usefulness judgment for one or more recalled claims. */
+export async function recordMemoryFeedback(
+  args: MemoryFeedbackArgs,
+  deps: Pick<MemoryToolDeps, "store">,
+): Promise<MemoryFeedbackResult> {
+  const claimIds = [...new Set(args.claimIds.map((id) => id.trim()).filter(Boolean))];
+  if (claimIds.length === 0) {
+    throw new Error("memory_feedback: at least one claim id is required");
+  }
+
+  const updated = await deps.store.recordClaimFeedback(claimIds, args.useful);
+  const updatedIds = new Set(updated.map((claim) => claim.id));
+  return {
+    useful: args.useful,
+    updated,
+    unknownClaimIds: claimIds.filter((id) => !updatedIds.has(id)),
+  };
 }
 
 export interface RecallMemoryArgs {

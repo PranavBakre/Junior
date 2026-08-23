@@ -81,6 +81,12 @@ export interface SlackMessageEvent {
   conversationalText?: string;
   /** Dashboard-originated inject. Skip default-run hijack and short-followup. */
   dashboardContinue?: boolean;
+  /**
+   * Action-button follow-up that may run directly after a terminal pipeline.
+   * Active runs are still resumed by the default-run router before this flag
+   * is applied.
+   */
+  bypassDefaultRun?: boolean;
 }
 
 export type OnMessageCallback = (event: SlackMessageEvent) => void | Promise<void>;

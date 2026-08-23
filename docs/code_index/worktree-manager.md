@@ -1,6 +1,6 @@
 # Code Index: Worktree Manager
 
-Creates, removes, and inspects git worktrees in target repos for per-thread code isolation. Supports inline `git worktree add` and delegated setup scripts.
+Creates, removes, and inspects git worktrees in target repos for per-thread code isolation. Supports inline `git worktree add`, delegated setup scripts, and repo-scoped GitHub CLI identities.
 
 ## Code Index
 
@@ -8,7 +8,7 @@ Creates, removes, and inspects git worktrees in target repos for per-thread code
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `WorktreeManager(repos, options?)` | `manager.ts` | Constructor — keeps `RepoConfig[]`; options support deterministic disk-headroom tests. |
+| `WorktreeManager(repos, options?)` | `manager.ts` | Constructor — keeps `RepoConfig[]`; options support deterministic disk-headroom tests and an injectable repo-scoped GitHub auth resolver. |
 | `createWorktree(repoName, threadId, baseRef?, branchOverride?)` | `manager.ts` | Creates worktree. `baseRef` defaults to `repo.defaultBase`. `branchOverride` defaults to `slack/<threadId>`. Returns absolute path. |
 | `removeWorktree(repoName, threadId)` | `manager.ts` | `git worktree remove --force` + `git branch -D` (queries actual branch name from the worktree first to handle `branchOverride`) |
 | `worktreeExists(repoName, threadId)` | `manager.ts` | Filesystem check via `node:fs/promises.stat` |
@@ -16,6 +16,7 @@ Creates, removes, and inspects git worktrees in target repos for per-thread code
 | `getWorktreePath(repoName, threadId)` | `manager.ts` | `<repo.path>.junior-worktrees/slack-<threadId>` — sibling, NOT under `.claude/` |
 | `getBranchName(threadId)` | `manager.ts` | `slack/<threadId>` |
 | `getRepo(name)` | `manager.ts` | Lookup in `repos` |
+| `getGitHubEnvironment(name)` | `manager.ts` | Resolve the configured repo `githubUser` into a verified child-process environment |
 
 ## Layout
 

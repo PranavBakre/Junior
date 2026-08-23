@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { InMemoryPipelineStore } from "../pipelines/store/memory.ts";
 import {
   makeAssignmentCreate,
+  makeDefaultRun,
   makeProductRun,
 } from "../pipelines/store/test-helpers.ts";
 import { fakeClock } from "../time/clock.ts";
@@ -428,6 +429,44 @@ describe("SessionManager", () => {
     expect(session?.activePipelineInvocation?.runId).toBe(run?.id);
     expect(mockSpawnFn.mock.calls[0][1]).toContain("<pipeline-assignment>");
     expect(mockSpawnFn.mock.calls[0][1]).toContain("make the small config change");
+  });
+
+  it("does not create a second default run for Re-review after a terminal run", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    manager = createTestManager(store, cloneConfig({
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+
+    await pipelineStore.createRun(makeDefaultRun({
+      id: "terminal-review-run",
+      channelId: "C123",
+      threadId: "thread-1",
+      phase: "completed",
+      status: "terminal",
+      terminalOutcome: "completed",
+      terminalReason: "review settled",
+    }));
+    const existing = createSession("thread-1", "C123");
+    existing.activeRunId = "terminal-review-run";
+    await store.set(existing.threadId, existing);
+
+    await manager.handleAgentMessage(makeEvent({
+      text: "Re-review the latest PR/head.",
+      ts: "review-button-terminal",
+      bypassDefaultRun: true,
+    }), "review");
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+
+    expect(await pipelineStore.listRuns({ kind: "default" })).toHaveLength(1);
+    expect(mockSpawnFn.mock.calls[0][1]).not.toContain("<pipeline-assignment>");
+    expect(mockSpawnFn.mock.calls[0][1]).toContain("Re-review the latest PR/head.");
   });
 
   it("binds every PR repository before dispatching a multi-repo review", async () => {

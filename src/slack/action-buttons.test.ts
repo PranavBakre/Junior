@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { resolveDispatchAgent } from "./action-buttons.ts";
+import { resolveDispatchAgent, shouldBypassDefaultRun } from "./action-buttons.ts";
 
 describe("resolveDispatchAgent", () => {
   it("routes review make-fix to default outside support channels", () => {
@@ -72,5 +72,31 @@ describe("resolveDispatchAgent", () => {
         new Set(["C-BUGS"]),
       ),
     ).toBe("review");
+  });
+});
+
+describe("shouldBypassDefaultRun", () => {
+  it("keeps Re-review from creating a second default run", () => {
+    expect(
+      shouldBypassDefaultRun({
+        id: "review:rereview",
+        label: "Re-review",
+        type: "dispatch_agent",
+        agent: "review",
+        prompt: "review again",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps Make fix on the durable default-run path", () => {
+    expect(
+      shouldBypassDefaultRun({
+        id: "review:make-fix",
+        label: "Make fix",
+        type: "dispatch_agent",
+        agent: "default",
+        prompt: "fix it",
+      }),
+    ).toBe(false);
   });
 });

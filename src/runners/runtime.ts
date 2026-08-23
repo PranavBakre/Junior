@@ -7,6 +7,7 @@ export interface RunnerRuntimeOptions {
   targetRepoCwd?: string;
   botToken?: string;
   agentIdentity?: AgentIdentity;
+  githubAuthEnv?: Record<string, string>;
 }
 
 export interface RunnerRuntime {
@@ -55,14 +56,20 @@ export function willResume(options: {
 }
 
 export function buildRunnerRuntime(options: RunnerRuntimeOptions): RunnerRuntime {
-  const { session, targetRepoCwd, botToken, agentIdentity } = options;
+  const {
+    session,
+    targetRepoCwd,
+    botToken,
+    agentIdentity,
+    githubAuthEnv,
+  } = options;
   const cwd = resolveRunnerCwd(session, targetRepoCwd);
   if (session.cwd) mkdirSync(session.cwd, { recursive: true });
 
   return {
     cwd,
     needsProjectMcp: needsProjectMcp(session, cwd),
-    env: buildRunnerEnv(session, botToken, agentIdentity),
+    env: buildRunnerEnv(session, botToken, agentIdentity, githubAuthEnv),
   };
 }
 
@@ -122,6 +129,7 @@ export function buildRunnerEnv(
   session: ThreadSession,
   botToken?: string,
   agentIdentity?: AgentIdentity,
+  githubAuthEnv?: Record<string, string>,
 ): Record<string, string> {
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
@@ -131,6 +139,11 @@ export function buildRunnerEnv(
     JUNIOR_AGENT_NAME: session.activeAgentName ?? "default",
     ...(botToken ? { SLACK_BOT_TOKEN: botToken } : {}),
   };
+  if (githubAuthEnv) {
+    Object.assign(env, githubAuthEnv);
+    delete env.GITHUB_TOKEN;
+    delete env.GH_ENTERPRISE_TOKEN;
+  }
   // MCP_CONTEXT_SECRET authenticates the agent identity embedded in MCP URLs.
   // A child that receives it could forge a different agent's capability token.
   delete env.MCP_CONTEXT_SECRET;

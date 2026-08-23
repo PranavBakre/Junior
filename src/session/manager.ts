@@ -96,6 +96,7 @@ import {
   projectRunSummary,
 } from "../pipelines/projection.ts";
 import { buildAssignmentContext } from "../pipelines/context.ts";
+import { pipelineLog } from "../pipelines/logging.ts";
 import { bugContextForAssignment } from "../pipelines/bug/controller.ts";
 import { composeBugDispatchPrompt } from "../pipelines/bug/context.ts";
 import { productContextForAssignment } from "../pipelines/product/controller.ts";
@@ -121,6 +122,11 @@ const TURN_PROGRESS_EMOJI = "hourglass_flowing_sand";
  * — and reacting to those is an API call that can only fail.
  */
 const SLACK_MESSAGE_TS = /^\d+\.\d+$/;
+
+const PIPELINE_CONTROL_MCP_TOOLS = [
+  "mcp__slack-bot__pipeline_get_state",
+  "mcp__slack-bot__pipeline_report_outcome",
+] as const;
 
 export type DashboardInjectResult =
   | { status: "accepted" }
@@ -199,7 +205,15 @@ export class SessionManager {
     this.config = config;
     this.spawnRunner = spawnRunner ?? defaultSpawnRunnerForRuntime;
     this.drivers = drivers ?? createDrivers({
-      spawnFn: (session, prompt, _claudeConfig, targetRepoCwd, botToken, agentIdentity) =>
+      spawnFn: (
+        session,
+        prompt,
+        _claudeConfig,
+        targetRepoCwd,
+        botToken,
+        agentIdentity,
+        githubAuthEnv,
+      ) =>
         this.spawnRunner(
           { ...session, provider: "claude" },
           prompt,
@@ -207,6 +221,8 @@ export class SessionManager {
           targetRepoCwd,
           botToken,
           agentIdentity,
+          undefined,
+          githubAuthEnv,
         ),
     });
     this.memoryIngestor = memoryIngestor;
@@ -1697,7 +1713,24 @@ export class SessionManager {
           this.config.repos,
           activePipelineRun.repoRefs,
         );
+        pipelineLog("info", "workspace.binding.resolved", {
+          run: activePipelineRun.id,
+          thread: session.threadId,
+          assignment: pipelineInvocation.assignmentId,
+          agent: agentName,
+          repo_refs: activePipelineRun.repoRefs.length,
+          resolved_repos: resolution.repos.length,
+          unresolved_repos: resolution.unresolvedRefs.length,
+          requires_worktree: assignmentNeedsWorktree,
+        });
         if (resolution.unresolvedRefs.length > 0) {
+          pipelineLog("error", "workspace.binding.failed", {
+            run: activePipelineRun.id,
+            thread: session.threadId,
+            assignment: pipelineInvocation.assignmentId,
+            agent: agentName,
+            reason: `unresolved repository refs: ${resolution.unresolvedRefs.join(", ")}`,
+          });
           throw new Error(
             `Pipeline ${activePipelineRun.id.slice(0, 8)} cannot run assignment ${pipelineInvocation.assignmentId.slice(0, 8)}: repository refs are not uniquely configured: ${resolution.unresolvedRefs.join(", ")}. Update the run repository refs/configuration or use !reset after preserving any work.`,
           );
@@ -1724,6 +1757,13 @@ export class SessionManager {
         }
         if (pipelineRepos.length === 0) {
           if (assignmentNeedsWorktree) {
+            pipelineLog("error", "workspace.binding.missing", {
+              run: activePipelineRun.id,
+              thread: session.threadId,
+              assignment: pipelineInvocation.assignmentId,
+              agent: agentName,
+              reason: "worktree_required_but_no_repository_bound",
+            });
             throw new Error(
               `Pipeline ${activePipelineRun.id.slice(0, 8)} cannot run ${agentName} assignment ${pipelineInvocation.assignmentId.slice(0, 8)} without a configured repository and isolated worktree. Add a repository to the run or use !reset after preserving any work.`,
             );
@@ -1790,6 +1830,14 @@ export class SessionManager {
           );
           assertRunOwnership();
           const provisionedPaths = Object.fromEntries(provisioned);
+          pipelineLog("info", "workspace.worktrees.provisioned", {
+            run: activePipelineRun.id,
+            thread: session.threadId,
+            assignment: pipelineInvocation.assignmentId,
+            agent: agentName,
+            repo_count: Object.keys(provisionedPaths).length,
+            primary_repo: primaryRepo.name,
+          });
           session = await this.mutateSession(session.threadId, (fresh) => {
             assertRunOwnership();
             fresh.worktreePaths = {
@@ -1817,12 +1865,18 @@ export class SessionManager {
       }
 
       // Resolve target repo before building the preamble so workspace info can be injected.
-      let targetRepo: { name: string; path: string } | undefined;
+      let targetRepo: { name: string; path: string; githubUser?: string } | undefined;
       if (session.targetRepo) {
         const repo = this.config.repos.find(
           (r) => r.name === session.targetRepo,
         );
-        if (repo) targetRepo = { name: repo.name, path: repo.path };
+        if (repo) {
+          targetRepo = {
+            name: repo.name,
+            path: repo.path,
+            ...(repo.githubUser ? { githubUser: repo.githubUser } : {}),
+          };
+        }
       }
 
       // Always create a worktree when a target repo is set — Junior must never
@@ -1900,6 +1954,10 @@ export class SessionManager {
       let targetRepoCwd: string | undefined = session.worktreePath
         ? undefined
         : targetRepo?.path;
+      const githubAuthEnv = targetRepo && this.worktreeManager &&
+        typeof this.worktreeManager.getGitHubEnvironment === "function"
+        ? await this.worktreeManager.getGitHubEnvironment(targetRepo.name)
+        : undefined;
 
       // Build after worktree routing/creation so provider policy and cwd see
       // the newly registered isolated checkout on this same turn.
@@ -2353,6 +2411,8 @@ export class SessionManager {
           targetRepoCwd,
           botToken: this.config.slack.botToken,
           agentIdentity,
+          githubAuthEnv,
+          githubUser: targetRepo?.githubUser,
           threadId: session.threadId,
           agentName,
         });
@@ -2366,6 +2426,7 @@ export class SessionManager {
           this.config.slack.botToken,
           agentIdentity,
           imagePaths,
+          githubAuthEnv,
         );
       }
       runnerStarted = true;
@@ -2829,6 +2890,14 @@ export class SessionManager {
       this.pipelineStore.listOutcomes(invocation.assignmentId),
     ]);
     if (!run || !assignment) {
+      pipelineLog("error", "settlement.state_missing", {
+        thread: session.threadId,
+        agent: agentName,
+        run: invocation.runId,
+        assignment: invocation.assignmentId,
+        run_found: Boolean(run),
+        assignment_found: Boolean(assignment),
+      });
       return {
         ...result,
         response: "",
@@ -2845,7 +2914,32 @@ export class SessionManager {
       !["pending", "leased"].includes(assignment.status) ||
       outcomes.length > invocation.outcomeCountAtDispatch;
 
+    pipelineLog("info", "assignment.runner.completed", {
+      run: run.id,
+      thread: run.threadId,
+      assignment: assignment.id,
+      agent: agentName,
+      run_status: run.status,
+      assignment_status: assignment.status,
+      outcomes_before: invocation.outcomeCountAtDispatch,
+      outcomes_now: outcomes.length,
+      durable,
+      result_status: result.completion?.status ?? "unknown",
+      result_reason: result.completion?.reason ?? "unknown",
+      provider_error: result.error ?? undefined,
+      exit_code: result.exitCode,
+    });
+
     if (durable) {
+      pipelineLog("info", "settlement.durable", {
+        run: run.id,
+        thread: run.threadId,
+        assignment: assignment.id,
+        agent: agentName,
+        run_status: run.status,
+        assignment_status: assignment.status,
+        outcome_count: outcomes.length,
+      });
       const currentResponseIsVisible =
         prepareSlackResponse(result.response) !== null;
       const currentTurnPostedToSlack =
@@ -2900,7 +2994,19 @@ export class SessionManager {
           ? null
           : !result.error && currentResponseIsVisible
             ? result.response
-            : invocation.pendingUserResponse ?? null;
+          : invocation.pendingUserResponse ?? null;
+      pipelineLog("warn", "settlement.recovery_requested", {
+        run: run.id,
+        thread: run.threadId,
+        assignment: assignment.id,
+        agent: agentName,
+        retry: retryCount,
+        max_retries: maxRetries,
+        outcome_count: outcomes.length,
+        response_preserved: pendingUserResponse !== null,
+        provider_error: result.error ?? undefined,
+        completion_reason: result.completion?.reason ?? "unknown",
+      });
       let continued: ThreadSession;
       try {
         continued = await this.mutateSession(fresh.threadId, (current) => {
@@ -3029,11 +3135,28 @@ export class SessionManager {
         receipt.status === "duplicate"
       ) {
         escalationPersisted = true;
+        pipelineLog("error", "settlement.escalated", {
+          run: latestRun.id,
+          thread: latestRun.threadId,
+          assignment: latestAssignment.id,
+          agent: agentName,
+          recovery_attempts: invocation.retryCount,
+          receipt: receipt.status,
+          reason: `missing typed outcome ${recoverySummary}`,
+          provider_error: result.error ?? "none",
+        });
         break;
       }
       if (!/state version conflict/i.test(receipt.reason ?? "")) break;
     }
     if (!escalationPersisted) {
+      pipelineLog("error", "settlement.escalation_persist_failed", {
+        run: invocation.runId,
+        thread: fresh.threadId,
+        assignment: invocation.assignmentId,
+        agent: agentName,
+        recovery_attempts: invocation.retryCount,
+      });
       if (this.handles.get(handleKey) !== ownHandle) return null;
       this.handles.delete(handleKey);
       const persistenceError =
@@ -3911,6 +4034,12 @@ export class SessionManager {
         return true;
       }
     }
+
+    // A Re-review button is a follow-up to the review that rendered it. Once
+    // that run is terminal, dispatch it as a direct review instead of
+    // manufacturing a second generic default run. Keep the active-run path
+    // above first so a click racing an in-flight run still resumes that run.
+    if (event.bypassDefaultRun) return false;
 
     const repoRefs = explicitReviewRepoRefs.length > 0
       ? explicitReviewRepoRefs

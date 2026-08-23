@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RepoConfig } from "../config.ts";
+import { GitHubAuthResolver } from "../github/auth.ts";
 import { WorktreeManager } from "./manager.ts";
 
 // Real-fs integration test. We create a tiny git repo in a tmpdir and let
@@ -265,6 +266,55 @@ describe("WorktreeManager.createWorktree", () => {
     expect(wtPath).toBe(`${repoRoot}.junior-worktrees/slack-custom-thread`);
 
     await wm.removeWorktree("custom-flow", "custom-thread");
+  });
+
+  it("passes the selected GitHub account token to delegated setup", async () => {
+    const authMarker = join(repoRoot, "github-auth-marker.txt");
+    const authSetup = join(repoRoot, "github-auth-setup.sh");
+    writeFileSync(
+      authSetup,
+      `#!/usr/bin/env bash
+set -e
+printf '%s' "\${GH_TOKEN:-}" > "${authMarker}"
+BRANCH="$1"
+shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --path) TARGET="$2"; shift 2 ;;
+    --base) BASE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+git fetch origin --prune
+git worktree add "$TARGET" -b "$BRANCH" "$BASE"
+`,
+    );
+    chmodSync(authSetup, 0o755);
+
+    const repos: RepoConfig[] = [{
+      name: "selected-auth-flow",
+      path: repoRoot,
+      defaultBase: "origin/main",
+      githubRepo: "GrowthX-Club/gx-client-next",
+      githubUser: "gxt-admin",
+      worktreeSetupCommand: "github-auth-setup.sh",
+    }];
+    const auth = new GitHubAuthResolver(repos, async (args) =>
+      args[0] === "auth"
+        ? { status: 0, stdout: "selected-token", stderr: "" }
+        : { status: 0, stdout: "gxt-admin", stderr: "" },
+    );
+    const wm = new WorktreeManager(repos, { githubAuth: auth });
+
+    await wm.createWorktree(
+      "selected-auth-flow",
+      "selected-auth-thread",
+    );
+
+    expect(await Bun.file(authMarker).text()).toBe("selected-token");
+    await wm.removeWorktree("selected-auth-flow", "selected-auth-thread");
+    rmSync(authMarker, { force: true });
+    rmSync(authSetup, { force: true });
   });
 
   it("forwards baseRef as --base to the setup script when set explicitly", async () => {

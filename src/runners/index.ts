@@ -42,6 +42,7 @@ export function spawnRunner(
   botToken?: string,
   agentIdentity?: AgentIdentity,
   imagePaths?: string[],
+  githubAuthEnv?: Record<string, string>,
 ): SpawnHandle {
   const provider = sessionProvider(session, config);
 
@@ -64,6 +65,7 @@ export function spawnRunner(
       botToken,
       agentIdentity,
       imagePaths,
+      githubAuthEnv,
     );
   }
 
@@ -76,6 +78,7 @@ export function spawnRunner(
       botToken,
       agentIdentity,
       imagePaths,
+      githubAuthEnv,
     );
   }
 
@@ -94,6 +97,7 @@ export function spawnRunner(
       botToken,
       agentIdentity,
       imagePaths,
+      githubAuthEnv,
     );
   }
 
@@ -104,6 +108,7 @@ export function spawnRunner(
     targetRepoCwd,
     botToken,
     agentIdentity,
+    githubAuthEnv,
   );
 }
 

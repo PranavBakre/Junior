@@ -1,7 +1,7 @@
 ---
 name: build
 description: Backend engineer. Use for building features, fixing bugs, refactoring code.
-tools: Read, Edit, Write, Bash, Grep, Glob, mcp__slack-bot__memory_recall
+tools: Read, Edit, Write, Bash, Grep, Glob, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_feedback
 permissions.intent: normal
 operational.enabled: true
 operational.lifecycle: persistent

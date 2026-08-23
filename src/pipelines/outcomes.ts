@@ -18,6 +18,7 @@ import {
   skillRunnerAgentName,
 } from "../skills/registry.ts";
 import { log } from "../logger.ts";
+import { pipelineLog } from "./logging.ts";
 import type { PipelineStore } from "./store/interface.ts";
 import type {
   AgentOutcome,
@@ -216,6 +217,17 @@ export async function reportOutcome(
   input: ReportOutcomeInput,
 ): Promise<TransitionReceipt> {
   const { outcome, auth } = input;
+  pipelineLog("info", "outcome.receipt.started", {
+    assignment: outcome.assignmentId,
+    agent: auth.agent,
+    action: outcome.action,
+    status: outcome.status,
+    expected_version: outcome.expectedRunVersion,
+    evidence: outcome.evidenceRefs.length,
+    artifacts: outcome.artifactRefs.length,
+    blockers: outcome.blockers.length,
+    checks: outcome.checks.length,
+  });
   const assignment = await deps.store.getAssignment(outcome.assignmentId);
   if (!assignment) {
     const receipt: TransitionReceipt = {
@@ -371,8 +383,28 @@ export async function reportOutcome(
       "pipeline-outcomes",
       `outcome ${outcome.action} ${receipt.status} run=${run.id} assignment=${assignment.id} v${receipt.runVersion}`,
     );
+    pipelineLog("info", "outcome.receipt.accepted", {
+      run: run.id,
+      thread: run.threadId,
+      assignment: assignment.id,
+      agent: auth.agent,
+      action: outcome.action,
+      status: outcome.status,
+      receipt: receipt.status,
+      version: receipt.runVersion,
+    });
   } else if (receipt.status === "rejected") {
     logRejectedOutcome(run.id, assignment.id, receipt.reason ?? "rejected");
+    pipelineLog("warn", "outcome.receipt.rejected", {
+      run: run.id,
+      thread: run.threadId,
+      assignment: assignment.id,
+      agent: auth.agent,
+      action: outcome.action,
+      status: outcome.status,
+      expected_version: outcome.expectedRunVersion,
+      reason: receipt.reason ?? "rejected",
+    });
   }
 
   return receipt;

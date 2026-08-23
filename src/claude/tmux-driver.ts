@@ -28,7 +28,11 @@ export interface TmuxDriverOptions {
    * Test seam. Production passes nothing and we shell out to tmux directly.
    * Returns stdout (trimmed). Throws on non-zero exit.
    */
-  exec?: (cmd: string, args: string[]) => Promise<string>;
+  exec?: (
+    cmd: string,
+    args: string[],
+    env?: Record<string, string>,
+  ) => Promise<string>;
 }
 
 interface TmuxSession {
@@ -47,6 +51,7 @@ interface TmuxSession {
   activeTurn: ActiveTurn | null;
   /** Wall-clock cutoff for transcript-file selection — only files mtime >= this match. */
   startedAt: number;
+  githubUser: string | null;
   /** Serializes drainTranscript — fs.watch and the poll timer both fire it. */
   drainInFlight: boolean;
   /** Set when a drain request arrives while one is already running. */
@@ -70,7 +75,11 @@ export class TmuxDriver implements ClaudeDriver {
   readonly mode: DriverMode = "tmux";
   private projectsRoot: string;
   private tmuxBin: string;
-  private execImpl: (cmd: string, args: string[]) => Promise<string>;
+  private execImpl: (
+    cmd: string,
+    args: string[],
+    env?: Record<string, string>,
+  ) => Promise<string>;
   /** Per-(thread, agent) tmux session state. Lifetime = thread/agent lifetime. */
   private sessions = new Map<string, TmuxSession>();
 
@@ -254,6 +263,7 @@ export class TmuxDriver implements ClaudeDriver {
       pollTimer: null,
       activeTurn: null,
       startedAt: Date.now() - 86_400_000, // Adopt anything that already exists.
+      githubUser: null,
       drainInFlight: false,
       drainPending: false,
     };
@@ -355,7 +365,8 @@ export class TmuxDriver implements ClaudeDriver {
     if (
       existing &&
       resolve(existing.cwd) === resolve(cwd) &&
-      (await this.tmuxSessionUsable(existing.name))
+      (await this.tmuxSessionUsable(existing.name)) &&
+      existing.githubUser === (input.githubUser ?? null)
     ) {
       return;
     }
@@ -394,7 +405,7 @@ export class TmuxDriver implements ClaudeDriver {
       ...DATABASE_CREDENTIAL_ENV_KEYS.flatMap((key) => ["-e", `${key}=`]),
       "claude",
       ...claudeArgs,
-    ]);
+    ], runtime.env);
 
     const sess: TmuxSession = {
       name: sessionName,
@@ -408,6 +419,7 @@ export class TmuxDriver implements ClaudeDriver {
       pollTimer: null,
       activeTurn: null,
       startedAt,
+      githubUser: input.githubUser ?? null,
       drainInFlight: false,
       drainPending: false,
     };
@@ -682,8 +694,16 @@ function buildInteractiveClaudeArgs(
   return out;
 }
 
-async function defaultExec(cmd: string, args: string[]): Promise<string> {
-  const proc = Bun.spawn([cmd, ...args], { stdout: "pipe", stderr: "pipe" });
+async function defaultExec(
+  cmd: string,
+  args: string[],
+  env?: Record<string, string>,
+): Promise<string> {
+  const proc = Bun.spawn([cmd, ...args], {
+    ...(env ? { env } : {}),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

@@ -30,6 +30,7 @@ import {
   type OutcomeAuthContext,
 } from "./outcomes.ts";
 import { runPipelineCheck, writePipelineArtifact } from "./artifacts.ts";
+import { pipelineLog } from "./logging.ts";
 import type {
   AgentOutcome,
   Assignment,
@@ -542,10 +543,18 @@ export async function pipelineReportOutcome(
     idempotency_key?: string;
   },
 ): Promise<ToolTextResult> {
+  pipelineLog("info", "outcome.tool.called", {
+    run: runContext?.runId,
+    thread: runContext?.threadId,
+    assignment: runContext?.assignmentId,
+    agent: runContext?.agent,
+    signed: runContext?.signed ?? false,
+  });
   // Shadow may record outcomes for comparison, but suppress dispatch via deps.
   const disabled = requireActive(runtime, { allowShadowRecord: true });
   if (disabled) return disabled;
   if (!runContext) {
+    pipelineLog("warn", "outcome.tool.rejected", { reason: "missing_context" });
     return textResult({ ok: false, reason: "MCP run context missing" }, true);
   }
 
@@ -553,6 +562,12 @@ export async function pipelineReportOutcome(
   try {
     outcome = parseAgentOutcome(args.outcome);
   } catch (err) {
+    pipelineLog("warn", "outcome.tool.rejected", {
+      run: runContext.runId,
+      assignment: runContext.assignmentId,
+      agent: runContext.agent,
+      reason: "invalid_outcome",
+    });
     return textResult(
       {
         ok: false,
@@ -564,6 +579,12 @@ export async function pipelineReportOutcome(
 
   const shadow = runtime.runtimeMode === "shadow";
   if (!runContext.signed || !runtime.sessionStore) {
+    pipelineLog("warn", "outcome.tool.rejected", {
+      run: runContext.runId,
+      assignment: runContext.assignmentId,
+      agent: runContext.agent,
+      reason: "unsigned_or_missing_session_store",
+    });
     return textResult({ ok: false, reason: "signed pipeline session context required" }, true);
   }
   const session = await runtime.sessionStore.get(runContext.threadId);
@@ -580,6 +601,12 @@ export async function pipelineReportOutcome(
     runContext.dispatchKey !== invocation.dispatchKey ||
     outcome.assignmentId !== invocation.assignmentId
   ) {
+    pipelineLog("warn", "outcome.tool.rejected", {
+      run: runContext.runId,
+      assignment: runContext.assignmentId,
+      agent: runContext.agent,
+      reason: "stale_or_mismatched_assignment",
+    });
     return textResult(
       { ok: false, reason: "outcome does not match this signed active assignment" },
       true,
@@ -589,7 +616,15 @@ export async function pipelineReportOutcome(
   const run = assignment ? await runtime.store.getRun(assignment.runId) : undefined;
   if (run && assignment) {
     const authFailure = authorizeAssignmentAction(run, assignment, runContext.agent);
-    if (authFailure) return textResult({ ok: false, reason: authFailure }, true);
+    if (authFailure) {
+      pipelineLog("warn", "outcome.tool.rejected", {
+        run: run.id,
+        assignment: assignment.id,
+        agent: runContext.agent,
+        reason: "unauthorized_assignment_action",
+      });
+      return textResult({ ok: false, reason: authFailure }, true);
+    }
   }
   const delegatedBranch = assignment?.contextRefs.some((ref) =>
     ref.startsWith("delegated-branch:") || ref === "control-branch:human-input"
@@ -642,6 +677,20 @@ export async function pipelineReportOutcome(
   ) {
     await runtime.onOutcomeCommitted?.(receipt);
   }
+
+  pipelineLog(
+    receipt.status === "rejected" ? "warn" : "info",
+    "outcome.tool.completed",
+    {
+      run: run?.id,
+      assignment: receipt.assignmentId ?? outcome.assignmentId,
+      agent: runContext.agent,
+      status: receipt.status,
+      version: receipt.runVersion,
+      outcome: receipt.outcomeId,
+      event: receipt.eventId,
+    },
+  );
 
   return textResult({ ok: receipt.status !== "rejected", receipt });
 }
@@ -1261,6 +1310,16 @@ export async function pipelineRegisterPr(
     expected_head_sha: string;
   },
 ): Promise<ToolTextResult> {
+  pipelineLog("info", "github.pr_registration.started", {
+    run: args.run_id,
+    assignment: args.assignment_id,
+    agent: runContext?.agent,
+    owner: args.owner,
+    repo: args.repo,
+    pr: args.number,
+    role: args.role,
+    head: args.expected_head_sha,
+  });
   const disabled = requireActive(runtime);
   if (disabled) return disabled;
   if (!runContext) {
@@ -1287,8 +1346,26 @@ export async function pipelineRegisterPr(
   );
 
   if (!result.ok) {
+    pipelineLog("warn", "github.pr_registration.failed", {
+      run: args.run_id,
+      assignment: args.assignment_id,
+      agent: runContext.agent,
+      owner: args.owner,
+      repo: args.repo,
+      pr: args.number,
+      reason: result.reason,
+    });
     return textResult({ ok: false, reason: result.reason }, true);
   }
+  pipelineLog("info", "github.pr_registration.completed", {
+    run: args.run_id,
+    assignment: args.assignment_id,
+    agent: runContext.agent,
+    owner: args.owner,
+    repo: args.repo,
+    pr: args.number,
+    event: result.eventId,
+  });
   return textResult({ ok: true, eventId: result.eventId });
 }
 

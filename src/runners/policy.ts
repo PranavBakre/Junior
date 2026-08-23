@@ -69,7 +69,8 @@ export function resolveRunPermissionIntent(
 
 /**
  * Read-safe MCP tools for read-only / human-gated agents.
- * Mutating Slack/memory/dispatch tools are NOT included.
+ * Product-mutating Slack/memory/dispatch tools are NOT included. The bounded
+ * memory feedback counter is telemetry and is safe for read-only agents.
  */
 export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
   "mcp__mongodb__aggregate": "allow",
@@ -83,6 +84,7 @@ export const READ_SAFE_MCP_PERMISSIONS: Record<string, string> = {
   "mcp__slack-bot__slack_search": "allow",
   "mcp__slack-bot__slack_search_users": "allow",
   "mcp__slack-bot__memory_recall": "allow",
+  "mcp__slack-bot__memory_feedback": "allow",
   "mcp__slack-bot__runbook_search": "allow",
   "mcp__slack-bot__runbook_select": "allow",
   "mcp__slack-bot__register_worktree": "allow",

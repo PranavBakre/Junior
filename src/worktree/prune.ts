@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import type { RepoConfig } from "../config.ts";
+import { cleanGitHubEnvironment, GitHubAuthResolver } from "../github/auth.ts";
 
 export interface WorktreePruneScope {
   repoNames?: readonly string[];
@@ -37,6 +38,7 @@ export async function pruneWorktrees(
     reposInspected: [], removed: [], skipped: [], failures: [],
   };
   const allowedRepos = scope.repoNames ? new Set(scope.repoNames) : null;
+  const githubAuth = new GitHubAuthResolver(repos);
 
   for (const repo of repos) {
     if (allowedRepos && !allowedRepos.has(repo.name)) continue;
@@ -46,9 +48,10 @@ export async function pruneWorktrees(
     }
     report.reposInspected.push(repo.name);
     try {
-      const base = await resolveBase(repo);
+      const githubEnv = await githubAuth.environmentForRepo(repo);
+      const base = await resolveBase(repo, githubEnv);
       const primary = await canonicalPath(repo.path);
-      const worktrees = parseWorktrees(await git(repo.path, ["worktree", "list", "--porcelain"]));
+      const worktrees = parseWorktrees(await git(repo.path, ["worktree", "list", "--porcelain"], githubEnv));
       const allowedBranches = scope.branches?.get(repo.name);
       for (const worktree of worktrees) {
         if ((await canonicalPath(worktree.path)) === primary) continue;
@@ -66,18 +69,18 @@ export async function pruneWorktrees(
           report.skipped.push({ repo: repo.name, path: worktree.path, reason: "worktree has an active process" });
           continue;
         }
-        if (!await isMerged(worktree.path, base)) {
+        if (!await isMerged(worktree.path, base, githubEnv)) {
           report.skipped.push({ repo: repo.name, path: worktree.path, reason: `HEAD is not merged into ${base}` });
           continue;
         }
-        const dirty = await git(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
+        const dirty = await git(worktree.path, ["status", "--porcelain", "--untracked-files=all"], githubEnv);
         const dirtyPaths = statusPaths(dirty);
         const meaningfulPaths = dirtyPaths.filter((path) => !isPrunableResidualPath(path));
         if (meaningfulPaths.length) {
           report.skipped.push({ repo: repo.name, path: worktree.path, reason: `meaningful changes: ${meaningfulPaths.join(", ")}` });
           continue;
         }
-        const ignored = await git(worktree.path, ["ls-files", "--others", "--ignored", "--exclude-standard"]);
+        const ignored = await git(worktree.path, ["ls-files", "--others", "--ignored", "--exclude-standard"], githubEnv);
         if (ignored.split(/\r?\n/).some(isDotenvPath)) {
           report.skipped.push({ repo: repo.name, path: worktree.path, reason: "ignored dotenv files require preservation review" });
           continue;
@@ -85,7 +88,7 @@ export async function pruneWorktrees(
         // The force is scoped to this exact worktree. It is required when the
         // only residual files are the generated paths allowed above; all
         // meaningful and preservation-sensitive state has already been gated.
-        await git(repo.path, ["worktree", "remove", "--force", worktree.path]);
+        await git(repo.path, ["worktree", "remove", "--force", worktree.path], githubEnv);
         if (existsSync(worktree.path)) {
           throw new Error(`git worktree remove succeeded but path remains: ${worktree.path}`);
         }
@@ -111,11 +114,11 @@ export function formatWorktreePruneReport(report: WorktreePruneReport): string {
   return lines.join("\n");
 }
 
-async function resolveBase(repo: RepoConfig): Promise<string> {
+async function resolveBase(repo: RepoConfig, githubEnv?: Record<string, string>): Promise<string> {
   const configured = repo.defaultBase.replace(/^origin\//, "");
-  await git(repo.path, ["fetch", "origin", configured, "--prune"]);
+  await git(repo.path, ["fetch", "origin", configured, "--prune"], githubEnv);
   for (const candidate of [`origin/${configured}`, configured]) {
-    if (await gitExitCode(repo.path, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`]) === 0) {
+    if (await gitExitCode(repo.path, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], githubEnv) === 0) {
       return candidate;
     }
   }
@@ -140,8 +143,8 @@ function parseWorktrees(output: string): ListedWorktree[] {
   });
 }
 
-async function isMerged(worktreePath: string, base: string): Promise<boolean> {
-  return await gitExitCode(worktreePath, ["merge-base", "--is-ancestor", "HEAD", base]) === 0;
+async function isMerged(worktreePath: string, base: string, githubEnv?: Record<string, string>): Promise<boolean> {
+  return await gitExitCode(worktreePath, ["merge-base", "--is-ancestor", "HEAD", base], githubEnv) === 0;
 }
 
 function isDevServerWorktree(worktree: ListedWorktree): boolean {
@@ -166,8 +169,13 @@ async function canonicalPath(path: string): Promise<string> {
   try { return await realpath(path); } catch { return path; }
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
-  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+async function git(cwd: string, args: string[], githubEnv?: Record<string, string>): Promise<string> {
+  const proc = Bun.spawn(["git", ...args], {
+    cwd,
+    env: githubEnv ? { ...cleanGitHubEnvironment(), ...githubEnv } : undefined,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [code, stdout, stderr] = await Promise.all([
     proc.exited,
     new Response(proc.stdout).text(),
@@ -177,8 +185,13 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return stdout;
 }
 
-async function gitExitCode(cwd: string, args: string[]): Promise<number> {
-  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" });
+async function gitExitCode(cwd: string, args: string[], githubEnv?: Record<string, string>): Promise<number> {
+  const proc = Bun.spawn(["git", ...args], {
+    cwd,
+    env: githubEnv ? { ...cleanGitHubEnvironment(), ...githubEnv } : undefined,
+    stdout: "ignore",
+    stderr: "ignore",
+  });
   return await proc.exited;
 }
 

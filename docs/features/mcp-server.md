@@ -57,6 +57,7 @@ Junior main process
 | `reload_agent_registry` | (internal) | Reload private overlay agent identities so newly added workers become dispatchable |
 | `memory_recall` | (internal SQLite + profiles) | Recall v3 memory: keyed entity profiles (by `entity_refs`) + semantic claims (query embedded locally, cosine-ranked) |
 | `memory_add` | (internal SQLite) | Add and locally embed one atomic claim (lesson/fact/situation-claim) into the semantic store |
+| `memory_feedback` | (internal SQLite) | Record an agent's explicit useful/useless judgment for recalled claim ids; increments `helpful_count` or `unhelpful_count` |
 | `memory_consolidate` | (internal SQLite + LLM) | Run the v3 offline consolidation sweep: read unconsolidated source records, derive episodes/profiles/claims via the runner LLM |
 | `whatsapp_list_groups` | (internal SQLite) | List WhatsApp groups with stored messages (name, JID, counts, activity window) |
 | `whatsapp_read_messages` | (internal SQLite) | Read stored WhatsApp messages by group/time window, paged backwards with `before_ts` |

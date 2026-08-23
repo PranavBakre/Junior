@@ -192,6 +192,25 @@ describe("runner runtime", () => {
     }
   });
 
+  it("uses the repo-selected GitHub token and removes inherited overrides", () => {
+    const previous = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = "wrong-account-token";
+    try {
+      const env = buildRunnerEnv(
+        makeSession({ activeAgentName: "review" }),
+        "xoxb-test",
+        undefined,
+        { GH_TOKEN: "selected-account-token", GH_PROMPT_DISABLED: "1" },
+      );
+      expect(env.GH_TOKEN).toBe("selected-account-token");
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+      expect(env.GH_PROMPT_DISABLED).toBe("1");
+    } finally {
+      if (previous === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previous;
+    }
+  });
+
   it("never exposes direct database credentials to child runners", () => {
     const keys = DATABASE_CREDENTIAL_ENV_KEYS;
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));

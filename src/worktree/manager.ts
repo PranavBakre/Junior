@@ -1,4 +1,5 @@
 import type { RepoConfig } from "../config.ts";
+import { GitHubAuthResolver } from "../github/auth.ts";
 import { statfs } from "node:fs/promises";
 import {
   closeSync,
@@ -18,6 +19,7 @@ const SETUP_LOG_DIR = join(import.meta.dir, "..", "..", "logs", "worktree-setup"
 export interface WorktreeManagerOptions {
   setupMinFreeBytes?: number;
   availableBytes?: (path: string) => Promise<number>;
+  githubAuth?: GitHubAuthResolver;
 }
 
 export interface WorktreeStatus {
@@ -31,6 +33,7 @@ export class WorktreeManager {
   private repos: RepoConfig[];
   private setupMinFreeBytes: number;
   private availableBytes: (path: string) => Promise<number>;
+  private githubAuth: GitHubAuthResolver;
 
   constructor(repos: RepoConfig[], options: WorktreeManagerOptions = {}) {
     this.repos = repos;
@@ -44,6 +47,7 @@ export class WorktreeManager {
       const stats = await statfs(path);
       return stats.bavail * stats.bsize;
     });
+    this.githubAuth = options.githubAuth ?? new GitHubAuthResolver(repos);
   }
 
   /**
@@ -74,6 +78,7 @@ export class WorktreeManager {
 
     const worktreePath = this.getWorktreePath(repoName, threadId);
     const branchName = branchOverride ?? `slack/${threadId}`;
+    const githubEnv = await this.githubEnvironment(repo);
 
     if (repo.worktreeSetupCommand) {
       await this.assertSetupDiskCapacity(repo.path);
@@ -88,12 +93,13 @@ export class WorktreeManager {
       const base = baseRef ?? repo.defaultBase;
       const args = [setupCmd, branchName, "--path", worktreePath, "--base", base];
       try {
-        await this.runCommand(args, repo.path);
+        await this.runCommand(args, repo.path, githubEnv);
       } catch (err) {
         const rollbackError = await this.rollbackFailedSetup(
           repo.path,
           worktreePath,
           branchName,
+          githubEnv,
         );
         const message = err instanceof Error ? err.message : String(err);
         throw new Error(
@@ -107,7 +113,7 @@ export class WorktreeManager {
       // No setup hook configured — Junior creates the worktree inline. Fetch
       // fresh first so the base ref is up to date, then `git worktree add`.
       const base = baseRef ?? repo.defaultBase;
-      await this.runGit(["fetch", "origin", "--prune"], repo.path);
+      await this.runGit(["fetch", "origin", "--prune"], repo.path, githubEnv);
       await this.runGit(
         ["worktree", "add", worktreePath, "-b", branchName, base],
         repo.path,
@@ -190,7 +196,20 @@ export class WorktreeManager {
   async syncRepo(repoName: string): Promise<void> {
     const repo = this.getRepo(repoName);
     if (!repo) throw new Error(`Unknown repo: ${repoName}`);
-    await this.runGit(["fetch", "origin", "--prune"], repo.path);
+    await this.runGit(
+      ["fetch", "origin", "--prune"],
+      repo.path,
+      await this.githubEnvironment(repo),
+    );
+  }
+
+  /** Return the selected repo-scoped GitHub environment for runner children. */
+  async getGitHubEnvironment(
+    repoName: string,
+  ): Promise<Record<string, string> | undefined> {
+    const repo = this.getRepo(repoName);
+    if (!repo) throw new Error(`Unknown repo: ${repoName}`);
+    return this.githubEnvironment(repo);
   }
 
   /**
@@ -284,9 +303,14 @@ export class WorktreeManager {
   /**
    * Run a git command and return stdout. Throws on non-zero exit.
    */
-  private async runGit(args: string[], cwd: string): Promise<string> {
+  private async runGit(
+    args: string[],
+    cwd: string,
+    githubEnv?: Record<string, string>,
+  ): Promise<string> {
     const proc = Bun.spawn(["git", ...args], {
       cwd,
+      ...(githubEnv ? { env: this.commandEnvironment(githubEnv) } : {}),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -311,9 +335,14 @@ export class WorktreeManager {
    * The first element is the command; remaining elements are args.
    * Throws on non-zero exit.
    */
-  private async runCommand(args: string[], cwd: string): Promise<void> {
+  private async runCommand(
+    args: string[],
+    cwd: string,
+    githubEnv?: Record<string, string>,
+  ): Promise<void> {
     const proc = Bun.spawn(args, {
       cwd,
+      ...(githubEnv ? { env: this.commandEnvironment(githubEnv) } : {}),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -429,10 +458,15 @@ export class WorktreeManager {
     repoPath: string,
     worktreePath: string,
     branchName: string,
+    githubEnv?: Record<string, string>,
   ): Promise<string | null> {
     try {
       if (!await this.worktreeExistsAtPath(worktreePath)) return null;
-      await this.runGit(["worktree", "remove", worktreePath, "--force"], repoPath);
+      await this.runGit(
+        ["worktree", "remove", worktreePath, "--force"],
+        repoPath,
+        githubEnv,
+      );
       await this.tryRunGit(["branch", "-D", branchName], repoPath);
       return null;
     } catch (err) {
@@ -446,5 +480,22 @@ export class WorktreeManager {
     } catch {
       return false;
     }
+  }
+
+  private async githubEnvironment(
+    repo: RepoConfig,
+  ): Promise<Record<string, string> | undefined> {
+    return this.githubAuth.environmentForRepo(repo);
+  }
+
+  private commandEnvironment(
+    githubEnv: Record<string, string>,
+  ): Record<string, string> {
+    const env = { ...(process.env as Record<string, string>), ...githubEnv };
+    // An inherited GITHUB_TOKEN would take precedence over the selected
+    // account in some GitHub tooling. The repo-scoped GH_TOKEN is authoritative.
+    delete env.GITHUB_TOKEN;
+    delete env.GH_ENTERPRISE_TOKEN;
+    return env;
   }
 }

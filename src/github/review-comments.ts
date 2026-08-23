@@ -1,16 +1,29 @@
 import { createHash } from "node:crypto";
 import { checkCapability } from "../agents/capabilities.ts";
+import {
+  cleanGitHubEnvironment,
+  type GitHubAuthResolver,
+} from "./auth.ts";
 import type { SlackMcpRunContext } from "../mcp/context.ts";
+import { pipelineLog } from "../pipelines/logging.ts";
 
 const MAX_REVIEW_BODY_LENGTH = 20_000;
 const MAX_COMMENT_BODY_LENGTH = 10_000;
 const MAX_INLINE_COMMENTS = 100;
 const inFlightReviews = new Map<string, Promise<PostGitHubReviewResult>>();
+let githubAuthResolver: GitHubAuthResolver | undefined;
 
 export const GITHUB_POST_REVIEW_TOOL =
   "mcp__slack-bot__github_post_review";
 export const GITHUB_READ_REVIEW_STATE_TOOL =
   "mcp__slack-bot__github_read_pr_review_state";
+
+/** Configure repo-scoped GitHub credentials without changing global `gh` state. */
+export function setGitHubAuthResolver(
+  resolver: GitHubAuthResolver | undefined,
+): void {
+  githubAuthResolver = resolver;
+}
 
 const MAX_READ_REVIEW_ITEMS = 100;
 
@@ -108,13 +121,33 @@ export async function readGitHubReviewState(
   runApi: GitHubApiRunner = runGitHubApi,
 ): Promise<ReadGitHubReviewStateResult> {
   if (!runContext?.signed) {
+    pipelineLog("warn", "github.review_read.rejected", { reason: "unsigned_context" });
     return { ok: false, reason: "signed MCP run context required" };
   }
   const capability = checkCapability(runContext.agent, "github-review-read");
-  if (!capability.ok) return { ok: false, reason: capability.reason };
+  if (!capability.ok) {
+    pipelineLog("warn", "github.review_read.rejected", {
+      run: runContext.runId,
+      assignment: runContext.assignmentId,
+      agent: runContext.agent,
+      reason: "missing_capability",
+    });
+    return { ok: false, reason: capability.reason };
+  }
 
   const validationError = validateReviewTarget(input);
   if (validationError) return { ok: false, reason: validationError };
+
+  pipelineLog("info", "github.review_read.started", {
+    run: runContext.runId,
+    thread: runContext.threadId,
+    assignment: runContext.assignmentId,
+    agent: runContext.agent,
+    owner: input.owner,
+    repo: input.repo,
+    pr: input.prNumber,
+    review: input.reviewId,
+  });
 
   const pullEndpoint = `repos/${input.owner}/${input.repo}/pulls/${input.prNumber}`;
   const commentsEndpoint = input.reviewId
@@ -186,6 +219,7 @@ export async function postGitHubReview(
   runApi: GitHubApiRunner = runGitHubApi,
 ): Promise<PostGitHubReviewResult> {
   if (!runContext?.signed) {
+    pipelineLog("warn", "github.review.rejected", { reason: "unsigned_context" });
     return { ok: false, reason: "signed MCP run context required" };
   }
 
@@ -194,11 +228,40 @@ export async function postGitHubReview(
     "github-review-comment",
   );
   if (!capability.ok) {
+    pipelineLog("warn", "github.review.rejected", {
+      run: runContext.runId,
+      assignment: runContext.assignmentId,
+      agent: runContext.agent,
+      reason: "missing_capability",
+    });
     return { ok: false, reason: capability.reason };
   }
 
   const validationError = validateReviewInput(input);
-  if (validationError) return { ok: false, reason: validationError };
+  if (validationError) {
+    pipelineLog("warn", "github.review.rejected", {
+      run: runContext.runId,
+      assignment: runContext.assignmentId,
+      agent: runContext.agent,
+      owner: input.owner,
+      repo: input.repo,
+      pr: input.prNumber,
+      reason: "invalid_input",
+    });
+    return { ok: false, reason: validationError };
+  }
+
+  pipelineLog("info", "github.review.started", {
+    run: runContext.runId,
+    thread: runContext.threadId,
+    assignment: runContext.assignmentId,
+    agent: runContext.agent,
+    owner: input.owner,
+    repo: input.repo,
+    pr: input.prNumber,
+    head: input.headSha,
+    comments: input.comments.length,
+  });
 
   const marker = idempotencyMarker(input);
   const pending = inFlightReviews.get(marker);
@@ -207,7 +270,20 @@ export async function postGitHubReview(
   const operation = postGitHubReviewOnce(input, marker, runApi);
   inFlightReviews.set(marker, operation);
   try {
-    return await operation;
+    const result = await operation;
+    pipelineLog(result.ok ? "info" : "warn", "github.review.completed", {
+      run: runContext.runId,
+      assignment: runContext.assignmentId,
+      owner: input.owner,
+      repo: input.repo,
+      pr: input.prNumber,
+      ok: result.ok,
+      review: result.ok ? result.reviewId : undefined,
+      comments: result.ok ? result.inlineComments : undefined,
+      already_posted: result.ok ? result.alreadyPosted : undefined,
+      reason_code: result.ok ? undefined : reviewFailureCode(result.reason),
+    });
+    return result;
   } finally {
     if (inFlightReviews.get(marker) === operation) {
       inFlightReviews.delete(marker);
@@ -419,10 +495,25 @@ function apiFailure(
   action: string,
   result: GitHubApiResult,
 ): { ok: false; reason: string } {
+  pipelineLog("warn", "github.api.failed", {
+    action,
+    status: result.status,
+    ok: result.ok,
+  });
   const detail = (result.stderr || result.stdout || `exit ${result.status}`)
     .trim()
     .slice(0, 1_000);
   return { ok: false, reason: `failed to ${action}: ${detail}` };
+}
+
+function reviewFailureCode(reason: string): string {
+  if (reason.startsWith("failed to ")) return "github_api_failed";
+  if (reason.startsWith("PR head moved:")) return "stale_head";
+  if (reason.includes("verified") && reason.includes("inline comments")) {
+    return "comment_verification_mismatch";
+  }
+  if (reason.includes("response omitted")) return "malformed_response";
+  return "operation_failed";
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {
@@ -488,6 +579,13 @@ function positiveInteger(value: unknown): number | null {
 async function runGitHubApi(
   request: GitHubApiRequest,
 ): Promise<GitHubApiResult> {
+  const startedAt = performance.now();
+  pipelineLog("info", "github.api.started", {
+    method: request.method,
+    endpoint: request.endpoint,
+    paginate: request.paginate ?? false,
+    has_body: request.body !== undefined,
+  });
   const args = ["gh", "api", request.endpoint];
   if (request.method !== "GET") {
     args.push("--method", request.method, "--input", "-");
@@ -498,7 +596,7 @@ async function runGitHubApi(
     stdin: request.body === undefined ? "ignore" : "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+    env: await githubEnvironmentForEndpoint(request.endpoint),
   });
   if (request.body !== undefined && proc.stdin) {
     proc.stdin.write(JSON.stringify(request.body));
@@ -509,5 +607,33 @@ async function runGitHubApi(
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  return { ok: status === 0, status, stdout, stderr };
+  const result = { ok: status === 0, status, stdout, stderr };
+  pipelineLog(result.ok ? "info" : "warn", "github.api.completed", {
+    method: request.method,
+    endpoint: request.endpoint,
+    status,
+    http_status: extractHttpStatus(stderr || stdout),
+    ok: result.ok,
+    duration_ms: Math.round(performance.now() - startedAt),
+  });
+  return result;
+}
+
+async function githubEnvironmentForEndpoint(
+  endpoint: string,
+): Promise<Record<string, string>> {
+  const match = endpoint.match(/^repos\/([^/]+\/[^/]+)/i);
+  if (!githubAuthResolver || !match) {
+    return { ...(process.env as Record<string, string>), GH_PROMPT_DISABLED: "1" };
+  }
+  const selected = await githubAuthResolver.environmentForRepoRef(match[1]);
+  if (!selected) {
+    return { ...(process.env as Record<string, string>), GH_PROMPT_DISABLED: "1" };
+  }
+  return { ...cleanGitHubEnvironment(), ...selected };
+}
+
+function extractHttpStatus(output: string): number | undefined {
+  const match = output.match(/\bHTTP\s+(\d{3})\b/i);
+  return match ? Number(match[1]) : undefined;
 }

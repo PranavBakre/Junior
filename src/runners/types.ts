@@ -87,4 +87,5 @@ export type SpawnRunnerFn = (
   botToken?: string,
   agentIdentity?: AgentIdentity,
   imagePaths?: string[],
+  githubAuthEnv?: Record<string, string>,
 ) => SpawnHandle;

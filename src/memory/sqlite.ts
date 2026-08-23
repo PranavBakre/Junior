@@ -6,6 +6,7 @@ import type { MemoryStore } from "./store.ts";
 import type {
   ArchiveStaleClaimsOptions,
   ArchiveStaleClaimsResult,
+  ClaimFeedbackResult,
   ClaimInput,
   ClaimKind,
   ClaimRecallOptions,
@@ -1006,6 +1007,52 @@ export class SqliteMemoryStore implements MemoryStore {
       for (const id of uniqueIds) bump.run(now, id);
     });
     txn();
+  }
+
+  /**
+   * Record an explicit post-recall usefulness judgment. Feedback is additive,
+   * applies to archived claims too (their provenance remains measurable), and
+   * is atomic across all ids in one agent feedback call.
+   */
+  async recordClaimFeedback(
+    ids: string[],
+    useful: boolean,
+  ): Promise<ClaimFeedbackResult[]> {
+    const uniqueIds = unique(ids);
+    if (uniqueIds.length === 0) return [];
+
+    const txn = this.db.transaction((): ClaimFeedbackResult[] => {
+      const increment = useful ? "helpful_count" : "unhelpful_count";
+      const update = this.db.query(
+        `UPDATE claim
+         SET ${increment} = COALESCE(${increment}, 0) + 1
+         WHERE id = ?`,
+      );
+      for (const id of uniqueIds) update.run(id);
+
+      const placeholders = uniqueIds.map(() => "?").join(", ");
+      const rows = this.db
+        .query<
+          { id: string; helpful_count: number | null; unhelpful_count: number | null },
+          string[]
+        >(
+          `SELECT id, helpful_count, unhelpful_count
+           FROM claim WHERE id IN (${placeholders})`,
+        )
+        .all(...uniqueIds);
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return uniqueIds.flatMap((id) => {
+        const row = byId.get(id);
+        return row
+          ? [{
+              id,
+              helpfulCount: row.helpful_count ?? 0,
+              unhelpfulCount: row.unhelpful_count ?? 0,
+            }]
+          : [];
+      });
+    });
+    return txn.immediate();
   }
 
   // --- memory v3: consolidation source-record bookkeeping -------------------
