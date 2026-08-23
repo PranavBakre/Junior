@@ -58,6 +58,7 @@ import { registerWhatsAppTools } from "./whatsapp-tools.ts";
 import { registerSlackArchiveTools } from "./slack-archive-tools.ts";
 import { registerTaskRouteTools } from "../routes/tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
+import { handleMixpanelMcpRequest } from "./mixpanel-proxy.ts";
 import { registerPendingApproval } from "./approval.ts";
 import { configureSlackApprovalBridge } from "./slack-approval-bridge.ts";
 import { prepareSlackResponseWithActions, type SlackActionButtonSpec } from "../slack/formatting.ts";
@@ -2486,6 +2487,10 @@ export function startMcpServer(
     const pathname = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`).pathname;
     if (pathname === "/mcp/mongodb") {
       await handleMongoMcpRequest(req, res);
+      return;
+    }
+    if (pathname === "/mcp/mixpanel") {
+      await handleMixpanelMcpRequest(req, res);
       return;
     }
 

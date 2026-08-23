@@ -84,11 +84,25 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   `OPENCODE_CONFIG_CONTENT` for all normal runs, including initial lead intake
   from Junior's project root. Explicit `session.cwd` utility runs still skip
   Junior's local MCP wiring.
-- The Mixpanel MCP is intentionally **not** in `.mcp.json` and is not part of
-  default Junior's OpenCode config. It is injected only when the active
-  OpenCode session is `feature-metrics`, using Mixpanel's official hosted MCP
-  through `npx -y mcp-remote https://mcp.mixpanel.com/mcp`. Disable with
-  `OPENCODE_MIXPANEL_MCP_ENABLED=false`.
+- The Mixpanel MCP is intentionally **not** in `.mcp.json` and is injected only
+  for `feature-metrics` sessions. Junior exposes one signed, read-only HTTP MCP
+  at `/mcp/mixpanel`; it maintains one upstream connection for each configured
+  Mixpanel data-residency region (US, EU, and/or IN), combines their safe tool
+  schemas, and adds a required `region` argument to every tool. Configure
+  `bun run mixpanel:oauth` performs the three independent regional OAuth flows
+  sequentially and persists each client registration, access token, refresh
+  token, and PKCE state under mode-0700 `data/mixpanel-oauth` with mode-0600
+  files. The runtime refreshes each grant independently. Optional
+  `MIXPANEL_MCP_US_TOKEN`, `MIXPANEL_MCP_EU_TOKEN`, and
+  `MIXPANEL_MCP_IN_TOKEN` service-account credentials take precedence per
+  region. User OAuth cannot combine multiple regional authorization servers
+  into one grant, so initial setup still requires one approval per region.
+  Interrupted setup is resumable, and specific regions can be retried with
+  `bun run mixpanel:oauth -- eu in`.
+  New upstream tools fail closed until
+  explicitly classified as read-only. Disable runner injection with
+  `OPENCODE_MIXPANEL_MCP_ENABLED=false` /
+  `CODEX_MIXPANEL_MCP_ENABLED=false`.
 - Human-gated Codex app-server commands use the same blocking Slack Allow/Deny
   actions and pending-approval registry as Claude's permission prompt tool.
   The registry entry exists before a prompt can become actionable, preventing

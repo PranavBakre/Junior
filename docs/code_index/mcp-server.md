@@ -14,6 +14,11 @@ operations using the bot token and signed run context.
 | `registerTools(server)` (internal) | `slack-server.ts` | Registers Slack, worktree, and agent-registry tools on a fresh `McpServer` per request. |
 | `handleMongoMcpRequest(req, res)` | `mongodb-proxy.ts` | Serves `/mcp/mongodb` as a stateless HTTP MCP proxy to one shared read-only MongoDB stdio backend; hides upstream connection selection and injects the environment-backed `preconfigured` ID. |
 | `closeMongoMcpBackend()` | `mongodb-proxy.ts` | Closes the shared backend immediately; also used by the idle TTL. |
+| `handleMixpanelMcpRequest(req, res)` | `mixpanel-proxy.ts` | Serves `/mcp/mixpanel` as one signed read-only MCP surface over all configured Mixpanel regions. |
+| `createMixpanelProxyServer(...)` | `mixpanel-proxy.ts` | Unions safe upstream tools, adds the required `region` selector, strips it before forwarding, and rejects write tools. |
+| `closeMixpanelMcpBackends()` | `mixpanel-proxy.ts` | Closes the shared per-region HTTP clients immediately; also used by the idle TTL. |
+| `MixpanelOAuthProvider` | `mixpanel-oauth.ts` | Persists region-isolated OAuth client registrations, PKCE verifiers, and refreshable tokens with restricted filesystem permissions. |
+| `bun run mixpanel:oauth` | `mixpanel-oauth-cli.ts` | Opens and completes US, EU, and IN OAuth authorization sequentially through a validated loopback callback. |
 | `searchAgentDefinitions(options)` | `slack-server.ts` | Reads public/private agent markdown files and returns matching definitions plus dispatch registration state. |
 
 ### Tools
@@ -41,7 +46,7 @@ operations using the bot token and signed run context.
 
 | File | What |
 |---|---|
-| `.mcp.json` | Root config contains `slack-bot`, Figma, and Notion servers. Per-agent generated configs add Playwright/MongoDB as needed. |
+| `.mcp.json` | Root config contains `slack-bot`, Figma, and Notion servers. Per-agent generated configs add Playwright, MongoDB, and the multi-region Mixpanel proxy as needed. |
 | `.claude/settings.json` | `permissions.allow: ["mcp__slack-bot__*"]` |
 | `src/claude/spawner.ts` | Passes `--mcp-config` for worktree spawns |
 | `src/codex-app-server/spawner.ts` | Routes native approval callbacks through the shared Slack approval bridge |
@@ -50,7 +55,7 @@ operations using the bot token and signed run context.
 
 ### Stateless per request
 
-Each HTTP request creates a fresh `McpServer` + `StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`). No MCP session state is kept between requests. Slack requests share the same `WebClient` (module-level singleton). MongoDB proxy requests share one lazily started wrapped stdio backend and close it after an idle TTL. Run context is HMAC-signed per spawn and validated before thread/agent-sensitive tools execute.
+Each HTTP request creates a fresh `McpServer` + `StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`). No MCP session state is kept between requests. Slack requests share the same `WebClient` (module-level singleton). MongoDB proxy requests share one lazily started wrapped stdio backend. Mixpanel proxy requests share one lazily started hosted-MCP client per configured region. Both proxy types close idle backends after a TTL. Run context is HMAC-signed per spawn and validated before thread/agent-sensitive tools execute.
 
 ### Identity model
 

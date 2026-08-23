@@ -4,7 +4,7 @@ import type { Config } from "../config.ts";
 import type { ThreadSession } from "../session/types.ts";
 import type { CodexApprovalPolicy, CodexSandbox } from "./policy.ts";
 import {
-  mixpanelMcpCommand,
+  mixpanelMcpUrl,
   mongoMcpUrl,
   playwrightMcpCommand,
   slackMcpUrl,
@@ -39,7 +39,7 @@ export function buildCodexMcpConfig(
     mcp.playwright = playwrightMcpCommand();
   }
   if (config.codex.mixpanelMcpEnabled && wantsMcp(session, "mixpanel") && isFeatureMetricsSession(session)) {
-    mcp.mixpanel = mixpanelMcpCommand();
+    mcp.mixpanel = { transport: "http", url: mixpanelMcpUrl(session) };
   }
   if (config.codex.mongodbMcpEnabled && wantsMcp(session, "mongodb")) {
     mcp.mongodb = {
