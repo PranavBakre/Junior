@@ -9,6 +9,7 @@
     "test": "bun test",
     "build": "bun build ./src/index.ts --outdir ./dist --target bun",
     "cleanup": "bun run src/lifecycle/cleanup.ts",
+    "mixpanel:oauth": "bun run src/mcp/mixpanel-oauth-cli.ts",
     "memory:reembed": "bun run src/memory/reembed-retrieval.ts",
     "memory:benchmark:lesson-cues": "bun run src/memory/lesson-retrieval-benchmark.ts",
     "slack:archive:import": "bun run src/slack/archive-cli.ts import",

@@ -59,15 +59,8 @@ describe("buildOpenCodeMcpConfig", () => {
 
     expect(mainMcp?.mixpanel).toBeUndefined();
     expect(featureMetricsMcp?.mixpanel).toEqual({
-      type: "local",
-      command: [
-        expect.stringContaining("junior-mcp-stdio-wrapper.js"),
-        "--",
-        "npx",
-        "-y",
-        "mcp-remote",
-        "https://mcp.mixpanel.com/mcp",
-      ],
+      type: "remote",
+      url: expect.stringContaining("http://localhost:3456/mcp/mixpanel?agent=default&channel=C01&thread=thread-1"),
       enabled: true,
     });
   });

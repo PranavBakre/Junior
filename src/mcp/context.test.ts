@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createSession } from "../session/types.ts";
 import {
+  buildMixpanelMcpUrl,
   buildMongoMcpUrl,
   buildSlackMcpUrl,
   mcpContextSecret,
@@ -53,6 +54,19 @@ describe("Slack MCP run context", () => {
 
     expect(parsed.pathname).toBe("/mcp/mongodb");
     expect(parsed.searchParams.get("agent")).toBe("default");
+    expect(parsed.searchParams.get("channel")).toBe("C01");
+    expect(parsed.searchParams.get("thread")).toBe("thread-1");
+  });
+
+  it("encodes trusted run context in the Mixpanel MCP proxy URL", () => {
+    const session = createSession("thread-1", "C01");
+    session.activeAgentName = "default";
+    session.agentType = "feature-metrics";
+
+    const parsed = new URL(buildMixpanelMcpUrl(session));
+
+    expect(parsed.pathname).toBe("/mcp/mixpanel");
+    expect(parsed.searchParams.get("agent")).toBe("feature-metrics");
     expect(parsed.searchParams.get("channel")).toBe("C01");
     expect(parsed.searchParams.get("thread")).toBe("thread-1");
   });

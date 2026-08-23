@@ -4,6 +4,7 @@ import type { ThreadSession } from "../session/types.ts";
 const MCP_PORT = Number(process.env.MCP_PORT ?? "3456");
 const DEFAULT_SLACK_MCP_URL = `http://localhost:${MCP_PORT}/mcp`;
 const DEFAULT_MONGODB_MCP_URL = `http://localhost:${MCP_PORT}/mcp/mongodb`;
+const DEFAULT_MIXPANEL_MCP_URL = `http://localhost:${MCP_PORT}/mcp/mixpanel`;
 
 /** Default token lifetime for signed MCP run context (2 hours). */
 const MCP_CONTEXT_TTL_MS = 2 * 60 * 60 * 1000;
@@ -75,6 +76,20 @@ export function buildMongoMcpUrl(session: ThreadSession): string {
     threadId: session.threadId,
     messageTs:
       session.currentMessageTs ?? session.activeTopLevelMessageTs ?? null,
+    runId: session.activePipelineInvocation?.runId ?? null,
+    assignmentId: session.activePipelineInvocation?.assignmentId ?? null,
+    dispatchKey: session.activePipelineInvocation?.dispatchKey ?? null,
+  });
+  return url.toString();
+}
+
+export function buildMixpanelMcpUrl(session: ThreadSession): string {
+  const url = new URL(process.env.MIXPANEL_MCP_URL ?? DEFAULT_MIXPANEL_MCP_URL);
+  applySignedRunContext(url, {
+    agent: slackMcpAgentForSession(session),
+    channel: session.channel,
+    threadId: session.threadId,
+    messageTs: session.currentMessageTs ?? session.activeTopLevelMessageTs ?? null,
     runId: session.activePipelineInvocation?.runId ?? null,
     assignmentId: session.activePipelineInvocation?.assignmentId ?? null,
     dispatchKey: session.activePipelineInvocation?.dispatchKey ?? null,

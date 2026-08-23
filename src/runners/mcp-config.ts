@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { OpenCodeMcpConfig } from "../opencode/config.ts";
 import type { ThreadSession } from "../session/types.ts";
-import { buildMongoMcpUrl, buildSlackMcpUrl } from "../mcp/context.ts";
+import { buildMixpanelMcpUrl, buildMongoMcpUrl, buildSlackMcpUrl } from "../mcp/context.ts";
 import { subjectHasCapability } from "../agents/capabilities.ts";
 
 export type McpServerName = "slack-bot" | "playwright" | "mixpanel" | "mongodb" | "figma" | "notion";
@@ -50,17 +50,12 @@ export function mongoMcpUrl(session: ThreadSession): string {
   return buildMongoMcpUrl(session);
 }
 
-export function playwrightMcpCommand(): StdioMcpCommand {
-  return wrappedStdioMcpCommand(["npx", "@playwright/mcp", "--headless"]);
+export function mixpanelMcpUrl(session: ThreadSession): string {
+  return buildMixpanelMcpUrl(session);
 }
 
-export function mixpanelMcpCommand(): StdioMcpCommand {
-  return wrappedStdioMcpCommand([
-    "npx",
-    "-y",
-    "mcp-remote",
-    "https://mcp.mixpanel.com/mcp",
-  ]);
+export function playwrightMcpCommand(): StdioMcpCommand {
+  return wrappedStdioMcpCommand(["npx", "@playwright/mcp", "--headless"]);
 }
 
 export function needsUserSettings(): boolean {
@@ -96,10 +91,9 @@ export function buildOpenCodeMcpConfig(
     wantsMcp(session, "mixpanel") &&
     isFeatureMetricsSession(session)
   ) {
-    const command = mixpanelMcpCommand();
     mcp.mixpanel = {
-      type: "local",
-      command: [command.command, ...command.args],
+      type: "remote",
+      url: mixpanelMcpUrl(session),
       enabled: true,
     };
   }

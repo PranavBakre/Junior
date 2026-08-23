@@ -15,7 +15,7 @@ import { buildClaudeArgs } from "./args.ts";
 import { createStreamParser } from "./parser.ts";
 import { signalProcessTree } from "../lifecycle/process-tree.ts";
 import {
-  mixpanelMcpCommand,
+  mixpanelMcpUrl,
   mongoMcpUrl,
   needsUserSettings,
   playwrightMcpCommand,
@@ -232,7 +232,7 @@ export function writeClaudeMcpConfig(
     mcpServers.playwright = playwrightMcpCommand();
   }
   if (wantsMcp(session, "mixpanel") && isFeatureMetricsSession(session)) {
-    mcpServers.mixpanel = mixpanelMcpCommand();
+    mcpServers.mixpanel = { type: "http", url: mixpanelMcpUrl(session) };
   }
   if (wantsMcp(session, "mongodb")) {
     mcpServers.mongodb = {
