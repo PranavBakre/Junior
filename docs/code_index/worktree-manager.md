@@ -48,7 +48,10 @@ Before delegated setup, Junior requires 2 GiB of free space by default (`WORKTRE
 
 `scripts/worktree-prune.ts` runs the deterministic prune engine directly
 from `REPOS`, so workflows can perform the routine Git work in one process and
-leave only preservation exceptions and reporting to the runner.
+leave only preservation exceptions and reporting to the runner. The engine
+allows generated PNG artifacts and `next-env.d.ts` as harmless residual state;
+other meaningful changes, ignored dotenv files, locks, active processes, and
+unmerged worktrees remain protected.
 
 ## Key Concepts
 
