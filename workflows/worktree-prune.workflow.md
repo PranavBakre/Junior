@@ -46,8 +46,10 @@ Slack report in this workflow.
 
 For merge-triggered runs, resolve the event owner/repo only against the exact
 case-insensitive `repo.githubRepo`, then pass that configured repo and branch to
-the script. Do not broaden the run. The script conservatively skips all dirty,
-locked, unmerged, missing, dev-server, and dotenv-bearing worktrees.
+the script. Do not broaden the run. The script conservatively skips all
+meaningful dirty state, locked, unmerged, missing, dev-server, and dotenv-bearing
+worktrees. PNG artifacts and `next-env.d.ts` are treated as harmless generated
+residuals.
 
 After it finishes, use the script output directly in a compact Slack-ready
 summary: repos inspected, removals, skips with reasons, and failures. Do not

@@ -73,10 +73,13 @@ The MCP tool `mcp__slack-bot__register_worktree({ thread_id, repo, branch? })` (
 `worktree-prune` workflow. It loads `REPOS` and calls
 `src/worktree/prune.ts`, which fetches and resolves each configured default
 base, parses porcelain worktree records, and removes only secondary worktrees
-that are unlocked, present, merged, clean, and free of ignored dotenv files.
+that are unlocked, present, merged, free of meaningful changes, and free of
+ignored dotenv files.
 It never deletes branches and reports every skip or command failure. Ignored
-dotenv files, visible changes, and any other preservation-sensitive state stay
-for the workflow's small review/reporting phase.
+dotenv files, meaningful visible changes, and any other preservation-sensitive
+state stay for the workflow's small review/reporting phase. Untracked or
+modified PNG artifacts and `next-env.d.ts` are treated as generated residual
+state and do not block removal once the worktree is otherwise safe and merged.
 
 ## Iterations
 

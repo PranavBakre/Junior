@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,5 +52,30 @@ describe("pruneWorktrees", () => {
       repo: "repo", path: canonicalDotenvPath, reason: "ignored dotenv files require preservation review",
     });
     await git(repoPath, ["worktree", "remove", "--force", dotenvPath]);
+  });
+
+  it("removes a merged worktree containing only PNG artifacts", async () => {
+    const artifactsPath = `${repoPath}.png-artifacts`;
+    await git(repoPath, ["worktree", "add", "-b", "png-artifacts", artifactsPath, "main"]);
+    const canonicalArtifactsPath = await realpath(artifactsPath);
+    mkdirSync(join(artifactsPath, ".junior-artifacts"));
+    writeFileSync(join(artifactsPath, ".junior-artifacts", "screenshot.png"), "png");
+
+    const report = await pruneWorktrees([{ name: "repo", path: repoPath, defaultBase: "origin/main" }]);
+
+    expect(report.removed).toEqual([{ repo: "repo", path: canonicalArtifactsPath, branch: "png-artifacts" }]);
+    expect(existsSync(artifactsPath)).toBe(false);
+  });
+
+  it("removes a merged worktree containing only next-env.d.ts", async () => {
+    const nextEnvPath = `${repoPath}.next-env`;
+    await git(repoPath, ["worktree", "add", "-b", "next-env", nextEnvPath, "main"]);
+    const canonicalNextEnvPath = await realpath(nextEnvPath);
+    writeFileSync(join(nextEnvPath, "next-env.d.ts"), "// generated\n");
+
+    const report = await pruneWorktrees([{ name: "repo", path: repoPath, defaultBase: "origin/main" }]);
+
+    expect(report.removed).toEqual([{ repo: "repo", path: canonicalNextEnvPath, branch: "next-env" }]);
+    expect(existsSync(nextEnvPath)).toBe(false);
   });
 });

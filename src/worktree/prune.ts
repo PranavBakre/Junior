@@ -24,8 +24,10 @@ interface ListedWorktree {
 /**
  * Deterministic, conservative half of worktree pruning. It only removes a
  * present, unlocked secondary worktree when its HEAD is merged into the
- * configured base and it has neither visible changes nor ignored dotenv files.
- * Anything needing preservation or interpretation is reported as skipped.
+ * configured base and it has neither meaningful changes nor ignored dotenv
+ * files. Generated PNGs and next-env.d.ts are harmless residual state and do
+ * not prevent pruning. Anything needing preservation or interpretation is
+ * reported as skipped.
  */
 export async function pruneWorktrees(
   repos: readonly RepoConfig[],
@@ -68,9 +70,11 @@ export async function pruneWorktrees(
           report.skipped.push({ repo: repo.name, path: worktree.path, reason: `HEAD is not merged into ${base}` });
           continue;
         }
-        const dirty = await git(worktree.path, ["status", "--porcelain"]);
-        if (dirty.trim()) {
-          report.skipped.push({ repo: repo.name, path: worktree.path, reason: `meaningful changes: ${statusPaths(dirty).join(", ")}` });
+        const dirty = await git(worktree.path, ["status", "--porcelain", "--untracked-files=all"]);
+        const dirtyPaths = statusPaths(dirty);
+        const meaningfulPaths = dirtyPaths.filter((path) => !isPrunableResidualPath(path));
+        if (meaningfulPaths.length) {
+          report.skipped.push({ repo: repo.name, path: worktree.path, reason: `meaningful changes: ${meaningfulPaths.join(", ")}` });
           continue;
         }
         const ignored = await git(worktree.path, ["ls-files", "--others", "--ignored", "--exclude-standard"]);
@@ -78,7 +82,10 @@ export async function pruneWorktrees(
           report.skipped.push({ repo: repo.name, path: worktree.path, reason: "ignored dotenv files require preservation review" });
           continue;
         }
-        await git(repo.path, ["worktree", "remove", worktree.path]);
+        // The force is scoped to this exact worktree. It is required when the
+        // only residual files are the generated paths allowed above; all
+        // meaningful and preservation-sensitive state has already been gated.
+        await git(repo.path, ["worktree", "remove", "--force", worktree.path]);
         if (existsSync(worktree.path)) {
           throw new Error(`git worktree remove succeeded but path remains: ${worktree.path}`);
         }
@@ -145,6 +152,10 @@ function isDevServerWorktree(worktree: ListedWorktree): boolean {
 
 function isDotenvPath(path: string): boolean {
   return basename(path) === ".env" || basename(path).startsWith(".env.");
+}
+
+function isPrunableResidualPath(path: string): boolean {
+  return path.toLowerCase().endsWith(".png") || basename(path) === "next-env.d.ts";
 }
 
 function statusPaths(output: string): string[] {
