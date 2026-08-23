@@ -2107,6 +2107,30 @@ export class SessionManager {
         };
       }
 
+      // Every durable pipeline assignment must be able to settle itself.
+      // Repo-backed assignments used to inherit the agent definition verbatim,
+      // so review/build workers could finish useful work but had no explicit
+      // pipeline_report_outcome tool in their provider permission envelope.
+      // Keep the agent's intent and declared tools, then add only the two
+      // control-plane tools needed by every pipeline worker.
+      if (pipelineInvocation) {
+        const permissions = runSession.agentPermissions ?? {
+          intent: null,
+          mcp: [],
+          tools: [],
+        };
+        runSession.agentPermissions = {
+          ...permissions,
+          mcp: [...new Set([...permissions.mcp, "slack-bot"])],
+          tools: [
+            ...new Set([
+              ...permissions.tools,
+              ...PIPELINE_CONTROL_MCP_TOOLS,
+            ]),
+          ],
+        };
+      }
+
       // Build the prompt. When the provider will not resume a prior model
       // session, inject the preamble blocks the agent asked for. On resumed
       // turns, provider-native resume already carries identity/context/history —

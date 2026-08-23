@@ -937,6 +937,13 @@ describe("SessionManager", () => {
     expect(runSession.targetRepo).toBe("frontend");
     expect(runSession.worktreePath).toBe(paths.frontend);
     expect(runSession.worktreePaths).toEqual(paths);
+    expect(runSession.agentPermissions?.mcp).toContain("slack-bot");
+    expect(runSession.agentPermissions?.tools).toEqual(
+      expect.arrayContaining([
+        "mcp__slack-bot__pipeline_get_state",
+        "mcp__slack-bot__pipeline_report_outcome",
+      ]),
+    );
   });
 
   it("keeps the onboarding agent repo-less outside a pipeline", async () => {
