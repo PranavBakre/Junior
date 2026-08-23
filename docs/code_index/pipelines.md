@@ -19,7 +19,7 @@ disabled by default (`PIPELINE_RUNTIME_MODE=off`) and can run in `shadow` or
 | Retention cleanup | `src/pipelines/gc.ts` | Pipeline retention GC (`PIPELINE_RETENTION_DAYS`). |
 | Full cancellation | `PipelineStore.cancelRun`, `SessionManager` `!stop` handling | Atomically abandons the run, cancels live assignments/jobs, dead-letters pending or leased wakes, deactivates GitHub tracking, clears session invocation state, and interrupts runner handles. |
 | Legacy bridge | `src/pipelines/legacy-directives.ts`, `src/support/pipeline-guard.ts` | Safely maps selected legacy directives while preserving existing routing. |
-| MCP tools | `src/pipelines/tools.ts` | Runner-facing pipeline read/write tools with scope and idempotency checks. |
+| MCP tools | `src/pipelines/tools.ts`, `src/session/manager.ts` | Runner-facing pipeline read/write tools with scope and idempotency checks. Every durable assignment receives `pipeline_get_state` and `pipeline_report_outcome` in its provider permission envelope, including repo-backed workers. |
 
 ## Runtime contract
 
