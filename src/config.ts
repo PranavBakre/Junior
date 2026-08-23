@@ -19,6 +19,8 @@ export interface RepoConfig {
   defaultBase: string;
   /** Exact GitHub `owner/repo` identity used to authorize PR URL routing. */
   githubRepo?: string;
+  /** GitHub CLI account to use for this repo's git/gh child processes. */
+  githubUser?: string;
   /**
    * Optional. When set, Junior delegates worktree creation to this script via
    * `<repo.path>/<command> <branch> --path <abs> [--base <ref>]`. The script

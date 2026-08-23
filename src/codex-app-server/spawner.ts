@@ -34,6 +34,7 @@ export function spawnCodexAppServer(
   botToken?: string,
   agentIdentity?: AgentIdentity,
   imagePaths: string[] = [],
+  githubAuthEnv?: Record<string, string>,
 ): SpawnHandle {
   const provider = "codex-app-server" as const;
   const runtime = buildRunnerRuntime({
@@ -41,6 +42,7 @@ export function spawnCodexAppServer(
     targetRepoCwd,
     botToken,
     agentIdentity,
+    githubAuthEnv,
   });
   const model = resolveCodexModel(session.model, config.codex.model);
   const policy = mapCodexRunPolicy({

@@ -37,12 +37,14 @@ export function spawnClaude(
   targetRepoCwd?: string,
   botToken?: string,
   agentIdentity?: AgentIdentity,
+  githubAuthEnv?: Record<string, string>,
 ): SpawnHandle {
   const runtime = buildRunnerRuntime({
     session,
     targetRepoCwd,
     botToken,
     agentIdentity,
+    githubAuthEnv,
   });
   // Human-gated agents route approvals through the slack-bot MCP permission
   // tool, so that server must be present even if the agent declared no MCP.

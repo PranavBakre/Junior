@@ -46,6 +46,7 @@ Junior validates the JSON, strips it from the Slack-visible text, renders Slack 
 - Buttons expire when the same source agent receives a new message or posts a newer response in the same thread.
 - Clicked buttons are disabled by updating the original Slack message and removing the actions block.
 - `Make fix` dispatches the support `lead` marker or the default Junior session; the orchestrator reads Slack thread history instead of relying on copied review text.
+- `Re-review` resumes an active durable run when one exists. If the original review run is already terminal, it dispatches a direct review follow-up and does not create a second generic default run.
 - `cleanup_worktree` may be clicked by any thread participant.
 - Worktree cleanup refuses tracked changes and unknown untracked files.
 - Cleanup may proceed when the only untracked paths are `learnings.md`, `.codex/`, `.claude/`, or `.DS_Store`.

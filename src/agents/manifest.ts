@@ -150,15 +150,17 @@ const CAPABILITIES = new Set<AgentCapability>([
 
 /**
  * MCP-only runs deny every tool by default and exact-grant declarations. Keep
- * the compiler's allowlist equally explicit so a trusted-definition typo
- * cannot turn a read-only utility into a production writer.
+ * the compiler's safe-tool allowlist equally explicit so a trusted-definition
+ * typo cannot turn a bounded utility into an uncontrolled production writer.
  */
-const MCP_ONLY_READ_TOOLS = new Set([
+const MCP_ONLY_SAFE_TOOLS = new Set([
   "mcp__slack-bot__slack_read_thread",
   "mcp__slack-bot__slack_read_channel",
   "mcp__slack-bot__slack_search",
   "mcp__slack-bot__slack_search_users",
   "mcp__slack-bot__memory_recall",
+  // Bounded telemetry mutation: records an agent's explicit usefulness judgment.
+  "mcp__slack-bot__memory_feedback",
   "mcp__slack-bot__runbook_search",
   "mcp__slack-bot__runbook_select",
 ]);
@@ -267,7 +269,7 @@ function parseCatalogEntry(
     );
     const unsafeTool = tools.find(
       (tool) =>
-        !MCP_ONLY_READ_TOOLS.has(tool) && !capabilityTools.has(tool),
+        !MCP_ONLY_SAFE_TOOLS.has(tool) && !capabilityTools.has(tool),
     );
     if (unsafeTool) {
       throw new Error(

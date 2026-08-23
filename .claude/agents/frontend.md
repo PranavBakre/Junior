@@ -1,7 +1,7 @@
 ---
 name: frontend
 description: Frontend engineer. Use for UI work, component building, styling, frontend features.
-tools: Read, Edit, Write, Bash, Grep, Glob, mcp__slack-bot__memory_recall
+tools: Read, Edit, Write, Bash, Grep, Glob, mcp__slack-bot__memory_recall, mcp__slack-bot__memory_feedback
 permissions.intent: normal
 operational.enabled: true
 operational.lifecycle: persistent

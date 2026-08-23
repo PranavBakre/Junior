@@ -6,6 +6,7 @@ import { isPersistentAgent } from "../support/agents.ts";
 import type { WorktreeManager, WorktreeStatus } from "../worktree/manager.ts";
 import { log } from "../logger.ts";
 import { resolvePendingApproval } from "../mcp/approval.ts";
+import { pipelineLog } from "../pipelines/logging.ts";
 import type { SlackActionRecord, SlackActionStore } from "./action-store.ts";
 import {
   formatResourceAnchorForPrompt,
@@ -113,6 +114,15 @@ async function handleDispatch(
     prompt = `${action.prompt}\n\n${formatResourceAnchorForPrompt(action.resourceAnchor)}`;
   }
 
+  const bypassDefaultRun = shouldBypassDefaultRun(action);
+  pipelineLog("info", "action.button.dispatch", {
+    thread: record.threadTs,
+    action: action.id,
+    target: targetAgent,
+    bypass_default_run: bypassDefaultRun,
+    source_message: record.messageTs,
+  });
+
   await sessionManager.handleAgentMessage(
     {
       threadId: record.threadTs,
@@ -122,9 +132,16 @@ async function handleDispatch(
       ts: `${record.messageTs}:button:${record.actionId}`,
       command: null,
       dedupeKey: `button:${record.token}`,
+      bypassDefaultRun,
     },
     targetAgent,
   );
+}
+
+export function shouldBypassDefaultRun(
+  action: Extract<SlackActionRecord["action"], { type: "dispatch_agent" }>,
+): boolean {
+  return action.id === "review:rereview";
 }
 
 export function resolveDispatchAgent(

@@ -25,6 +25,7 @@ export class HeadlessDriver implements ClaudeDriver {
       input.targetRepoCwd,
       input.botToken,
       input.agentIdentity,
+      input.githubAuthEnv,
     );
   }
 

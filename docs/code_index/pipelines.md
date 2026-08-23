@@ -11,6 +11,7 @@ disabled by default (`PIPELINE_RUNTIME_MODE=off`) and can run in `shadow` or
 | Types and definitions | `src/pipelines/types.ts`, `src/pipelines/bug/definition.ts`, `src/pipelines/product/definition.ts` | Run, assignment, outcome, artifact, transition, and pipeline-specific state. |
 | Controllers | `src/pipelines/bug/controller.ts`, `src/pipelines/product/controller.ts` | Start typed runs, apply transitions, and enqueue work. |
 | Dispatch | `src/pipelines/dispatch.ts`, `src/pipelines/pump.ts` | Claim assignments and deliver them to agent sessions. |
+| Structured monitoring | `src/pipelines/logging.ts`, dispatch, settlement, outcome, and GitHub review modules | Emits searchable `event=...` lifecycle records keyed by run, thread, assignment, and agent. |
 | Persistence | `src/pipelines/store/*` | Memory and SQLite stores, versioned writes, and transactional outcome handling. |
 | Reliability | `src/pipelines/outbox.ts`, `recovery.ts`, `settlement-recovery` paths | At-least-once outbox delivery, lease recovery, and settlement repair. |
 | Outcomes | `src/pipelines/outcomes.ts`, `revision.ts`, `artifacts.ts` | Idempotent agent outcomes, revisions, artifacts, and handoffs. |
@@ -46,6 +47,31 @@ clicking a card opens the complete assignment rail. Assignments are not provider
 sessions.
 There are no pipeline writes from the dashboard (no force-transition, no outbox
 replay); those stay in Slack / MCP.
+
+## Operational logging
+
+Pipeline records use the `pipeline` log tag and a compact key/value format:
+`event=<name> run=<id> thread=<id> assignment=<id> ...`. The event names form a
+single trace across the main failure boundaries:
+
+- `assignment.dispatch.*` and `workspace.*` cover assignment delivery and
+  repository/worktree binding.
+- `action.button.dispatch` records Slack action-button follow-ups, including
+  whether the action intentionally bypasses creation of a new default run.
+- `assignment.runner.completed`, `settlement.*` cover provider completion,
+  durable outcome detection, recovery continuations, and escalation persistence.
+- `outcome.tool.*` and `outcome.receipt.*` cover MCP invocation, authorization,
+  validation, and the durable transition receipt.
+- `github.api.*` and `github.review.*` cover each fixed GitHub API endpoint,
+  status code, latency, review verification, and final result. Request bodies,
+  review text, and command output are intentionally excluded from monitoring
+  logs.
+
+For an incident, filter the daily log by the run or assignment ID, then follow
+the event sequence. A GitHub access failure is now visible as
+`github.api.completed ... status=... http_status=... ok=false`; a missing typed outcome is
+visible as `settlement.recovery_requested` followed by
+`settlement.escalated`.
 
 See [the HTTP index](http-dashboard.md) for the operator routes,
 [the implementation plan](../features/agent-product-debugging-pipeline-implementation-plan.md)

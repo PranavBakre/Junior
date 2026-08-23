@@ -177,6 +177,13 @@ export interface ClaimWriteResult {
   mergedInto?: string;
 }
 
+/** The updated usefulness counters for one claim after agent feedback. */
+export interface ClaimFeedbackResult {
+  id: string;
+  helpfulCount: number;
+  unhelpfulCount: number;
+}
+
 export interface CollapseDuplicateClaimsOptions {
   /** The claim that keeps its row and absorbs the duplicates' counters. */
   survivorId: string;

@@ -19,6 +19,7 @@ import {
 import { claimReadyOutbox, markDelivered, reclaimExpiredLeases } from "./outbox.ts";
 import { bugContextForAssignment } from "./bug/controller.ts";
 import { productContextForAssignment } from "./product/controller.ts";
+import { pipelineLog } from "./logging.ts";
 
 export type PumpDeps = {
   store: PipelineStore;
@@ -66,6 +67,15 @@ export async function pumpOutbox(deps: PumpDeps): Promise<PumpReport> {
     skipped: 0,
     errors: [],
   };
+  if (reclaimed > 0 || claimed.length > 0) {
+    pipelineLog("info", "outbox.tick", {
+      owner,
+      reclaimed,
+      claimed: claimed.length,
+      limit,
+      lease_ms: leaseMs,
+    });
+  }
 
   const dispatchDeps: DispatchDeps = {
     dispatcher: deps.dispatcher,
@@ -75,19 +85,46 @@ export async function pumpOutbox(deps: PumpDeps): Promise<PumpReport> {
   };
 
   for (const item of claimed) {
+    pipelineLog("info", "outbox.item.started", {
+      outbox: item.id,
+      event_type: item.eventType,
+      run: item.runId,
+      assignment: item.assignmentId,
+    });
     try {
       const handled = await handleOutboxItem(deps, dispatchDeps, item);
       if (handled === "delivered") {
         await markDelivered(deps.store, item.id);
         report.delivered += 1;
+        pipelineLog("info", "outbox.item.completed", {
+          outbox: item.id,
+          event_type: item.eventType,
+          run: item.runId,
+          assignment: item.assignmentId,
+          status: handled,
+        });
       } else if (handled === "skipped") {
         // Leave leased until expiry so another tick can retry, or mark delivered
         // for non-actionable informational events.
         await markDelivered(deps.store, item.id);
         report.skipped += 1;
+        pipelineLog("warn", "outbox.item.skipped", {
+          outbox: item.id,
+          event_type: item.eventType,
+          run: item.runId,
+          assignment: item.assignmentId,
+          reason: "not_actionable",
+        });
       } else {
         report.failed += 1;
         report.errors.push(`${item.id}: dispatch rejected`);
+        pipelineLog("warn", "outbox.item.failed", {
+          outbox: item.id,
+          event_type: item.eventType,
+          run: item.runId,
+          assignment: item.assignmentId,
+          reason: "dispatch_rejected",
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -97,6 +134,14 @@ export async function pumpOutbox(deps: PumpDeps): Promise<PumpReport> {
         "pipeline-pump",
         `outbox item ${item.id} failed: ${message}`,
       );
+      pipelineLog("error", "outbox.item.failed", {
+        outbox: item.id,
+        event_type: item.eventType,
+        run: item.runId,
+        assignment: item.assignmentId,
+        reason: message,
+        lease_retained: true,
+      });
       // Do not mark delivered — lease expiry will reclaim for replay.
     }
   }

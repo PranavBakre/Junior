@@ -55,12 +55,14 @@ export function spawnOpenCode(
   botToken?: string,
   agentIdentity?: AgentIdentity,
   imagePaths: string[] = [],
+  githubAuthEnv?: Record<string, string>,
 ): SpawnHandle {
   const runtime = buildRunnerRuntime({
     session,
     targetRepoCwd,
     botToken,
     agentIdentity,
+    githubAuthEnv,
   });
   const juniorAgentName = juniorAgentNameForSession(session);
   const agentName = config.agentName ?? OPENCODE_PROVIDER_AGENT;

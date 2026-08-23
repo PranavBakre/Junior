@@ -18,6 +18,8 @@ export interface DriverSendInput {
   targetRepoCwd?: string;
   botToken?: string;
   agentIdentity?: AgentIdentity;
+  githubAuthEnv?: Record<string, string>;
+  githubUser?: string;
   /**
    * Routing keys used by drivers that hold per-thread state (tmux session
    * names, transcript tails). The manager already has these; passing them

@@ -238,7 +238,7 @@ describe("provider parity — prompt body soft budget", () => {
       "utf-8",
     );
     const bugPipeline = await fs.readFile(
-      path.join(agentsDir, "common/bug-pipeline.md"),
+      path.resolve(import.meta.dir, "../../support/skills/bug-pipeline/SKILL.md"),
       "utf-8",
     );
     // Templates must not instruct orchestrators to append "by junior".

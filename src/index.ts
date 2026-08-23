@@ -38,6 +38,8 @@ import { AgentRouter } from "./agents/router.ts";
 import { AgentDispatcher } from "./support/router.ts";
 import { loadOverlayIdentities } from "./support/agents.ts";
 import { WorktreeManager } from "./worktree/manager.ts";
+import { GitHubAuthResolver } from "./github/auth.ts";
+import { setGitHubAuthResolver } from "./github/review-comments.ts";
 import { DevServerManager } from "./lifecycle/dev-server.ts";
 import { DevServerQueue } from "./lifecycle/dev-server-queue.ts";
 import { startMcpServer } from "./mcp/slack-server.ts";
@@ -106,7 +108,9 @@ const agentRouter = new AgentRouter(
   ".claude/agents",
   "agents-org",
 );
-const worktreeManager = new WorktreeManager(config.repos);
+const githubAuth = new GitHubAuthResolver(config.repos);
+setGitHubAuthResolver(githubAuth);
+const worktreeManager = new WorktreeManager(config.repos, { githubAuth });
 const devServerManager = new DevServerManager(config.repos, worktreeManager);
 const devServerQueue = new DevServerQueue(devServerManager, config.repos);
 
@@ -494,6 +498,7 @@ const pipelineBoot = (async () => {
       const client = createGitHubClient({
         token: config.github.reconcileToken ?? undefined,
         useCli: config.github.reconcileUseCli,
+        githubAuth,
       });
       const shadowMode = pipelineRuntimeMode !== "active";
       const eventWakeEnabled =

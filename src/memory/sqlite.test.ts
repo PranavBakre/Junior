@@ -848,6 +848,26 @@ describe("SqliteMemoryStore", () => {
     expect(bumped!).toBeGreaterThanOrEqual(before);
   });
 
+  it("records claim usefulness feedback atomically and ignores unknown ids", async () => {
+    await store.upsertClaim({
+      id: "feedback-claim",
+      kind: "lesson",
+      text: "feedback claim",
+      embedding: new Float32Array([1, 0, 0, 0]),
+      createdAt: Date.now(),
+    });
+
+    expect(await store.recordClaimFeedback(
+      ["feedback-claim", "feedback-claim", "unknown"],
+      true,
+    )).toEqual([
+      { id: "feedback-claim", helpfulCount: 1, unhelpfulCount: 0 },
+    ]);
+    expect(await store.recordClaimFeedback(["feedback-claim"], false)).toEqual([
+      { id: "feedback-claim", helpfulCount: 1, unhelpfulCount: 1 },
+    ]);
+  });
+
   it("does NOT bump claim.last_used_at when recordUsage is false (eval/dashboard reads)", async () => {
     await store.upsertClaim({
       id: "claim-inspected",

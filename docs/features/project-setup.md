@@ -162,7 +162,7 @@ interface Config {
 | `CODEX_MONGODB_MCP_ENABLED` | no | `true` | Include MongoDB MCP for Codex |
 | `CODEX_MEMORY_MCP_ENABLED` | no | `true` | Include memory MCP for Codex |
 | `CODEX_ISOLATED_HOME_PATH` | no | `data/codex-home` | Isolated Codex home directory |
-| `REPOS` | no | `[]` | JSON array of `RepoConfig`; `githubRepo` is the exact `owner/repo` identity used for PR URL routing (derived from a GitHub origin when omitted) |
+| `REPOS` | no | `[]` | JSON array of `RepoConfig`; `githubRepo` is the exact `owner/repo` identity used for PR URL routing (derived from a GitHub origin when omitted), and optional `githubUser` pins the local `gh` account for that repo |
 | `CHANNEL_DEFAULTS` | no | `{"C05557KKV37":{"agentType":"lead"}}` | JSON, validated |
 | `SESSION_STORE` | no | `sqlite` | `sqlite` \| `memory` |
 | `SESSION_DB_PATH` | no | `data/sessions.db` | |

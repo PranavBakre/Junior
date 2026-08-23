@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   addMemory,
+  recordMemoryFeedback,
   dispatchAgentDirectivesFromSlackPost,
   recallMemory,
   registerTools,
@@ -42,6 +43,7 @@ describe("MCP Slack tool catalogue", () => {
           fact_kinds: { type: "array" },
         },
       });
+      expect(names).toContain("memory_feedback");
       const dispatch = tools.find((tool) => tool.name === "agent_dispatch");
       expect(dispatch?.inputSchema).toMatchObject({
         properties: {
@@ -168,6 +170,35 @@ describe("MCP memory v3 tools", () => {
 
       expect(result.claims.some((c) => c.id === id)).toBe(true);
       expect(result.profiles).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("records useful and useless feedback with additive counters", async () => {
+    const { deps, cleanup } = makeMemoryDeps();
+    try {
+      const { id } = await addMemory({ text: "Use the scoped release checklist" }, deps);
+
+      const useful = await recordMemoryFeedback(
+        { claimIds: [id, id], useful: true },
+        deps,
+      );
+      expect(useful).toEqual({
+        useful: true,
+        updated: [{ id, helpfulCount: 1, unhelpfulCount: 0 }],
+        unknownClaimIds: [],
+      });
+
+      const useless = await recordMemoryFeedback(
+        { claimIds: [id, "missing-claim"], useful: false },
+        deps,
+      );
+      expect(useless).toEqual({
+        useful: false,
+        updated: [{ id, helpfulCount: 1, unhelpfulCount: 1 }],
+        unknownClaimIds: ["missing-claim"],
+      });
     } finally {
       cleanup();
     }

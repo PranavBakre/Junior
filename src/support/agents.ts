@@ -29,6 +29,9 @@ export const AGENT_IDENTITIES: Record<string, AgentIdentity> = {
   // overriding it with an emoji. Workers use emoji to distinguish their posts
   // from Junior.
   default: { username: "Junior" },
+  // Legacy top-level handle retained for persisted lead sessions and older
+  // Slack actions. It shares the default orchestrator runtime contract.
+  lead: { username: "Junior (Lead)" },
   reproducer: { username: "Reproducer", iconEmoji: ":mag:" },
   review: { username: "Reviewer", iconEmoji: ":eyes:" },
   echo: { username: "Echo", iconEmoji: ":speech_balloon:" },
@@ -121,6 +124,7 @@ export async function loadOverlayIdentities(dirPath: string): Promise<void> {
  */
 const ORCHESTRATOR_AGENTS: ReadonlySet<string> = new Set([
   "default",
+  "lead",
   "junior",
 ]);
 

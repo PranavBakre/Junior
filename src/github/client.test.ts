@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { createGitHubClient, parsePullRequestNode } from "./client.ts";
+import { GitHubAuthResolver } from "./auth.ts";
 import type { GraphQlPullRequestNode } from "./queries.ts";
 
 describe("parsePullRequestNode", () => {
@@ -230,5 +231,36 @@ describe("createGitHubClient", () => {
     expect(cliArgs).toContain("ids[]=PR_1");
     expect(cliArgs).toContain("ids[]=PR_2");
     expect(cliArgs).not.toContain('ids=["PR_1","PR_2"]');
+  });
+
+  it("passes the configured repo identity to the CLI GraphQL fallback", async () => {
+    let cliEnv: Record<string, string> | undefined;
+    const auth = new GitHubAuthResolver([{
+      name: "client-repo",
+      path: "/tmp/client-repo",
+      defaultBase: "origin/main",
+      githubRepo: "GrowthX-Club/gx-client-next",
+      githubUser: "gxt-admin",
+    }], async (args) => args[0] === "auth"
+      ? { status: 0, stdout: "selected-token", stderr: "" }
+      : { status: 0, stdout: "gxt-admin", stderr: "" });
+    const client = createGitHubClient({
+      useCli: true,
+      githubAuth: auth,
+      runCli: async (_args, env) => {
+        cliEnv = env;
+        return {
+          ok: true,
+          status: 200,
+          body: JSON.stringify({ data: { repository: { pullRequest: null } } }),
+          headers: {},
+        };
+      },
+    });
+
+    await client.fetchPullRequest("GrowthX-Club", "gx-client-next", 1);
+
+    expect(cliEnv?.GH_TOKEN).toBe("selected-token");
+    expect(cliEnv?.GITHUB_TOKEN).toBeUndefined();
   });
 });

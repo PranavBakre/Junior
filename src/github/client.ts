@@ -23,6 +23,7 @@ import type {
   PrReviewDecision,
   PrSnapshot,
 } from "./types.ts";
+import { cleanGitHubEnvironment, type GitHubAuthResolver } from "./auth.ts";
 
 const DEFAULT_API_URL = "https://api.github.com/graphql";
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -77,12 +78,14 @@ export type GitHubClientOptions = {
     init?: RequestInit,
   ) => Promise<Response>;
   /** Injectable CLI runner for tests. */
-  runCli?: (args: string[]) => Promise<{
+  runCli?: (args: string[], env?: Record<string, string>) => Promise<{
     ok: boolean;
     status: number;
     body: string;
     headers: Record<string, string>;
   }>;
+  /** Optional repo-scoped identity for the development `gh` fallback. */
+  githubAuth?: GitHubAuthResolver;
 };
 
 export function createGitHubClient(options: GitHubClientOptions = {}): GitHubClient {
@@ -99,8 +102,9 @@ export function createGitHubClient(options: GitHubClientOptions = {}): GitHubCli
   const fetchImpl = options.fetchImpl ?? fetch;
   const runCli =
     options.runCli ??
-    (async (args: string[]) => {
+    (async (args: string[], env?: Record<string, string>) => {
       const proc = Bun.spawn(["gh", ...args], {
+        env,
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -131,13 +135,19 @@ export function createGitHubClient(options: GitHubClientOptions = {}): GitHubCli
       }
   > {
     if (useCli && !token) {
+      const repoRef = typeof variables.owner === "string" && typeof variables.repo === "string"
+        ? `${variables.owner}/${variables.repo}`
+        : undefined;
+      const selectedEnv = repoRef && options.githubAuth
+        ? await options.githubAuth.environmentForRepoRef(repoRef)
+        : undefined;
       const result = await runCli([
         "api",
         "graphql",
         "-f",
         `query=${query}`,
         ...serializeCliVariables(variables),
-      ]);
+      ], selectedEnv ? { ...cleanGitHubEnvironment(), ...selectedEnv } : undefined);
       if (!result.ok) {
         return {
           ok: false,
