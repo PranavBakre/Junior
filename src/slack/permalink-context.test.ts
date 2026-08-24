@@ -28,6 +28,10 @@ describe("parseSlackPermalinks", () => {
       "https://evil.example/archives/C123ABC/p1700000000123456",
       "https://team.slack.com",
     )).toEqual([]);
+    expect(parseSlackPermalinks(
+      "http://team.slack.com/archives/C123ABC/p1700000000123456",
+      "https://team.slack.com",
+    )).toEqual([]);
   });
 });
 
@@ -110,6 +114,31 @@ describe("resolveReferencedSlackContext", () => {
       },
     );
     expect(context).toBeNull();
+    expect(replies).not.toHaveBeenCalled();
+  });
+
+  it("skips a reply permalink after history identifies the current thread", async () => {
+    const history = mock(async () => ({
+      ok: true,
+      messages: [{
+        ts: "1700000000.123457",
+        thread_ts: "1700000000.123456",
+        user: "U1",
+        text: "current-thread reply",
+      }],
+    }));
+    const replies = mock(async () => ({ ok: true, messages: [] }));
+    const context = await resolveReferencedSlackContext(
+      { conversations: { history, replies } },
+      "https://team.slack.com/archives/C123ABC/p1700000000123457",
+      {
+        workspaceOrigin: "https://team.slack.com",
+        currentChannel: "C123ABC",
+        currentThreadTs: "1700000000.123456",
+      },
+    );
+    expect(context).toBeNull();
+    expect(history).toHaveBeenCalledTimes(1);
     expect(replies).not.toHaveBeenCalled();
   });
 });

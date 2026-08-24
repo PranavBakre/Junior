@@ -59,12 +59,15 @@ export function parseSlackPermalinks(
   const seen = new Set<string>();
   for (const match of text.matchAll(pattern)) {
     let host: string;
+    let protocol: string;
     try {
-      host = new URL(match[0]!).host.toLowerCase();
+      const parsed = new URL(match[0]!);
+      host = parsed.host.toLowerCase();
+      protocol = parsed.protocol;
     } catch {
       continue;
     }
-    if (host !== originHost) continue;
+    if (protocol !== "https:" || host !== originHost) continue;
     const channel = match[1]!.toUpperCase();
     const digits = match[2]!;
     const messageTs = `${digits.slice(0, -6)}.${digits.slice(-6)}`;
@@ -119,6 +122,13 @@ export async function resolveReferencedSlackContext(
           (message) => message.ts === reference.messageTs,
         );
         if (!referencedMessage) continue;
+        // A reply permalink can point inside the active thread even though
+        // its own timestamp differs from the thread root. Do this check after
+        // history resolves thread_ts, before the broader replies read.
+        if (
+          reference.channel === options.currentChannel &&
+          referencedMessage.thread_ts === options.currentThreadTs
+        ) continue;
       }
 
       const threadTs = referencedMessage?.thread_ts ?? reference.messageTs;
