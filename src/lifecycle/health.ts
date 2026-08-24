@@ -1,4 +1,6 @@
 import type { SessionStore } from "../session/store/interface.ts";
+import { isPidAlive } from "./process-utils.ts";
+import { terminateProcessGroup } from "./process-tree.ts";
 
 /**
  * Detect dead runner PIDs and mark them interrupted rather than silently idle.
@@ -22,48 +24,54 @@ export async function checkOrphanedSessions(
 
     // Lead pid (top-level session)
     if (session.status === "busy" && session.pid !== null) {
-      let alive = true;
-      try {
-        process.kill(session.pid, 0);
-      } catch {
-        alive = false;
-      }
-      if (!alive) {
-        session.status = "idle";
-        session.pid = null;
-        session.lastError = {
-          type: "interrupted",
-          message: "Process died unexpectedly",
-          timestamp: now,
-        };
-        mutated = true;
+      const orphanPid = session.pid;
+      if (!isPidAlive(orphanPid)) {
+        // A wrapper can exit while descendants keep its detached process group
+        // alive. Tear down that group before advertising the thread as usable.
+        await terminateProcessGroup(orphanPid, { signal: "SIGTERM" });
+        await store.mutateThread(threadId, (current) => {
+          // Do not clear a newly-owned turn if another path repaired/restarted
+          // this thread while process-group teardown was in flight.
+          if (current.status !== "busy" || current.pid !== orphanPid) return;
+          current.status = "idle";
+          current.pid = null;
+          current.lastError = {
+            type: "interrupted",
+            message: "Process died unexpectedly",
+            timestamp: now,
+          };
+          mutated = true;
+        });
       }
     }
 
     // Per-agent pids (persistent agent sessions)
-    for (const agentSession of Object.values(session.agentSessions ?? {})) {
+    for (const [agentName, agentSession] of Object.entries(session.agentSessions ?? {})) {
       if (agentSession.status !== "busy" || agentSession.pid === null) continue;
-      let alive = true;
-      try {
-        process.kill(agentSession.pid, 0);
-      } catch {
-        alive = false;
-      }
-      if (!alive) {
-        // Not silent idle: mark failed so pipeline/status surfaces interruption.
-        agentSession.status = "failed";
-        agentSession.pid = null;
-        session.lastError = {
-          type: "interrupted",
-          message: `Agent ${agentSession.agentName} process died unexpectedly`,
-          timestamp: now,
-        };
-        mutated = true;
+      const orphanPid = agentSession.pid;
+      if (!isPidAlive(orphanPid)) {
+        // See the top-level repair above: persistent agent wrappers can leave
+        // helpers behind after their recorded leader dies.
+        await terminateProcessGroup(orphanPid, { signal: "SIGTERM" });
+        await store.mutateThread(threadId, (current) => {
+          const currentAgent = current.agentSessions?.[agentName];
+          // Same generation guard as the top-level repair: a restarted agent
+          // must not be downgraded by a stale health-check snapshot.
+          if (currentAgent?.status !== "busy" || currentAgent.pid !== orphanPid) return;
+          // Not silent idle: mark failed so pipeline/status surfaces interruption.
+          currentAgent.status = "failed";
+          currentAgent.pid = null;
+          current.lastError = {
+            type: "interrupted",
+            message: `Agent ${currentAgent.agentName} process died unexpectedly`,
+            timestamp: now,
+          };
+          mutated = true;
+        });
       }
     }
 
     if (mutated) {
-      await store.set(threadId, session);
       orphaned.push(threadId);
     }
   }

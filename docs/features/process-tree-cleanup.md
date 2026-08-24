@@ -27,6 +27,10 @@ The shared helper is `src/lifecycle/process-tree.ts`:
   direct-PID fallback for non-detached or test handles.
 - `terminateProcessTree(pid, opts)` sends a graceful signal, waits, then sends
   `SIGKILL` if anything in the group is still alive.
+- `terminateProcessGroup(pid, opts)` is the health-repair variant for a dead
+  recorded leader. It addresses only the original negative process-group id;
+  it must not fall back to the former positive PID because that PID could be
+  reused before repair runs.
 - `isProcessTreeAlive(pid)` checks the process group first, then the direct PID.
 
 Spawner-owned `kill()` methods are synchronous handles, so they call
@@ -63,4 +67,5 @@ Regression coverage includes:
 - workflow shutdown terminating active workflow runner handles while preserving
   `providerSessionId`
 - dev-server kill and killAll paths using process-tree termination
-
+- orphan repair terminating a helper that survives its recorded wrapper before
+  the session is cleared
