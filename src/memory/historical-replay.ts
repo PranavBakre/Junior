@@ -13,6 +13,8 @@ export interface HistoricalReplayCase {
   id: string;
   query: string;
   expectedClaimId: string;
+  repo?: string | null;
+  trustedTags?: string[];
   /** Stable answer-level label from a reviewed historical query. */
   useful: boolean;
 }
@@ -40,7 +42,7 @@ export async function runHistoricalReplay(
     }
     const outcomes = [];
     for (const item of cases) {
-      const candidates = await recallCandidates([item.query], { repo: null }, deps);
+      const candidates = await recallCandidates([item.query], { repo: item.repo ?? null, trustedTags: item.trustedTags }, deps);
       const shortlist = selectSynthesisCandidates(candidates);
       const selected = selectFallbackCandidates(shortlist);
       outcomes.push({ id: item.id, candidateIds: candidates.map((x) => x.id), selectedIds: selected.map((x) => x.id), useful: item.useful && selected.some((x) => x.id === item.expectedClaimId) });

@@ -298,7 +298,9 @@ Every unit carries a `last_used_at` so the system can identify memory that shoul
 It creates a disposable SQLite store, writes claims through `upsertClaim`, then
 uses the production pre-recall candidate, top-k, and fallback-floor selection
 path. Each replay case names a stable reviewed answer-level usefulness label;
-the harness never opens `MEMORY_DB_PATH` or records recall usage.
+the harness never opens `MEMORY_DB_PATH` or records recall usage. Fixtures pin
+repo-plus-global scope, trusted-tag fallback, the 20-candidate/3-selected caps,
+both relevance-floor branches, and positive and negative usefulness labels.
 
 Recall runs **two channels** and merges:
 
