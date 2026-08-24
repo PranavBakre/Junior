@@ -144,6 +144,26 @@ Then:
 
 ## MCP Configuration
 
+The app-server adapter sends `environments: []` on both `thread/start` and
+`thread/resume`. Codex's default local environment is therefore disabled, and
+tool access is limited to the scoped MCP configuration that Junior generates
+for the run. The spawner tests assert this on fresh threads and on the
+missing-rollout resume fallback.
+
+The release gate is intentionally opt-in because it posts a real test message:
+
+```sh
+CODEX_APP_SMOKE_SLACK_CHANNEL_ID=<approved-test-channel> \
+CODEX_APP_SMOKE_RELEASE_GATE=1 bun run codex:release-gate
+```
+
+It requires an authenticated Codex CLI and a running Junior MCP server. The
+positive probe requires a completed `slack-bot/slack_send_message` MCP item
+with no error and a concrete result; the negative probe asks for a shell
+`touch` and requires explicit refusal or terminal-failure evidence, then fails
+if a command item or filesystem side effect appears. The probe path is
+temporary and cleaned up.
+
 Current `.mcp.json` (unchanged):
 
 ```json

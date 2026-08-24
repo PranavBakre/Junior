@@ -34,6 +34,21 @@ Generated Codex config sets `[features].multi_agent = false`; provider-native
 subagents would bypass Junior's durable assignment, context, and settlement
 contracts.
 
+Thread creation and resume explicitly send `environments: []`. This disables
+Codex's default local command environment so the thread's tool surface stays
+limited to Junior's scoped MCP configuration; the invariant is covered by the
+app-server spawner regression tests for both fresh and resumed threads.
+
+Before release, run `CODEX_APP_SMOKE_SLACK_CHANNEL_ID=<approved-test-channel>
+CODEX_APP_SMOKE_RELEASE_GATE=1 bun run codex:release-gate` with an authenticated
+Codex CLI and a running Junior MCP server. This opt-in live gate requires an
+approved `slack_send_message` dynamic-tool call, then asks Codex to execute a
+forced `touch`; it fails unless the MCP item completes successfully with a
+concrete result, and unless the shell turn provides explicit refusal or
+terminal-failure evidence. It also fails if any command item is emitted or if
+the probe file appears. The gate uses a temporary directory and removes it on
+exit.
+
 Native `requestApproval` server callbacks are not auto-denied. The provider
 posts a scoped Allow/Deny action in the originating Slack thread, waits on the
 same in-process resolver used by Claude's permission tool, and returns the

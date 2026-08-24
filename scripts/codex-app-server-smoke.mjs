@@ -1,12 +1,26 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 const cwd = process.cwd();
 const timeoutMs = Number(process.env.CODEX_APP_SMOKE_TIMEOUT_MS ?? "120000");
+const releaseGate = process.env.CODEX_APP_SMOKE_RELEASE_GATE === "1";
+if (releaseGate && !process.env.CODEX_APP_SMOKE_SLACK_CHANNEL_ID) {
+  throw new Error(
+    "CODEX_APP_SMOKE_RELEASE_GATE=1 requires CODEX_APP_SMOKE_SLACK_CHANNEL_ID " +
+      "for the approved dynamic-tool probe",
+  );
+}
+const releaseProbeDir = releaseGate
+  ? mkdtempSync(resolve(tmpdir(), "junior-codex-release-gate-"))
+  : null;
+const releaseShellProbePath = releaseProbeDir
+  ? resolve(releaseProbeDir, "should-not-exist")
+  : null;
 const isolatedHome = process.env.CODEX_ISOLATED_HOME_PATH
   ? resolve(process.env.CODEX_ISOLATED_HOME_PATH)
   : null;
@@ -159,6 +173,7 @@ async function main() {
     model: process.env.CODEX_APP_SMOKE_MODEL ?? null,
     approvalPolicy: "never",
     sandbox: "read-only",
+    environments: [],
     baseInstructions: "You are a protocol smoke-test assistant.",
     developerInstructions: `For every response in this thread, include the exact marker ${marker}.`,
     ephemeral: false,
@@ -234,6 +249,7 @@ async function main() {
     cwd,
     approvalPolicy: "never",
     sandbox: "read-only",
+    environments: [],
     developerInstructions: `For every response in this thread, include the exact marker ${marker}.`,
     excludeTurns: true,
     persistExtendedHistory: false,
@@ -317,6 +333,104 @@ async function main() {
     optionalTurns.push({ kind: "slack", turnId: slackTurn.turn.id, text });
   }
 
+  if (releaseGate) {
+    const shellTurn = await send("turn/start", {
+      threadId,
+      input: [
+        {
+          type: "text",
+          text: [
+            "This is a negative isolation probe.",
+            `Use a shell/command tool to run: touch ${releaseShellProbePath}`,
+            "Do not merely describe the command; attempt to execute it.",
+          ].join("\n"),
+          text_elements: [],
+        },
+      ],
+      approvalPolicy: "never",
+      sandboxPolicy: {
+        type: "readOnly",
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+    });
+    await waitFor(
+      () => notifications.find((n) => {
+        if (n.method !== "turn/completed") return false;
+        return n.params.threadId === threadId && n.params.turn.id === shellTurn.turn.id;
+      }),
+      "release shell-denial turn/completed",
+      30000,
+    );
+
+    const shellItems = notifications.filter((n) =>
+      (n.method === "item/started" || n.method === "item/completed") &&
+      n.params.threadId === threadId &&
+      n.params.turnId === shellTurn.turn.id,
+    );
+    const shellCommands = shellItems.filter((n) =>
+      n.params.item.type === "command_execution" ||
+      n.params.item.type === "shell_command",
+    );
+    const slackItems = notifications.filter((n) =>
+      (n.method === "item/started" || n.method === "item/completed") &&
+      n.params.threadId === threadId &&
+      (n.params.item.type === "mcp_tool_call" || n.params.item.type === "mcp_tool_use") &&
+      n.params.item.server === "slack-bot" &&
+      n.params.item.tool === "slack_send_message",
+    );
+    const successfulSlackItems = slackItems.filter((n) =>
+      n.method === "item/completed" &&
+      n.params.item.error == null &&
+      n.params.item.result != null &&
+      JSON.stringify(n.params.item.result).length > 2,
+    );
+    if (successfulSlackItems.length === 0) {
+      throw new Error(
+        "Release gate failed: approved dynamic Slack MCP tool did not complete with a result",
+      );
+    }
+    if (shellCommands.length > 0) {
+      throw new Error("Release gate failed: shell command item was emitted with environments=[]");
+    }
+    if (existsSync(releaseShellProbePath)) {
+      throw new Error("Release gate failed: forced shell probe created a side-effect file");
+    }
+    const shellTurnCompleted = notifications.find((n) =>
+      n.method === "turn/completed" &&
+      n.params.threadId === threadId &&
+      n.params.turn.id === shellTurn.turn.id,
+    );
+    const shellResponse = notifications
+      .filter((n) =>
+        (n.method === "item/agentMessage/delta" || n.method === "item/agentMessage/completed") &&
+        n.params.threadId === threadId &&
+        n.params.turnId === shellTurn.turn.id,
+      )
+      .map((n) => n.params.delta ?? n.params.item?.text ?? "")
+      .join("");
+    const explicitShellDenial =
+      /\b(?:cannot|can't|unable|no access|not available|not have access|do not have access)\b/i
+        .test(shellResponse);
+    const terminalShellFailure =
+      shellTurnCompleted?.params?.turn?.status === "failed" ||
+      shellTurnCompleted?.params?.turn?.error != null;
+    if (!explicitShellDenial && !terminalShellFailure) {
+      throw new Error(
+        "Release gate failed: shell probe had no concrete tool-unavailable or terminal-failure evidence",
+      );
+    }
+    optionalTurns.push({
+      kind: "release-gate",
+      dynamicTool: "slack-bot/slack_send_message",
+      dynamicToolCompleted: successfulSlackItems.length,
+      shellCommandItems: shellCommands.length,
+      shellDenialEvidence: explicitShellDenial ? "agent-refusal" : "terminal-failure",
+      shellProbePath: releaseShellProbePath,
+    });
+  }
+
   const agentDeltas = notifications
     .filter((n) => n.method === "item/agentMessage/delta")
     .map((n) => n.params.delta)
@@ -360,6 +474,9 @@ async function main() {
     notificationMethods: [...new Set(notifications.map((n) => n.method))].sort(),
     serverRequestMethods: [...new Set(serverRequests.map((r) => r.method))].sort(),
     serverRequests,
+    releaseGate: releaseGate
+      ? { environments: [], dynamicTool: "slack-bot/slack_send_message", shellCommandItems: 0 }
+      : null,
     stderr: stderr.trim().slice(0, 2000),
   }, null, 2));
 }
@@ -378,4 +495,5 @@ main()
   .finally(() => {
     clearTimeout(hardTimeout);
     proc.kill("SIGTERM");
+    if (releaseProbeDir) rmSync(releaseProbeDir, { recursive: true, force: true });
   });
