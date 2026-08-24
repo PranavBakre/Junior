@@ -67,6 +67,7 @@ export const DIRECT_DATABASE_ACCESS_DISALLOWED = [
   "Bash(*mongodb+srv://*)",
   "Bash(*mongodb://*)",
   "Bash(*DB_STRING*)",
+  "Bash(*MDB_MCP_CONNECTIONS*)",
   "Bash(*MDB_MCP_CONNECTION_STRING*)",
   "Bash(*.env*)",
   "Read(**/.env)",

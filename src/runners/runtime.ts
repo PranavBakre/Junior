@@ -18,6 +18,7 @@ export interface RunnerRuntime {
 }
 
 export const DATABASE_CREDENTIAL_ENV_KEYS = [
+  "MDB_MCP_CONNECTIONS",
   "MDB_MCP_CONNECTION_STRING",
   "DB_STRING",
   "MONGODB_URI",
