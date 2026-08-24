@@ -75,6 +75,12 @@ import {
   bootstrapRunbookRuntime,
   resolveGitCommitSha,
 } from "./runbooks/runtime.ts";
+import {
+  compareSlackDeploymentIdentity,
+  expectedSlackDeploymentIdentity,
+  fetchSlackDeploymentIdentity,
+  loadExpectedSlackDeploymentIdentity,
+} from "./slack/deployment-identity.ts";
 
 const config = loadConfig();
 const app = createSlackApp(config);
@@ -805,23 +811,28 @@ setInterval(() => {
 
   await app.start();
 
-  // Resolve bot identity before registering event handlers
+  // Resolve and pin deployment identity before registering event handlers.
   let selfBotId: string | undefined;
   let slackWorkspaceOrigin: string | undefined;
   try {
-    const auth = await app.client.auth.test();
-    if (auth.url) slackWorkspaceOrigin = auth.url;
-    if (auth.user_id) {
-      sessionManager.botUserId = auth.user_id;
-      log.info("boot", `Bot user ID: ${auth.user_id}`);
+    const persisted = loadExpectedSlackDeploymentIdentity(config.slack.deploymentIdentityPath);
+    const expected = expectedSlackDeploymentIdentity(config.slack, persisted);
+    const identity = await fetchSlackDeploymentIdentity(app.client);
+    const check = compareSlackDeploymentIdentity(identity, expected);
+    if (check.errors.length > 0) {
+      throw new Error(`Slack deployment identity validation failed: ${check.errors.join("; ")}`);
     }
-    if (auth.bot_id) {
-      selfBotId = auth.bot_id;
-      sessionManager.selfBotId = auth.bot_id;
-      log.info("boot", `Bot ID: ${auth.bot_id}`);
-    }
+    sessionManager.botUserId = identity.userId;
+    sessionManager.selfBotId = identity.botId ?? undefined;
+    selfBotId = identity.botId ?? undefined;
+    log.info("boot", `Slack deployment verified: user=${identity.userId} name=${JSON.stringify(identity.visibleName)} joined=${identity.joinedChannelIds.length}`);
+    // Preserve the workspace URL used by cross-workspace permalink guards.
+    slackWorkspaceOrigin = identity.workspaceUrl ?? undefined;
   } catch (err) {
-    log.warn("boot", `Failed to resolve bot identity: ${err}`);
+    log.error("boot", `${err instanceof Error ? err.message : String(err)}`);
+    await app.stop().catch(() => undefined);
+    process.exitCode = 1;
+    return;
   }
 
   registerEventHandlers(app, async (event) => {

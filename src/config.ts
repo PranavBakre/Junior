@@ -60,6 +60,13 @@ export interface Config {
     botToken: string;
     appToken: string;
     signingSecret: string;
+    /** Pinned Slack deployment identity; startup fails closed on mismatch. */
+    deploymentIdentityPath?: string;
+    expectedUserId?: string | null;
+    expectedBotId?: string | null;
+    expectedTeamId?: string | null;
+    expectedVisibleName?: string | null;
+    expectedChannelIds?: string[];
   };
   claude: {
     maxTurns: number;
@@ -303,6 +310,18 @@ export function loadConfig(): Config {
       botToken: required("SLACK_BOT_TOKEN"),
       appToken: required("SLACK_APP_TOKEN"),
       signingSecret: optional("SLACK_SIGNING_SECRET", ""),
+      deploymentIdentityPath: optional(
+        "SLACK_DEPLOYMENT_IDENTITY_PATH",
+        "data/slack-deployment-identity.json",
+      ),
+      expectedUserId: process.env.SLACK_EXPECTED_USER_ID ?? null,
+      expectedBotId: process.env.SLACK_EXPECTED_BOT_ID ?? null,
+      expectedTeamId: process.env.SLACK_EXPECTED_TEAM_ID ?? null,
+      expectedVisibleName: process.env.SLACK_EXPECTED_VISIBLE_NAME ?? null,
+      expectedChannelIds: (process.env.SLACK_EXPECTED_CHANNEL_IDS ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean),
     },
     claude: {
       maxTurns: Number(optional("CLAUDE_MAX_TURNS", "100")),
