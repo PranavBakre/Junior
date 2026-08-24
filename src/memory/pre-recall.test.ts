@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,8 @@ import {
   maxCosine,
   parseSynthesisResult,
   recallCandidates,
+  readBoundedTextFile,
+  runPreRecallProcess,
   selectFallbackCandidates,
   selectSynthesisCandidates,
   type RunTextFn,
@@ -31,6 +33,44 @@ describe("buildPreRecallCodexArgs", () => {
     expect(args[args.indexOf("-m") + 1]).toBe("gpt-5.6-luna");
     expect(args[args.indexOf("-c") + 1]).toBe('model_reasoning_effort="medium"');
     expect(args.at(-1)).toBe("-");
+  });
+});
+
+describe("pre-recall subprocess stream boundaries", () => {
+  test("drains stderr beyond pipe capacity without retaining it all", async () => {
+    const proc = Bun.spawn(
+      ["sh", "-c", "head -c 262144 /dev/zero >&2; printf ok"],
+      { stdout: "pipe", stderr: "pipe", detached: true },
+    );
+
+    await expect(
+      runPreRecallProcess(proc, 5_000, "stream-test", (stdout) => stdout),
+    ).resolves.toBe("ok");
+  });
+
+  test("bounds runaway stdout and cleans up a never-ending producer", async () => {
+    const proc = Bun.spawn(["yes", "runaway"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: true,
+    });
+
+    await expect(
+      runPreRecallProcess(proc, 150, "stream-test", (stdout) => stdout),
+    ).rejects.toThrow(/timed out|hung|stdout characters/);
+  }, 10_000);
+
+  test("rejects an oversized Codex output file at the provider file boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-pre-recall-codex-"));
+    const output = join(root, "output.txt");
+    writeFileSync(output, Buffer.alloc(131072, "x"));
+    try {
+      await expect(
+        readBoundedTextFile(output, 64 * 1024),
+      ).rejects.toThrow(/output exceeds 65536 bytes/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 import type { Config } from "../config.ts";
