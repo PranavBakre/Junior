@@ -20,6 +20,34 @@ describe("queryHasExactLexicalAnchor", () => {
       "The overnight thing has gone quiet and I cannot tell whether patience is safer",
     )).toBe(false);
   });
+  it("migrates, persists, authorizes, and bounds pre-recall feedback retention", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-pre-recall-ledger-"));
+    const store = new SqliteMemoryStore(join(root, "memory.db"));
+    try {
+    const raw = (store as unknown as { db: Database }).db;
+    expect(raw.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE name = 'pre_recall_observation'").get()?.name).toBe("pre_recall_observation");
+    for (const id of ["selected", "candidate-only"]) {
+      await store.upsertClaim({ id, kind: "lesson", text: id, createdAt: 1, skipDedup: true });
+    }
+    await store.appendPreRecallObservation({
+      id: "obs-old", threadId: "thread-1", candidateIds: ["selected", "candidate-only"], selectedIds: ["selected"], createdAt: 0,
+    });
+    await expect(store.recordPreRecallFeedback("obs-old", true)).resolves.toEqual([
+      { id: "selected", helpfulCount: 1, unhelpfulCount: 0 },
+    ]);
+    await expect(store.recordPreRecallFeedback("obs-old", false, ["candidate-only"])).rejects.toThrow("no selected claims");
+    expect(raw.query<{ thread_id: string; candidate_ids_json: string; selected_ids_json: string }, []>("SELECT thread_id, candidate_ids_json, selected_ids_json FROM pre_recall_observation WHERE id = 'obs-old'").get()).toEqual({
+      thread_id: "thread-1", candidate_ids_json: '["selected","candidate-only"]', selected_ids_json: '["selected"]',
+    });
+    await store.appendPreRecallObservation({ id: "obs-new", threadId: null, candidateIds: ["selected"], selectedIds: ["selected"], createdAt: 90 * 24 * 60 * 60 * 1000 });
+    expect(await store.deletePreRecallObservationsOlderThan(90 * 24 * 60 * 60 * 1000, 1)).toBe(1);
+    expect(raw.query<{ count: number }, []>("SELECT count(*) AS count FROM pre_recall_feedback").get()?.count).toBe(0);
+    expect(raw.query<{ count: number }, []>("SELECT count(*) AS count FROM pre_recall_observation").get()?.count).toBe(1);
+    } finally {
+      store.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("SqliteMemoryStore", () => {
