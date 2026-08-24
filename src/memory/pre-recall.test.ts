@@ -127,6 +127,16 @@ describe("buildPreRecallClaudeArgs", () => {
 });
 
 describe("pre-recall subprocess environment", () => {
+  test("classifies reconciliation and every Mixpanel regional credential as sterile", () => {
+    expect(STERILE_RUNNER_SECRET_ENV_KEYS).toEqual(expect.arrayContaining([
+      "GITHUB_RECONCILE_TOKEN",
+      "MIXPANEL_MCP_TOKEN",
+      "MIXPANEL_MCP_US_TOKEN",
+      "MIXPANEL_MCP_EU_TOKEN",
+      "MIXPANEL_MCP_IN_TOKEN",
+    ]));
+  });
+
   test("uses explicit secret sentinels for every provider despite a hostile cwd dotenv", async () => {
     const root = mkdtempSync(join(tmpdir(), "junior-pre-recall-hostile-env-"));
     const bin = join(root, "bin");
