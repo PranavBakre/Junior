@@ -3,6 +3,7 @@ import { cleanGitHubEnvironment, GitHubAuthResolver } from "../github/auth.ts";
 import { statfs } from "node:fs/promises";
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   unlinkSync,
@@ -198,6 +199,26 @@ export class WorktreeManager {
       await this.runGit(["branch", "-D", branchName], repo.path);
     } catch {
       // branch may not exist — non-fatal
+    }
+
+    // `git worktree remove` is not atomic with respect to the filesystem: an
+    // ignored leftover can survive even after the registry entry is gone.
+    // Verify both postconditions before reporting success so callers can
+    // preserve and review partial cleanup instead of losing the path.
+    const registry = await this.runGit(
+      ["worktree", "list", "--porcelain"],
+      repo.path,
+    );
+    const registryContainsPath = registry.split(/\r?\n\r?\n+/).some((record) =>
+      record.split(/\r?\n/).some((line) => line === `worktree ${worktreePath}`),
+    );
+    const pathRemains = existsSync(worktreePath);
+    if (registryContainsPath || pathRemains) {
+      const remaining = [
+        registryContainsPath ? "git registry entry remains" : null,
+        pathRemains ? "filesystem path remains" : null,
+      ].filter((reason): reason is string => reason !== null).join("; ");
+      throw new Error(`worktree removal incomplete: ${remaining}: ${worktreePath}`);
     }
   }
 
