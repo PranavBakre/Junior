@@ -14,7 +14,10 @@ The spawned Claude Code instances need personality and context. A bare `claude -
 then the private `agents-org` overlay, then its public fallback definitions;
 it composes the selected common profile and injects the result into the
 provider session. Target-repository operational metadata cannot widen the
-trusted catalog.
+trusted catalog. Operational frontmatter in Junior and `agents-org` is active
+only when its exact file bytes match the respective repository's default
+branch. Dirty, untracked, and branch-only definitions are marked unpublished
+and excluded from the trusted catalog until merged.
 **Painful part:** Agent definitions for Example Org repos live in THOSE repos. Junior should not duplicate them. But junior needs its own agents for: (a) generic tasks not tied to a specific repo, (b) developing the bot itself, (c) fallback when target repo has no matching agent.
 **"Finally" moment:** `!build` in a example-backend thread → loads example-backend's build.md agent. `!review` in a junior thread → loads junior's own review.md agent. No duplication. No drift.
 
@@ -49,6 +52,22 @@ Contains org-specific agents and common preamble files that don't belong in the 
 **Loading order for common preamble:**
 1. Per-file fallback tier — for each selected common profile name, the target repo's `.claude/agents/common/<name>.md` wins when present; otherwise Junior's public `.claude/agents/common/<name>.md` supplies that file.
 2. Additive tier — org overlay's `<orgAgentsDir>/common/*.md` (always appended when overlay is configured).
+
+### Trusted-definition publication gate
+
+The trusted catalog is an authority boundary, not a prompt-discovery index.
+For every definition with `operational.enabled: true`, Junior discovers the
+repository's default remote ref (`origin/HEAD`, then `origin/main` or
+`origin/master`; local `main`/`master` only when no remote ref exists) and
+compares the on-disk file bytes with `git show
+<default-ref>:<path>`. A mismatch, missing blob, unavailable ref, or non-Git
+path is **unpublished**. Unpublished definitions do not add capabilities,
+permissions, mutation policy, aliases, variants, or handoff edges. If this
+removes the required `default` orchestrator, startup fails closed.
+
+This check is performed independently for the public Junior checkout and the
+`agents-org` submodule checkout. Target-repository definitions remain
+prompt-only and are never catalog sources.
 
 **Per-agent context profile:**
 

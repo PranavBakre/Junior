@@ -12,6 +12,7 @@ Resolves agent definitions across a layered search chain (target repo → privat
 | `AgentRouter.resolveAgent(session)` | `router.ts` | Searches target repo → org overlay → public fallback. First match wins. Returns `AgentDefinition \| null`. |
 | `AgentRouter.composeSystemPrompt(session)` | `router.ts` | Builds the system prompt = selected shared playbooks + agent body. Each `common:` name resolves target-repo common first, then the canonical `support/skills/<name>/SKILL.md`; matching org common overlays append additively. |
 | `loadAgentDefinition(filePath)` | `loader.ts` | Reads a `.md` file, parses frontmatter (flat `key: value`, dot-notation `context.<flag>`, quoted-value strip). Returns `null` if missing. |
+| `inspectAgentDefinitionProvenance(path)` | `manifest.ts` | Compares an authority-bearing definition's on-disk bytes to its own default-branch Git blob. Reports `published` or `unpublished`; the catalog ignores unpublished entries. |
 | `DEFAULT_CONTEXT_PROFILE` | `loader.ts` | All five flags (`identity`, `slack`, `workspace`, `threadHistory`, `agentState`) set to `true`. |
 
 ### Types
@@ -52,6 +53,14 @@ runClaudeWithAgent(session)
 ### Layered load chain
 
 Agent definitions use **exclusive resolution** (first match wins). Shared playbooks are selected by each agent's `common:` frontmatter profile. Each selected name is loaded from target-repo common when present, otherwise canonical `support/skills/<name>/SKILL.md`; matching org overlay common files append additively. Adding a skill does nothing until an agent profile names it.
+
+The operational catalog has a separate publication gate: a Junior or
+`agents-org` definition with `operational.enabled: true` is compiled only when
+its bytes exactly match the definition at that repository's default remote
+branch (or local `main`/`master` when no remote ref exists). Dirty files,
+untracked files, and commits visible only from a feature branch are reported as
+unpublished and ignored. A missing published `default` role is a startup error,
+so local authority changes cannot silently take effect.
 
 ### Common profile
 
