@@ -48,14 +48,53 @@ describe("buildCodexMcpConfig", () => {
     session.activeAgentName = "review";
     session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
 
-    expect(buildCodexMcpConfig(makeConfig(), session, true)).toEqual({
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toMatchObject({
       "slack-bot": {
         transport: "http",
         url: expect.stringContaining(
           "http://localhost:3456/mcp?agent=review&channel=c&thread=t",
         ),
+        tools: {
+          github_read_pr_review_state: { approval_mode: "approve" },
+          github_post_review: { approval_mode: "approve" },
+          pipeline_get_state: { approval_mode: "approve" },
+          pipeline_write_artifact: { approval_mode: "approve" },
+          pipeline_report_outcome: { approval_mode: "approve" },
+        },
       },
     });
+  });
+
+  it("auto-approves only declared MCP tools for read-only agents", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "review";
+    session.agentPermissions = {
+      intent: "read-only",
+      mcp: ["slack-bot"],
+      tools: [
+        "mcp__slack-bot__memory_recall",
+        "mcp__slack-bot__slack_read_thread",
+      ],
+    };
+
+    const mcp = buildCodexMcpConfig(makeConfig(), session, true);
+    expect(mcp?.["slack-bot"]?.tools).toMatchObject({
+      memory_recall: { approval_mode: "approve" },
+      slack_read_thread: { approval_mode: "approve" },
+    });
+  });
+
+  it("does not bypass MCP approval for human-gated agents", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "pm";
+    session.agentPermissions = {
+      intent: "human-gated",
+      mcp: ["slack-bot"],
+      tools: ["mcp__slack-bot__memory_recall"],
+    };
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)?.["slack-bot"]?.tools)
+      .toBeUndefined();
   });
 
   it("limits MCP servers to explicitly declared agent permissions", () => {
@@ -126,21 +165,26 @@ describe("buildCodexMcpConfig", () => {
 
 describe("buildCodexConfigToml", () => {
   it("serializes minimal isolated Codex config", () => {
-    expect(
-      buildCodexConfigToml({
-        model: "gpt-5.6-sol",
-        reasoningEffort: "medium",
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-        mcp: {
-          "slack-bot": {
-            transport: "http",
-            url: "http://localhost:3456/mcp",
+    const configWithMcp = buildCodexConfigToml({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "medium",
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      mcp: {
+        "slack-bot": {
+          transport: "http",
+          url: "http://localhost:3456/mcp",
+          tools: {
+            memory_recall: { approval_mode: "approve" },
           },
         },
-        trustedProjectPath: "/repo",
-      }),
-    ).toContain('[projects."/repo"]\ntrust_level = "trusted"');
+      },
+      trustedProjectPath: "/repo",
+    });
+    expect(configWithMcp).toContain('[projects."/repo"]\ntrust_level = "trusted"');
+    expect(configWithMcp).toContain(
+      '[mcp_servers.slack-bot.tools.memory_recall]\napproval_mode = "approve"',
+    );
     const config = buildCodexConfigToml({
       model: "gpt-5.6-sol",
       reasoningEffort: "medium",

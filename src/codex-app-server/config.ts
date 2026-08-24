@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { ThreadSession } from "../session/types.ts";
 import type { CodexApprovalPolicy, CodexSandbox } from "./policy.ts";
+import { resolveEffectivePermissionIntent } from "../agents/loader.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 import {
   mixpanelMcpUrl,
   mongoMcpUrl,
@@ -18,6 +20,11 @@ export interface CodexMcpServerConfig {
   url?: string;
   command?: string;
   args?: string[];
+  tools?: Record<string, CodexMcpToolConfig>;
+}
+
+export interface CodexMcpToolConfig {
+  approval_mode: "approve";
 }
 
 export type CodexMcpConfig = Record<string, CodexMcpServerConfig>;
@@ -35,30 +42,41 @@ export function buildCodexMcpConfig(
     mcp["slack-bot"] = {
       transport: "http",
       url: slackMcpUrl(session),
+      ...trustedMcpToolConfig(session, "slack-bot"),
     };
   }
   if (config.codex.playwrightMcpEnabled && wantsMcp(session, "playwright")) {
-    mcp.playwright = playwrightMcpCommand();
+    mcp.playwright = {
+      ...playwrightMcpCommand(),
+      ...trustedMcpToolConfig(session, "playwright"),
+    };
   }
   if (config.codex.mixpanelMcpEnabled && wantsMcp(session, "mixpanel") && isFeatureMetricsSession(session)) {
-    mcp.mixpanel = { transport: "http", url: mixpanelMcpUrl(session) };
+    mcp.mixpanel = {
+      transport: "http",
+      url: mixpanelMcpUrl(session),
+      ...trustedMcpToolConfig(session, "mixpanel"),
+    };
   }
   if (config.codex.mongodbMcpEnabled && wantsMcp(session, "mongodb")) {
     mcp.mongodb = {
       transport: "http",
       url: mongoMcpUrl(session),
+      ...trustedMcpToolConfig(session, "mongodb"),
     };
   }
   if (config.codex.figmaMcpEnabled !== false && wantsMcp(session, "figma")) {
     mcp.figma = {
       transport: "http",
       url: figmaMcpUrl(),
+      ...trustedMcpToolConfig(session, "figma"),
     };
   }
   if (config.codex.notionMcpEnabled !== false && wantsMcp(session, "notion")) {
     mcp.notion = {
       transport: "http",
       url: notionMcpUrl(),
+      ...trustedMcpToolConfig(session, "notion"),
     };
   }
 
@@ -128,6 +146,13 @@ export function buildCodexConfigToml(options: {
     if (server.args) {
       lines.push(`args = [${server.args.map(tomlString).join(", ")}]`);
     }
+    for (const [toolName, tool] of Object.entries(server.tools ?? {})) {
+      lines.push("");
+      lines.push(
+        `[mcp_servers.${tomlBareKey(name)}.tools.${tomlBareKey(toolName)}]`,
+      );
+      lines.push(`approval_mode = ${tomlString(tool.approval_mode)}`);
+    }
     lines.push("");
   }
 
@@ -158,3 +183,66 @@ function isFeatureMetricsSession(session: ThreadSession): boolean {
     session.activeAgentName === "feature-metrics"
   );
 }
+
+/**
+ * Codex's `approval_policy = "never"` also rejects MCP calls unless the MCP
+ * tool has an explicit approval mode. Read-only Junior roles may use only the
+ * MCP tools granted by their trusted definition/capabilities, so mark those
+ * exact tools as approved while leaving shell/file approval unchanged.
+ */
+function trustedMcpToolConfig(
+  session: ThreadSession,
+  serverName: string,
+): { tools: Record<string, CodexMcpToolConfig> } | Record<string, never> {
+  const intent = resolveEffectivePermissionIntent(
+    session.agentPermissions,
+    session.activeAgentName ?? session.agentType,
+  );
+  if (intent !== "read-only" && intent !== "mcp-only") return {};
+
+  const prefix = `mcp__${serverName}__`;
+  const tools = new Set(
+    (session.agentPermissions?.tools ?? [])
+      .filter((tool) => tool.startsWith(prefix))
+      .map((tool) => tool.slice(prefix.length)),
+  );
+
+  for (const [capability, capabilityTools] of Object.entries(CAPABILITY_MCP_TOOLS)) {
+    if (subjectHasCapability(session, capability as Parameters<typeof subjectHasCapability>[1])) {
+      for (const tool of capabilityTools) {
+        if (tool.startsWith(prefix)) tools.add(tool.slice(prefix.length));
+      }
+    }
+  }
+
+  if (tools.size === 0) return {};
+  return {
+    tools: Object.fromEntries(
+      [...tools].map((tool) => [tool, { approval_mode: "approve" }]),
+    ),
+  };
+}
+
+const CAPABILITY_MCP_TOOLS = {
+  "github-review-read": ["mcp__slack-bot__github_read_pr_review_state"],
+  "github-review-comment": ["mcp__slack-bot__github_post_review"],
+  "pipeline-artifact-write": [
+    "mcp__slack-bot__pipeline_get_state",
+    "mcp__slack-bot__pipeline_write_artifact",
+    "mcp__slack-bot__pipeline_report_outcome",
+  ],
+  "pipeline-run-start": ["mcp__slack-bot__pipeline_start_run"],
+  "mongodb-read": [
+    "mcp__mongodb__aggregate",
+    "mcp__mongodb__count",
+    "mcp__mongodb__find",
+    "mcp__mongodb__list-databases",
+    "mcp__mongodb__list-collections",
+    "mcp__mongodb__collection-schema",
+  ],
+  dispatch: [
+    "mcp__slack-bot__agent_dispatch",
+    "mcp__slack-bot__skill_dispatch",
+  ],
+  "worktree-mutate": ["mcp__slack-bot__unregister_worktree"],
+} as const;
