@@ -36,6 +36,14 @@ Generated Codex config sets `[features].multi_agent = false`; provider-native
 subagents would bypass Junior's durable assignment, context, and settlement
 contracts.
 
+For read-only and MCP-only roles, `config.ts` also emits Codex's per-tool MCP
+`approval_mode = "approve"` entries for the exact tools declared by the
+trusted agent definition and its catalog capabilities. This is required even
+when the thread uses `approval_policy = "never"`: Codex otherwise rejects MCP
+calls as approval-required. The setting is scoped to MCP tools only; shell and
+file approvals continue through the normal Codex policy and Slack approval
+bridge.
+
 Thread creation and resume explicitly send `environments: []`. This disables
 Codex's default local command environment so the thread's tool surface stays
 limited to Junior's scoped MCP configuration; the invariant is covered by the
