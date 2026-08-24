@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 import { terminateProcessTree } from "../lifecycle/process-tree.ts";
+import { ignoredDotenvPaths } from "./safety.ts";
 
 const DEFAULT_SETUP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_GIT_COMMAND_TIMEOUT_MS = 30_000;
@@ -36,6 +37,8 @@ export interface WorktreeManagerOptions {
 export interface WorktreeStatus {
   tracked: string[];
   untracked: string[];
+  /** Ignored dotenv paths are enumerated without reading their contents. */
+  ignoredDotenv: string[];
   unpushedCommits: number;
   unpushedBase: string | null;
 }
@@ -254,9 +257,17 @@ export class WorktreeManager {
     repoName?: string,
   ): Promise<WorktreeStatus> {
     const output = await this.runGit(["status", "--porcelain"], worktreePath);
+    const ignored = await this.runGit(
+      [
+        "ls-files", "--others", "--ignored", "--exclude-standard", "--",
+        ".env", ":(glob)**/.env", ":(glob)**/.env.*",
+      ],
+      worktreePath,
+    );
     const status: WorktreeStatus = {
       tracked: [],
       untracked: [],
+      ignoredDotenv: ignoredDotenvPaths(ignored),
       ...(await this.getUnpushedStatus(worktreePath, repoName)),
     };
     for (const line of output.split(/\r?\n/)) {
