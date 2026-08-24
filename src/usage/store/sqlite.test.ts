@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeRunnerUsage, type NormalizedUsage } from "../normalize.ts";
 import { SqliteUsageStore } from "./sqlite.ts";
+import { InMemoryUsageStore } from "./memory.ts";
 import { USAGE_RETENTION_MS } from "../../lifecycle/cleanup.ts";
 
 function usage(overrides: Partial<NormalizedUsage> = {}): NormalizedUsage {
@@ -187,6 +188,62 @@ describe("SqliteUsageStore", () => {
       String(local.getDate()).padStart(2, "0"),
     ].join("-");
     expect(result.buckets.map((bucket) => bucket.key)).toEqual([expected]);
+  });
+
+  it("keeps historical winter and summer day boundaries aligned with JavaScript DST", async () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const winter = new Date("2026-01-15T00:30:00-05:00").getTime();
+      const summer = new Date("2026-07-15T00:30:00-04:00").getTime();
+      await store.add(usage({ sourceId: "dst-winter", occurredAt: winter }));
+      await store.add(usage({ sourceId: "dst-summer", occurredAt: summer }));
+      const result = await store.groupBy({
+        from: winter - 1,
+        to: summer + 1,
+        groupBy: "day",
+      });
+      expect(result.buckets.map((bucket) => bucket.key)).toEqual(["2026-01-15", "2026-07-15"]);
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
+  });
+
+  it("matches the in-memory aggregate shape across null fallbacks and filters", async () => {
+    const events = [
+      usage({ sourceId: "group-a", threadId: null, agentName: null, provider: null, workflowName: null, workflowRunId: "workflow-1", pipelineRunId: null, inputTokens: null, outputTokens: null, costUsd: null, occurredAt: 1_700_000_100_000 }),
+      usage({ sourceId: "group-b", threadId: "thread-b", agentName: "review", provider: "claude", workflowName: "worklog", pipelineRunId: "run-1", inputTokens: 3, outputTokens: 4, costUsd: 0.25, occurredAt: 1_700_000_200_000 }),
+      usage({ sourceId: "outside", threadId: "outside", inputTokens: 99, occurredAt: 1_700_001_000_000 }),
+    ];
+    const memory = new InMemoryUsageStore();
+    for (const event of events) {
+      await store.add(event);
+      await memory.add(event);
+    }
+    for (const groupBy of ["session", "agent", "provider", "workflow", "pipeline"] as const) {
+      await expect(store.groupBy({ from: 1_700_000_000_000, to: 1_700_000_300_000, groupBy }))
+        .resolves.toEqual(await memory.groupBy({ from: 1_700_000_000_000, to: 1_700_000_300_000, groupBy }));
+    }
+  });
+
+  it("aggregates a large event set without materializing usage rows", async () => {
+    for (let i = 0; i < 2_000; i += 1) {
+      await store.add(usage({
+        sourceId: `large-${i}`,
+        threadId: `thread-${i % 10}`,
+        inputTokens: 1,
+        outputTokens: 2,
+        occurredAt: 1_700_000_000_000 + i,
+      }));
+    }
+    const result = await store.groupBy({
+      from: 1_700_000_000_000,
+      to: 1_700_000_010_000,
+      groupBy: "session",
+    });
+    expect(result.totals).toMatchObject({ turns: 2_000, inputTokens: 2_000, outputTokens: 4_000 });
+    expect(result.buckets).toHaveLength(10);
   });
 
   it("deletes rows older than the retention cutoff", async () => {

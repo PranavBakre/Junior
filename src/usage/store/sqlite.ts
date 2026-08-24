@@ -3,7 +3,6 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { mergeUsage } from "../merge.ts";
 import type { NormalizedUsage, UsageEvent, UsageSourceKind } from "../normalize.ts";
-import { groupUsageEvents } from "./aggregate.ts";
 import type { UsageBucket, UsageGroupBy, UsageGroupResult, UsageStore } from "./interface.ts";
 
 type UsageRow = {
@@ -167,8 +166,63 @@ export class SqliteUsageStore implements UsageStore {
     to: number;
     groupBy: UsageGroupBy;
   }): Promise<UsageGroupResult> {
-    const events = await this.list({ from: input.from, to: input.to });
-    return groupUsageEvents(events, input.groupBy);
+    const group = usageGroupExpression(input.groupBy, input.from, input.to);
+    const totals = this.db.query<{
+      turns: number;
+      inputTokens: number;
+      outputTokens: number;
+      costUsd: number;
+      missingUsageTurns: number;
+    }, [number, number]>(
+      `SELECT COUNT(*) AS turns,
+              COALESCE(SUM(input_tokens), 0) AS inputTokens,
+              COALESCE(SUM(output_tokens), 0) AS outputTokens,
+              COALESCE(SUM(cost_usd), 0) AS costUsd,
+              COALESCE(SUM(CASE WHEN input_tokens IS NULL
+                           AND output_tokens IS NULL
+                           AND cache_read_tokens IS NULL
+                           AND cache_write_tokens IS NULL
+                           AND cost_usd IS NULL
+                       THEN 1 ELSE 0 END), 0) AS missingUsageTurns
+       FROM usage_events
+       WHERE occurred_at >= ? AND occurred_at <= ?`,
+    ).get(input.from, input.to) ?? {
+      turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      missingUsageTurns: 0,
+    };
+    const rows = this.db.query<{
+      key: string;
+      turns: number;
+      inputTokens: number;
+      outputTokens: number;
+      costUsd: number;
+    }, number[]>(
+      `SELECT ${group.sql} AS key,
+              COUNT(*) AS turns,
+              COALESCE(SUM(input_tokens), 0) AS inputTokens,
+              COALESCE(SUM(output_tokens), 0) AS outputTokens,
+              COALESCE(SUM(cost_usd), 0) AS costUsd
+       FROM usage_events
+       WHERE occurred_at >= ? AND occurred_at <= ?
+       GROUP BY ${group.sql}`,
+    ).all(...group.params, input.from, input.to, ...group.params);
+    return {
+      totals: { ...totals, costEstimatedUsd: 0 },
+      buckets: rows
+        .map((row) => ({
+          key: row.key,
+          label: row.key,
+          turns: row.turns,
+          inputTokens: row.inputTokens,
+          outputTokens: row.outputTokens,
+          costUsd: row.costUsd,
+          costEstimatedUsd: 0,
+        }))
+        .sort((a, b) => a.key.localeCompare(b.key)),
+    };
   }
 
   async count(filter: {
@@ -307,6 +361,71 @@ export class SqliteUsageStore implements UsageStore {
         ON usage_events (workflow_name, occurred_at)
     `);
   }
+}
+
+function usageGroupExpression(
+  groupBy: UsageGroupBy,
+  from: number,
+  to: number,
+): { sql: string; params: number[] } {
+  switch (groupBy) {
+    case "day": return localDaySqlExpression(from, to);
+    case "session": return { sql: "COALESCE(thread_id, 'unknown')", params: [] };
+    case "agent": return { sql: "COALESCE(agent_name, 'unknown')", params: [] };
+    case "provider": return { sql: "COALESCE(provider, 'unknown')", params: [] };
+    case "workflow": return { sql: "COALESCE(workflow_name, workflow_run_id, 'unknown')", params: [] };
+    case "pipeline": return { sql: "COALESCE(pipeline_run_id, 'unknown')", params: [] };
+  }
+}
+
+function localDaySqlExpression(from: number, to: number): { sql: string; params: number[] } {
+  const segments = timezoneSegments(from, to);
+  const params: number[] = [];
+  const cases = segments.map((segment) => {
+    params.push(segment.from, segment.toExclusive);
+    return `WHEN occurred_at >= ? AND occurred_at < ? THEN strftime('%Y-%m-%d', occurred_at / 1000, 'unixepoch', ${timezoneModifier(segment.offsetMinutes)})`;
+  });
+  return {
+    sql: `(CASE ${cases.join(" ")} ELSE strftime('%Y-%m-%d', occurred_at / 1000, 'unixepoch') END)`,
+    params,
+  };
+}
+
+type TimezoneSegment = { from: number; toExclusive: number; offsetMinutes: number };
+
+function timezoneSegments(from: number, to: number): TimezoneSegment[] {
+  const end = to + 1;
+  const segments: TimezoneSegment[] = [];
+  let cursor = from;
+  while (cursor < end) {
+    const offset = new Date(cursor).getTimezoneOffset();
+    let probe = Math.min(cursor + 24 * 60 * 60 * 1000, end);
+    while (probe < end && new Date(probe).getTimezoneOffset() === offset) {
+      probe = Math.min(probe + 24 * 60 * 60 * 1000, end);
+    }
+    let transition = probe;
+    if (probe < end) {
+      let low = cursor;
+      let high = probe;
+      while (high - low > 1) {
+        const middle = Math.floor((low + high) / 2);
+        if (new Date(middle).getTimezoneOffset() === offset) low = middle;
+        else high = middle;
+      }
+      transition = high;
+    }
+    segments.push({ from: cursor, toExclusive: transition, offsetMinutes: offset });
+    cursor = transition;
+  }
+  return segments;
+}
+
+function timezoneModifier(offsetMinutes: number): string {
+  const eastMinutes = -offsetMinutes;
+  const sign = eastMinutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(eastMinutes);
+  const hours = `'${sign}${Math.floor(absolute / 60)} hours'`;
+  return absolute % 60 ? `${hours}, '${sign}${absolute % 60} minutes'` : hours;
 }
 
 function usageWhere(filter: {
