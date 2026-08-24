@@ -211,12 +211,12 @@ describe("createGitHubClient", () => {
     expect(map.get("PR_missing")?.ok).toBe(false);
   });
 
-  it("passes CLI GraphQL arrays as repeated typed fields", async () => {
-    let cliArgs: string[] = [];
+  it("does not use ambient gh auth for CLI GraphQL calls without a repository", async () => {
+    let called = false;
     const client = createGitHubClient({
       useCli: true,
-      runCli: async (args) => {
-        cliArgs = args;
+      runCli: async (_args) => {
+        called = true;
         return {
           ok: true,
           status: 200,
@@ -226,11 +226,13 @@ describe("createGitHubClient", () => {
       },
     });
 
-    await client.fetchPullRequestsByNodeIds(["PR_1", "PR_2"]);
+    const result = await client.fetchPullRequestsByNodeIds(["PR_1", "PR_2"]);
 
-    expect(cliArgs).toContain("ids[]=PR_1");
-    expect(cliArgs).toContain("ids[]=PR_2");
-    expect(cliArgs).not.toContain('ids=["PR_1","PR_2"]');
+    expect(called).toBe(false);
+    expect(result.get("PR_1")).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("exact configured repository identity"),
+    });
   });
 
   it("passes the configured repo identity to the CLI GraphQL fallback", async () => {
@@ -262,5 +264,26 @@ describe("createGitHubClient", () => {
 
     expect(cliEnv?.GH_TOKEN).toBe("selected-token");
     expect(cliEnv?.GITHUB_TOKEN).toBeUndefined();
+    expect(cliEnv?.GH_CONFIG_DIR).toContain("junior-gh-isolated");
+  });
+
+  it("fails closed for a CLI fallback whose repository is not configured", async () => {
+    let called = false;
+    const client = createGitHubClient({
+      useCli: true,
+      githubAuth: new GitHubAuthResolver([]),
+      runCli: async () => {
+        called = true;
+        return { ok: true, status: 200, body: "{}", headers: {} };
+      },
+    });
+
+    const result = await client.fetchPullRequest("GrowthX-Club", "missing", 1);
+
+    expect(called).toBe(false);
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("No GitHub identity is configured"),
+    });
   });
 });

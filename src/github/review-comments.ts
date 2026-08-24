@@ -592,11 +592,24 @@ async function runGitHubApi(
   }
   if (request.paginate) args.push("--paginate", "--slurp");
 
+  let env: Record<string, string>;
+  try {
+    env = await githubEnvironmentForEndpoint(request.endpoint);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    pipelineLog("warn", "github.api.rejected", {
+      method: request.method,
+      endpoint: request.endpoint,
+      reason,
+    });
+    return { ok: false, status: 0, stdout: "", stderr: reason };
+  }
+
   const proc = Bun.spawn(args, {
     stdin: request.body === undefined ? "ignore" : "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: await githubEnvironmentForEndpoint(request.endpoint),
+    env,
   });
   if (request.body !== undefined && proc.stdin) {
     proc.stdin.write(JSON.stringify(request.body));
@@ -619,17 +632,17 @@ async function runGitHubApi(
   return result;
 }
 
-async function githubEnvironmentForEndpoint(
+export async function githubEnvironmentForEndpoint(
   endpoint: string,
 ): Promise<Record<string, string>> {
   const match = endpoint.match(/^repos\/([^/]+\/[^/]+)/i);
-  if (!githubAuthResolver || !match) {
-    return { ...(process.env as Record<string, string>), GH_PROMPT_DISABLED: "1" };
+  if (!match) {
+    throw new Error("GitHub operation requires an exact repository endpoint");
+  }
+  if (!githubAuthResolver) {
+    throw new Error("GitHub operation requires a configured identity resolver");
   }
   const selected = await githubAuthResolver.environmentForRepoRef(match[1]);
-  if (!selected) {
-    return { ...(process.env as Record<string, string>), GH_PROMPT_DISABLED: "1" };
-  }
   return { ...cleanGitHubEnvironment(), ...selected };
 }
 

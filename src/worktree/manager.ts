@@ -1,5 +1,5 @@
 import type { RepoConfig } from "../config.ts";
-import { GitHubAuthResolver } from "../github/auth.ts";
+import { cleanGitHubEnvironment, GitHubAuthResolver } from "../github/auth.ts";
 import { statfs } from "node:fs/promises";
 import {
   closeSync,
@@ -601,13 +601,10 @@ export class WorktreeManager {
   private commandEnvironment(
     githubEnv?: Record<string, string>,
   ): Record<string, string> {
-    const env = { ...(process.env as Record<string, string>), ...githubEnv };
-    if (githubEnv) {
-      // An inherited GITHUB_TOKEN would take precedence over the selected
-      // account in some GitHub tooling. The repo-scoped GH_TOKEN is authoritative.
-      delete env.GITHUB_TOKEN;
-      delete env.GH_ENTERPRISE_TOKEN;
-    }
+    const env = {
+      ...cleanGitHubEnvironment({ isolatedConfig: true }),
+      ...githubEnv,
+    };
     // Git's prompt paths can outlive a child process (credential helpers and
     // SSH read /dev/tty directly), so every inline Git command and delegated
     // setup script receives a fail-fast, noninteractive transport contract.

@@ -193,21 +193,50 @@ describe("runner runtime", () => {
   });
 
   it("uses the repo-selected GitHub token and removes inherited overrides", () => {
-    const previous = process.env.GITHUB_TOKEN;
+    const previous = {
+      GH_TOKEN: process.env.GH_TOKEN,
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+      GH_ENTERPRISE_TOKEN: process.env.GH_ENTERPRISE_TOKEN,
+      GH_CONFIG_DIR: process.env.GH_CONFIG_DIR,
+    };
+    process.env.GH_TOKEN = "wrong-global-token";
     process.env.GITHUB_TOKEN = "wrong-account-token";
+    process.env.GH_ENTERPRISE_TOKEN = "wrong-enterprise-token";
+    process.env.GH_CONFIG_DIR = "/tmp/wrong-gh-config";
     try {
       const env = buildRunnerEnv(
         makeSession({ activeAgentName: "review" }),
         "xoxb-test",
         undefined,
-        { GH_TOKEN: "selected-account-token", GH_PROMPT_DISABLED: "1" },
+        {
+          GH_TOKEN: "selected-account-token",
+          GH_PROMPT_DISABLED: "1",
+          GH_CONFIG_DIR: "/tmp/junior-gh-isolated",
+        },
       );
       expect(env.GH_TOKEN).toBe("selected-account-token");
-      expect(env.GITHUB_TOKEN).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBe("");
+      expect(env.GH_ENTERPRISE_TOKEN).toBe("");
+      expect(env.GH_CONFIG_DIR).toBe("/tmp/junior-gh-isolated");
       expect(env.GH_PROMPT_DISABLED).toBe("1");
     } finally {
-      if (previous === undefined) delete process.env.GITHUB_TOKEN;
-      else process.env.GITHUB_TOKEN = previous;
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it("removes ambient GitHub credentials when no repository identity was selected", () => {
+    const previous = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = "wrong-global-token";
+    try {
+      const env = buildRunnerEnv(makeSession(), "xoxb-test");
+      expect(env.GH_TOKEN).toBe("");
+      expect(env.GH_CONFIG_DIR).toContain("junior-gh-isolated");
+    } finally {
+      if (previous === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previous;
     }
   });
 
