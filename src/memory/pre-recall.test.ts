@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,7 @@ import {
   maxCosine,
   parseSynthesisResult,
   recallCandidates,
+  readBoundedTextFile,
   runPreRecallProcess,
   selectFallbackCandidates,
   selectSynthesisCandidates,
@@ -58,6 +59,19 @@ describe("pre-recall subprocess stream boundaries", () => {
       runPreRecallProcess(proc, 150, "stream-test", (stdout) => stdout),
     ).rejects.toThrow(/timed out|hung|stdout characters/);
   }, 10_000);
+
+  test("rejects an oversized Codex output file at the provider file boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-pre-recall-codex-"));
+    const output = join(root, "output.txt");
+    writeFileSync(output, Buffer.alloc(131072, "x"));
+    try {
+      await expect(
+        readBoundedTextFile(output, 64 * 1024),
+      ).rejects.toThrow(/output exceeds 65536 bytes/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 import type { Config } from "../config.ts";
 import { addMemory, type MemoryToolDeps } from "../mcp/slack-server.ts";

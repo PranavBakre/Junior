@@ -17,7 +17,7 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFile, rm } from "node:fs/promises";
+import { open, rm } from "node:fs/promises";
 
 import type { Config } from "../config.ts";
 import type { MemoryToolDeps } from "../mcp/slack-server.ts";
@@ -121,6 +121,8 @@ const MAX_NOTES = 5;
 const MAX_NOTE_CHARS = 500;
 /** Maximum stdout retained from a synthesis subprocess. */
 const MAX_PRE_RECALL_STDOUT_CHARS = 64 * 1024;
+/** Codex writes to a file rather than stdout; apply the same output bound. */
+const MAX_PRE_RECALL_CODEX_OUTPUT_BYTES = 64 * 1024;
 /** Maximum stderr retained for a bounded error message. */
 const MAX_PRE_RECALL_STDERR_CHARS = 8 * 1024;
 /** Do not wait forever for a pipe inherited by a provider child. */
@@ -811,7 +813,7 @@ export async function codexRunText(req: RunTextRequest): Promise<string> {
     await runPreRecallProcess(proc, req.timeoutMs, "codex", () => "");
     let text: string;
     try {
-      text = await readFile(outFile, "utf8");
+      text = await readBoundedTextFile(outFile, MAX_PRE_RECALL_CODEX_OUTPUT_BYTES);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(`pre-recall: codex output file unreadable (${reason})`);
@@ -822,6 +824,25 @@ export async function codexRunText(req: RunTextRequest): Promise<string> {
     return text;
   } finally {
     await rm(outFile, { force: true }).catch(() => {});
+  }
+}
+
+/** Read a provider output file without allowing a runaway file into memory. */
+export async function readBoundedTextFile(path: string, maxBytes: number): Promise<string> {
+  const file = await open(path, "r");
+  try {
+    const size = (await file.stat()).size;
+    if (size > maxBytes) {
+      throw new Error(`output exceeds ${maxBytes} bytes`);
+    }
+    const buffer = new Uint8Array(maxBytes + 1);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > maxBytes) {
+      throw new Error(`output exceeds ${maxBytes} bytes`);
+    }
+    return new TextDecoder().decode(buffer.subarray(0, bytesRead));
+  } finally {
+    await file.close();
   }
 }
 

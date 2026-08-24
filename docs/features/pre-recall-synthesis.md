@@ -356,7 +356,9 @@ the stdout cap is rejected rather than parsed from an incomplete or
 unbounded result. Timeout cleanup still terminates the detached process tree,
 then cancels any reader whose pipe was inherited by a child, with a bounded
 drain grace period. The boundary tests cover stderr beyond OS pipe capacity
-and a never-ending stdout producer.
+and a never-ending stdout producer. Codex's `-o` output file uses the same
+64 KiB bound with a size check before a bounded read, so file-backed output
+cannot bypass the pipe bound.
 
 Known limitation: a claim cited in `used` is marked used even if it did not
 really contribute, so a lying citation mildly refreshes that claim's decay
