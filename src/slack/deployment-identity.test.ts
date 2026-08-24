@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -81,5 +81,13 @@ describe("Slack deployment identity", () => {
     expect(merged).toEqual({ userId: "Unew", visibleName: "New", joinedChannelIds: ["C2"] });
     expect(JSON.parse(readFileSync(path, "utf8")).userId).toBe("Uold");
     expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it.each([0o644, 0o666])("rejects an existing insecure mode %o pin", (mode) => {
+    const dir = mkdtempSync(join(tmpdir(), "junior-slack-insecure-"));
+    const path = join(dir, "identity.json");
+    writeFileSync(path, JSON.stringify({ userId: "Ubot" }), { mode: 0o600 });
+    chmodSync(path, mode);
+    expect(() => loadExpectedSlackDeploymentIdentity(path)).toThrow(/mode-0600/);
   });
 });

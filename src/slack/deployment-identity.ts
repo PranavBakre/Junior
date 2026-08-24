@@ -1,4 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { WebClient } from "@slack/web-api";
 
@@ -144,7 +151,12 @@ export function loadExpectedSlackDeploymentIdentity(
   path = DEFAULT_SLACK_IDENTITY_PATH,
 ): ExpectedSlackDeploymentIdentity | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(resolve(path), "utf8"));
+    const target = resolve(path);
+    const file = lstatSync(target);
+    if (!file.isFile() || (file.mode & 0o777) !== 0o600) {
+      throw new Error(`expected Slack identity must be a regular mode-0600 file: ${target}`);
+    }
+    const parsed: unknown = JSON.parse(readFileSync(target, "utf8"));
     const record = asRecord(parsed);
     if (!record || typeof record.userId !== "string" || !record.userId.trim()) {
       throw new Error("expected identity must contain a non-empty userId");
@@ -170,7 +182,10 @@ export function persistExpectedSlackDeploymentIdentity(
 ): void {
   const target = resolve(path);
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  writeFileSync(target, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
+  const temporary = `${target}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
+  chmodSync(temporary, 0o600);
+  renameSync(temporary, target);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

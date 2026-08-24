@@ -9,6 +9,9 @@ conversations to collect channels where the token is a member. Startup compares
 that result against `SLACK_EXPECTED_*` values or the mode-0600 persisted pin at
 `SLACK_DEPLOYMENT_IDENTITY_PATH`. A mismatch, missing pin, failed API call, or
 missing expected channel stops event-handler registration and exits non-zero.
+The persisted pin must be a regular mode-0600 file; startup and doctor reject
+permissive or symlinked pins. The explicit setup command atomically rewrites a
+mode-0600 pin when repairing one.
 
 Use the explicit setup/doctor commands after authenticating the intended bot:
 
