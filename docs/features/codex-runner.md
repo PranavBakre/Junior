@@ -144,6 +144,12 @@ Then:
 
 ## MCP Configuration
 
+The app-server adapter sends `environments: []` on both `thread/start` and
+`thread/resume`. Codex's default local environment is therefore disabled, and
+tool access is limited to the scoped MCP configuration that Junior generates
+for the run. The spawner tests assert this on fresh threads and on the
+missing-rollout resume fallback.
+
 Current `.mcp.json` (unchanged):
 
 ```json

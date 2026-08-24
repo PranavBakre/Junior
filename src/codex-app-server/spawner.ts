@@ -239,6 +239,9 @@ export function spawnCodexAppServer(
             approvalPolicy: policy.approvalPolicy,
             sandbox: policy.sandbox,
             sandboxPolicy: policy.sandboxPolicy,
+            // Do not expose Codex's default local environment. Junior's
+            // scoped MCP wiring is the only tool surface for this thread.
+            environments: [],
             developerInstructions: developerInstructions(session),
             excludeTurns: true,
             persistExtendedHistory: false,
@@ -407,6 +410,9 @@ function threadStartParams(options: {
     approvalPolicy: options.policy.approvalPolicy,
     sandbox: options.policy.sandbox,
     sandboxPolicy: options.policy.sandboxPolicy,
+    // Keep the built-in local command environment disabled. Tool access must
+    // come from Junior's scoped MCP contract.
+    environments: [],
     // Omit baseInstructions so Codex retains its native coding-agent operating
     // prompt. Junior is an additive developer layer, not a replacement for
     // Codex's tool, persistence, safety, and editing contract.

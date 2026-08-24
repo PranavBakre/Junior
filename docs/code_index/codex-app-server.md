@@ -34,6 +34,11 @@ Generated Codex config sets `[features].multi_agent = false`; provider-native
 subagents would bypass Junior's durable assignment, context, and settlement
 contracts.
 
+Thread creation and resume explicitly send `environments: []`. This disables
+Codex's default local command environment so the thread's tool surface stays
+limited to Junior's scoped MCP configuration; the invariant is covered by the
+app-server spawner regression tests for both fresh and resumed threads.
+
 Native `requestApproval` server callbacks are not auto-denied. The provider
 posts a scoped Allow/Deny action in the originating Slack thread, waits on the
 same in-process resolver used by Claude's permission tool, and returns the

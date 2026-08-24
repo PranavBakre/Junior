@@ -216,6 +216,7 @@ describe("spawnCodexAppServer", () => {
       );
       expect(threadStart.params.sandbox).toBe("danger-full-access");
       expect(threadStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
+      expect(threadStart.params.environments).toEqual([]);
       expect(turnStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
     } finally {
       fakeCodex.cleanup();
@@ -299,6 +300,10 @@ describe("spawnCodexAppServer", () => {
         "thread/start",
         "turn/start",
       ]);
+      expect(requests.find((request) => request.method === "thread/resume").params.environments)
+        .toEqual([]);
+      expect(requests.find((request) => request.method === "thread/start").params.environments)
+        .toEqual([]);
       expect(requests.find((request) => request.method === "turn/start").params.threadId)
         .toBe("thread-created");
     } finally {
