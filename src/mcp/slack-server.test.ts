@@ -36,6 +36,40 @@ describe("MCP Slack tool catalogue", () => {
       const names = tools.map((tool) => tool.name);
 
       expect(names).toContain("pipeline_report_outcome");
+      const pipelineOutcome = tools.find((tool) => tool.name === "pipeline_report_outcome");
+      expect(pipelineOutcome?.inputSchema).toMatchObject({
+        properties: {
+          outcome: {
+            properties: {
+              action: {
+                enum: ["continue_self", "delegate", "handoff", "wait", "escalate", "complete"],
+              },
+              status: {
+                enum: ["progress", "succeeded", "expected_behavior", "not_reproduced", "blocked", "failed"],
+              },
+              blockers: {
+                items: {
+                  properties: {
+                    kind: {
+                      enum: [
+                        "missing_context",
+                        "missing_authority",
+                        "human_gate",
+                        "unsafe_mutation",
+                        "conflicting_evidence",
+                        "no_progress",
+                        "infra_failure",
+                      ],
+                    },
+                    detail: { type: "string" },
+                  },
+                  required: ["kind", "detail"],
+                },
+              },
+            },
+          },
+        },
+      });
       expect(names).toContain("runbook_select");
       expect(names).toContain("promotion_record");
       const memoryRecall = tools.find((tool) => tool.name === "memory_recall");

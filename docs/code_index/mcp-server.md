@@ -40,7 +40,7 @@ operations using the bot token and signed run context.
 | `runbook_select` | Runbooks + Memory v3 | `request` | Select reviewed runbook; on miss perform procedure-memory recall |
 | `promotion_record` / `runbook_propose` | Runbook promotion + authoring | promotion evidence plus optional authoritative `request`; proposal `fingerprint` | Promotion retains normalized request intent (with legacy runbook-name fallback), so proposals produce usable names/descriptions and dry-run PR content. |
 | `github_read_pr_review_state` / `github_post_review` | Fixed GitHub API surface | review-specific | inline comments |
-| `pipeline_*` | Durable pipeline store | tool-specific | artifact/check fields |
+| `pipeline_*` | Durable pipeline store | tool-specific | artifact/check fields; `pipeline_report_outcome` publishes the typed `AgentOutcome` action/status enums and nested blocker/check schemas |
 | `whatsapp_*` | Read-only archive | tool-specific | time/group filters |
 
 ### Configuration
@@ -81,6 +81,15 @@ authoritative request replaces that fallback for the same fingerprint.
 candidate and therefore receives a non-empty `normalizedIntent` for filename,
 description, routing examples, and proposal content. The evidence schema keeps
 `request` optional for backward compatibility.
+
+### Pipeline outcome contract
+
+`pipeline_report_outcome` publishes the same structural contract enforced by
+`src/pipelines/outcomes.ts`: action and status enums, allowed blocker kinds,
+check status enums, and nested `wait` / `nextAssignment` fields. Keep this
+schema aligned with the parser so provider tool metadata cannot invite values
+such as `status: "completed"` or string blockers that runtime validation will
+reject.
 
 ## Dependencies
 
