@@ -60,6 +60,7 @@ surfaces have dedicated indexes:
 - [Pipelines](code_index/pipelines.md)
 - [Pre-recall](code_index/pre-recall.md)
 - [Project setup and boot](code_index/project-setup.md)
+- [Slack deployment identity](code_index/slack-deployment-identity.md)
 - [Runner providers](code_index/runner-providers.md)
 - [Support router](code_index/support-router.md)
 - [Task routes](code_index/task-routes.md)

@@ -11,6 +11,8 @@ Entry point, configuration, logging, persona loading, and boot sequence. The pro
 | `loadConfig()` | `config.ts` | Reads env vars, validates, returns typed `Config` |
 | `log.info / log.warn / log.error` | `logger.ts` | Structured log to stdout + daily file `logs/YYYY-MM-DD.log` |
 | `loadPersona()` | `persona.ts` | Reads `identity/junior/IDENTITY.md` + `SOUL.md` from the submodule; cached |
+| `fetchSlackDeploymentIdentity()` | `slack/deployment-identity.ts` | Calls `auth.test`, `users.info`, and paginated `conversations.list` to resolve the token's deployment identity and joined channels |
+| `compareSlackDeploymentIdentity()` | `slack/deployment-identity.ts` | Fails closed on configured/persisted user, bot, team, visible-name, or channel-membership mismatch |
 
 ### Types
 

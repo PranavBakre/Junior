@@ -32,8 +32,20 @@ The bot needs environment configuration (Slack tokens, repo paths, timeouts) and
 6. Register the App Home tab and graceful-shutdown hooks.
 7. Start two `setInterval` loops: orphan check (60s) and stale-session cleanup (`SESSION_CLEANUP_INTERVAL_MS`).
 8. Async bootstrap: `loadOverlayIdentities("agents-org")` merges private agent identities from frontmatter (`username`, `iconEmoji`) into `AGENT_IDENTITIES`; `devServerManager.bootstrap()` prepares dev-server worktrees. Both are non-fatal.
-9. `app.start()`, resolve bot identity via `auth.test`, register event handlers (every message goes through `supportRouter.handleMessage`).
+9. `app.start()`, validate the Slack deployment identity via `auth.test`, `users.info`, and joined-channel pagination against the configured/persisted pin, then register event handlers (every message goes through `supportRouter.handleMessage`). A mismatch fails closed.
 10. If `config.http.enabled`, dynamic-import `./http/server.ts` and start the localhost dashboard. Failure is non-fatal — logged so the bot keeps running.
+
+Before first start, pin the intended Slack deployment token and verify it on
+subsequent deploys:
+
+```bash
+SLACK_BOT_TOKEN=xoxb-... bun run slack:identity:setup
+SLACK_BOT_TOKEN=xoxb-... bun run slack:identity:doctor
+```
+
+Startup refuses to register Slack event handlers when the live token differs
+from the configured or persisted user, visible name, workspace, or required
+channel membership.
 
 ## Private Org Overlay
 
@@ -133,6 +145,12 @@ interface Config {
 | `SLACK_BOT_TOKEN` | yes | — | |
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode `xapp-...` |
 | `SLACK_SIGNING_SECRET` | no | `""` | only needed if you ever switch to Events API |
+| `SLACK_DEPLOYMENT_IDENTITY_PATH` | no | `data/slack-deployment-identity.json` | Persisted expected Slack token identity used by startup and doctor |
+| `SLACK_EXPECTED_USER_ID` | no | unset | Explicit expected `auth.test.user_id`; overrides the persisted pin |
+| `SLACK_EXPECTED_BOT_ID` | no | unset | Optional expected `auth.test.bot_id` |
+| `SLACK_EXPECTED_TEAM_ID` | no | unset | Optional expected workspace/team ID |
+| `SLACK_EXPECTED_VISIBLE_NAME` | no | unset | Optional exact `users.info` display/visible name |
+| `SLACK_EXPECTED_CHANNEL_IDS` | no | unset | Comma-separated channels the deployment must be joined to |
 | `RUNNER_PROVIDER` | no | `opencode` | `opencode` \| `opencode-sdk` \| `codex-app-server` \| `claude` |
 | `CLAUDE_MAX_TURNS` | no | `100` | Max turns per `claude -p` / `claude -p --resume` invocation |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | |
