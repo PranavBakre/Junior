@@ -571,12 +571,33 @@ export class WorkflowExecutor {
     return formatDedupSweep(report);
   }
 
+  private async runMemoryDecayReport(): Promise<string> {
+    if (!this.memoryStore) throw new Error("memory store not configured");
+    const olderThanMs = this.config.memory.archiveOlderThanMs ?? 90 * 24 * 60 * 60 * 1000;
+    const maxWeight = this.config.memory.archiveMaxWeight ?? 0.5;
+    // Report-first workflow: archiveStaleClaims is explicitly dry-run here.
+    // Applying the returned candidate set is reserved for the CLI's --apply gate.
+    const report = await this.memoryStore.archiveStaleClaims({
+      olderThanMs,
+      maxWeight,
+      apply: false,
+    });
+    return [
+      "Memory stale-claim decay report (DRY RUN)",
+      `Thresholds: olderThanMs=${olderThanMs} maxWeight=${maxWeight}`,
+      `Candidates: ${report.candidateIds.length}`,
+      report.candidateIds.length > 0 ? `Candidate IDs: ${report.candidateIds.join(", ")}` : "No candidates.",
+      "No claims were archived. Run `bun run src/memory/cli.ts archive-stale --apply` after review to apply.",
+    ].join("\n");
+  }
+
   private async runNativeHandler(
     handler: WorkflowNativeHandler,
   ): Promise<{ summary: string; status: "success" | "skipped" }> {
     const handlers: Record<WorkflowNativeHandler, () => Promise<string>> = {
       "memory-consolidation": () => this.runMemoryConsolidation(),
       "memory-dedup-sweep": () => this.runMemoryDedupSweep(),
+      "memory-decay-report": () => this.runMemoryDecayReport(),
       "slack-archive-maintenance": () => this.runSlackArchiveMaintenance(),
     };
     if (handler === "slack-archive-maintenance" && !this.config.slackArchive?.enabled) {

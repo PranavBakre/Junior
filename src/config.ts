@@ -191,6 +191,9 @@ export interface Config {
      * populates it and the store falls back to the same default.
      */
     dedupThreshold?: number;
+    /** Owned report-first decay thresholds; archival requires an explicit apply gate. */
+    archiveOlderThanMs?: number;
+    archiveMaxWeight?: number;
     /**
      * Pre-recall hook: before each runner turn, retrieve relevant claims and
      * inject them into the prompt. Deterministic relevance filtering is the
@@ -414,6 +417,14 @@ export function loadConfig(): Config {
       dedupThreshold: resolveDedupThreshold(
         optional("MEMORY_DEDUP_THRESHOLD", String(DEFAULT_DEDUP_THRESHOLD)),
       ),
+      archiveOlderThanMs: parsePositiveIntEnv(
+        "MEMORY_ARCHIVE_OLDER_THAN_MS",
+        optional("MEMORY_ARCHIVE_OLDER_THAN_MS", String(90 * 24 * 60 * 60 * 1000)),
+      ),
+      archiveMaxWeight: parseWeightThresholdEnv(
+        "MEMORY_ARCHIVE_MAX_WEIGHT",
+        optional("MEMORY_ARCHIVE_MAX_WEIGHT", "0.5"),
+      ),
       preRecall: {
         // Default OFF: pre-recall spawns a subprocess on every Slack turn.
         // Operators must opt in after verifying timeout/kill behaviour.
@@ -556,6 +567,14 @@ function parsePositiveIntEnv(name: string, raw: string): number {
     throw new Error(
       `Invalid ${name}: ${JSON.stringify(raw)} (expected a positive integer)`,
     );
+  }
+  return value;
+}
+
+function parseWeightThresholdEnv(name: string, raw: string): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`Invalid ${name}: ${JSON.stringify(raw)} (expected a non-negative number)`);
   }
   return value;
 }

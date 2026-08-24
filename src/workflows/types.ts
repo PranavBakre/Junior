@@ -11,6 +11,7 @@ export type WorkflowConcurrency = "skip" | "parallel";
 export type WorkflowNativeHandler =
   | "memory-consolidation"
   | "memory-dedup-sweep"
+  | "memory-decay-report"
   | "slack-archive-maintenance";
 export type WorkflowRunnerProvider =
   | "default"

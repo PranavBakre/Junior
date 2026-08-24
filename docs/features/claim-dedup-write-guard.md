@@ -206,9 +206,7 @@ it matters. On a near-duplicate hit, bump the surviving claim instead —
 `helpful_count` and `weight`, and refresh `last_used_at`. That is the value
 signal the decay contract is written against (`archiveStaleClaims` is "stale
 **and** low-value"), so rediscovery accumulates evidence instead of being a
-no-op. Note what that sentence does *not* say: see
-[the decay wiring gap](#the-decay-half-is-not-wired-up) — nothing calls
-`archiveStaleClaims` today, so this feeds a contract with no reader yet.
+no-op. The scheduled report and explicit CLI apply gate use this contract.
 
 **The weight bump needs a ceiling.** A merge writes no row for the twin, so the
 same input text merges again on every call — the bump is not idempotent by
@@ -224,7 +222,7 @@ The clamp only holds a bump down; it never pulls an explicitly set higher weight
 back. `helpful_count` stays uncapped: it feeds no ranking, and the honest count
 of rediscoveries is the signal worth keeping.
 
-#### The decay half is not wired up
+#### The decay path is report-first and operator-gated
 
 Do not read the ceiling as "a safety net until decay cleans it up". Verified
 against the current tree:
@@ -235,13 +233,14 @@ against the current tree:
 - **A default-weight claim is not even a fade candidate.** Inserts default to
   `weight = 1.0`; the ceiling `memoryHealth` previews fade candidates at is
   `maxWeight = 0.5`. Nothing written at the default is eligible, merged or not.
-- **`archiveStaleClaims` has no caller.** It appears only in `src/memory/sqlite.ts`,
-  the `MemoryStore` interface, and one test. No workflow, CLI, or scheduler
-  invokes it.
+- **`archiveStaleClaims` is report-first.** The scheduled
+  `memory-decay-report` workflow invokes it with `apply: false`; an operator
+  must review the candidate IDs and run `archive-stale --apply` before rows are
+  archived. It remains offline/manual, never a hot-path TTL.
 
-So an over-weighted claim is permanent, and the ceiling is the only bound that
-exists. Wiring decay up is real work and deliberately **not** part of this
-branch — it is in the [cut list](#cut-list-true-v2).
+So an over-weighted claim remains above the fade value ceiling, and the merge
+ceiling is the only bound on merge bumps. The report-first decay workflow and
+CLI apply gate are the explicit operator-controlled retirement path.
 
 The response should say which happened — `{ id, action: "inserted" | "merged",
 mergedInto? }` — so a caller (and the Stop hook) can tell the difference between

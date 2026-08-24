@@ -253,6 +253,16 @@ posts it to configured Slack outputs.
 
 The v3 memory consolidation ("dreaming") engine uses this workflow system rather than a bespoke scheduler. The `memory-consolidation` workflow runs the shared `runConsolidationSweep` helper (the same path the `consolidate-v3` CLI and the `memory_consolidate` MCP tool use); it can run on a cron schedule and by owner/admin command, skip overlapping runs with `concurrency: skip`, write artifacts under `data/workflow-runs/memory-consolidation`, and optionally post a compact Slack summary. See [memory-system-v3.md](memory-system-v3.md) §7.
 
+### Memory decay report
+
+`memory-decay-report` is a report-first native workflow. Its scheduled and
+command triggers call `archiveStaleClaims` with `apply: false`, using the owned
+`MEMORY_ARCHIVE_OLDER_THAN_MS` and `MEMORY_ARCHIVE_MAX_WEIGHT` thresholds. The
+artifact lists candidate claim IDs; no rows are changed. After review, an
+operator must run `bun run src/memory/cli.ts archive-stale --apply` with the
+same thresholds to archive candidates. Archival sets `active = 0` and never
+deletes claims or their provenance. There is no hot-path TTL.
+
 The sweep itself is the LLM pass — it spawns the runner (`claude -p`) per session to derive episodes/profiles/claims; the workflow definition does not place that logic in prompt prose. Workflow utility runs skip Junior's project MCP wiring because they run from `/tmp/junior-utility`, so a manual sweep can also go through the CLI surface:
 
 ```bash

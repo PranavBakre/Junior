@@ -1,5 +1,6 @@
 import { createMemoryStore } from "./factory.ts";
 import type {
+  ArchiveStaleClaimsResult,
   ClaimKind,
   ClaimRecallResult,
   ClaimWriteResult,
@@ -380,6 +381,33 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       return json ? `${JSON.stringify(report, null, 2)}\n` : formatDedupSweep(report);
     }
 
+    if (command === "archive-stale") {
+      const apply = booleanOption(options, "apply") === true;
+      if (apply && (options.has("older-than-ms") || options.has("max-weight"))) {
+        throw new Error(
+          "--apply uses configured MEMORY_ARCHIVE_OLDER_THAN_MS and MEMORY_ARCHIVE_MAX_WEIGHT; threshold overrides are dry-run only",
+        );
+      }
+      const olderThanMs = numberOption(options, "older-than-ms") ??
+        Number(process.env.MEMORY_ARCHIVE_OLDER_THAN_MS ?? 90 * 24 * 60 * 60 * 1000);
+      const maxWeight = numberOption(options, "max-weight") ??
+        Number(process.env.MEMORY_ARCHIVE_MAX_WEIGHT ?? 0.5);
+      if (!Number.isInteger(olderThanMs) || olderThanMs <= 0) {
+        throw new Error("--older-than-ms must be a positive integer");
+      }
+      if (!Number.isFinite(maxWeight) || maxWeight < 0) {
+        throw new Error("--max-weight must be a non-negative number");
+      }
+      const report = await store.archiveStaleClaims({
+        olderThanMs,
+        maxWeight,
+        apply,
+      });
+      return json
+        ? `${JSON.stringify({ ...report, olderThanMs, maxWeight }, null, 2)}\n`
+        : formatArchiveStale(report, { olderThanMs, maxWeight });
+    }
+
     if (command === "recall-claims") {
       const vector = floatListOption(options, "query-vector");
       const queryText = stringOption(options, "query");
@@ -578,6 +606,20 @@ function usage(): string {
     "  bun run src/memory/cli.ts add-fact --id <id> --kind <curated_fact|routing_memory|procedure> --body <body> [--title <title>] [--confidence 0-1] [--importance 0-1] [--source-ids a,b] [--tags x,y] [--entities name:kind,...] [--json]",
     "  bun run src/memory/cli.ts add-claim --id <id> --kind <lesson|fact|preference|decision|situation-claim> --text <text> [--repo <name>] [--tags x,y] [--source-episode <id>] [--source-path <path>] [--source-heading <heading>] [--source-text <section>] [--weight 0-N] [--embedding 0.1,0.2,...] [--embed-model <name>] [--skip-dedup] [--json]",
     "  bun run src/memory/cli.ts dedup-sweep [--threshold 0.92] [--apply] [--json]   (DRY RUN without --apply)",
+    "  bun run src/memory/cli.ts archive-stale [--older-than-ms n] [--max-weight n] [--apply] [--json]   (DRY RUN without --apply)",
     "  bun run src/memory/cli.ts recall-claims [--query <text> | --query-vector 0.1,0.2,...] [--repo <name>] [--kind <lesson|fact|preference|decision|procedure|situation-claim|curated_fact|routing_memory>] [--tags x,y] [--since-ms <epoch-ms>] [--limit n] [--json]",
   ].join("\n") + "\n";
+}
+
+function formatArchiveStale(
+  report: ArchiveStaleClaimsResult,
+  thresholds: { olderThanMs: number; maxWeight: number },
+): string {
+  return [
+    `Stale claim archive ${report.applied ? "APPLIED" : "DRY RUN"}`,
+    `Thresholds: olderThanMs=${thresholds.olderThanMs} maxWeight=${thresholds.maxWeight}`,
+    `Candidates: ${report.candidateIds.length}`,
+    `Archived: ${report.archivedIds.length}`,
+    report.candidateIds.length > 0 ? `Candidate IDs: ${report.candidateIds.join(", ")}` : null,
+  ].filter((line): line is string => line !== null).join("\n") + "\n";
 }

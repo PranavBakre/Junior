@@ -955,6 +955,7 @@ describe("SqliteMemoryStore", () => {
       olderThanMs: 90 * 24 * 60 * 60 * 1000,
       maxWeight: 0.5,
       now,
+      apply: true,
     });
     expect(result.archivedIds.sort()).toEqual(["c-neverused-low", "c-stale-low"]);
 
@@ -1226,8 +1227,8 @@ describe("SqliteMemoryStore", () => {
       // every call — a Stop hook re-asserting one lesson each session would add
       // +0.1 forever. recallClaims scores `cosine * weight`, so an unbounded
       // weight lets a low-cosine claim outrank everything, permanently: nothing
-      // in the codebase decrements a weight, and archiveStaleClaims has no
-      // caller. The ceiling is the only bound there is.
+      // in the codebase decrements a weight. The merge ceiling is the only
+      // bound on merge bumps; decay remains separately operator-gated.
       for (let i = 0; i < 30; i += 1) {
         const result = await store.upsertClaim({
           id: `b-twin-${i}`,
