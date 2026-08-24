@@ -10,7 +10,8 @@ disabled by default (`PIPELINE_RUNTIME_MODE=off`) and can run in `shadow` or
 |---|---|---|
 | Types and definitions | `src/pipelines/types.ts`, `src/pipelines/bug/definition.ts`, `src/pipelines/product/definition.ts` | Run, assignment, outcome, artifact, transition, and pipeline-specific state. |
 | Controllers | `src/pipelines/bug/controller.ts`, `src/pipelines/product/controller.ts` | Start typed runs, apply transitions, and enqueue work. |
-| Dispatch | `src/pipelines/dispatch.ts`, `src/pipelines/pump.ts` | Claim assignments and deliver them to agent sessions. |
+| Dispatch | `src/pipelines/dispatch.ts`, `src/pipelines/pump.ts` | Claim assignments and deliver them to agent sessions, restoring bounded Slack attachments from durable state. |
+| Slack attachment durability | `src/slack/files.ts`, `src/pipelines/default/controller.ts`, `src/session/manager.ts` | Bounds the existing `SlackFileAttachment` contract, stores refs on default assignments/outbox payloads, and restores them on synthetic dispatch events. |
 | Structured monitoring | `src/pipelines/logging.ts`, dispatch, settlement, outcome, and GitHub review modules | Emits searchable `event=...` lifecycle records keyed by run, thread, assignment, and agent. |
 | Persistence | `src/pipelines/store/*` | Memory and SQLite stores, versioned writes, and transactional outcome handling. |
 | Reliability | `src/pipelines/outbox.ts`, `recovery.ts`, `settlement-recovery` paths | At-least-once outbox delivery, lease recovery, and settlement repair. |
@@ -35,6 +36,12 @@ Assignments use leases and idempotency keys. The outbox is at-least-once, so
 consumers and outcome writes must remain idempotent; version/CAS checks prevent
 stale workers from overwriting newer state. Retention is controlled by
 `PIPELINE_RETENTION_DAYS`.
+
+Ordinary Slack messages routed through an active default run retain up to eight
+attachment references (bounded URL, filename, and MIME type fields) on the
+assignment and its dispatch outbox item. The pump validates those JSON refs and
+reconstructs `SlackMessageEvent.files` before `SessionManager` downloads them;
+missing refs remain backward-compatible with older outbox rows.
 
 The localhost dashboard defaults to a readable **dispatch trace** in
 `public/js/pipelines.js`: run start/end, assignment source→target agents,

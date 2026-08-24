@@ -431,6 +431,49 @@ describe("SessionManager", () => {
     expect(mockSpawnFn.mock.calls[0][1]).toContain("make the small config change");
   });
 
+  it("preserves Slack attachments through the durable default run", async () => {
+    const pipelineStore = new InMemoryPipelineStore();
+    manager = createTestManager(store, cloneConfig({
+      pipeline: {
+        runtimeMode: "active",
+        legacyDirectivesEnabled: true,
+        bugPipelineEnabled: true,
+        productPipelineEnabled: true,
+        retentionDays: 90,
+      },
+    }));
+    manager.pipelineStore = pipelineStore;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () => new Response("a,b\n1,2\n", { status: 200 })) as unknown as typeof fetch;
+    try {
+      await manager.handleMessage(makeEvent({
+        text: "review this csv",
+        files: [{
+          url: "https://files.slack.com/files-pri/T/F/download/input.csv",
+          name: "input.csv",
+          mimetype: "text/csv",
+        }],
+      }));
+      await waitFor(() => mockSpawnFn.mock.calls.length === 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    const run = await pipelineStore.getRunByThread("thread-1");
+    const assignment = run
+      ? (await pipelineStore.listAssignments(run.id))[0]
+      : undefined;
+    const outbox = run ? (await pipelineStore.listOutbox(run.id))[0] : undefined;
+    expect(assignment?.files).toEqual([{
+      url: "https://files.slack.com/files-pri/T/F/download/input.csv",
+      name: "input.csv",
+      mimetype: "text/csv",
+    }]);
+    expect(outbox?.payload.files).toEqual(assignment?.files);
+    expect(mockSpawnFn.mock.calls[0][1]).toContain("The user shared files.");
+    expect(mockSpawnFn.mock.calls[0][1]).toContain("/tmp/junior-files/thread-1/input.csv");
+  });
+
   it("does not create a second default run for Re-review after a terminal run", async () => {
     const pipelineStore = new InMemoryPipelineStore();
     manager = createTestManager(store, cloneConfig({

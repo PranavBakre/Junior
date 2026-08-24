@@ -3,6 +3,8 @@
  * Phase 2 substrate — not wired into live Slack routing yet.
  */
 
+import type { SlackFileAttachment } from "../slack/events.ts";
+
 /** Bump only when the controller contract itself changes incompatibly. */
 export const PIPELINE_DEFINITION_VERSION = 1;
 
@@ -272,6 +274,8 @@ export type Assignment = {
   capabilityRefs: import("../agents/manifest.ts").AgentCapability[];
   status: AssignmentStatus;
   objective: string;
+  /** Bounded Slack attachments retained for the assignment's runner turn. */
+  files?: SlackFileAttachment[];
   contextRefs: string[];
   artifactRefs: string[];
   acceptanceCriteria: string[];
@@ -299,6 +303,7 @@ export type AssignmentCreate = Omit<
   | "createdAt"
   | "updatedAt"
 > & {
+  files?: SlackFileAttachment[];
   skillRef?: string | null;
   capabilityRefs?: import("../agents/manifest.ts").AgentCapability[];
   status?: AssignmentStatus;

@@ -20,7 +20,8 @@ Slack Bolt app setup, event filtering (with self-bot directive escape hatch), ho
 
 | Type | File | Shape |
 |---|---|---|
-| `SlackMessageEvent` | `events.ts` | `{ threadId, channel, user, text, ts, command, files?, isSelfBot?, botId?, botUsername?, mentionsJunior?, dedupeKey?, pipelineInvocation?, attributionUserId?, conversationalText? }` |
+| `SlackMessageEvent` | `events.ts` | `{ threadId, channel, user, text, ts, command, files?, isSelfBot?, botId?, botUsername?, mentionsJunior?, dedupeKey?, pipelineInvocation?, attributionUserId?, conversationalText? }`; durable default runs bound the `files` refs before persistence and restore them on pump dispatch. |
+| `boundSlackFileAttachments` / `parseSlackFileAttachments` | `files.ts` | Caps serialized Slack file refs and validates JSON-restored refs before they re-enter a synthetic event. |
 | `SlackFileAttachment` | `events.ts` | `{ url, name, mimetype }` |
 | `OnMessageCallback` | `events.ts` | `(event: SlackMessageEvent) => void` |
 

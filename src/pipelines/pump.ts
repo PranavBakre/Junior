@@ -7,6 +7,7 @@
 import type { Clock } from "../time/clock.ts";
 import { systemClock } from "../time/clock.ts";
 import { log } from "../logger.ts";
+import { parseSlackFileAttachments } from "../slack/files.ts";
 import type { PipelineStore } from "./store/interface.ts";
 import type { Assignment, PipelineOutboxRecord } from "./types.ts";
 import {
@@ -279,6 +280,9 @@ async function handleOutboxItem(
         // Control-plane routing remains synthetic while trusted provenance
         // supplies the conversational author for prompt attribution.
         userId: sourceSlackUserId,
+        files: Array.isArray(item.payload.files)
+          ? parseSlackFileAttachments(item.payload.files)
+          : undefined,
         dedupeKey: `pipeline-outbox:${item.idempotencyKey}`,
         pipelineInvocation: {
           runId: run.id,

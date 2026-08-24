@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { readFile } from "node:fs/promises";
-import { downloadSlackFiles } from "./files.ts";
+import {
+  boundSlackFileAttachments,
+  downloadSlackFiles,
+  MAX_DURABLE_SLACK_FILES,
+  parseSlackFileAttachments,
+} from "./files.ts";
 
 const originalFetch = globalThis.fetch;
 
@@ -78,5 +83,22 @@ describe("sanitizeFileName", () => {
     expect(paths).toEqual([
       "/tmp/junior-files/thread-files-sanitize-test/_buffered-message_.png",
     ]);
+  });
+});
+
+describe("durable Slack attachment refs", () => {
+  it("bounds and validates refs before pipeline persistence", () => {
+    const files = Array.from({ length: MAX_DURABLE_SLACK_FILES + 2 }, (_, index) => ({
+      url: ` https://files/${index} `,
+      name: `file-${index}.txt`,
+      mimetype: "text/plain",
+    }));
+    const bounded = boundSlackFileAttachments(files);
+    expect(bounded).toHaveLength(MAX_DURABLE_SLACK_FILES);
+    expect(bounded[0]?.url).toBe("https://files/0");
+    expect(parseSlackFileAttachments([
+      ...bounded,
+      { url: 42, name: "bad", mimetype: "text/plain" },
+    ])).toEqual(bounded);
   });
 });

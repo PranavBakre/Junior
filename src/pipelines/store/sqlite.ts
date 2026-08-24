@@ -86,6 +86,7 @@ type AssignmentRow = {
   capability_refs_json: string;
   status: string;
   objective: string;
+  files_json: string;
   context_refs_json: string;
   artifact_refs_json: string;
   acceptance_json: string;
@@ -394,6 +395,7 @@ export class SqlitePipelineStore implements PipelineStore {
         capability_refs_json TEXT NOT NULL DEFAULT '[]',
         status TEXT NOT NULL,
         objective TEXT NOT NULL,
+        files_json TEXT NOT NULL DEFAULT '[]',
         context_refs_json TEXT NOT NULL DEFAULT '[]',
         artifact_refs_json TEXT NOT NULL DEFAULT '[]',
         acceptance_json TEXT NOT NULL DEFAULT '[]',
@@ -428,6 +430,11 @@ export class SqlitePipelineStore implements PipelineStore {
     if (!assignmentColumns.some((column) => column.name === "capability_refs_json")) {
       this.db.run(
         `ALTER TABLE pipeline_assignments ADD COLUMN capability_refs_json TEXT NOT NULL DEFAULT '[]'`,
+      );
+    }
+    if (!assignmentColumns.some((column) => column.name === "files_json")) {
+      this.db.run(
+        `ALTER TABLE pipeline_assignments ADD COLUMN files_json TEXT NOT NULL DEFAULT '[]'`,
       );
     }
 
@@ -951,6 +958,7 @@ export class SqlitePipelineStore implements PipelineStore {
         capabilityRefs: [...(assignmentInput.capabilityRefs ?? [])],
         status: assignmentInput.status ?? "pending",
         objective: assignmentInput.objective,
+        files: [...(assignmentInput.files ?? [])],
         contextRefs: [...assignmentInput.contextRefs],
         artifactRefs: [...assignmentInput.artifactRefs],
         acceptanceCriteria: [...assignmentInput.acceptanceCriteria],
@@ -1095,6 +1103,7 @@ export class SqlitePipelineStore implements PipelineStore {
       capabilityRefs: [...(input.capabilityRefs ?? [])],
       status: input.status ?? "pending",
       objective: input.objective,
+      files: [...(input.files ?? [])],
       contextRefs: [...input.contextRefs],
       artifactRefs: [...input.artifactRefs],
       acceptanceCriteria: [...input.acceptanceCriteria],
@@ -1132,6 +1141,7 @@ export class SqlitePipelineStore implements PipelineStore {
             skillRef: input.assignment.skillRef ?? null,
             capabilityRefs: [...(input.assignment.capabilityRefs ?? [])],
             status: input.assignment.status ?? ("pending" as const),
+            files: [...(input.assignment.files ?? [])],
             leaseOwner: input.assignment.leaseOwner ?? null,
             leaseExpiresAt: input.assignment.leaseExpiresAt ?? null,
             createdAt: now,
@@ -2930,11 +2940,11 @@ export class SqlitePipelineStore implements PipelineStore {
         `INSERT INTO pipeline_assignments (
           id, run_id, parent_assignment_id, source_agent, source_slack_user_id,
           target_agent, skill_ref, capability_refs_json,
-          status, objective, context_refs_json, artifact_refs_json,
+          status, objective, files_json, context_refs_json, artifact_refs_json,
           acceptance_json, mutation_scope_json, dependencies_json,
           attempt_number, attempt_id, candidate_revision_digest, deadline_at,
           lease_owner, lease_expires_at, idempotency_key, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(idempotency_key) DO NOTHING`,
       )
       .run(
@@ -2948,6 +2958,7 @@ export class SqlitePipelineStore implements PipelineStore {
         JSON.stringify(assignment.capabilityRefs),
         assignment.status,
         assignment.objective,
+        JSON.stringify(assignment.files ?? []),
         JSON.stringify(assignment.contextRefs),
         JSON.stringify(assignment.artifactRefs),
         JSON.stringify(assignment.acceptanceCriteria),
@@ -3091,6 +3102,7 @@ function assignmentFromRow(row: AssignmentRow): Assignment {
     ) as Assignment["capabilityRefs"],
     status: row.status as Assignment["status"],
     objective: row.objective,
+    files: parseJsonArray(row.files_json) as unknown as Assignment["files"],
     contextRefs: parseJsonArray(row.context_refs_json),
     artifactRefs: parseJsonArray(row.artifact_refs_json),
     acceptanceCriteria: parseJsonArray(row.acceptance_json),
