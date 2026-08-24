@@ -31,7 +31,13 @@ describe("MongoDB MCP read-only proxy", () => {
                     type: "object",
                     additionalProperties: true,
                   },
-                  limit: { type: "integer" },
+                  limit: {
+                    type: "number",
+                    minimum: 0,
+                    maximum: 1000,
+                    description: "Upstream page size",
+                    "x-upstream": "preserved",
+                  },
                 },
                 required: ["connectionId", "database", "collection"],
               },
@@ -73,6 +79,13 @@ describe("MongoDB MCP read-only proxy", () => {
         },
       });
       expect(tools[0]?.inputSchema.properties).not.toHaveProperty("connectionId");
+      expect(tools[0]?.inputSchema.properties?.limit).toEqual({
+        type: "integer",
+        minimum: 1,
+        maximum: 100,
+        description: "Upstream page size. Must be between 1 and 100.",
+        "x-upstream": "preserved",
+      });
       expect(tools[0]?.inputSchema.required).toEqual(["database", "collection", "limit"]);
 
       const filter = {

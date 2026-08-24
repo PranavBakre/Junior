@@ -129,11 +129,23 @@ function hideMongoConnectionId<T extends { name: string; description?: string; i
     : schema.required;
   if (tool.name === "find") {
     properties ??= {};
-    properties.limit ??= {
+    const upstreamLimit = properties.limit && typeof properties.limit === "object"
+      ? properties.limit as Record<string, unknown>
+      : {};
+    const upstreamMinimum = typeof upstreamLimit.minimum === "number"
+      ? upstreamLimit.minimum
+      : 1;
+    const upstreamMaximum = typeof upstreamLimit.maximum === "number"
+      ? upstreamLimit.maximum
+      : MONGODB_FIND_MAX_LIMIT;
+    properties.limit = {
+      ...upstreamLimit,
       type: "integer",
-      minimum: 1,
-      maximum: MONGODB_FIND_MAX_LIMIT,
-      description: "Required bounded page size; results never exceed 100 documents.",
+      minimum: Math.max(1, upstreamMinimum),
+      maximum: Math.min(MONGODB_FIND_MAX_LIMIT, upstreamMaximum),
+      description: typeof upstreamLimit.description === "string"
+        ? `${upstreamLimit.description}. Must be between 1 and ${MONGODB_FIND_MAX_LIMIT}.`
+        : `Required bounded page size; results never exceed ${MONGODB_FIND_MAX_LIMIT} documents.`,
     };
     const findRequired = Array.isArray(required) ? [...required] : [];
     if (!findRequired.includes("limit")) findRequired.push("limit");
