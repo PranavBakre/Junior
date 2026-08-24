@@ -331,11 +331,16 @@ export interface ArchiveStaleClaimsOptions {
   maxWeight: number;
   /** Clock; defaults to `Date.now()` at the call site. */
   now?: number;
+  /** Report candidates without changing rows unless explicitly applied. */
+  apply?: boolean;
 }
 
 export interface ArchiveStaleClaimsResult {
+  /** All eligible ids, including dry-run candidates. */
+  candidateIds: string[];
   /** Ids of the claims flipped to `active = 0` (ARCHIVED, never deleted). */
   archivedIds: string[];
+  applied: boolean;
 }
 
 export interface MemoryHealthOptions {

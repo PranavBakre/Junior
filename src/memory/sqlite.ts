@@ -54,11 +54,10 @@ const CLAIM_MERGE_WEIGHT_BUMP = 0.1;
  *
  * NOTE what does NOT save you here: nothing in this codebase ever decrements a
  * claim's `weight` — there is no downweight-on-unhelpful and no time decay — and
- * `archiveStaleClaims` (the only thing that could retire an over-weighted claim)
- * has no production caller at all. An over-weighted claim is permanent, so the
- * ceiling is the ONLY bound. Do not relax it on the assumption that decay will
- * clean up afterwards. See the backlog note in
- * docs/features/claim-dedup-write-guard.md.
+ * `archiveStaleClaims` is report-first and only retires claims behind an
+ * explicit `apply:true` gate. It is not a hot-path TTL; operators review the
+ * scheduled report before applying the owned age/value thresholds. The ceiling
+ * remains the only bound on merge bumps. See docs/features/claim-dedup-write-guard.md.
  *
  * The cap only ever holds a bump DOWN; it never pulls an explicitly-set higher
  * weight back to the ceiling. `helpful_count` is deliberately NOT capped — it
@@ -1153,15 +1152,17 @@ export class SqliteMemoryStore implements MemoryStore {
                 OR (last_used_at IS NULL AND created_at < ?))`,
       )
       .all(options.maxWeight, cutoff, cutoff);
-    const archivedIds = rows.map((row) => row.id);
-    if (archivedIds.length > 0) {
+    const candidateIds = rows.map((row) => row.id);
+    const apply = options.apply === true;
+    const archivedIds = apply ? candidateIds : [];
+    if (apply && archivedIds.length > 0) {
       const archive = this.db.query("UPDATE claim SET active = 0 WHERE id = ?");
       const txn = this.db.transaction(() => {
         for (const id of archivedIds) archive.run(id);
       });
       txn();
     }
-    return { archivedIds };
+    return { candidateIds, archivedIds, applied: apply };
   }
 
   /**

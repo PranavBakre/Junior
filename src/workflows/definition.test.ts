@@ -163,6 +163,26 @@ describe("validateWorkflowDefinition", () => {
     expect(definition.runner).toBeUndefined();
   });
 
+  it("accepts the report-first memory decay native handler", () => {
+    const definition = validateWorkflowDefinition({
+      path: "workflows/memory-decay-report.workflow.md",
+      sourceRoot: "public",
+      repos,
+      content: validContent(),
+      body: "Report only.",
+      frontmatter: {
+        name: "memory-decay-report",
+        enabled: true,
+        nativeHandler: "memory-decay-report",
+        ownerSlackUserIds: [],
+        triggers: [{ type: "schedule", cron: "18 6 * * 1", timezone: "Asia/Kolkata" }],
+        outputs: [{ type: "docs", path: "data/workflow-runs/memory-decay-report" }],
+        permissions: { tools: ["docs.write", "memory.read", "memory.write", "memory.evaluate"] },
+      },
+    });
+    expect(definition.nativeHandler).toBe("memory-decay-report");
+  });
+
   it("rejects unknown native handlers and native-handler plus runner ambiguity", () => {
     const base = {
       name: "worklog",

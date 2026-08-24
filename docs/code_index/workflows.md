@@ -27,6 +27,8 @@ also enqueue, start, stop, reload, create, and edit workflows; see
 The current repository definitions are:
 
 - `workflows/memory-consolidation.workflow.md`
+- `workflows/memory-decay-report.workflow.md` (native, report-first stale-claim
+  decay; archival requires the CLI `--apply` gate)
 - `workflows/memory-dedup-sweep.workflow.md` (native, report-only — see
   [claim-dedup-write-guard.md](../features/claim-dedup-write-guard.md))
 - `workflows/release-notes.workflow.md`

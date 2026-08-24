@@ -13,6 +13,49 @@ import type { ConsolidationInvoke, ConsolidationOutput } from "./consolidation/t
 process.env.MEMORY_EMBED_PROVIDER = "hashing";
 
 describe("memory CLI", () => {
+  it("archive-stale is report-first and requires --apply", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
+    const dbPath = join(tmpDir, "memory.db");
+    const now = Date.now();
+    try {
+      const store = new SqliteMemoryStore(dbPath);
+      await store.upsertClaim({
+        id: "stale-cli",
+        kind: "lesson",
+        text: "old lesson",
+        embedding: new Float32Array([1, 0, 0]),
+        weight: 0.2,
+        createdAt: now - 1000,
+        lastUsedAt: now - 1000,
+        skipDedup: true,
+      });
+      store.close();
+
+      const dry = JSON.parse(await runMemoryCli([
+        "archive-stale", "--db", dbPath, "--older-than-ms", "500", "--max-weight", "0.5", "--json",
+      ])) as { candidateIds: string[]; archivedIds: string[]; applied: boolean };
+      expect(dry.candidateIds).toEqual(["stale-cli"]);
+      expect(dry.archivedIds).toEqual([]);
+      expect(dry.applied).toBe(false);
+
+      await expect(runMemoryCli([
+        "archive-stale", "--db", dbPath, "--older-than-ms", "1", "--apply", "--json",
+      ])).rejects.toThrow("threshold overrides are dry-run only");
+
+      process.env.MEMORY_ARCHIVE_OLDER_THAN_MS = "500";
+      process.env.MEMORY_ARCHIVE_MAX_WEIGHT = "0.5";
+      const applied = JSON.parse(await runMemoryCli([
+        "archive-stale", "--db", dbPath, "--apply", "--json",
+      ])) as { archivedIds: string[]; applied: boolean };
+      expect(applied.archivedIds).toEqual(["stale-cli"]);
+      expect(applied.applied).toBe(true);
+      delete process.env.MEMORY_ARCHIVE_OLDER_THAN_MS;
+      delete process.env.MEMORY_ARCHIVE_MAX_WEIGHT;
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("add-lesson mirrors the lesson into the semantic claim store", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "junior-memory-cli-"));
     const dbPath = join(tmpDir, "memory.db");
