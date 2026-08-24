@@ -75,7 +75,7 @@ describe("registerEventHandlers — referenced Slack permalinks", () => {
       }],
     }));
     const onMessage = mock((_e: SlackMessageEvent) => {});
-    registerEventHandlers(app, onMessage);
+    registerEventHandlers(app, onMessage, undefined, undefined, undefined, undefined, undefined, undefined, "https://team.slack.com");
 
     await handlers.get("message")!({
       event: {

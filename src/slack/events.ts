@@ -156,6 +156,7 @@ export function registerEventHandlers(
   autoTriggerChannels?: Set<string>,
   onArchiveMessage?: OnArchiveMessageCallback,
   archiveApprovedChannels?: ReadonlySet<string>,
+  slackWorkspaceOrigin?: string,
 ): void {
   app.event("message", async ({ event }) => {
     const archiveChannelType = "channel_type" in event ? event.channel_type : undefined;
@@ -274,6 +275,11 @@ export function registerEventHandlers(
     const referencedContext = await resolveReferencedSlackContext(
       app.client,
       deliveredText,
+      {
+        workspaceOrigin: slackWorkspaceOrigin,
+        currentChannel: event.channel,
+        currentThreadTs: threadId,
+      },
     );
     await onMessage({
       threadId,
@@ -332,6 +338,11 @@ export function registerEventHandlers(
     const referencedContext = await resolveReferencedSlackContext(
       app.client,
       deliveredText,
+      {
+        workspaceOrigin: slackWorkspaceOrigin,
+        currentChannel: event.channel,
+        currentThreadTs: threadId,
+      },
     );
     await onMessage({
       threadId,

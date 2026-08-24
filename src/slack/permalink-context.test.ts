@@ -18,12 +18,16 @@ describe("parseSlackPermalinks", () => {
   it("normalizes Slack permalink timestamps and deduplicates in order", () => {
     expect(parseSlackPermalinks(
       "see https://team.slack.com/archives/C123ABC/p1700000000123456 and https://team.slack.com/archives/C123ABC/p1700000000123456",
+      "https://team.slack.com",
     )).toEqual([{
       permalink: "https://team.slack.com/archives/C123ABC/p1700000000123456",
       channel: "C123ABC",
       messageTs: "1700000000.123456",
     }]);
-    expect(parseSlackPermalinks("https://example.com/not-slack/archives/C1/p1")).toEqual([]);
+    expect(parseSlackPermalinks(
+      "https://evil.example/archives/C123ABC/p1700000000123456",
+      "https://team.slack.com",
+    )).toEqual([]);
   });
 });
 
@@ -48,6 +52,7 @@ describe("resolveReferencedSlackContext", () => {
     const context = await resolveReferencedSlackContext(
       client(replies),
       "Please inspect https://team.slack.com/archives/C123ABC/p1700000000123456",
+      { workspaceOrigin: "https://team.slack.com" },
     );
     expect(context).toContain("<referenced-slack-context>");
     expect(context).toContain("quoted &lt;instruction&gt; &amp; text");
@@ -59,10 +64,12 @@ describe("resolveReferencedSlackContext", () => {
     const denied = await resolveReferencedSlackContext(
       client(async () => ({ ok: false, messages: [] })),
       "https://team.slack.com/archives/C123ABC/p1700000000123456",
+      { workspaceOrigin: "https://team.slack.com" },
     );
     const failed = await resolveReferencedSlackContext(
       client(async () => { throw new Error("missing_scope"); }),
       "https://team.slack.com/archives/C123ABC/p1700000000123456",
+      { workspaceOrigin: "https://team.slack.com" },
     );
     expect(denied).toBeNull();
     expect(failed).toBeNull();
@@ -85,8 +92,24 @@ describe("resolveReferencedSlackContext", () => {
       Array.from({ length: MAX_REFERENCED_PERMALINKS + 2 }, (_, index) =>
         `https://team.slack.com/archives/C123ABC/p170000000${String(index).padStart(6, "0")}`,
       ).join(" "),
+      { workspaceOrigin: "https://team.slack.com" },
     );
     expect(calls).toBe(MAX_REFERENCED_PERMALINKS);
     expect(context!.length).toBeLessThanOrEqual(MAX_REFERENCED_CONTEXT_CHARS + 500);
+  });
+
+  it("skips a permalink to the current channel thread without reading Slack", async () => {
+    const replies = mock(async () => ({ ok: true, messages: [] }));
+    const context = await resolveReferencedSlackContext(
+      client(replies),
+      "https://team.slack.com/archives/C123ABC/p1700000000123456",
+      {
+        workspaceOrigin: "https://team.slack.com",
+        currentChannel: "C123ABC",
+        currentThreadTs: "1700000000.123456",
+      },
+    );
+    expect(context).toBeNull();
+    expect(replies).not.toHaveBeenCalled();
   });
 });

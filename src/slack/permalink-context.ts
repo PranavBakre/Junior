@@ -48,11 +48,23 @@ export type SlackPermalinkReference = {
 };
 
 /** Parse canonical Slack archive permalinks in stable, deterministic order. */
-export function parseSlackPermalinks(text: string): SlackPermalinkReference[] {
+export function parseSlackPermalinks(
+  text: string,
+  workspaceOrigin?: string,
+): SlackPermalinkReference[] {
+  const originHost = workspaceHost(workspaceOrigin);
+  if (!originHost) return [];
   const pattern = /https?:\/\/[^\s<>/]+\/archives\/([CGD][A-Z0-9]+)\/p(\d{10,20})(?:[/?#][^\s<>]*)?/gi;
   const references: SlackPermalinkReference[] = [];
   const seen = new Set<string>();
   for (const match of text.matchAll(pattern)) {
+    let host: string;
+    try {
+      host = new URL(match[0]!).host.toLowerCase();
+    } catch {
+      continue;
+    }
+    if (host !== originHost) continue;
     const channel = match[1]!.toUpperCase();
     const digits = match[2]!;
     const messageTs = `${digits.slice(0, -6)}.${digits.slice(-6)}`;
@@ -77,8 +89,17 @@ export function parseSlackPermalinks(text: string): SlackPermalinkReference[] {
 export async function resolveReferencedSlackContext(
   client: RepliesClient,
   text: string,
+  options: {
+    workspaceOrigin?: string;
+    currentChannel?: string;
+    currentThreadTs?: string;
+  } = {},
 ): Promise<string | null> {
-  const references = parseSlackPermalinks(text);
+  const references = parseSlackPermalinks(text, options.workspaceOrigin)
+    .filter((reference) =>
+      reference.channel !== options.currentChannel ||
+      reference.messageTs !== options.currentThreadTs,
+    );
   if (references.length === 0) return null;
 
   const sections: string[] = [];
@@ -149,4 +170,15 @@ function quote(value: string): string {
     '"': "&quot;",
     "&": "&amp;",
   })[character]!);
+}
+
+function workspaceHost(origin: string | undefined): string | null {
+  if (!origin) return null;
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "https:") return null;
+    return parsed.host.toLowerCase();
+  } catch {
+    return null;
+  }
 }

@@ -801,8 +801,10 @@ setInterval(() => {
 
   // Resolve bot identity before registering event handlers
   let selfBotId: string | undefined;
+  let slackWorkspaceOrigin: string | undefined;
   try {
     const auth = await app.client.auth.test();
+    if (auth.url) slackWorkspaceOrigin = auth.url;
     if (auth.user_id) {
       sessionManager.botUserId = auth.user_id;
       log.info("boot", `Bot user ID: ${auth.user_id}`);
@@ -828,7 +830,7 @@ setInterval(() => {
     await supportRouter.handleMessage(event);
   }, store, selfBotId, sessionManager.botUserId, autoTriggerChannels, (message) => {
     slackArchiveStore?.upsertMessage(message);
-  }, new Set(config.slackArchive?.approvedChannelIds ?? []));
+  }, new Set(config.slackArchive?.approvedChannelIds ?? []), slackWorkspaceOrigin);
 
   if (config.http.enabled) {
     // Bun.serve throws synchronously on port conflict (EADDRINUSE) and a few

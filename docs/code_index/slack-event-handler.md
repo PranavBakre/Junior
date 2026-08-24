@@ -79,8 +79,9 @@ In a thread reply (not DM, not auto-trigger), the handler skips messages whose `
 
 ### Cross-thread permalink context
 
-Ingress recognizes canonical Slack archive URLs in message text and resolves
-up to three unique links before dispatch. Each lookup is capped to one exact
+Ingress recognizes canonical Slack archive URLs on the workspace origin
+returned by Slack `auth.test` and resolves up to three unique links before
+dispatch. Arbitrary hosts are rejected. Each lookup is capped to one exact
 message history read plus an eight-message reply window, and the final quoted
 context is capped at 6,000 characters. The resolver escapes structural
 delimiters and treats Slack permission/API failures as a best-effort miss, so
