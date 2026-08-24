@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,10 +15,13 @@ import {
   buildPreRecallCodexArgs,
   buildPreRecallClaudeArgs,
   buildSynthesisPrompt,
+  claudeRunText,
+  codexRunText,
   createPreRecall,
   deriveRecallQueries,
   FALLBACK_MIN_COSINE,
   maxCosine,
+  openCodeRunText,
   parseSynthesisResult,
   recallCandidates,
   readBoundedTextFile,
@@ -20,6 +31,10 @@ import {
   type RunTextFn,
   type SynthesisCandidate,
 } from "./pre-recall.ts";
+import {
+  DATABASE_CREDENTIAL_ENV_KEYS,
+  STERILE_RUNNER_SECRET_ENV_KEYS,
+} from "../runners/runtime.ts";
 
 describe("buildPreRecallCodexArgs", () => {
   test("pins the requested model and reasoning effort in an isolated run", () => {
@@ -108,6 +123,110 @@ describe("buildPreRecallClaudeArgs", () => {
     // Bare -p with no inline prompt: the caller writes the message to stdin.
     expect(args[0]).toBe("-p");
     expect(args[1]).toMatch(/^--/);
+  });
+});
+
+describe("pre-recall subprocess environment", () => {
+  test("classifies reconciliation and every Mixpanel regional credential as sterile", () => {
+    expect(STERILE_RUNNER_SECRET_ENV_KEYS).toEqual(expect.arrayContaining([
+      "GITHUB_RECONCILE_TOKEN",
+      "MIXPANEL_MCP_TOKEN",
+      "MIXPANEL_MCP_US_TOKEN",
+      "MIXPANEL_MCP_EU_TOKEN",
+      "MIXPANEL_MCP_IN_TOKEN",
+    ]));
+  });
+
+  test("uses explicit secret sentinels for every provider despite a hostile cwd dotenv", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-pre-recall-hostile-env-"));
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const original = Object.fromEntries(
+      ["PATH", "TMPDIR", "JUNIOR_TEST_CAPTURE_ROOT", ...STERILE_RUNNER_SECRET_ENV_KEYS]
+        .map((key) => [key, process.env[key]]),
+    );
+    const hostileValues = Object.fromEntries(
+      STERILE_RUNNER_SECRET_ENV_KEYS.map((key) => [key, `hostile-${key}`]),
+    );
+
+    const capture = [
+      "#!/bin/sh",
+      'capture="$JUNIOR_TEST_CAPTURE_ROOT/${0##*/}"',
+      "{",
+      '  printf "cwd=%s\\n" "$PWD"',
+      ...STERILE_RUNNER_SECRET_ENV_KEYS.map(
+        (key) => `  printf '${key}=%s\\n' "\$${key}"`,
+      ),
+      '} > "$capture"',
+    ];
+    writeFileSync(
+      join(root, ".env"),
+      Object.entries(hostileValues).map(([key, value]) => `${key}=${value}`).join("\n"),
+    );
+    writeFileSync(
+      join(bin, "claude"),
+      [...capture, "printf '{\\\"result\\\":\\\"safe\\\"}'"].join("\n"),
+    );
+    writeFileSync(
+      join(bin, "opencode"),
+      [
+        ...capture,
+        "printf '{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"safe\\\"}\\n{\\\"type\\\":\\\"step_finish\\\"}\\n'",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(bin, "codex"),
+      [
+        ...capture,
+        'while [ "$#" -gt 0 ]; do if [ "$1" = "-o" ]; then out="$2"; break; fi; shift; done',
+        'printf "safe" > "$out"',
+      ].join("\n"),
+    );
+    for (const name of ["claude", "opencode", "codex"]) chmodSync(join(bin, name), 0o755);
+
+    try {
+      process.env.PATH = `${bin}:${original.PATH ?? ""}`;
+      process.env.TMPDIR = root;
+      process.env.JUNIOR_TEST_CAPTURE_ROOT = root;
+      for (const [key, value] of Object.entries(hostileValues)) process.env[key] = value;
+
+      await expect(claudeRunText({
+        prompt: "test",
+        model: "claude-haiku-4-5-20251001",
+        timeoutMs: 5_000,
+      })).resolves.toBe("safe");
+      await expect(openCodeRunText({
+        prompt: "test",
+        model: "opencode-go/deepseek-v4-pro",
+        timeoutMs: 5_000,
+      })).resolves.toBe("safe");
+      await expect(codexRunText({
+        prompt: "test",
+        model: "gpt-5.6-luna",
+        timeoutMs: 5_000,
+      })).resolves.toBe("safe");
+
+      for (const provider of ["claude", "opencode", "codex"]) {
+        const captured = Object.fromEntries(
+          readFileSync(join(root, provider), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => {
+              const separator = line.indexOf("=");
+              return [line.slice(0, separator), line.slice(separator + 1)];
+            }),
+        );
+        expect(captured.cwd).toBe(realpathSync(root));
+        for (const key of STERILE_RUNNER_SECRET_ENV_KEYS) expect(captured[key]).toBe("");
+        for (const key of DATABASE_CREDENTIAL_ENV_KEYS) expect(captured[key]).toBe("");
+      }
+    } finally {
+      for (const [key, value] of Object.entries(original)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
