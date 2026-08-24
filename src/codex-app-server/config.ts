@@ -136,6 +136,9 @@ export function buildCodexConfigToml(options: {
   lines.push("");
   lines.push("[features]");
   lines.push("multi_agent = false");
+  // Junior supplies capability-scoped MCP tools. Do not inherit personal
+  // Codex connected apps (for example GitHub) from the shared auth session.
+  lines.push("apps = false");
   lines.push("");
 
   for (const [name, server] of Object.entries(options.mcp ?? {})) {
