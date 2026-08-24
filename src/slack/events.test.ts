@@ -48,15 +48,53 @@ describe("canonicalizeLiveSlackMessage", () => {
 
 type EventHandler = (args: { event: Record<string, unknown> }) => Promise<void> | void;
 
-function makeMockApp() {
+function makeMockApp(
+  replies: (...args: any[]) => Promise<{
+    ok?: boolean;
+    messages?: Array<Record<string, unknown>>;
+  }> = async () => ({ ok: true, messages: [] }),
+) {
   const handlers = new Map<string, EventHandler>();
   const app = {
     event: (name: string, handler: EventHandler) => {
       handlers.set(name, handler);
     },
+    client: { conversations: { replies } },
   } as unknown as App;
   return { app, handlers };
 }
+
+describe("registerEventHandlers — referenced Slack permalinks", () => {
+  it("injects server-fetched context before dispatch while preserving the source text", async () => {
+    const { app, handlers } = makeMockApp(async () => ({
+      ok: true,
+      messages: [{
+        ts: "1700000000.123456",
+        user: "U_REF",
+        text: "referenced decision",
+      }],
+    }));
+    const onMessage = mock((_e: SlackMessageEvent) => {});
+    registerEventHandlers(app, onMessage);
+
+    await handlers.get("message")!({
+      event: {
+        type: "message",
+        text: "please use https://team.slack.com/archives/C123ABC/p1700000000123456",
+        channel: "D123",
+        channel_type: "im",
+        ts: "1700000010.000000",
+        user: "U1",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    const delivered = onMessage.mock.calls[0][0].text;
+    expect(delivered).toContain("please use https://team.slack.com/archives/C123ABC/p1700000000123456");
+    expect(delivered).toContain("<referenced-slack-context>");
+    expect(delivered).toContain("referenced decision");
+  });
+});
 
 describe("isForeignBotThinking", () => {
   it("matches a leading ✽", () => {

@@ -8,6 +8,7 @@ import type {
   SlackArchiveFile,
   SlackArchiveMessageInput,
 } from "./archive-types.ts";
+import { resolveReferencedSlackContext } from "./permalink-context.ts";
 
 /**
  * Detect whether a self-bot message contains at least one `!<persistent-agent>`
@@ -270,11 +271,15 @@ export function registerEventHandlers(
         ? (event as { bot_id: string }).bot_id
         : undefined;
 
+    const referencedContext = await resolveReferencedSlackContext(
+      app.client,
+      deliveredText,
+    );
     await onMessage({
       threadId,
       channel: event.channel,
       user,
-      text: deliveredText,
+      text: referencedContext ? `${deliveredText}\n\n${referencedContext}` : deliveredText,
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
@@ -324,11 +329,15 @@ export function registerEventHandlers(
         : undefined;
     const isSelfBot = !!(botId && selfBotId && botId === selfBotId);
 
+    const referencedContext = await resolveReferencedSlackContext(
+      app.client,
+      deliveredText,
+    );
     await onMessage({
       threadId,
       channel: event.channel,
       user: event.user,
-      text: deliveredText,
+      text: referencedContext ? `${deliveredText}\n\n${referencedContext}` : deliveredText,
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
