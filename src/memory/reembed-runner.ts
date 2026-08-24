@@ -74,6 +74,8 @@ export interface IsolatedComposerRequest {
   prompt: string;
   model?: string;
   timeoutMs?: number;
+  /** Test seam for an executable that behaves like the Claude CLI. */
+  command?: string;
 }
 
 export function armComposerTimeout(
@@ -159,7 +161,7 @@ export async function runNoToolsComposer(
   const root = await mkdtemp(join(tmpdir(), "junior-reembed-claude-"));
   try {
     const proc = Bun.spawn(
-      ["claude", ...buildNoToolsComposerArgs(request.model ?? DEFAULT_COMPOSER_MODEL)],
+      [request.command ?? "claude", ...buildNoToolsComposerArgs(request.model ?? DEFAULT_COMPOSER_MODEL)],
       {
         cwd: root,
         env: sterileComposerEnvironment(),
