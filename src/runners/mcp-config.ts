@@ -54,14 +54,25 @@ export function mixpanelMcpUrl(session: ThreadSession): string {
   return buildMixpanelMcpUrl(session);
 }
 
+/** Hosted MCP endpoints authenticate with Claude's user OAuth credentials. */
+export function figmaMcpUrl(): string {
+  return "https://mcp.figma.com/mcp";
+}
+
+/** Hosted MCP endpoints authenticate with Claude's user OAuth credentials. */
+export function notionMcpUrl(): string {
+  return "https://mcp.notion.com/mcp";
+}
+
 export function playwrightMcpCommand(): StdioMcpCommand {
   return wrappedStdioMcpCommand(["npx", "@playwright/mcp", "--headless"]);
 }
 
-export function needsUserSettings(): boolean {
-  // Figma and Notion MCP are unconditionally included and require OAuth tokens
-  // stored at the user level (~/.claude/). Always widen setting sources.
-  return true;
+export function needsUserSettings(session: ThreadSession): boolean {
+  // Claude stores hosted MCP OAuth credentials at the user level. Only a run
+  // that explicitly requested one of those servers may load user settings;
+  // all other runs retain project-only settings isolation.
+  return wantsMcp(session, "figma") || wantsMcp(session, "notion");
 }
 
 export function buildOpenCodeMcpConfig(
@@ -101,6 +112,20 @@ export function buildOpenCodeMcpConfig(
     mcp.mongodb = {
       type: "remote",
       url: mongoMcpUrl(session),
+      enabled: true,
+    };
+  }
+  if (config.opencode.figmaMcpEnabled !== false && wantsMcp(session, "figma")) {
+    mcp.figma = {
+      type: "remote",
+      url: figmaMcpUrl(),
+      enabled: true,
+    };
+  }
+  if (config.opencode.notionMcpEnabled !== false && wantsMcp(session, "notion")) {
+    mcp.notion = {
+      type: "remote",
+      url: notionMcpUrl(),
       enabled: true,
     };
   }

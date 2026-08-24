@@ -108,6 +108,8 @@ describe("loadConfig runner providers", () => {
       playwrightMcpEnabled: true,
       mixpanelMcpEnabled: true,
       mongodbMcpEnabled: true,
+      figmaMcpEnabled: true,
+      notionMcpEnabled: true,
     });
     expect(config.codex).toEqual({
       mode: "app-server",
@@ -123,6 +125,8 @@ describe("loadConfig runner providers", () => {
       playwrightMcpEnabled: true,
       mixpanelMcpEnabled: true,
       mongodbMcpEnabled: true,
+      figmaMcpEnabled: true,
+      notionMcpEnabled: true,
       memoryMcpEnabled: true,
       isolatedHomePath: "data/codex-home",
     });
@@ -200,6 +204,8 @@ describe("loadConfig runner providers", () => {
       playwrightMcpEnabled: false,
       mixpanelMcpEnabled: false,
       mongodbMcpEnabled: false,
+      figmaMcpEnabled: true,
+      notionMcpEnabled: true,
     });
   });
 
@@ -356,6 +362,8 @@ describe("loadConfig runner providers", () => {
       playwrightMcpEnabled: false,
       mixpanelMcpEnabled: false,
       mongodbMcpEnabled: false,
+      figmaMcpEnabled: true,
+      notionMcpEnabled: true,
       memoryMcpEnabled: false,
       isolatedHomePath: "/tmp/junior-codex-home-test",
     });

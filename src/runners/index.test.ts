@@ -115,6 +115,39 @@ describe("buildOpenCodeMcpConfig", () => {
 
     expect(mcp?.mongodb).toBeUndefined();
   });
+
+  it("keeps hosted OAuth MCPs capability-scoped", () => {
+    const defaultSession = createSession("thread-1", "C01");
+    defaultSession.agentPermissions = { intent: "normal", mcp: [], tools: [] };
+    const designerSession = createSession("thread-1", "C01");
+    designerSession.agentPermissions = {
+      intent: "normal",
+      mcp: ["figma", "notion"],
+      tools: [],
+    };
+
+    expect(buildOpenCodeMcpConfig(testConfig(), defaultSession)).toBeNull();
+    expect(buildOpenCodeMcpConfig(testConfig(), designerSession)).toEqual({
+      figma: {
+        type: "remote",
+        url: "https://mcp.figma.com/mcp",
+        enabled: true,
+      },
+      notion: {
+        type: "remote",
+        url: "https://mcp.notion.com/mcp",
+        enabled: true,
+      },
+    });
+  });
+
+  it("respects hosted OAuth MCP feature flags", () => {
+    const session = createSession("thread-1", "C01");
+    session.agentPermissions = { intent: "normal", mcp: ["figma"], tools: [] };
+    expect(
+      buildOpenCodeMcpConfig(testConfig({ figmaMcpEnabled: false }), session),
+    ).toBeNull();
+  });
 });
 
 function testConfig(

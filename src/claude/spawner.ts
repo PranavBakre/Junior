@@ -18,6 +18,8 @@ import {
   mixpanelMcpUrl,
   mongoMcpUrl,
   needsUserSettings,
+  figmaMcpUrl,
+  notionMcpUrl,
   playwrightMcpCommand,
   slackMcpUrl,
   wantsMcp,
@@ -56,7 +58,10 @@ export function spawnClaude(
   const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp, forceSlackMcp)
     ? writeClaudeMcpConfig(session, forceSlackMcp)
     : undefined;
-  const effectiveConfig = needsUserSettings()
+  // User-level settings are needed only for hosted OAuth MCPs, and only when
+  // this run actually receives Junior's generated MCP config. Utility cwd
+  // runs intentionally receive neither and remain project-settings-only.
+  const effectiveConfig = mcpConfigPath && needsUserSettings(session)
     ? widenSettingSources(config)
     : config;
   const activeSkill = session.activeSkill
@@ -223,6 +228,14 @@ export function writeClaudeMcpConfig(
   mkdirSync(MCP_CONFIG_DIR, { recursive: true });
   const agent = session.activeAgentName ?? "default";
   const path = join(MCP_CONFIG_DIR, `${session.threadId}-${agent}.json`);
+  writeFileSync(path, JSON.stringify(buildClaudeMcpConfig(session, forceSlackMcp), null, 2));
+  return path;
+}
+
+export function buildClaudeMcpConfig(
+  session: ThreadSession,
+  forceSlackMcp = false,
+): { mcpServers: Record<string, unknown> } {
   const mcpServers: Record<string, unknown> = {};
   if (forceSlackMcp || wantsMcp(session, "slack-bot")) {
     mcpServers["slack-bot"] = {
@@ -242,17 +255,13 @@ export function writeClaudeMcpConfig(
       url: mongoMcpUrl(session),
     };
   }
-  mcpServers.figma = {
-    type: "http",
-    url: "https://mcp.figma.com/mcp",
-  };
-  mcpServers.notion = {
-    type: "http",
-    url: "https://mcp.notion.com/mcp",
-  };
-  const config = { mcpServers };
-  writeFileSync(path, JSON.stringify(config, null, 2));
-  return path;
+  if (wantsMcp(session, "figma")) {
+    mcpServers.figma = { type: "http", url: figmaMcpUrl() };
+  }
+  if (wantsMcp(session, "notion")) {
+    mcpServers.notion = { type: "http", url: notionMcpUrl() };
+  }
+  return { mcpServers };
 }
 
 function isFeatureMetricsSession(session: ThreadSession): boolean {
@@ -375,7 +384,7 @@ function claudeDoneUsage(
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
-function widenSettingSources(config: Config["claude"]): Config["claude"] {
+export function widenSettingSources(config: Config["claude"]): Config["claude"] {
   const base = config.settingSources ?? "";
   if (!base || base.includes("user")) return config;
   return { ...config, settingSources: `user,${base}` };

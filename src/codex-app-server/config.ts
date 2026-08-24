@@ -6,6 +6,8 @@ import type { CodexApprovalPolicy, CodexSandbox } from "./policy.ts";
 import {
   mixpanelMcpUrl,
   mongoMcpUrl,
+  figmaMcpUrl,
+  notionMcpUrl,
   playwrightMcpCommand,
   slackMcpUrl,
   wantsMcp,
@@ -45,6 +47,18 @@ export function buildCodexMcpConfig(
     mcp.mongodb = {
       transport: "http",
       url: mongoMcpUrl(session),
+    };
+  }
+  if (config.codex.figmaMcpEnabled !== false && wantsMcp(session, "figma")) {
+    mcp.figma = {
+      transport: "http",
+      url: figmaMcpUrl(),
+    };
+  }
+  if (config.codex.notionMcpEnabled !== false && wantsMcp(session, "notion")) {
+    mcp.notion = {
+      transport: "http",
+      url: notionMcpUrl(),
     };
   }
 

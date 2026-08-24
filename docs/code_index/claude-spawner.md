@@ -68,6 +68,11 @@ also add `--strict-mcp-config` and project `--setting-sources` by default so
 developer-global MCP/settings cannot leak into a run. Human-gated agents can
 opt into the Slack approval tool; assignment-scoped skills use `--add-dir`.
 
+Hosted OAuth MCPs (`figma`, `notion`) are added only when the active session's
+agent declares them through `wantsMcp`. Because Claude stores their OAuth
+credentials at user scope, `--setting-sources user,project` is likewise used
+only for those non-utility runs; ordinary runs remain project-only.
+
 ### CLI flags
 
 Always: `-p`, `--output-format stream-json`, `--verbose`, `--max-turns`,

@@ -14,7 +14,7 @@ Session manager calls `spawnClaude`, subscribes via `onEvent` (consumed by [stre
 
 ## Arg building (`args.ts`)
 
-Always: `-p <prompt>`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode` (from the resolved agent policy). Production runs also use `--strict-mcp-config` and `--setting-sources project` unless explicitly disabled.
+Always: `-p <prompt>`, `--output-format stream-json`, `--verbose`, `--max-turns`, `--permission-mode` (from the resolved agent policy). Production runs also use `--strict-mcp-config` and project-only `--setting-sources` unless the active agent explicitly requests a hosted OAuth MCP (Figma/Notion), in which case user settings are added for that non-utility run.
 
 Conditional:
 - `--resume <id>` if `session.sessionId` is set

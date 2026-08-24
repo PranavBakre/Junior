@@ -24,8 +24,10 @@ Two pieces:
    - `whatsapp_read_messages` — newest window by group/time range, `before_ts` pages backwards
    - `whatsapp_search_messages` — case-insensitive substring search, optional group/sender scope
 
-Notion integration is the plain hosted Notion MCP (`https://mcp.notion.com/mcp`
-in `.mcp.json`) — no custom sync code.
+Notion integration is the plain hosted Notion MCP (`https://mcp.notion.com/mcp`)
+when an agent explicitly declares the `notion` MCP capability — no custom sync
+code. It is not registered in the root `.mcp.json`; provider adapters emit it
+only for the requesting session.
 
 ### Data flow
 
