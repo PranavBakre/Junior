@@ -31,6 +31,8 @@ is historical.
   state and artifacts remain authoritative.
 - Stale cleanup must not delete an idle parent thread while any persistent agent session is still busy.
 - Health check: periodic scan for orphaned processes
+- Orphan repair: when a recorded wrapper PID is dead, terminate any surviving
+  descendants in its detached process group before clearing the session state
 - Metrics: track success/failure/timeout rates per agent type
 - Graceful bot shutdown: on SIGINT/SIGTERM, wait for running processes to finish
 

@@ -9,6 +9,7 @@ Timeout guards, graceful shutdown, stale session cleanup, orphan detection, and 
 | Symbol | File | Purpose |
 |---|---|---|
 | `withTimeout(handle, timeoutMs, onTimeout?)` | `timeout.ts` | Wraps `SpawnHandle`; kills + resolves with `error: "Process timed out..."` after timeout |
+| `terminateProcessGroup(pid, opts)` | `process-tree.ts` | Health-only teardown for descendants whose recorded detached-group leader has already exited; never falls back to the reusable positive PID |
 | workflow runner idle recovery | `src/workflows/executor.ts` | For workflow runner configs with `idleTimeoutMs`, sends SIGINT after a silent period, SIGKILL after 10s grace if needed, then respawns with provider-native resume and a continuation prompt up to `maxIdleInterrupts`. |
 | `setupGracefulShutdown(manager, devServerManager?, extraShutdown?)` | `shutdown.ts` | SIGINT/SIGTERM handler — terminates active runner trees, kills managed dev servers and runs optional teardown, hard exit after 30s |
 | `cleanupStaleSessions(store, staleTimeoutMs)` | `cleanup.ts` | Deletes stale idle sessions; skips top-level busy/draining and rows with any busy persistent agent |
@@ -48,7 +49,7 @@ On timeout: `handle.kill()`, result resolves with `{ exitCode: null, error: "Pro
 
 ### Orphan detection
 
-A session/agent is "orphaned" when `status === "busy"` but `process.kill(pid, 0)` throws. `health.ts` walks both the top-level `session.pid` and every `agentSessions[*].pid`, marking each idle and recording `lastError: "orphaned"` on the parent session.
+A session/agent is "orphaned" when `status === "busy"` but `process.kill(pid, 0)` throws. `health.ts` walks both the top-level `session.pid` and every `agentSessions[*].pid`; before it clears the dead leader's state, it sends `SIGTERM` to its surviving detached process group (with SIGKILL fallback). This prevents a wrapper that exited first from leaving helpers behind. The final state mutation must match the snapshot's `stateVersion` as well as status/PID, so a replacement turn with a recycled PID is never cleared. It then marks the lead idle or the agent failed and records the interruption on the parent session.
 
 ### Stale cleanup
 
