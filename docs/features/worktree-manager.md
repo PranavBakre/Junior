@@ -76,8 +76,13 @@ The bug-pipeline + dev-server fields are optional. Repos that only need the `!re
   force-kills it after `WORKTREE_TERMINATION_GRACE_MS` (1 second default), and
   cancels pipe readers so a grandchild holding stdout/stderr cannot keep the
   Slack turn alive. These processes are always noninteractive:
-  `GIT_TERMINAL_PROMPT=0`, batch-mode SSH, and an injected empty credential
-  helper prevent credential prompts from becoming hangs.
+  `GIT_TERMINAL_PROMPT=0`, batch-mode SSH, and suppressed inherited credential
+  helpers prevent credential prompts from becoming hangs. For a repo with a
+  verified `GH_TOKEN`, Junior supplies GitHub HTTPS credentials through a
+  temporary 0700 askpass helper (`x-access-token` plus the token), then removes
+  the helper after the bounded process exits. `GH_TOKEN` alone is not consumed
+  by Git's HTTPS transport. Repos without a verified token use a host-valid
+  false askpass executable and fail fast.
 - `removeWorktree(repoName, threadId) → Promise<void>` — reads the actual current branch via `git -C <wt> branch --show-current` before deletion (so cleanup works for `branchOverride` callers), force-removes the worktree, and `git branch -D`s the branch. It then verifies both the Git worktree registry and filesystem path are gone; a non-atomic leftover raises an incomplete-cleanup error with the path for preservation review. Branch lookup and deletion remain non-fatal for missing/detached state.
 - `worktreeExists(repoName, threadId) → Promise<boolean>` and `isWorktreeDirty(worktreePath) → Promise<boolean>` — used by cleanup.
 - `getWorktreePath(repoName, threadId) → string` and `getBranchName(threadId) → string` — pure helpers (no I/O).

@@ -306,12 +306,15 @@ describe("WorktreeManager.createWorktree", () => {
 
   it("passes the selected GitHub account token to delegated setup", async () => {
     const authMarker = join(repoRoot, "github-auth-marker.txt");
+    const askpassMarker = join(repoRoot, "github-askpass-marker.txt");
     const authSetup = join(repoRoot, "github-auth-setup.sh");
     writeFileSync(
       authSetup,
       `#!/usr/bin/env bash
 set -e
 printf '%s' "\${GH_TOKEN:-}" > "${authMarker}"
+printf '%s\\n' "$($GIT_ASKPASS 'Username for https://github.com:')" > "${askpassMarker}"
+printf '%s\\n' "$($GIT_ASKPASS 'Password for https://github.com:')" >> "${askpassMarker}"
 BRANCH="$1"
 shift
 while [[ $# -gt 0 ]]; do
@@ -348,8 +351,10 @@ git worktree add "$TARGET" -b "$BRANCH" "$BASE"
     );
 
     expect(await Bun.file(authMarker).text()).toBe("selected-token");
+    expect(await Bun.file(askpassMarker).text()).toBe("x-access-token\nselected-token\n");
     await wm.removeWorktree("selected-auth-flow", "selected-auth-thread");
     rmSync(authMarker, { force: true });
+    rmSync(askpassMarker, { force: true });
     rmSync(authSetup, { force: true });
   });
 
