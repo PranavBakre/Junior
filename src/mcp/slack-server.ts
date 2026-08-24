@@ -163,6 +163,73 @@ let pipelineRuntime: PipelineToolRuntime | undefined;
 let catalogStore: CatalogStore | undefined;
 let slackArchiveApprovedChannelIds = new Set<string>();
 
+const pipelineOutcomeSchema = z.object({
+  assignmentId: z.string().min(1).describe("Exact signed assignment id being settled"),
+  expectedRunVersion: z.number().describe("Run state version read from pipeline_get_state"),
+  action: z.enum([
+    "continue_self",
+    "delegate",
+    "handoff",
+    "wait",
+    "escalate",
+    "complete",
+  ]),
+  status: z.enum([
+    "progress",
+    "succeeded",
+    "expected_behavior",
+    "not_reproduced",
+    "blocked",
+    "failed",
+  ]),
+  targetAgent: z.string().min(1).optional(),
+  reason: z.string().min(1),
+  evidenceRefs: z.array(z.string()).default([]),
+  artifactRefs: z.array(z.string()).default([]),
+  blockers: z.array(z.object({
+    kind: z.enum([
+      "missing_context",
+      "missing_authority",
+      "human_gate",
+      "unsafe_mutation",
+      "conflicting_evidence",
+      "no_progress",
+      "infra_failure",
+    ]),
+    detail: z.string().min(1),
+  })).default([]),
+  checks: z.array(z.object({
+    name: z.string().min(1),
+    status: z.enum(["passed", "failed", "skipped"]),
+    evidenceRef: z.string().optional(),
+  })).default([]),
+  confidence: z.number().optional(),
+  progressFingerprint: z.string().min(1),
+  wait: z.object({
+    conditionName: z.string().min(1),
+    wakeAt: z.number().optional(),
+    deadlineAt: z.number(),
+  }).optional(),
+  nextAssignment: z.object({
+    id: z.string().min(1).optional(),
+    parentAssignmentId: z.string().min(1).nullable().optional(),
+    targetAgent: z.string().min(1),
+    objective: z.string().min(1),
+    contextRefs: z.array(z.string()).default([]),
+    artifactRefs: z.array(z.string()).default([]),
+    acceptanceCriteria: z.array(z.string()).default([]),
+    mutationScope: z.array(z.string()).default([]),
+    dependsOn: z.array(z.string()).default([]),
+    attempt: z.number().default(1),
+    attemptId: z.string().min(1).nullable().optional(),
+    candidateRevisionDigest: z.string().min(1).nullable().optional(),
+    deadlineAt: z.number().nullable().optional(),
+    idempotencyKey: z.string().min(1),
+  }).optional(),
+}).describe(
+  "Typed AgentOutcome. For a successful review or build, use action=complete and status=succeeded. Blockers must be objects with an allowed kind and detail.",
+);
+
 /** Inject pipeline tool runtime (store + mode). Called from boot or tests. */
 export function setPipelineRuntime(runtime: PipelineToolRuntime | undefined): void {
   pipelineRuntime = runtime;
@@ -1812,9 +1879,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         "Settle the caller's exact signed assignment with continue_self|wait|escalate|complete. Use agent_dispatch for every agent-to-agent transition. " +
         "Runtime validates authority, state version, edges, and budgets; returns an explicit receipt.",
       inputSchema: {
-        outcome: z
-          .record(z.string(), z.unknown())
-          .describe("AgentOutcome object with assignmentId, expectedRunVersion, action, status, reason, evidenceRefs, artifactRefs, blockers, checks, progressFingerprint, plus wait when action=wait. For scheduled monitoring, wait includes wakeAt (next check) and deadlineAt (final stop); external-condition waits omit wakeAt."),
+        outcome: pipelineOutcomeSchema,
         to_phase: z.string().optional().describe("Optional phase advance"),
         idempotency_key: z.string().optional().describe("Duplicate-safe idempotency key"),
       },
