@@ -286,14 +286,35 @@ describe("retrieval corpus migration", () => {
   it("rejects an oversized structured model result before binding rewrites", () => {
     const oversized = JSON.stringify({
       is_error: false,
-      result: JSON.stringify({
+      structured_output: {
         rewrites: Array.from({ length: 101 }, (_, index) => ({
           id: `claim-${index}`,
           retrievalText: "bounded",
         })),
-      }),
+      },
     });
     expect(() => parseNoToolsComposerOutput(oversized)).toThrow("oversized rewrite array");
+  });
+
+  it("uses Claude's validated structured_output instead of display result text", () => {
+    const output = JSON.stringify({
+      is_error: false,
+      // Claude's output-format=json envelope can format this field differently.
+      result: "Here is the requested projection.",
+      structured_output: {
+        rewrites: [{ id: "claim-1", retrievalText: "Use the safe path." }],
+      },
+    });
+    expect(parseNoToolsComposerOutput(output)).toEqual([
+      { id: "claim-1", retrievalText: "Use the safe path." },
+    ]);
+  });
+
+  it("rejects successful Claude envelopes that omit structured_output", () => {
+    expect(() => parseNoToolsComposerOutput(JSON.stringify({
+      is_error: false,
+      result: '{"rewrites":[]}',
+    }))).toThrow("no structured output");
   });
 
   it("hard-stops a timed-out no-tool subprocess tree", async () => {

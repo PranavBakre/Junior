@@ -123,12 +123,18 @@ export async function readBoundedComposerStream(
 
 /** Decode Claude's bounded JSON envelope, not arbitrary model prose. */
 export function parseNoToolsComposerOutput(text: string): Array<{ id: string; retrievalText: string }> {
-  const envelope = JSON.parse(text) as { is_error?: unknown; result?: unknown };
+  const envelope = JSON.parse(text) as {
+    is_error?: unknown;
+    result?: unknown;
+    structured_output?: unknown;
+  };
   if (envelope.is_error === true) {
     throw new Error(`re-embed runner: Claude failed: ${typeof envelope.result === "string" ? envelope.result : "unknown error"}`);
   }
-  if (typeof envelope.result !== "string") throw new Error("re-embed runner: Claude returned no result");
-  const value = JSON.parse(envelope.result) as { rewrites?: unknown };
+  if (!envelope.structured_output || typeof envelope.structured_output !== "object") {
+    throw new Error("re-embed runner: Claude returned no structured output");
+  }
+  const value = envelope.structured_output as { rewrites?: unknown };
   if (!Array.isArray(value.rewrites) || value.rewrites.length > 100) {
     throw new Error("re-embed runner: invalid or oversized rewrite array");
   }
