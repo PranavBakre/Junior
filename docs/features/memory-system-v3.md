@@ -292,6 +292,14 @@ Every unit carries a `last_used_at` so the system can identify memory that shoul
 
 ## 8. Read path — recall
 
+### Historical replay gate
+
+`bun run memory:replay` is a read-only production-boundary regression harness.
+It creates a disposable SQLite store, writes claims through `upsertClaim`, then
+uses the production pre-recall candidate, top-k, and fallback-floor selection
+path. Each replay case names a stable reviewed answer-level usefulness label;
+the harness never opens `MEMORY_DB_PATH` or records recall usage.
+
 Recall runs **two channels** and merges:
 
 1. **Keyed fetch.** The interlocutor and workspace are *ground truth*: in a thread with Pranav, in `gx-backend` → read `profiles/people/pranav.md` and `profiles/repos/gx-backend.md` **directly by path**. No LLM phrasing, no cosine.
