@@ -652,13 +652,26 @@ async function runPaginatedGitHubApi(
   args: string[],
   env: Record<string, string>,
 ): Promise<GitHubApiResult> {
+  return collectPaginatedGitHubApi(
+    args[1]!,
+    (endpoint) => runGitHubApiCommand([args[0]!, endpoint], env),
+  );
+}
+
+export async function collectPaginatedGitHubApi(
+  endpoint: string,
+  runPage: (endpoint: string) => Promise<GitHubApiResult>,
+  limits: {
+    maxPages?: number;
+    maxResponseBytes?: number;
+  } = {},
+): Promise<GitHubApiResult> {
+  const maxPages = limits.maxPages ?? MAX_GITHUB_PAGES;
+  const maxResponseBytes = limits.maxResponseBytes ?? MAX_GITHUB_PAGINATED_RESPONSE_BYTES;
   const pages: unknown[] = [];
   let responseBytes = 2; // JSON outer-array delimiters.
-  for (let page = 1; page <= MAX_GITHUB_PAGES; page += 1) {
-    const result = await runGitHubApiCommand(
-      [args[0]!, appendPage(args[1]!, page)],
-      env,
-    );
+  for (let page = 1; page <= maxPages; page += 1) {
+    const result = await runPage(appendPage(endpoint, page));
     if (!result.ok) return result;
     let parsed: unknown;
     try {
@@ -670,7 +683,7 @@ async function runPaginatedGitHubApi(
       return { ...result, ok: false, stderr: "expected an array from gh api pagination" };
     }
     const pageBytes = new TextEncoder().encode(JSON.stringify(parsed)).byteLength;
-    if (responseBytes + pageBytes > MAX_GITHUB_PAGINATED_RESPONSE_BYTES) {
+    if (responseBytes + pageBytes > maxResponseBytes) {
       return {
         ok: false,
         status: -1,
