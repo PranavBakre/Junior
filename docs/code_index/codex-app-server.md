@@ -39,6 +39,14 @@ Codex's default local command environment so the thread's tool surface stays
 limited to Junior's scoped MCP configuration; the invariant is covered by the
 app-server spawner regression tests for both fresh and resumed threads.
 
+Before release, run `CODEX_APP_SMOKE_SLACK_CHANNEL_ID=<approved-test-channel>
+CODEX_APP_SMOKE_RELEASE_GATE=1 bun run codex:release-gate` with an authenticated
+Codex CLI and a running Junior MCP server. This opt-in live gate requires an
+approved `slack_send_message` dynamic-tool call, then asks Codex to execute a
+forced `touch`; it fails if no MCP tool item is observed, if any command item is
+emitted, or if the probe file appears. The gate uses a temporary directory and
+removes it on exit.
+
 Native `requestApproval` server callbacks are not auto-denied. The provider
 posts a scoped Allow/Deny action in the originating Slack thread, waits on the
 same in-process resolver used by Claude's permission tool, and returns the

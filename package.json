@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "codex:release-gate": "CODEX_APP_SMOKE_RELEASE_GATE=1 node scripts/codex-app-server-smoke.mjs",
     "cleanup": "bun run src/lifecycle/cleanup.ts",
     "mixpanel:oauth": "bun run src/mcp/mixpanel-oauth-cli.ts",
     "memory:reembed": "bun run src/memory/reembed-retrieval.ts",
