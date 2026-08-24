@@ -16,7 +16,7 @@ import { createRunnerInvoke } from "./consolidation/runner.ts";
 import type { ConsolidationInvoke } from "./consolidation/types.ts";
 import { createEmbeddingProvider } from "./embedding/factory.ts";
 import type { EmbeddingProvider } from "./embedding/types.ts";
-import { createProfileStore } from "./profiles/factory.ts";
+import { createProfileStore, resolveMemoryProfileRoot } from "./profiles/factory.ts";
 import type { ProfileStore } from "./profiles/store.ts";
 import {
   buildFactRetrievalText,
@@ -147,7 +147,7 @@ export async function runMemoryCli(argv: string[], deps: MemoryCliDeps = {}): Pr
       // only — no cron, and this does NOT touch the v2 `consolidate` path above.
       // The per-thread + unthreaded-sweep + isolation loop lives in the shared
       // `runConsolidationSweep` helper so the workflow and MCP tool run the same path.
-      const profileStore = deps.profileStore ?? createProfileStore();
+      const profileStore = deps.profileStore ?? createProfileStore({ root: resolveMemoryProfileRoot() });
       const embedder = deps.embedder ?? createEmbeddingProvider(defaultEmbedProviderKind());
       const runner = stringOption(options, "runner");
       if (runner && runner !== "claude" && runner !== "opencode" && runner !== "codex") {

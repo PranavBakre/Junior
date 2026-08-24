@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,10 +7,10 @@ import { parseDocument, serializeDocument } from "./frontmatter.ts";
 import { createProfileStore } from "./factory.ts";
 import type { PersonProfile, ProjectProfile, RepoProfile } from "./types.ts";
 
-function withTmp<T>(fn: (root: string) => T): T {
-  const dir = mkdtempSync(join(tmpdir(), "junior-profiles-"));
+async function withTmp<T>(fn: (root: string) => Promise<T> | T): Promise<T> {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "junior-profiles-")));
   try {
-    return fn(dir);
+    return await fn(dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -72,6 +72,38 @@ describe("frontmatter serialize/parse", () => {
 });
 
 describe("ProfileStore keyed path scheme", () => {
+  it("keeps the env-resolved default root stable across cwd changes", async () => {
+    await withTmp(async (root) => {
+      const firstCwd = join(root, "first-cwd");
+      const secondCwd = join(root, "second-cwd");
+      const profileRoot = join(root, "runtime-profiles");
+      mkdirSync(firstCwd);
+      mkdirSync(secondCwd);
+      const previousCwd = process.cwd();
+      const previousRoot = process.env.MEMORY_PROFILE_ROOT;
+      try {
+        process.env.MEMORY_PROFILE_ROOT = profileRoot;
+        process.chdir(firstCwd);
+        await createProfileStore().upsertProfile({
+          kind: "person",
+          entity_ref: "pranav:person",
+          role: "principal",
+        });
+
+        process.chdir(secondCwd);
+        const profile = await createProfileStore().fetchByEntityRef("pranav:person");
+        expect(profile?.kind).toBe("person");
+        if (!profile || profile.kind !== "person") throw new Error("expected person profile");
+        expect(profile.role).toBe("principal");
+        expect(existsSync(join(profileRoot, "people", "pranav.md"))).toBe(true);
+      } finally {
+        process.chdir(previousCwd);
+        if (previousRoot === undefined) delete process.env.MEMORY_PROFILE_ROOT;
+        else process.env.MEMORY_PROFILE_ROOT = previousRoot;
+      }
+    });
+  });
+
   it("writes each profile kind to the right folder", async () => {
     await withTmp(async (root) => {
       const store = createProfileStore({ root });

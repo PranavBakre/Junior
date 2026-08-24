@@ -116,6 +116,11 @@ data/
                              #  • profile index         (entity_ref → path; optional)
 ```
 
+`MEMORY_DB_PATH` configures the SQLite store, while `MEMORY_PROFILE_ROOT`
+configures the keyed markdown root. The latter is resolved to an absolute path
+at startup (default `data/profiles`), so a workflow, CLI, or utility process
+changing cwd cannot silently fork a second profile corpus.
+
 | Kind | Retrieval | Source of truth | Embedded? |
 |---|---|---|---|
 | episode / source record | by id, bulk-scan | **SQLite** (raw log) | no |

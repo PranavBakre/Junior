@@ -97,7 +97,7 @@ const memoryStore = createMemoryStore(config.memory.sqlitePath, {
 });
 const PRE_RECALL_FEEDBACK_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const PRE_RECALL_FEEDBACK_CLEANUP_LIMIT = 500;
-const profileStore = createProfileStore();
+const profileStore = createProfileStore({ root: config.memory.profileRoot });
 const memoryIngestor = new MemoryIngestor(memoryStore);
 const runbookCatalogStore = new CatalogStore(
   resolve(process.env.RUNBOOK_CATALOG_DB_PATH ?? "data/runbooks.db"),

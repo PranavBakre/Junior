@@ -23,7 +23,7 @@ import type { Config } from "../config.ts";
 import type { MemoryToolDeps } from "../mcp/slack-server.ts";
 import { recallMemory } from "../mcp/slack-server.ts";
 import { createMemoryStore } from "./factory.ts";
-import { createProfileStore } from "./profiles/index.ts";
+import { createProfileStore, resolveMemoryProfileRoot } from "./profiles/index.ts";
 import {
   isProcessTreeAlive,
   terminateProcessTree,
@@ -228,7 +228,7 @@ export function createPreRecall(
     const provider = createEmbeddingProvider(
       config.memory.embedProvider ?? "local",
     );
-    const profileStore = createProfileStore();
+    const profileStore = createProfileStore({ root: config.memory.profileRoot ?? resolveMemoryProfileRoot() });
     deps = { store, provider, profileStore };
     return deps;
   }

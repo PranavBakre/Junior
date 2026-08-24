@@ -7,6 +7,7 @@ import {
 } from "./session/types.ts";
 import { DEFAULT_DEDUP_THRESHOLD, resolveDedupThreshold } from "./memory/dedup.ts";
 import type { EmbeddingProviderKind } from "./memory/embedding/factory.ts";
+import { resolveMemoryProfileRoot } from "./memory/profiles/factory.ts";
 import type { WhatsAppConfig } from "./whatsapp/types.ts";
 import {
   mergeConfiguredAndDiscoveredRepos,
@@ -164,6 +165,8 @@ export interface Config {
   };
   memory: {
     sqlitePath: string;
+    /** Absolute markdown profile root; configured by MEMORY_PROFILE_ROOT. */
+    profileRoot?: string;
     /**
      * Embedding provider for the v3 semantic claim store (memory_recall /
      * memory_add). "local" is harrier-270-ONNX (in-process, lazy-loads the
@@ -387,6 +390,7 @@ export function loadConfig(): Config {
     },
     memory: {
       sqlitePath: optional("MEMORY_DB_PATH", "data/memory.db"),
+      profileRoot: resolveMemoryProfileRoot(optional("MEMORY_PROFILE_ROOT", "data/profiles")),
       embedProvider: parseEmbedProvider(optional("MEMORY_EMBED_PROVIDER", "local")),
       dedupThreshold: resolveDedupThreshold(
         optional("MEMORY_DEDUP_THRESHOLD", String(DEFAULT_DEDUP_THRESHOLD)),
