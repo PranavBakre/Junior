@@ -147,6 +147,8 @@ interface Config {
 | `OPENCODE_PLAYWRIGHT_MCP_ENABLED` | no | `true` | includes Playwright MCP in generated OpenCode config; set `false` to disable |
 | `OPENCODE_MIXPANEL_MCP_ENABLED` | no | `true` | includes the optional Mixpanel MCP entry |
 | `OPENCODE_MONGODB_MCP_ENABLED` | no | `true` | includes the optional MongoDB MCP entry |
+| `OPENCODE_FIGMA_MCP_ENABLED` | no | `true` | permits the hosted Figma MCP entry when the active agent declares `figma` |
+| `OPENCODE_NOTION_MCP_ENABLED` | no | `true` | permits the hosted Notion MCP entry when the active agent declares `notion` |
 | `CODEX_MODE` | no | `app-server` | `app-server` or `cli`; app-server is the implemented Codex provider path |
 | `CODEX_MODEL` | no | unset | Codex model override |
 | `CODEX_REASONING_EFFORT` | no | `low` | Codex model reasoning effort |
@@ -160,6 +162,8 @@ interface Config {
 | `CODEX_PLAYWRIGHT_MCP_ENABLED` | no | `true` | Include Playwright MCP for Codex |
 | `CODEX_MIXPANEL_MCP_ENABLED` | no | `true` | Include Mixpanel MCP for Codex |
 | `CODEX_MONGODB_MCP_ENABLED` | no | `true` | Include MongoDB MCP for Codex |
+| `CODEX_FIGMA_MCP_ENABLED` | no | `true` | Permit the hosted Figma MCP entry when the active agent declares `figma` |
+| `CODEX_NOTION_MCP_ENABLED` | no | `true` | Permit the hosted Notion MCP entry when the active agent declares `notion` |
 | `CODEX_MEMORY_MCP_ENABLED` | no | `true` | Include memory MCP for Codex |
 | `CODEX_ISOLATED_HOME_PATH` | no | `data/codex-home` | Isolated Codex home directory |
 | `REPOS` | no | `[]` | JSON array of `RepoConfig`; `githubRepo` is the exact `owner/repo` identity used for PR URL routing (derived from a GitHub origin when omitted), and optional `githubUser` pins the local `gh` account for that repo |
