@@ -225,7 +225,7 @@ export async function cleanupThreadWorktrees(
 
   const removed: string[] = [];
   for (const worktree of worktrees) {
-    await worktreeManager.removeWorktree(worktree.repo, session.threadId);
+    await worktreeManager.removeWorktree(worktree.repo, session.threadId, { force: false });
     removed.push(worktree.repo);
     if (session.worktreePaths?.[worktree.repo]) {
       delete session.worktreePaths[worktree.repo];

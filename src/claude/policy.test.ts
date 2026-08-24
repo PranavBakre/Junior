@@ -138,6 +138,15 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.addDirs).toEqual(["/repo"]);
   });
 
+  test("worktree-mutate capability exposes managed unregister", () => {
+    const session = sessionWith({ intent: "read-only", mcp: ["slack-bot"], tools: [] });
+    session.assignmentCapabilities = ["worktree-mutate"];
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.allowedTools).toContain("mcp__slack-bot__unregister_worktree");
+  });
+
   test("denies provider-native fan-out for orchestrators too", () => {
     const session = createSession("t", "c");
     session.activeAgentName = "default";

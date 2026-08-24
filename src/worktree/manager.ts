@@ -180,7 +180,8 @@ export class WorktreeManager {
    */
   async removeWorktree(
     repoName: string,
-    threadId: string
+    threadId: string,
+    options: { force?: boolean } = {},
   ): Promise<void> {
     const repo = this.getRepo(repoName);
     if (!repo) {
@@ -204,9 +205,12 @@ export class WorktreeManager {
       // worktree path is gone or not a git checkout — proceed with default
     }
 
-    // Force-remove the worktree
+    // Safe callers can omit --force so Git gets a final chance to reject a
+    // worktree that became dirty after the caller's preservation check. The
+    // existing default remains forceful for explicit cleanup paths.
+    const force = options.force ?? true;
     await this.runGit(
-      ["worktree", "remove", worktreePath, "--force"],
+      ["worktree", "remove", worktreePath, ...(force ? ["--force"] : [])],
       repo.path
     );
 

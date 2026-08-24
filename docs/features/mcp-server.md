@@ -53,6 +53,7 @@ Junior main process
 | `slack_search_users` | `users.list` | Find users by name, email, or title |
 | `slack_upload_file` | `files.getUploadURLExternal` | Upload files to channels/threads |
 | `register_worktree` | (internal) | Create a per-thread worktree in a routed repo and persist its path on the session |
+| `unregister_worktree` | (internal) | Safely prune one current-thread worktree and remove its session registration; destructive discard requires explicit confirmation |
 | `agent_search` | (internal) | Search public/private agent definitions and show dispatch registration state |
 | `reload_agent_registry` | (internal) | Reload private overlay agent identities so newly added workers become dispatchable |
 | `memory_recall` | (internal SQLite + profiles) | Recall v3 memory: keyed entity profiles (by `entity_refs`) + semantic claims (query embedded locally, cosine-ranked) |
@@ -66,6 +67,13 @@ Junior main process
 Slack tools require explicit `channel_id` and `thread_ts` parameters. The spawned Claude already knows its thread coordinates from the prompt preamble built by `buildPromptPreamble()`.
 
 `register_worktree` is wired to Junior's `SessionStore` and `WorktreeManager` (passed into `startMcpServer`). It's invoked by agents during intake — once per routed repo — and writes `session.worktreePaths[repo]`. The `branch` arg is a branch-name override (not a base ref); `createWorktree` keeps `branchOverride` distinct from `baseRef` so callers can name the branch without changing what it forks from. See [worktree-manager.md](./worktree-manager.md) and [session-management.md](./session-management.md).
+
+`unregister_worktree` is available only with signed run context and derives the
+thread ID from that context rather than accepting an agent-supplied thread. It
+uses the same preservation policy as the Slack cleanup action, removes the
+worktree and branch through `WorktreeManager`, and then uses the session store's
+semantic mutation API to unregister the selected repo without clobbering
+concurrent session updates.
 
 Status pill updates that agents post mid-run go through `slack_send_message` with a stable `username` / `icon_emoji` identity — the streaming layer keys pills per-agent off those fields. See [stream-to-slack.md](./stream-to-slack.md).
 
