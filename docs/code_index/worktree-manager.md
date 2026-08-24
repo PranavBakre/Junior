@@ -10,7 +10,7 @@ Creates, removes, and inspects git worktrees in target repos for per-thread code
 |---|---|---|
 | `WorktreeManager(repos, options?)` | `manager.ts` | Constructor — keeps `RepoConfig[]`; options support deterministic disk-headroom tests and an injectable repo-scoped GitHub auth resolver. |
 | `createWorktree(repoName, threadId, baseRef?, branchOverride?)` | `manager.ts` | Creates worktree. `baseRef` defaults to `repo.defaultBase`. `branchOverride` defaults to `slack/<threadId>`. Returns absolute path. |
-| `removeWorktree(repoName, threadId)` | `manager.ts` | `git worktree remove --force` + `git branch -D` (queries actual branch name from the worktree first to handle `branchOverride`) |
+| `removeWorktree(repoName, threadId)` | `manager.ts` | `git worktree remove --force` + `git branch -D`, then verifies both registry absence and filesystem absence (queries actual branch name first to handle `branchOverride`) |
 | `worktreeExists(repoName, threadId)` | `manager.ts` | Filesystem check via `node:fs/promises.stat` |
 | `isWorktreeDirty(worktreePath)` | `manager.ts` | `git status --porcelain` |
 | `getWorktreeStatus(worktreePath, repoName?)` | `manager.ts` | Reports tracked/untracked changes, unpushed commits, and ignored dotenv paths (path names only; contents are never read). |
@@ -81,7 +81,7 @@ Durable pipeline assignments use a stricter path: `pipeline-routing.ts` resolves
 
 ### Dirty-check before remove
 
-Callers should `isWorktreeDirty(path)` before `removeWorktree` so uncommitted work isn't silently destroyed. The cleanup pass in `lifecycle/cleanup.ts` skips busy/draining and deletes only stale idle sessions; worktree removal itself is not currently automatic on cleanup (worktrees outlive the session row).
+Callers should `isWorktreeDirty(path)` before `removeWorktree` so uncommitted work isn't silently destroyed. Removal also verifies that Git's registry entry and the filesystem path are both gone; a leftover (for example, an ignored dotenv file) raises an incomplete-cleanup error for preservation review. The cleanup pass in `lifecycle/cleanup.ts` skips busy/draining and deletes only stale idle sessions; worktree removal itself is not currently automatic on cleanup (worktrees outlive the session row).
 
 ## Dependencies
 

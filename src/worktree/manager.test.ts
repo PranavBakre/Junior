@@ -659,6 +659,34 @@ git worktree add "$TARGET" -b "$BRANCH" "$BASE"
     expect(listed).toBe("");
   });
 
+  it("surfaces a non-atomic ignored leftover after git removes the worktree registry entry", async () => {
+    const wm = new WorktreeManager([{
+      name: "non-atomic-remove",
+      path: repoRoot,
+      defaultBase: "origin/main",
+    }]);
+    const threadId = "non-atomic-remove-thread";
+    const wtPath = await wm.createWorktree("non-atomic-remove", threadId);
+    const originalRunGit = (wm as unknown as {
+      runGit: (args: string[], cwd: string, env?: Record<string, string>) => Promise<string>;
+    }).runGit.bind(wm);
+    (wm as unknown as {
+      runGit: (args: string[], cwd: string, env?: Record<string, string>) => Promise<string>;
+    }).runGit = async (args, cwd, env) => {
+      const output = await originalRunGit(args, cwd, env);
+      if (args[0] === "worktree" && args[1] === "remove") {
+        mkdirSync(wtPath);
+        writeFileSync(join(wtPath, ".env.local"), "SECRET=must-not-be-logged\n");
+      }
+      return output;
+    };
+
+    await expect(wm.removeWorktree("non-atomic-remove", threadId))
+      .rejects.toThrow(new RegExp(`worktree removal incomplete: filesystem path remains: ${wtPath}`));
+    expect(existsSync(wtPath)).toBe(true);
+    rmSync(wtPath, { recursive: true, force: true });
+  });
+
   it("delegates branchOverride to the setup script", async () => {
     const repos: RepoConfig[] = [
       {

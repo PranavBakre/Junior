@@ -78,7 +78,7 @@ The bug-pipeline + dev-server fields are optional. Repos that only need the `!re
   Slack turn alive. These processes are always noninteractive:
   `GIT_TERMINAL_PROMPT=0`, batch-mode SSH, and an injected empty credential
   helper prevent credential prompts from becoming hangs.
-- `removeWorktree(repoName, threadId) → Promise<void>` — reads the actual current branch via `git -C <wt> branch --show-current` before deletion (so cleanup works for `branchOverride` callers), force-removes the worktree, and `git branch -D`s the branch. Both lookup and delete are wrapped in try/catch so missing/detached state is non-fatal.
+- `removeWorktree(repoName, threadId) → Promise<void>` — reads the actual current branch via `git -C <wt> branch --show-current` before deletion (so cleanup works for `branchOverride` callers), force-removes the worktree, and `git branch -D`s the branch. It then verifies both the Git worktree registry and filesystem path are gone; a non-atomic leftover raises an incomplete-cleanup error with the path for preservation review. Branch lookup and deletion remain non-fatal for missing/detached state.
 - `worktreeExists(repoName, threadId) → Promise<boolean>` and `isWorktreeDirty(worktreePath) → Promise<boolean>` — used by cleanup.
 - `getWorktreePath(repoName, threadId) → string` and `getBranchName(threadId) → string` — pure helpers (no I/O).
 
