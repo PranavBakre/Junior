@@ -7,7 +7,11 @@ import type { ClaudeDriver, DriverMode, DriverSendInput } from "./driver.ts";
 import type { StreamEvent } from "./types.ts";
 import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
 import { buildClaudeArgs } from "./args.ts";
-import { mapClaudeEvent, writeClaudeMcpConfig } from "./spawner.ts";
+import {
+  mapClaudeEvent,
+  resolveClaudeInvocationConfig,
+  resolveClaudeMcpConfigPath,
+} from "./spawner.ts";
 import { adaptTranscriptLine } from "./transcript-adapter.ts";
 import {
   DATABASE_CREDENTIAL_ENV_KEYS,
@@ -390,8 +394,8 @@ export class TmuxDriver implements ClaudeDriver {
           ...input,
           session: { ...input.session, sessionId: effectiveResumeId },
         };
-    const claudeArgs = buildInteractiveClaudeArgs(
-      effectiveInput,
+  const claudeArgs = buildInteractiveClaudeArgs(
+    effectiveInput,
       runtime.needsProjectMcp,
       cwd,
     );
@@ -661,17 +665,18 @@ function encodeCwd(cwd: string): string {
 
 function buildInteractiveClaudeArgs(
   input: DriverSendInput,
-  needsProjectMcp: boolean,
+  _needsProjectMcp: boolean,
   cwd: string,
 ): string[] {
   // Lean on the existing arg builder but strip the `-p <prompt>` and
   // `--output-format` flags — those are headless-only.
+  const mcpConfigPath = resolveClaudeMcpConfigPath(input.session);
   const all = buildClaudeArgs(
     input.session,
     /*prompt*/ "",
-    input.config,
+    resolveClaudeInvocationConfig(input.config, input.session, mcpConfigPath),
     cwd,
-    needsProjectMcp ? writeClaudeMcpConfig(input.session) : undefined,
+    mcpConfigPath,
   );
   const out: string[] = [];
   for (let i = 0; i < all.length; i++) {

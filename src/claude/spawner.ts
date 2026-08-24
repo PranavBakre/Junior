@@ -55,15 +55,11 @@ export function spawnClaude(
     session.activeAgentName ?? session.agentType,
   );
   const forceSlackMcp = config.approvalEnabled !== false && intent === "human-gated";
-  const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp, forceSlackMcp)
-    ? writeClaudeMcpConfig(session, forceSlackMcp)
-    : undefined;
+  const mcpConfigPath = resolveClaudeMcpConfigPath(session, forceSlackMcp);
   // User-level settings are needed only for hosted OAuth MCPs, and only when
   // this run actually receives Junior's generated MCP config. Utility cwd
   // runs intentionally receive neither and remain project-settings-only.
-  const effectiveConfig = mcpConfigPath && needsUserSettings(session)
-    ? widenSettingSources(config)
-    : config;
+  const effectiveConfig = resolveClaudeInvocationConfig(config, session, mcpConfigPath);
   const activeSkill = session.activeSkill
     ? resolveTrustedSkill(session.activeSkill.name)
     : null;
@@ -219,6 +215,27 @@ export function shouldUseClaudeMcpConfig(
 ): boolean {
   if (session.cwd) return false;
   return true;
+}
+
+/** Resolve the generated MCP config consistently for headless and tmux runs. */
+export function resolveClaudeMcpConfigPath(
+  session: ThreadSession,
+  forceSlackMcp = false,
+): string | undefined {
+  return shouldUseClaudeMcpConfig(session, false, forceSlackMcp)
+    ? writeClaudeMcpConfig(session, forceSlackMcp)
+    : undefined;
+}
+
+/** Apply the user-OAuth settings exception only to an MCP-enabled run. */
+export function resolveClaudeInvocationConfig(
+  config: Config["claude"],
+  session: ThreadSession,
+  mcpConfigPath: string | undefined,
+): Config["claude"] {
+  return mcpConfigPath && needsUserSettings(session)
+    ? widenSettingSources(config)
+    : config;
 }
 
 export function writeClaudeMcpConfig(
