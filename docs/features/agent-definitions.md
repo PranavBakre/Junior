@@ -61,7 +61,9 @@ repository's default remote ref (`origin/HEAD`, then `origin/main` or
 `origin/master`; local `main`/`master` only when no remote ref exists) and
 compares the on-disk file bytes with `git show
 <default-ref>:<path>`. A mismatch, missing blob, unavailable ref, or non-Git
-path is **unpublished**. Unpublished definitions do not add capabilities,
+path is **unpublished**. The configured `.md` path must also be a tracked,
+non-symlink regular file; resolving a link to another tracked payload never
+publishes an authority-bearing definition. Unpublished definitions do not add capabilities,
 permissions, mutation policy, aliases, variants, or handoff edges. If this
 removes the required `default` orchestrator, startup fails closed.
 

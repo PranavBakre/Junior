@@ -1,6 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+} from "node:fs";
+import { basename, resolve } from "node:path";
 import {
   parseAgentFrontmatter,
   parseFrontmatterCsv,
@@ -257,6 +263,27 @@ function defaultBranchRef(repoRoot: string): string | null {
 export function inspectAgentDefinitionProvenance(
   sourcePath: string,
 ): AgentDefinitionProvenance {
+  // Never canonicalize the definition path: `realpath` would turn an
+  // untracked `rogue.md -> tracked-payload.txt` symlink into the tracked
+  // payload's path. Authority belongs to the configured .md path itself.
+  let sourceStat: ReturnType<typeof lstatSync>;
+  try {
+    sourceStat = lstatSync(sourcePath);
+  } catch {
+    return {
+      status: "unpublished",
+      defaultBranchRef: null,
+      reason: "definition does not exist",
+    };
+  }
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+    return {
+      status: "unpublished",
+      defaultBranchRef: null,
+      reason: "definition is not a regular file",
+    };
+  }
+
   const repoRoot = gitText(resolve(sourcePath, ".."), [
     "rev-parse",
     "--show-toplevel",
@@ -268,7 +295,10 @@ export function inspectAgentDefinitionProvenance(
       reason: "definition is not inside a Git checkout",
     };
   }
-  const ref = defaultBranchRef(repoRoot);
+  // Git canonicalizes the checkout root on macOS (`/private/var`), but not the
+  // configured definition path; path identity stays anchored to the .md name.
+  const canonicalRepoRoot = realpathSync(repoRoot);
+  const ref = defaultBranchRef(canonicalRepoRoot);
   if (!ref) {
     return {
       status: "unpublished",
@@ -277,18 +307,26 @@ export function inspectAgentDefinitionProvenance(
     };
   }
 
-  // macOS commonly exposes temporary files through `/var` while Git returns
-  // `/private/var`; canonicalize before deriving the tree path.
-  const resolvedSourcePath = realpathSync(sourcePath);
-  const repoRelativePath = relative(repoRoot, resolvedSourcePath).replaceAll("\\", "/");
-  if (!repoRelativePath || repoRelativePath === ".." || repoRelativePath.startsWith("../")) {
+  const prefix = gitText(resolve(sourcePath, ".."), [
+    "rev-parse",
+    "--show-prefix",
+  ]);
+  const repoRelativePath = `${prefix ?? ""}${basename(sourcePath)}`;
+  const trackedPath = gitText(canonicalRepoRoot, [
+    "ls-files",
+    "--error-unmatch",
+    "--full-name",
+    "--",
+    repoRelativePath,
+  ]);
+  if (trackedPath !== repoRelativePath) {
     return {
       status: "unpublished",
       defaultBranchRef: ref,
-      reason: "definition is outside its Git checkout",
+      reason: "definition path is not tracked",
     };
   }
-  const published = gitOutput(repoRoot, ["show", `${ref}:${repoRelativePath}`]);
+  const published = gitOutput(canonicalRepoRoot, ["show", `${ref}:${repoRelativePath}`]);
   if (published === null) {
     return {
       status: "unpublished",
@@ -296,7 +334,7 @@ export function inspectAgentDefinitionProvenance(
       reason: `definition does not exist on ${ref}`,
     };
   }
-  if (!published.equals(readFileSync(resolvedSourcePath))) {
+  if (!published.equals(readFileSync(sourcePath))) {
     return {
       status: "unpublished",
       defaultBranchRef: ref,

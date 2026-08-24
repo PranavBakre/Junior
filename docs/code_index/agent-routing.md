@@ -59,7 +59,8 @@ The operational catalog has a separate publication gate: a Junior or
 its bytes exactly match the definition at that repository's default remote
 branch (or local `main`/`master` when no remote ref exists). Dirty files,
 untracked files, and commits visible only from a feature branch are reported as
-unpublished and ignored. A missing published `default` role is a startup error,
+unpublished and ignored. The configured definition must be a tracked regular
+file, never a symlink to some other tracked payload. A missing published `default` role is a startup error,
 so local authority changes cannot silently take effect.
 
 ### Common profile

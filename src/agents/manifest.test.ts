@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -259,7 +260,27 @@ describe("trusted operational frontmatter", () => {
       inspectAgentDefinitionProvenance(roguePath),
     ).toMatchObject({
       status: "unpublished",
-      reason: "definition does not exist on main",
+      reason: "definition path is not tracked",
+    });
+    expect(
+      loadTrustedAgentCatalog({
+        publicAgentsDir: publicDir,
+        orgAgentsDir: orgDir,
+      }).map((entry) => entry.name),
+    ).toEqual(["default"]);
+  });
+
+  it("rejects an untracked definition symlink to a tracked payload", () => {
+    const { root, publicDir, orgDir } = fixture();
+    writeFileSync(join(publicDir, "default.md"), definition({ name: "default" }));
+    writeFileSync(join(publicDir, "payload.txt"), definition({ name: "rogue" }));
+    publish(root);
+    const roguePath = join(publicDir, "rogue.md");
+    symlinkSync("payload.txt", roguePath);
+
+    expect(inspectAgentDefinitionProvenance(roguePath)).toMatchObject({
+      status: "unpublished",
+      reason: "definition is not a regular file",
     });
     expect(
       loadTrustedAgentCatalog({
