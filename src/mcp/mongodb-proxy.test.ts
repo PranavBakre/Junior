@@ -1,8 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { SlackMcpRunContext } from "./context.ts";
-import { createMongoProxyServer } from "./mongodb-proxy.ts";
+import {
+  configuredMongoConnections,
+  createMongoProxyServer,
+} from "./mongodb-proxy.ts";
 
 const RUN_CONTEXT: SlackMcpRunContext = {
   agent: "thinker",
@@ -10,6 +13,12 @@ const RUN_CONTEXT: SlackMcpRunContext = {
   threadId: "thread-1",
   signed: true,
 };
+
+const originalConnections = process.env.MDB_MCP_CONNECTIONS;
+afterEach(() => {
+  if (originalConnections === undefined) delete process.env.MDB_MCP_CONNECTIONS;
+  else process.env.MDB_MCP_CONNECTIONS = originalConnections;
+});
 
 describe("MongoDB MCP read-only proxy", () => {
   it("mirrors backend schemas and forwards nested filter arguments", async () => {
@@ -59,6 +68,7 @@ describe("MongoDB MCP read-only proxy", () => {
     const server = createMongoProxyServer(
       RUN_CONTEXT,
       async () => ({ client: backendClient as never }),
+      ["preconfigured"],
     );
     const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -71,6 +81,7 @@ describe("MongoDB MCP read-only proxy", () => {
       expect(tools.map((tool) => tool.name)).toEqual(["find"]);
       expect(tools[0]?.inputSchema).toMatchObject({
         properties: {
+          connection: { type: "string", enum: ["preconfigured"] },
           database: { type: "string" },
           filter: {
             type: "object",
@@ -86,7 +97,7 @@ describe("MongoDB MCP read-only proxy", () => {
         description: "Upstream page size. Must be between 1 and 100.",
         "x-upstream": "preserved",
       });
-      expect(tools[0]?.inputSchema.required).toEqual(["database", "collection", "limit"]);
+      expect(tools[0]?.inputSchema.required).toEqual(["connection", "database", "collection", "limit"]);
 
       const filter = {
         status: { $in: ["active", "trial"] },
@@ -95,6 +106,7 @@ describe("MongoDB MCP read-only proxy", () => {
       const result = await client.callTool({
         name: "find",
         arguments: {
+          connection: "preconfigured",
           database: "app",
           collection: "members",
           filter,
@@ -126,7 +138,7 @@ describe("MongoDB MCP read-only proxy", () => {
         async listTools() { return { tools: [] }; },
         async callTool() { called = true; return { content: [{ type: "text" as const, text: "unexpected" }] }; },
       } as never,
-    }));
+    }), ["preconfigured"]);
     const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -135,7 +147,12 @@ describe("MongoDB MCP read-only proxy", () => {
       for (const limit of [undefined, 101, 0]) {
         const result = await client.callTool({
           name: "find",
-          arguments: { database: "app", collection: "members", ...(limit === undefined ? {} : { limit }) },
+          arguments: {
+            connection: "preconfigured",
+            database: "app",
+            collection: "members",
+            ...(limit === undefined ? {} : { limit }),
+          },
         });
         expect(result.isError).toBe(true);
       }
@@ -153,7 +170,7 @@ describe("MongoDB MCP read-only proxy", () => {
         async listTools() { return { tools: [] }; },
         async callTool() { called = true; return { content: [{ type: "text" as const, text: "unexpected" }] }; },
       } as never,
-    }));
+    }), ["preconfigured"]);
     const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -183,7 +200,7 @@ describe("MongoDB MCP read-only proxy", () => {
           return { content: [{ type: "text" as const, text: "ok" }] };
         },
       } as never,
-    }));
+    }), ["preconfigured"]);
     const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -192,7 +209,7 @@ describe("MongoDB MCP read-only proxy", () => {
     try {
       await client.callTool({
         name: "list-databases",
-        arguments: { connectionId: "growthx-prod" },
+        arguments: { connection: "preconfigured", connectionId: "growthx-prod" },
       });
       expect(calls).toEqual([{
         name: "list-databases",
@@ -223,6 +240,7 @@ describe("MongoDB MCP read-only proxy", () => {
     const server = createMongoProxyServer(
       RUN_CONTEXT,
       async () => ({ client: backendClient as never }),
+      ["preconfigured"],
     );
     const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -242,5 +260,67 @@ describe("MongoDB MCP read-only proxy", () => {
       await client.close();
       await server.close();
     }
+  });
+
+  it("routes calls through the selected named connection", async () => {
+    const calls: Array<{ connectionId: string; request: unknown }> = [];
+    const server = createMongoProxyServer(
+      RUN_CONTEXT,
+      async (connectionId) => ({
+        client: {
+          async listTools() {
+            return {
+              tools: [{
+                name: "list-databases",
+                inputSchema: { type: "object" as const },
+              }],
+            };
+          },
+          async callTool(request: unknown) {
+            calls.push({ connectionId, request });
+            return { content: [{ type: "text" as const, text: connectionId }] };
+          },
+        } as never,
+      }),
+      ["dev", "prod"],
+    );
+    const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const { tools } = await client.listTools();
+      expect(tools[0]?.inputSchema).toMatchObject({
+        properties: { connection: { type: "string", enum: ["dev", "prod"] } },
+        required: ["connection"],
+      });
+      const result = await client.callTool({
+        name: "list-databases",
+        arguments: { connection: "dev" },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(calls).toEqual([{
+        connectionId: "dev",
+        request: {
+          name: "list-databases",
+          arguments: { connectionId: "preconfigured" },
+        },
+      }]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("parses named connection URIs without exposing them", () => {
+    process.env.MDB_MCP_CONNECTIONS = JSON.stringify({
+      prod: "mongodb://prod.example/test",
+      dev: "mongodb://dev.example/GX-debug",
+    });
+    expect(configuredMongoConnections()).toEqual([
+      { id: "dev", connectionString: "mongodb://dev.example/GX-debug" },
+      { id: "prod", connectionString: "mongodb://prod.example/test" },
+    ]);
   });
 });

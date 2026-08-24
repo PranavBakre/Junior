@@ -115,14 +115,19 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   approval, disable its stored actions, and remove its buttons; a delayed Slack
   decision cannot outlive the provider process that requested it. An ordinary
   approval timeout/default deny performs the same idempotent cleanup.
-- MongoDB MCP uses `MDB_MCP_CONNECTION_STRING` from the process environment.
-  `.env.example` includes a placeholder; real values belong only in local
-  `.env` or secret managers. Junior exposes a shared read-only HTTP proxy at
-  `/mcp/mongodb`, backed by one wrapped `mongodb-mcp-server@2.1.0 --readOnly`
-  stdio child. Mongo MCP v2 registers the environment connection as
-  `preconfigured`; the proxy removes `connectionId` from exposed schemas and
-  injects that ID itself so agents cannot select or guess connections. Runner adapters inject that proxy only when the active agent
-  declares `permissions.mcp: mongodb` or lists `mcp__mongodb__*` tools.
+- MongoDB MCP uses named read-only connections from `MDB_MCP_CONNECTIONS`, a
+  JSON object mapping stable IDs such as `dev` and `prod` to connection
+  strings. `.env.example` includes a placeholder; real values belong only in
+  local `.env` or secret managers. Junior exposes a shared read-only HTTP
+  proxy at `/mcp/mongodb`, backed by one wrapped
+  `mongodb-mcp-server@2.1.0 --readOnly` stdio child per configured target.
+  The proxy unions the safe tool schemas and adds a required `connection`
+  selector, then injects the upstream `preconfigured` ID into the selected
+  backend. Agents cannot supply raw connection strings or select arbitrary
+  upstream IDs. The legacy `MDB_MCP_CONNECTION_STRING` remains supported as a
+  single `preconfigured` target. Runner adapters inject that proxy only when
+  the active agent declares `permissions.mcp: mongodb` or lists
+  `mcp__mongodb__*` tools.
   Disable with `OPENCODE_MONGODB_MCP_ENABLED=false` /
   `CODEX_MONGODB_MCP_ENABLED=false`.
   The proxy requires every `find` call to provide an explicit integer
