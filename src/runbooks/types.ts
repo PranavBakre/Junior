@@ -97,6 +97,8 @@ export interface PromotionCandidate {
   fingerprint: string;
   proposedKind: "runbook" | "agent-extension" | "new-agent" | "workflow";
   normalizedIntent: string;
+  /** Whether normalizedIntent came from an authoritative operator request. */
+  normalizedIntentAuthoritative?: boolean;
   ownerAgent: string;
   occurrenceCount: number;
   successfulCount: number;

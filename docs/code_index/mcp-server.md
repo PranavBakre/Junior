@@ -75,7 +75,9 @@ Called by lead/intake to create a per-thread worktree for a repo and persist its
 `promotion_record` accepts an authoritative operator request either at the
 top level or inside the evidence object. It normalizes that request before
 creating/updating the in-memory promotion candidate; legacy evidence without a
-request falls back to its runbook name. `runbook_propose` consumes the same
+request falls back to its runbook name and is marked non-authoritative. A later
+authoritative request replaces that fallback for the same fingerprint.
+`runbook_propose` consumes the same
 candidate and therefore receives a non-empty `normalizedIntent` for filename,
 description, routing examples, and proposal content. The evidence schema keeps
 `request` optional for backward compatibility.

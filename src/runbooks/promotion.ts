@@ -13,10 +13,12 @@ const candidates = new Map<string, PromotionCandidate>();
 export function recordSuccessfulExecution(
   evidence: RunbookRunEvidence,
   request?: string,
+  options?: { authoritative?: boolean },
 ): void {
   const fp = evidence.intentFingerprint;
   const existing = candidates.get(fp);
   const normalizedText = request ? normalizeForFingerprint(request) : "";
+  const authoritative = options?.authoritative ?? Boolean(normalizedText);
 
   if (existing) {
     existing.occurrenceCount++;
@@ -26,7 +28,13 @@ export function recordSuccessfulExecution(
       existing.evidenceRefs.push(evidence.runId);
     }
     if (evidence.risk && !existing.risk) existing.risk = evidence.risk;
-    if (normalizedText && !existing.normalizedIntent) existing.normalizedIntent = normalizedText;
+    if (
+      normalizedText &&
+      (authoritative || !existing.normalizedIntent)
+    ) {
+      existing.normalizedIntent = normalizedText;
+      if (authoritative) existing.normalizedIntentAuthoritative = true;
+    }
     return;
   }
 
@@ -44,6 +52,7 @@ export function recordSuccessfulExecution(
       ? "runbook"
       : (classification.classification as PromotionCandidate["proposedKind"]),
     normalizedIntent: normalizedText,
+    normalizedIntentAuthoritative: authoritative,
     ownerAgent: evidence.ownerAgent,
     occurrenceCount: 1,
     successfulCount: evidence.status === "completed" ? 1 : 0,

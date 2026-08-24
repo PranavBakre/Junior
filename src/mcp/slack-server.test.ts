@@ -94,7 +94,6 @@ describe("MCP promotion authoring", () => {
             completedAt: 2_000,
             intentFingerprint: fingerprint,
           },
-          request: "Transfer six months of membership",
         },
       });
       const recordedResult = recorded as unknown as {
@@ -104,8 +103,40 @@ describe("MCP promotion authoring", () => {
         recordedResult.content[0]!.text,
       ) as { candidate: { normalizedIntent: string } };
       expect(recordedPayload.candidate.normalizedIntent).toBe(
-        "transfer six months of membership",
+        "legacy placeholder",
       );
+
+      const upgraded = await client.callTool({
+        name: "promotion_record",
+        arguments: {
+          evidence: {
+            runId: "mcp-promotion-run-2",
+            runbookName: "legacy-placeholder",
+            contentDigest: "digest",
+            ownerAgent: "build",
+            risk: "production-write",
+            boundInputs: {},
+            status: "completed",
+            startedAt: 3_000,
+            completedAt: 4_000,
+            intentFingerprint: fingerprint,
+          },
+          request: "Transfer six months of membership",
+        },
+      });
+      const upgradedResult = upgraded as unknown as {
+        content: Array<{ text: string }>;
+      };
+      const upgradedPayload = JSON.parse(upgradedResult.content[0]!.text) as {
+        candidate: {
+          normalizedIntent: string;
+          normalizedIntentAuthoritative?: boolean;
+        };
+      };
+      expect(upgradedPayload.candidate).toMatchObject({
+        normalizedIntent: "transfer six months of membership",
+        normalizedIntentAuthoritative: true,
+      });
 
       const proposed = await client.callTool({
         name: "runbook_propose",

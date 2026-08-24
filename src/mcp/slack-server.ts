@@ -1385,7 +1385,13 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
     async ({ evidence, request }) => {
       const authoritativeRequest =
         request?.trim() || evidence.request?.trim() || evidence.runbookName.trim();
-      promotionRecordExecution(evidence as RunbookRunEvidence, authoritativeRequest);
+      promotionRecordExecution(
+        evidence as RunbookRunEvidence,
+        authoritativeRequest,
+        {
+          authoritative: Boolean(request?.trim() || evidence.request?.trim()),
+        },
+      );
       const check = promotionCheckThreshold(evidence.intentFingerprint);
       return {
         content: [
