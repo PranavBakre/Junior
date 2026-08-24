@@ -151,7 +151,7 @@ interface Config {
 | `SLACK_EXPECTED_TEAM_ID` | no | unset | Optional expected workspace/team ID |
 | `SLACK_EXPECTED_VISIBLE_NAME` | no | unset | Optional exact `users.info` display/visible name |
 | `SLACK_EXPECTED_CHANNEL_IDS` | no | unset | Comma-separated channels the deployment must be joined to |
-| `RUNNER_PROVIDER` | no | `opencode` | `opencode` \| `opencode-sdk` \| `codex-app-server` \| `claude` |
+| `RUNNER_PROVIDER` | no | `codex-app-server` | `codex-app-server` \| `opencode` \| `opencode-sdk` \| `claude` |
 | `CLAUDE_MAX_TURNS` | no | `100` | Max turns per `claude -p` / `claude -p --resume` invocation |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | |
 | `CLAUDE_MODEL` | no | unset | passed through to `claude -p --model` |
@@ -167,7 +167,7 @@ interface Config {
 | `OPENCODE_MONGODB_MCP_ENABLED` | no | `true` | includes the optional MongoDB MCP entry |
 | `OPENCODE_FIGMA_MCP_ENABLED` | no | `true` | permits the hosted Figma MCP entry when the active agent declares `figma` |
 | `OPENCODE_NOTION_MCP_ENABLED` | no | `true` | permits the hosted Notion MCP entry when the active agent declares `notion` |
-| `CODEX_MODE` | no | `app-server` | `app-server` or `cli`; app-server is the implemented Codex provider path |
+| `CODEX_MODE` | no | `app-server` | Legacy selector; only the app-server transport is supported |
 | `CODEX_MODEL` | no | unset | Codex model override |
 | `CODEX_REASONING_EFFORT` | no | `low` | Codex model reasoning effort |
 | `CODEX_TIMEOUT_MS` | no | `300000` | Codex turn timeout |

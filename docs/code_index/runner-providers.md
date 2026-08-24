@@ -1,8 +1,9 @@
 # Code Index: Runner Providers
 
-Provider boundary for Claude/OpenCode/Codex spawning. App code talks to normalized
-runner events; provider adapters own CLI args, config, parsing, resume, cwd, env,
-and MCP wiring.
+Provider boundary for Claude/OpenCode/Codex spawning. Codex app-server is the
+default base provider; standalone `codex exec` is not supported as a Junior base
+runner. App code talks to normalized runner events; provider adapters own CLI
+args, config, parsing, resume, cwd, env, and MCP wiring.
 
 ## Code Index
 

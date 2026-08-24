@@ -1,6 +1,6 @@
 # Codex Provider Plan
 
-> **Historical implementation plan.** Codex app-server is implemented under `src/codex-app-server` and selected with `RUNNER_PROVIDER=codex-app-server`. This document preserves the earlier decision record; current behavior is indexed in [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md).
+> **Historical implementation plan.** Codex app-server is implemented under `src/codex-app-server` and is the default Codex/base provider. Standalone `codex exec` is not a supported Junior base runner. This document preserves the earlier decision record; current behavior is indexed in [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md). CLI material below is historical research only.
 
 Date: 2026-05-25
 
@@ -12,15 +12,15 @@ This document plans a Codex runner provider for Junior after the stacked PRs
 - #58: session idle interrupt and resume.
 - #59: OpenCode SDK/server provider.
 
-It supersedes the older Codex-only runner notes as an implementation plan, but
-keeps their verified CLI findings where they still match the installed Codex
-CLI.
+It supersedes the older Codex-only runner notes as an implementation plan. It
+keeps verified standalone CLI findings only as historical research; those
+findings do not define a supported Junior base provider.
 
 ## Historical recommendation
 
-Build a **Codex app-server provider first if and only if Phase 0 proves config,
-hook, and MCP isolation**. Keep a **Codex CLI provider as the fallback path** if
-that isolation cannot be made deterministic.
+Build and use the **Codex app-server provider** once its config, hook, and MCP
+isolation checks pass. If those checks fail, do not substitute standalone
+`codex exec` as a Junior base provider.
 
 Do not use `codex mcp-server` as the Junior provider. That command exposes
 Codex as an MCP tool to another host; Junior needs Codex to be the coding-agent
@@ -31,7 +31,6 @@ The recommended provider split is:
 | Provider | Timing | Purpose |
 |---|---|---|
 | `codex-app-server` | v1 target | Long-lived Codex control plane using `thread/start`, `turn/start`, `turn/interrupt`, streamed notifications, and `thread/resume`. This is the closest match to OpenCode SDK/server. |
-| `codex` | fallback | One process per Slack turn using `codex exec --json` and `codex exec resume --json` if app-server isolation is not production-safe. |
 
 Reasoning:
 
@@ -57,9 +56,8 @@ Reasoning:
   `$CODEX_HOME`, but local smoke tests showed `JUNIOR_SPAWNED=1` suppresses the
   learnings hook payload and a separate minimal `CODEX_HOME` suppresses user
   hooks and user MCP servers.
-- Codex CLI remains useful as a fallback because it has stable enough one-turn
-  primitives and an `--ignore-user-config` flag, but it is weaker on prompt
-  injection and native abort.
+- Standalone Codex CLI research remains historical. It is not a fallback or base
+  provider in the current Junior contract.
 - Junior should also ship a manual operator helper, analogous to
   `bin/opencode-with-mcp.sh`, so a human can talk to Codex with the same
   Junior-owned `CODEX_HOME`, prompt/config assumptions, and MCP set that the
@@ -157,7 +155,7 @@ return the same `SpawnResult` fields as Claude/OpenCode.
 - Agent frontmatter can set model, identity, context profile, tools, and
   provider permission intent.
 
-Codex impact: every worker session must carry `provider: "codex"` and its own
+Codex impact: every worker session must carry `provider: "codex-app-server"` and its own
 Codex session id. Switching a thread to Codex must not mix a previous Claude or
 OpenCode session id into Codex resume.
 
@@ -234,8 +232,9 @@ Rules:
   identity. Target repo instructions are useful context, not Junior's dynamic
   persona transport.
 
-Codex should still not replace OpenCode as default until real Slack-thread soak
-proves prompt salience and config isolation across normal Junior workflows.
+Codex app-server is the default once the configured isolation checks pass; real
+Slack-thread soak remains the release gate for prompt salience and config
+isolation.
 
 ### Worktrees and Cwd
 
@@ -270,7 +269,7 @@ Codex app-server should run from a Junior-owned `CODEX_HOME` whose generated
 running against the operator's real `~/.codex/config.toml`, because global MCPs
 are eagerly surfaced during app-server startup.
 
-CLI fallback can still use config overrides:
+Historical standalone CLI config overrides (not a supported Junior base path):
 
 ```sh
 codex \
@@ -404,9 +403,8 @@ operationally worth enabling.
 Workflows can run a provider from `/tmp/junior-utility`, declare tools, and
 optionally use idle recovery. Codex must support:
 
-- `runner.provider: codex` once implemented.
 - `runner.provider: codex-app-server` once implemented.
-- `runner.provider: default` when the global default is Codex.
+- `runner.provider: default` when the global default is Codex app-server.
 - Utility cwd with no Junior MCP wiring unless the workflow explicitly needs
   memory or Slack tools.
 - Long-running memory consolidation with idle resume only when
@@ -757,10 +755,11 @@ Exit criteria:
 - Persistent agents keep independent Codex session ids.
 - Worktree safety is preserved.
 
-### Phase 6: CLI Fallback
+### Phase 6: Historical CLI research (not supported)
 
-Implement `codex` CLI only if app-server isolation fails or if operators need a
-minimal fallback.
+The standalone `codex` CLI is deliberately not implemented as a Junior base
+provider. Keep the following only as historical research; do not wire it into
+provider selection.
 
 Deliverables:
 
@@ -769,8 +768,8 @@ Deliverables:
 - `src/codex/spawner.ts`
 - Fresh/resume/image/MCP/idle tests using `codex exec --json`.
 
-The CLI fallback should stay a separate provider mode because its prompt
-strategy is weaker: it has to wrap Junior's system prompt into user text.
+Its prompt strategy is weaker because it has to wrap Junior's system prompt into
+user text.
 
 ## Coverage Report Against OpenCode Support
 
@@ -799,8 +798,8 @@ Net: no currently documented OpenCode feature appears fundamentally uncovered by
 Codex app-server. The remaining gaps are implementation and hardening gaps:
 parser/mappers, isolated `CODEX_HOME` generation, MCP config generation,
 elicitation handling, image fixture coverage, subagent fixture coverage, provider
-wiring, and soak. The only reason to keep the CLI fallback is operational risk
-around experimental app-server lifecycle/auth behavior, not feature coverage.
+wiring, and soak. Standalone CLI is not retained as a fallback; app-server
+lifecycle/auth risk is handled by release gates and provider isolation.
 
 ## Provider Interface Impact
 
@@ -831,7 +830,8 @@ Existing fields are sufficient:
 Required changes are enum/config/wiring changes, not interface changes:
 
 - Add `codex-app-server` to the provider unions once the spawner lands.
-- Keep `codex` as the CLI fallback/planned provider unless/until implemented.
+- Keep standalone `codex exec` out of Junior provider selection; the supported
+  Codex base is `codex-app-server`.
 - Add Codex config and MCP config generation.
 - Add parser/mappers and fixture tests for app-server notification shapes.
 - Update Slack duplicate-post suppression tests for Codex `mcpToolCall` input
@@ -843,8 +843,8 @@ Required changes are enum/config/wiring changes, not interface changes:
 
 | Risk | Mitigation |
 |---|---|
-| Prompt salience under Codex differs from OpenCode/Claude | Keep OpenCode default until Slack soak. Use app-server instruction fields for v1; reserve XML prompt wrapping for CLI fallback only. |
-| Codex CLI flag drift | Version-gate docs/tests against `codex --version` and keep args tests narrow. |
+| Prompt salience under Codex differs from OpenCode/Claude | Use app-server instruction fields and require Slack soak before release. |
+| Historical standalone CLI flag drift | Keep CLI findings out of the supported provider contract. |
 | MCP config key mismatch | Capture real MCP call fixtures before enabling by default. |
 | Session id mix across providers | On provider switch, clear provider-native session id unless explicit migration is implemented. |
 | Idle interruption loses in-flight state | Require a Codex thread id before retry; app-server `turn/interrupt` is the v1 abort path. |
@@ -855,7 +855,7 @@ Required changes are enum/config/wiring changes, not interface changes:
 
 ## Decision
 
-Use **Codex app-server as the v1 target**, with **Codex CLI as fallback**:
+Use **Codex app-server as the supported Codex/base provider**:
 
 - App-server now has local smoke evidence for the major OpenCode parity
   features: developer instructions, native interrupt, streaming notifications,
@@ -863,5 +863,5 @@ Use **Codex app-server as the v1 target**, with **Codex CLI as fallback**:
   provider-native subagent surface.
 - The first implementation blocker is deterministic isolation from user hooks
   and global MCP servers, not app-server capability.
-- CLI remains a simpler fallback but should not be the primary path if
-  app-server isolation is solved.
+- Standalone `codex exec` remains historical research and is not a Junior base
+  provider.

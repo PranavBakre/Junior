@@ -1,15 +1,17 @@
 # Code Index: Codex App-Server Provider
 
 The Codex provider adapts the Codex app-server protocol to Junior's normalized
-runner boundary. It is selected with `RUNNER_PROVIDER=codex-app-server` and is
-not the same as the historical standalone `src/codex` runner plan.
+runner boundary. It is the default and is selected with
+`RUNNER_PROVIDER=codex-app-server`. It is not the same as the historical
+standalone `src/codex` runner plan; standalone `codex exec` is not a supported
+Junior base provider.
 
 ## Sources
 
 | Area | Files | Purpose |
 |---|---|---|
 | Spawning and lifecycle | `src/codex-app-server/spawner.ts` | Starts the isolated Codex app-server process and exposes a runner handle. |
-| Protocol parsing | `src/codex-app-server/parser.ts` | Parses JSONL app-server messages into normalized events. |
+| Protocol parsing | `src/codex-app-server/parser.ts` | Parses JSONL app-server messages into normalized events and typed terminal completion outcomes. |
 | Configuration | `src/codex-app-server/config.ts` | Builds app-server launch and MCP configuration. |
 | Policy | `src/codex-app-server/policy.ts` | Maps sandbox, approval, search, and agent policy to Codex options. |
 | Slack approval bridge | `src/mcp/slack-approval-bridge.ts`, `src/mcp/approval.ts` | Converts native app-server approval callbacks into blocking Slack Allow/Deny actions and defaults closed. |

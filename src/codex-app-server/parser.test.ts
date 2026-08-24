@@ -54,6 +54,11 @@ describe("createCodexAppServerEventMapper", () => {
         type: "done",
         provider: "codex-app-server",
         usage: { input_tokens: 1, output_tokens: 2 },
+        completion: {
+          status: "success",
+          reason: "completed",
+          retryable: false,
+        },
       },
     ]);
     expect(mapper.response).toBe("Hello world");
@@ -98,6 +103,11 @@ describe("createCodexAppServerEventMapper", () => {
           cache_creation_input_tokens: 2,
           total_tokens: 30,
         },
+        completion: {
+          status: "success",
+          reason: "completed",
+          retryable: false,
+        },
       },
     ]);
   });
@@ -122,9 +132,54 @@ describe("createCodexAppServerEventMapper", () => {
     expect(events).toEqual([
       { type: "init", provider: "codex-app-server", sessionId: "thr_1" },
       { type: "message", provider: "codex-app-server", text: "here." },
-      { type: "done", provider: "codex-app-server" },
+      {
+        type: "done",
+        provider: "codex-app-server",
+        completion: {
+          status: "success",
+          reason: "completed",
+          retryable: false,
+        },
+      },
     ]);
     expect(mapper.response).toBe("here.");
+  });
+
+  it("classifies interrupted and failed turns", () => {
+    const interrupted = createCodexAppServerEventMapper();
+    const interruptedEvents = interrupted.map({
+      method: "turn/completed",
+      params: { threadId: "thr_1", turn: { id: "turn_1", status: "interrupted" } },
+    });
+    expect(interruptedEvents).toContainEqual({
+      type: "done",
+      provider: "codex-app-server",
+      completion: {
+        status: "incomplete",
+        reason: "interrupted",
+        retryable: true,
+        providerSubtype: "interrupted",
+      },
+    });
+
+    const failed = createCodexAppServerEventMapper();
+    const failedEvents = failed.map({
+      method: "turn/completed",
+      params: {
+        threadId: "thr_1",
+        turn: { id: "turn_1", status: "failed", error: { code: "model_error" } },
+      },
+    });
+    expect(failedEvents).toContainEqual({
+      type: "done",
+      provider: "codex-app-server",
+      completion: {
+        status: "failure",
+        reason: "provider_error",
+        retryable: false,
+        providerSubtype: "model_error",
+      },
+    });
   });
 
   it("captures app-server error and warning diagnostics", () => {

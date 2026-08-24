@@ -128,7 +128,7 @@ export interface Config {
     notionMcpEnabled?: boolean;
   };
   codex: {
-    mode: "app-server" | "cli";
+    mode: "app-server";
     model: string | null;
     /** Codex model reasoning effort. Defaults to "low". */
     reasoningEffort?: string;
@@ -343,7 +343,7 @@ export function loadConfig(): Config {
       tmuxSweepIntervalMs: Number(optional("TMUX_SWEEP_INTERVAL_MS", "900000")), // 15min
     },
     runner: {
-      provider: parseRunnerProvider(optional("RUNNER_PROVIDER", "opencode")),
+      provider: parseRunnerProvider(optional("RUNNER_PROVIDER", "codex-app-server")),
     },
     opencode: {
       model: process.env.OPENCODE_MODEL ?? null,
@@ -629,8 +629,10 @@ function parseDriverMode(value: string): DriverMode {
 }
 
 function parseCodexMode(value: string): Config["codex"]["mode"] {
-  if (value === "app-server" || value === "cli") return value;
-  throw new Error(`Invalid CODEX_MODE: ${value} (expected app-server|cli)`);
+  if (value === "app-server") return value;
+  throw new Error(
+    `Invalid CODEX_MODE: ${value} (only app-server is supported; standalone Codex CLI is not a Junior base runner)`,
+  );
 }
 
 function parseCodexSandbox(value: string): Config["codex"]["sandbox"] {

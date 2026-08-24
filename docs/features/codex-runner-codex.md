@@ -1,6 +1,6 @@
 # Codex Runner — Codex Scope
 
-> **Historical implementation plan.** The provider boundary and Codex app-server path described here have since landed under `src/runners` and `src/codex-app-server`. See [`runner-providers.md`](runner-providers.md) and [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md) for current behavior.
+> **Historical implementation plan.** The provider boundary and Codex app-server path described here have since landed under `src/runners` and `src/codex-app-server`. Codex app-server is the default Codex/base provider; standalone `codex exec` is not supported as a Junior base runner. See [`runner-providers.md`](runner-providers.md) and [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md) for current behavior; CLI material below is historical only.
 
 Date: 2026-05-15
 
@@ -23,8 +23,9 @@ Slack/session experience it has today:
 - deterministic process lifecycle and timeout behavior
 
 The immediate goal is not to delete Claude support. The clean replacement path is
-to introduce a runner boundary, make Claude one adapter, make Codex another
-adapter, then switch the default provider once Codex has parity.
+to introduce a runner boundary, make Claude one adapter, and make Codex
+app-server another adapter. That boundary is now shipped, with Codex app-server
+as the default provider; standalone `codex exec` is not a supported base path.
 
 ## Historical snapshot (superseded)
 
@@ -111,7 +112,7 @@ will leak provider details everywhere and make the second provider brittle.
 Recommended app-level event model:
 
 ```ts
-export type RunnerProvider = "claude" | "codex";
+export type RunnerProvider = "claude" | "codex-app-server";
 
 export type RunnerEvent =
   | { type: "init"; provider: RunnerProvider; sessionId: string }
@@ -142,7 +143,7 @@ Keep provider-native event types inside adapter modules and adapter tests.
 Add provider metadata beside the existing native id:
 
 ```ts
-provider: "claude" | "codex";
+provider: "claude" | "codex-app-server";
 sessionId: string | null;
 ```
 
@@ -303,17 +304,18 @@ Claude mapping:
 
 ## Provider Selection
 
-Start with global selection:
+The original global-selection proposal is superseded. The current provider
+selection is:
 
 ```env
-RUNNER_PROVIDER=claude|codex
+RUNNER_PROVIDER=codex-app-server|claude|opencode|opencode-sdk
 ```
 
-Then add thread-level selection:
+Thread-level selection uses the same provider values:
 
 ```text
 !provider claude
-!provider codex
+!provider codex-app-server
 ```
 
 Thread-level switching rules:
@@ -323,11 +325,11 @@ Thread-level switching rules:
   `!reset all` or a new `!provider <name> --reset` command.
 - Status/home output must show provider and correct resume hint.
 
-Resume hints:
+Current resume behavior:
 
 ```text
 claude --resume <sessionId>
-codex exec resume <sessionId>
+Codex app-server: thread/resume <sessionId>
 ```
 
 ## Implementation Plan
@@ -382,7 +384,7 @@ Exit criteria:
 
 Exit criteria:
 
-- `RUNNER_PROVIDER=codex` can answer a Slack thread with a final message.
+- `RUNNER_PROVIDER=codex-app-server` can answer a Slack thread with a final message.
 - Session id is persisted and a second message resumes the same Codex thread.
 
 ### 5. Config and Provider Selection

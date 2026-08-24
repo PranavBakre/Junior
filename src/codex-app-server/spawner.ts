@@ -1,7 +1,12 @@
 import { resolve } from "node:path";
 import type { Config } from "../config.ts";
 import type { AgentIdentity, ThreadSession } from "../session/types.ts";
-import type { RunnerEvent, SpawnHandle, SpawnResult } from "../runners/types.ts";
+import type {
+  RunnerCompletion,
+  RunnerEvent,
+  SpawnHandle,
+  SpawnResult,
+} from "../runners/types.ts";
 import { buildRunnerRuntime } from "../runners/runtime.ts";
 import {
   buildCodexMcpConfig,
@@ -290,14 +295,23 @@ export function spawnCodexAppServer(
       await stdoutDone;
       const exitCode = await proc.exited;
       const stderr = await stderrText;
-      const mapperError = mapper.error ?? (!mapper.response ? mapper.warning : null);
+      const effectiveExitCode = exitCode === 143 ? 0 : exitCode;
+      const processError = mapper.error ?? (!mapper.response ? mapper.warning : null);
+      const completion = mapper.completion ?? classifyCodexProcessCompletion(
+        effectiveExitCode,
+        processError,
+      );
+      const error = completion.status === "success"
+        ? null
+        : codexCompletionError(completion, processError ?? stderr);
       return {
         provider,
         sessionId: mapper.sessionId ?? activeThreadId,
         response: mapper.response,
         events,
-        exitCode: exitCode === 143 ? 0 : exitCode,
-        error: mapperError ?? (exitCode === 0 || exitCode === 143 ? null : stderr || `Process exited with code ${exitCode}`),
+        exitCode: effectiveExitCode,
+        error,
+        completion,
       };
     } catch (err) {
       if (!processKilled) signalProcessTree(proc.pid, "SIGTERM");
@@ -309,6 +323,12 @@ export function spawnCodexAppServer(
         events,
         exitCode: await proc.exited.catch(() => null),
         error: err instanceof Error ? err.message : String(err || stderr),
+        completion: {
+          status: "failure",
+          reason: "process_error",
+          retryable: false,
+          providerSubtype: "app-server-process",
+        },
       };
     }
   })();
@@ -342,6 +362,40 @@ export function spawnCodexAppServer(
     },
     pid: proc.pid,
   };
+}
+
+function classifyCodexProcessCompletion(
+  exitCode: number | null,
+  processError: string | null,
+): RunnerCompletion {
+  if (processError || (exitCode != null && exitCode !== 0)) {
+    return {
+      status: "failure",
+      reason: "process_error",
+      retryable: false,
+      providerSubtype: "app-server-process",
+    };
+  }
+  return {
+    status: "incomplete",
+    reason: "missing_result",
+    retryable: true,
+    providerSubtype: "app-server-process",
+  };
+}
+
+function codexCompletionError(
+  completion: RunnerCompletion,
+  processError: string,
+): string {
+  if (processError.trim()) return processError.trim();
+  if (completion.reason === "missing_result") {
+    return "Codex app-server exited without a terminal turn/completed event.";
+  }
+  if (completion.reason === "interrupted") {
+    return "Codex app-server interrupted the active turn before completion.";
+  }
+  return `Codex app-server invocation failed (${completion.providerSubtype ?? completion.reason}).`;
 }
 
 export function resolveCodexModel(
