@@ -124,6 +124,9 @@ export function mapClaudeRunPolicy(options: {
     ...(subjectHasCapability(session, "pipeline-run-start")
       ? ["mcp__slack-bot__pipeline_start_run"]
       : []),
+    ...(subjectHasCapability(session, "worktree-mutate")
+      ? ["mcp__slack-bot__unregister_worktree"]
+      : []),
   ];
   const worktreeRoots = [
     session.worktreePath,

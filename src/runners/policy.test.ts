@@ -35,6 +35,23 @@ const codexConfig = {
 };
 
 describe("compileOpenCodePermission", () => {
+  it("exposes managed unregister only through worktree-mutate capability", () => {
+    const allowed = compileOpenCodePermission({
+      subject: {
+        assignmentCapabilities: ["worktree-mutate"],
+        agentPermissions: { intent: "read-only", mcp: ["slack-bot"], tools: [] },
+      },
+    }) as Record<string, string>;
+    const denied = compileOpenCodePermission({
+      subject: {
+        agentPermissions: { intent: "read-only", mcp: ["slack-bot"], tools: [] },
+      },
+    }) as Record<string, string>;
+
+    expect(allowed["mcp__slack-bot__unregister_worktree"]).toBe("allow");
+    expect(denied["mcp__slack-bot__unregister_worktree"]).not.toBe("allow");
+  });
+
   it("compiles a stateless skill's assignment capabilities without catalog identity", () => {
     const permission = compileOpenCodePermission({
       subject: {

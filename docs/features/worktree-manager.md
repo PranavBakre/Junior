@@ -83,11 +83,21 @@ The bug-pipeline + dev-server fields are optional. Repos that only need the `!re
   the helper after the bounded process exits. `GH_TOKEN` alone is not consumed
   by Git's HTTPS transport. Repos without a verified token use a host-valid
   false askpass executable and fail fast.
-- `removeWorktree(repoName, threadId) → Promise<void>` — reads the actual current branch via `git -C <wt> branch --show-current` before deletion (so cleanup works for `branchOverride` callers), force-removes the worktree, and `git branch -D`s the branch. It then verifies both the Git worktree registry and filesystem path are gone; a non-atomic leftover raises an incomplete-cleanup error with the path for preservation review. Branch lookup and deletion remain non-fatal for missing/detached state.
+- `removeWorktree(repoName, threadId, { force? }) → Promise<void>` — reads the actual current branch via `git -C <wt> branch --show-current` before deletion (so cleanup works for `branchOverride` callers), removes the worktree (forcefully by default; safe cleanup passes `force: false` so Git gets a final dirty-worktree guard), and `git branch -D`s the branch. It then verifies both the Git worktree registry and filesystem path are gone; a non-atomic leftover raises an incomplete-cleanup error with the path for preservation review. Branch lookup and deletion remain non-fatal for missing/detached state.
 - `worktreeExists(repoName, threadId) → Promise<boolean>` and `isWorktreeDirty(worktreePath) → Promise<boolean>` — used by cleanup.
 - `getWorktreePath(repoName, threadId) → string` and `getBranchName(threadId) → string` — pure helpers (no I/O).
 
 The MCP tool `mcp__slack-bot__register_worktree({ thread_id, repo, branch? })` (in `src/mcp/slack-server.ts`) wraps `createWorktree` for lead's intake and persists the resulting path into `session.worktreePaths[repo]` via the session store using the refetch-then-mutate pattern.
+
+The signed MCP tool `mcp__slack-bot__unregister_worktree({ repo, discard_changes? })`
+is the matching teardown path. It is bound to the authenticated current Slack
+thread, checks the registered worktree for tracked/untracked changes, ignored
+dotenv files, and unpushed commits, then calls `removeWorktree` and removes only
+that repo from the session's worktree fields. Preservation-sensitive state is
+refused by default. `discard_changes: true` is an explicit destructive override
+that agents may use only after a human confirms permanent deletion. The
+`worktree-mutate` capability exposes this tool to Junior without granting it to
+read-only workers.
 
 ## Deterministic prune script
 

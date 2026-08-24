@@ -13,6 +13,7 @@ import {
   registerTools,
   searchAgentDefinitions,
   sendSlackDirectMessage,
+  unregisterWorktree,
   type MemoryToolDeps,
 } from "./slack-server.ts";
 import { createMemoryStore } from "../memory/factory.ts";
@@ -79,6 +80,14 @@ describe("MCP Slack tool catalogue", () => {
         },
       });
       expect(names).toContain("memory_feedback");
+      const unregister = tools.find((tool) => tool.name === "unregister_worktree");
+      expect(unregister?.inputSchema).toMatchObject({
+        properties: {
+          repo: { type: "string" },
+          discard_changes: { type: "boolean" },
+        },
+        required: ["repo"],
+      });
       const dispatch = tools.find((tool) => tool.name === "agent_dispatch");
       expect(dispatch?.inputSchema).toMatchObject({
         properties: {
@@ -98,6 +107,127 @@ describe("MCP Slack tool catalogue", () => {
       await client.close();
       await server.close();
     }
+  });
+});
+
+describe("unregister_worktree", () => {
+  it("prunes a safe worktree and removes only that repo from session state", async () => {
+    const session = {
+      threadId: "thread-1",
+      targetRepo: "frontend",
+      worktreePath: "/worktrees/frontend",
+      worktreePaths: { frontend: "/worktrees/frontend", backend: "/worktrees/backend" },
+    } as any;
+    let removed: string | null = null;
+    let force: boolean | undefined;
+    const result = await unregisterWorktree({
+      threadId: "thread-1",
+      repoName: "frontend",
+      discardChanges: false,
+      store: {
+        get: async () => session,
+        mutateThread: async (_threadId: string, mutator: (value: any) => void) => {
+          await mutator(session);
+          return session;
+        },
+      } as any,
+      manager: {
+        getRepo: () => ({ name: "frontend" }),
+        getWorktreeStatus: async () => ({
+          tracked: [], untracked: [], ignoredDotenv: [], unpushedCommits: 0,
+        }),
+        removeWorktree: async (repo: string, _threadId: string, options?: { force?: boolean }) => {
+          removed = repo;
+          force = options?.force;
+        },
+      } as any,
+    });
+
+    expect(JSON.parse(result)).toMatchObject({ pruned: true, unregistered: true });
+    expect(String(removed)).toBe("frontend");
+    expect(force).toBe(false);
+    expect(session.worktreePaths).toEqual({ backend: "/worktrees/backend" });
+    expect(session.targetRepo).toBeNull();
+    expect(session.worktreePath).toBeNull();
+  });
+
+  it("refuses preservation-sensitive state unless discard is explicit", async () => {
+    let removed = false;
+    const result = await unregisterWorktree({
+      threadId: "thread-2",
+      repoName: "backend",
+      discardChanges: false,
+      store: {
+        get: async () => ({
+          threadId: "thread-2",
+          worktreePaths: { backend: "/worktrees/backend" },
+        }),
+      } as any,
+      manager: {
+        getRepo: () => ({ name: "backend" }),
+        getWorktreeStatus: async () => ({
+          tracked: ["apps/migrations/new.ts"],
+          untracked: [], ignoredDotenv: [], unpushedCommits: 0,
+        }),
+        removeWorktree: async () => { removed = true; },
+      } as any,
+    });
+
+    expect(result).toContain("Prune refused");
+    expect(result).toContain("discard_changes=true");
+    expect(removed).toBe(false);
+  });
+
+  it("requires a human confirmation callback for destructive discard", async () => {
+    let removed = false;
+    let force: boolean | undefined;
+    const base = {
+      threadId: "thread-3",
+      repoName: "backend",
+      discardChanges: true,
+      store: {
+        get: async () => ({
+          threadId: "thread-3",
+          worktreePaths: { backend: "/worktrees/backend" },
+        }),
+        mutateThread: async (_threadId: string, mutator: (value: any) => void) => {
+          const current = {
+            threadId: "thread-3",
+            worktreePaths: { backend: "/worktrees/backend" },
+          };
+          await mutator(current);
+          return current;
+        },
+      } as any,
+      manager: {
+        getRepo: () => ({ name: "backend" }),
+        getWorktreeStatus: async () => ({
+          tracked: ["apps/migrations/new.ts"],
+          untracked: [], ignoredDotenv: [], unpushedCommits: 0,
+        }),
+        removeWorktree: async (_repo: string, _threadId: string, options?: { force?: boolean }) => {
+          removed = true;
+          force = options?.force;
+        },
+      } as any,
+    };
+
+    expect(await unregisterWorktree(base)).toContain("requires an explicit human confirmation");
+    expect(removed).toBe(false);
+
+    expect(await unregisterWorktree({
+      ...base,
+      confirmDiscard: async () => false,
+    })).toContain("confirmation was not granted");
+    expect(removed).toBe(false);
+
+    const result = await unregisterWorktree({
+      ...base,
+      confirmDiscard: async () => true,
+    });
+    expect(JSON.parse(result)).toMatchObject({ pruned: true, unregistered: true });
+    expect(removed).toBe(true);
+    expect(force).toBe(true);
   });
 });
 

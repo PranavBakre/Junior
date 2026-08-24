@@ -46,6 +46,7 @@ import type { EmbeddingProviderKind } from "../memory/embedding/factory.ts";
 import type { SessionStore } from "../session/store/interface.ts";
 import type { SessionManager } from "../session/manager.ts";
 import type { WorktreeManager } from "../worktree/manager.ts";
+import { unsafeCleanupReason } from "../slack/action-buttons.ts";
 import {
   AGENT_IDENTITIES,
   dispatchableAgentsFor,
@@ -61,7 +62,10 @@ import { registerTaskRouteTools } from "../routes/tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 import { handleMixpanelMcpRequest } from "./mixpanel-proxy.ts";
 import { registerPendingApproval } from "./approval.ts";
-import { configureSlackApprovalBridge } from "./slack-approval-bridge.ts";
+import {
+  configureSlackApprovalBridge,
+  requestSlackApproval,
+} from "./slack-approval-bridge.ts";
 import { prepareSlackResponseWithActions, type SlackActionButtonSpec } from "../slack/formatting.ts";
 import { buildActionBlocks, splitActionMessageText } from "../slack/responder.ts";
 import type { SlackActionStore } from "../slack/action-store.ts";
@@ -233,6 +237,91 @@ const pipelineOutcomeSchema = z.object({
 /** Inject pipeline tool runtime (store + mode). Called from boot or tests. */
 export function setPipelineRuntime(runtime: PipelineToolRuntime | undefined): void {
   pipelineRuntime = runtime;
+}
+
+export async function unregisterWorktree(options: {
+  threadId: string;
+  repoName: string;
+  discardChanges: boolean;
+  store: SessionStore;
+  manager: WorktreeManager;
+  confirmDiscard?: (preservationRisk: string | null) => Promise<boolean>;
+}): Promise<string> {
+  const {
+    threadId,
+    repoName,
+    discardChanges,
+    store,
+    manager,
+    confirmDiscard,
+  } = options;
+  if (!manager.getRepo(repoName)) {
+    return `Error: unknown repo "${repoName}". Check REPOS config for valid names.`;
+  }
+
+  const session = await store.get(threadId);
+  if (!session) return `Error: no session found for thread ${threadId}.`;
+
+  const registeredPath = session.worktreePaths?.[repoName]
+    ?? (session.targetRepo === repoName ? session.worktreePath : null);
+  if (!registeredPath) {
+    return `Error: repo "${repoName}" has no registered worktree in this thread.`;
+  }
+
+  let preservationRisk: string | null = null;
+  try {
+    const status = await manager.getWorktreeStatus(registeredPath, repoName);
+    preservationRisk = unsafeCleanupReason(status);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Prune refused for ${repoName}: could not verify preservation state — ${message}`;
+  }
+
+  if (preservationRisk && !discardChanges) {
+    return `Prune refused for ${repoName}: ${preservationRisk}. Ask the human to confirm permanent discard, then retry with discard_changes=true.`;
+  }
+
+  if (discardChanges) {
+    if (!confirmDiscard) {
+      return `Prune refused for ${repoName}: discard_changes=true requires an explicit human confirmation.`;
+    }
+    let confirmed = false;
+    try {
+      confirmed = await confirmDiscard(preservationRisk);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return `Prune refused for ${repoName}: human confirmation failed — ${message}`;
+    }
+    if (!confirmed) {
+      return `Prune refused for ${repoName}: human confirmation was not granted.`;
+    }
+  }
+
+  try {
+    await manager.removeWorktree(repoName, threadId, { force: discardChanges });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Error: worktree prune failed — ${message}`;
+  }
+
+  try {
+    await store.mutateThread(threadId, (current) => {
+      if (current.worktreePaths?.[repoName]) {
+        const nextPaths = { ...current.worktreePaths };
+        delete nextPaths[repoName];
+        current.worktreePaths = nextPaths;
+      }
+      if (current.targetRepo === repoName) {
+        current.worktreePath = null;
+        current.targetRepo = null;
+      }
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `Error: worktree was pruned, but session unregister failed — ${message}`;
+  }
+
+  return JSON.stringify({ repo: repoName, path: registeredPath, pruned: true, unregistered: true });
 }
 
 export function registerTools(server: McpServer, runContext: SlackMcpRunContext | null = null) {
@@ -1039,6 +1128,53 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           },
         ],
       };
+    },
+  );
+
+  registerTool(
+    server,
+    "unregister_worktree",
+    {
+      description:
+        "Prune one managed worktree for the authenticated current Slack thread and unregister it from the session. " +
+        "Refuses local changes, ignored dotenv files, and unpushed commits by default. Set discard_changes only after a human explicitly confirms permanent deletion.",
+      inputSchema: {
+        repo: z.string().describe("Repo name as configured in REPOS"),
+        discard_changes: z.boolean().optional().default(false).describe(
+          "Permanently discard preservation-sensitive worktree state. Use only after explicit human confirmation.",
+        ),
+      },
+    },
+    async ({ repo: repoName, discard_changes }) => {
+      if (!runContext?.signed) {
+        return { content: [{ type: "text" as const, text: "Error: signed run context required" }] };
+      }
+      if (!sessionStore) {
+        return { content: [{ type: "text" as const, text: "Error: session store not available" }] };
+      }
+      if (!worktreeManager) {
+        return { content: [{ type: "text" as const, text: "Error: worktree manager not available" }] };
+      }
+
+      const result = await unregisterWorktree({
+        threadId: runContext.threadId,
+        repoName,
+        discardChanges: discard_changes,
+        store: sessionStore,
+        manager: worktreeManager,
+        confirmDiscard: (preservationRisk) => requestSlackApproval({
+          channel: runContext.channel,
+          threadTs: runContext.threadId,
+          agent: runContext.agent,
+          toolName: "unregister_worktree",
+          input: {
+            repo: repoName,
+            discard_changes: true,
+            preservation_risk: preservationRisk ?? "none detected; branch and worktree will still be permanently removed",
+          },
+        }),
+      });
+      return { content: [{ type: "text" as const, text: result }] };
     },
   );
 

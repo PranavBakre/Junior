@@ -32,6 +32,7 @@ operations using the bot token and signed run context.
 | `slack_search_users` | `users.list` (filtered) | `query` | — |
 | `slack_upload_file` | `files.getUploadURLExternal` + `completeUploadExternal` | `file_path`, `channel_id` | `thread_ts`, `comment` |
 | `register_worktree` | Junior internal | `thread_id`, `repo` | `branch` (branch-name override) |
+| `unregister_worktree` | Junior internal | `repo` | `discard_changes` (human-confirmed destructive override) |
 | `agent_search` | Junior internal | — | `query`, `include_public`, `include_private`, `limit` |
 | `reload_agent_registry` | Junior internal | — | — |
 | `slack_send_dm` | Slack Web API | `user_id`, `text` | identity fields |
@@ -65,6 +66,13 @@ Messages sent via `slack_send_message` carry Junior's `bot_id`. Optional `userna
 ### `register_worktree` tool
 
 Called by lead/intake to create a per-thread worktree for a repo and persist its path into `session.worktreePaths[repoName]`. Multi-repo bug-pipeline support — `worktreePaths` keys are repo names from `REPOS` config. Refetch-then-mutate guards against concurrent session writes.
+
+### `unregister_worktree` tool
+
+Bound to the signed current-thread context. Checks the registered path with
+`getWorktreeStatus`, refuses preservation-sensitive state unless
+`discard_changes` is explicitly true after human confirmation, removes the
+worktree/branch, and semantically mutates the session to drop only that repo.
 
 ### Agent registry tools
 

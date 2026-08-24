@@ -141,6 +141,9 @@ export function compileOpenCodePermission(options: {
     ...(subjectHasCapability(options.subject, "pipeline-run-start")
       ? { "mcp__slack-bot__pipeline_start_run": "allow" }
       : {}),
+    ...(subjectHasCapability(options.subject, "worktree-mutate")
+      ? { "mcp__slack-bot__unregister_worktree": "allow" }
+      : {}),
   };
   const declaredBashPatterns = (options.subject.agentPermissions?.tools ?? [])
     .map((tool) => /^Bash\((.+)\)$/.exec(tool)?.[1])
