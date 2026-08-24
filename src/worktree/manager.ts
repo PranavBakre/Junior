@@ -3,13 +3,18 @@ import { cleanGitHubEnvironment, GitHubAuthResolver } from "../github/auth.ts";
 import { statfs } from "node:fs/promises";
 import {
   closeSync,
+  chmodSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
+  rmSync,
   unlinkSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
+import { tmpdir } from "node:os";
 import { terminateProcessTree } from "../lifecycle/process-tree.ts";
 import { ignoredDotenvPaths } from "./safety.ts";
 
@@ -22,6 +27,17 @@ const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 const MAX_COMMAND_STREAM_CHARS = 110;
 const MAX_GIT_STREAM_CHARS = 64 * 1024;
 const SETUP_LOG_DIR = join(import.meta.dir, "..", "..", "logs", "worktree-setup");
+const GIT_ASKPASS_TOKEN_ENV = "JUNIOR_GIT_ASKPASS_TOKEN";
+const GIT_ASKPASS_SCRIPT = `#!/bin/sh
+case "$1" in
+  *[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]*)
+    printf '%s\\n' "\${${GIT_ASKPASS_TOKEN_ENV}:-}"
+    ;;
+  *)
+    printf '%s\\n' "x-access-token"
+    ;;
+esac
+`;
 
 export interface WorktreeManagerOptions {
   setupMinFreeBytes?: number;
@@ -538,21 +554,22 @@ export class WorktreeManager {
     maxStreamChars: number,
     logFd: number | null = null,
   ): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-    const proc = Bun.spawn(args, {
-      cwd,
-      env: this.commandEnvironment(githubEnv),
-      stdout: "pipe",
-      stderr: "pipe",
-      detached: true,
-    });
-    const stdout = this.startOutputDrain(proc.stdout, "stdout", maxStreamChars, logFd);
-    const stderr = this.startOutputDrain(proc.stderr, "stderr", maxStreamChars, logFd);
-    const completed = Promise.all([proc.exited, stdout.done, stderr.done]);
+    const commandEnvironment = this.commandEnvironment(githubEnv);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), timeoutMs);
     });
     try {
+      const proc = Bun.spawn(args, {
+        cwd,
+        env: commandEnvironment.env,
+        stdout: "pipe",
+        stderr: "pipe",
+        detached: true,
+      });
+      const stdout = this.startOutputDrain(proc.stdout, "stdout", maxStreamChars, logFd);
+      const stderr = this.startOutputDrain(proc.stderr, "stderr", maxStreamChars, logFd);
+      const completed = Promise.all([proc.exited, stdout.done, stderr.done]);
       const outcome = await Promise.race([completed, timeout]);
       if (outcome === "timeout") {
         await terminateProcessTree(proc.pid, {
@@ -572,6 +589,7 @@ export class WorktreeManager {
       };
     } finally {
       clearTimeout(timer);
+      commandEnvironment.cleanup();
     }
   }
 
@@ -621,7 +639,7 @@ export class WorktreeManager {
 
   private commandEnvironment(
     githubEnv?: Record<string, string>,
-  ): Record<string, string> {
+  ): { env: Record<string, string>; cleanup: () => void } {
     const env = {
       ...cleanGitHubEnvironment({ isolatedConfig: true }),
       ...githubEnv,
@@ -631,16 +649,25 @@ export class WorktreeManager {
     // setup script receives a fail-fast, noninteractive transport contract.
     // The injected empty credential.helper resets any inherited helper list.
     const configuredSsh = env.GIT_SSH_COMMAND?.trim() || "ssh";
-    return {
+    const askpass = githubEnv?.GH_TOKEN
+      ? createGitAskpass()
+      : null;
+    const falseExecutable = resolveFalseExecutable();
+    const commandEnv: Record<string, string> = {
       ...env,
       GIT_TERMINAL_PROMPT: "0",
-      GIT_ASKPASS: "/bin/false",
-      SSH_ASKPASS: "/bin/false",
+      GIT_ASKPASS: askpass?.path ?? falseExecutable,
+      SSH_ASKPASS: falseExecutable,
       GCM_INTERACTIVE: "Never",
       GIT_SSH_COMMAND: `${configuredSsh} -oBatchMode=yes -oNumberOfPasswordPrompts=0 -oConnectTimeout=10`,
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "credential.helper",
       GIT_CONFIG_VALUE_0: "",
+    };
+    if (askpass) commandEnv[GIT_ASKPASS_TOKEN_ENV] = githubEnv!.GH_TOKEN!;
+    return {
+      env: commandEnv,
+      cleanup: () => askpass?.cleanup(),
     };
   }
 
@@ -652,4 +679,30 @@ export class WorktreeManager {
     const candidate = override ?? Number(process.env[envName] ?? fallback);
     return Number.isFinite(candidate) && candidate > 0 ? candidate : fallback;
   }
+}
+
+function createGitAskpass(): { path: string; cleanup: () => void } {
+  const directory = mkdtempSync(join(tmpdir(), "junior-git-askpass-"));
+  chmodSync(directory, 0o700);
+  const path = join(directory, "askpass.sh");
+  writeFileSync(path, GIT_ASKPASS_SCRIPT, { mode: 0o700 });
+  chmodSync(path, 0o700);
+  return {
+    path,
+    cleanup: () => rmSync(directory, { recursive: true, force: true }),
+  };
+}
+
+function resolveFalseExecutable(): string {
+  const candidates = ["/usr/bin/false", "/bin/false"];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  const executable = process.platform === "win32" ? "false.exe" : "false";
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!directory) continue;
+    const candidate = join(directory, executable);
+    if (existsSync(candidate)) return candidate;
+  }
+  return executable;
 }

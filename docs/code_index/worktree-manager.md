@@ -54,7 +54,12 @@ keeps stdout/stderr open. Git commands default to 30 seconds
 (`WORKTREE_GIT_TIMEOUT_MS`), setup scripts to 15 minutes
 (`WORKTREE_SETUP_TIMEOUT_MS`), and the force-kill grace is 1 second
 (`WORKTREE_TERMINATION_GRACE_MS`). The command environment disables terminal
-prompts, requires batch-mode SSH, and injects an empty Git credential helper.
+prompts, requires batch-mode SSH, and suppresses inherited Git credential
+helpers. When a repo has a verified `GH_TOKEN`, Junior creates a temporary
+0700 askpass helper that supplies GitHub's `x-access-token` username and that
+token for HTTPS authentication; the helper directory is removed after the
+bounded process exits. Without a verified token, Git uses a host-valid false
+askpass executable so private-repo auth fails fast rather than prompting.
 
 Before delegated setup, Junior requires 2 GiB of free space by default (`WORKTREE_SETUP_MIN_FREE_BYTES` overrides it). A script failure after `git worktree add` triggers rollback of the registered worktree and its branch; the surfaced stdout/stderr tails are capped independently.
 
