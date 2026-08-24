@@ -1,5 +1,12 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+} from "node:fs";
+import { basename, resolve } from "node:path";
 import {
   parseAgentFrontmatter,
   parseFrontmatterCsv,
@@ -201,6 +208,142 @@ export interface TrustedCatalogOptions {
   orgAgentsDir: string;
 }
 
+/**
+ * A trusted definition is active only when its exact bytes are present on the
+ * repository's default branch. This deliberately treats dirty, untracked, and
+ * feature-branch-only files as unpublished: prompt content can be developed
+ * locally, but it cannot grant runtime authority before review and merge.
+ */
+export interface AgentDefinitionProvenance {
+  status: "published" | "unpublished";
+  defaultBranchRef: string | null;
+  reason: string | null;
+}
+
+function gitOutput(cwd: string, args: string[]): Buffer | null {
+  try {
+    return execFileSync("git", args, {
+      cwd,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+}
+
+function gitText(cwd: string, args: string[]): string | null {
+  const output = gitOutput(cwd, args);
+  return output === null ? null : output.toString("utf8").trim();
+}
+
+function defaultBranchRef(repoRoot: string): string | null {
+  const candidates = [
+    gitText(repoRoot, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]),
+    "origin/main",
+    "origin/master",
+    // Source checkouts and isolated test repositories may not have a remote.
+    // These are still stable branch refs, unlike the current HEAD.
+    "main",
+    "master",
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (gitText(repoRoot, ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`])) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Inspect a definition without activating it. Consumers can expose this state
+ * in diagnostics; the catalog compiler below fails closed on unpublished
+ * authority-bearing files.
+ */
+export function inspectAgentDefinitionProvenance(
+  sourcePath: string,
+): AgentDefinitionProvenance {
+  // Never canonicalize the definition path: `realpath` would turn an
+  // untracked `rogue.md -> tracked-payload.txt` symlink into the tracked
+  // payload's path. Authority belongs to the configured .md path itself.
+  let sourceStat: ReturnType<typeof lstatSync>;
+  try {
+    sourceStat = lstatSync(sourcePath);
+  } catch {
+    return {
+      status: "unpublished",
+      defaultBranchRef: null,
+      reason: "definition does not exist",
+    };
+  }
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+    return {
+      status: "unpublished",
+      defaultBranchRef: null,
+      reason: "definition is not a regular file",
+    };
+  }
+
+  const repoRoot = gitText(resolve(sourcePath, ".."), [
+    "rev-parse",
+    "--show-toplevel",
+  ]);
+  if (!repoRoot) {
+    return {
+      status: "unpublished",
+      defaultBranchRef: null,
+      reason: "definition is not inside a Git checkout",
+    };
+  }
+  // Git canonicalizes the checkout root on macOS (`/private/var`), but not the
+  // configured definition path; path identity stays anchored to the .md name.
+  const canonicalRepoRoot = realpathSync(repoRoot);
+  const ref = defaultBranchRef(canonicalRepoRoot);
+  if (!ref) {
+    return {
+      status: "unpublished",
+      defaultBranchRef: null,
+      reason: "default branch ref is unavailable",
+    };
+  }
+
+  const prefix = gitText(resolve(sourcePath, ".."), [
+    "rev-parse",
+    "--show-prefix",
+  ]);
+  const repoRelativePath = `${prefix ?? ""}${basename(sourcePath)}`;
+  const trackedPath = gitText(canonicalRepoRoot, [
+    "ls-files",
+    "--error-unmatch",
+    "--full-name",
+    "--",
+    repoRelativePath,
+  ]);
+  if (trackedPath !== repoRelativePath) {
+    return {
+      status: "unpublished",
+      defaultBranchRef: ref,
+      reason: "definition path is not tracked",
+    };
+  }
+  const published = gitOutput(canonicalRepoRoot, ["show", `${ref}:${repoRelativePath}`]);
+  if (published === null) {
+    return {
+      status: "unpublished",
+      defaultBranchRef: ref,
+      reason: `definition does not exist on ${ref}`,
+    };
+  }
+  if (!published.equals(readFileSync(sourcePath))) {
+    return {
+      status: "unpublished",
+      defaultBranchRef: ref,
+      reason: `definition bytes differ from ${ref}`,
+    };
+  }
+  return { status: "published", defaultBranchRef: ref, reason: null };
+}
+
 function required(
   frontmatter: Record<string, string>,
   key: string,
@@ -244,6 +387,14 @@ function parseCatalogEntry(
   const content = readFileSync(sourcePath, "utf8");
   const { frontmatter } = parseAgentFrontmatter(content);
   if (frontmatter["operational.enabled"] !== "true") return [];
+
+  const provenance = inspectAgentDefinitionProvenance(sourcePath);
+  if (provenance.status === "unpublished") {
+    console.warn(
+      `[agents] unpublished trusted definition ignored: ${sourcePath} (${provenance.reason})`,
+    );
+    return [];
+  }
 
   const name = required(frontmatter, "name", sourcePath);
   const capabilities = parseFrontmatterCsv(
