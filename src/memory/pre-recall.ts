@@ -146,6 +146,7 @@ Return {"notes": [], "used": []} when nothing applies. That is the common case a
 
 // ── Public types ─────────────────────────────────────────────────────────────
 export interface PreRecallOptions {
+  threadId?: string | null;
   /**
    * Session target repo (RepoConfig.name). Scopes recall so another repo's
    * conventions or operational data can't inject into this session's prompt.
@@ -307,8 +308,16 @@ export function createPreRecall(
       if (notes.length === 0) return null;
 
       claimCount = notes.length;
+      const observationId = crypto.randomUUID();
+      await memDeps.store.appendPreRecallObservation({
+        id: observationId,
+        threadId: options?.threadId ?? null,
+        candidateIds: candidates.map((candidate) => candidate.id),
+        selectedIds: usedIds,
+        createdAt: Date.now(),
+      });
       await recordClaimUsage(memDeps, usedIds);
-      return formatPreRecallBlock(notes, { verbatim });
+      return formatPreRecallBlock(notes, { verbatim, observationId, selectedIds: usedIds });
     } catch (err) {
       failure = err instanceof Error ? err.message : String(err);
       _log.warn("pre-recall", `fail err=${failure}`);
@@ -581,7 +590,7 @@ export function parseSynthesisResult(
  */
 export function formatPreRecallBlock(
   notes: string[],
-  options?: { verbatim?: boolean },
+  options?: { verbatim?: boolean; observationId?: string; selectedIds?: string[] },
 ): string {
   const header = options?.verbatim
     ? "Claim text recalled from Junior's memory, unedited (long claims end in …). Use as context."
@@ -591,6 +600,11 @@ export function formatPreRecallBlock(
     header,
     "",
     notes.map((note) => `- ${note}`).join("\n"),
+    ...(options?.observationId ? [
+      `<pre-recall-feedback reference="${options.observationId}" claim-ids="${options.selectedIds?.join(",") ?? ""}">`,
+      "After the turn, call memory_feedback with this pre_recall_id and useful true/false. Omit claim_ids to label every selected claim.",
+      "</pre-recall-feedback>",
+    ] : []),
     "</pre-recall>",
   ].join("\n");
 }

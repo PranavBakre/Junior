@@ -16,6 +16,7 @@ import type {
   MemoryLessonInput,
   MemorySourceRecord,
   RecallLogInput,
+  PreRecallObservation,
   SourceRecordQueryOptions,
   UnconsolidatedSourceRecordOptions,
 } from "./types.ts";
@@ -80,6 +81,8 @@ export interface MemoryStore {
   markClaimsUsed(ids: string[], now: number): Promise<void>;
   /** Increment the usefulness counter for claims an agent explicitly judged. */
   recordClaimFeedback(ids: string[], useful: boolean): Promise<ClaimFeedbackResult[]>;
+  appendPreRecallObservation(observation: PreRecallObservation): Promise<void>;
+  recordPreRecallFeedback(observationId: string, useful: boolean, claimIds?: string[]): Promise<ClaimFeedbackResult[]>;
   /**
    * Decay: ARCHIVE (set `active = 0`, never delete — keep provenance) claims that
    * are BOTH stale AND low-value. Batch/offline only, never a hot-path TTL.
