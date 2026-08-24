@@ -96,10 +96,10 @@ afterEach(() => {
 });
 
 describe("loadConfig runner providers", () => {
-  it("defaults to OpenCode runner and OpenCode defaults", () => {
+  it("defaults to Codex app-server and provider defaults", () => {
     const config = loadConfig();
 
-    expect(config.runner.provider).toBe("opencode");
+    expect(config.runner.provider).toBe("codex-app-server");
     expect(config.opencode).toEqual({
       model: null,
       timeoutMs: 300000,
@@ -215,6 +215,10 @@ describe("loadConfig runner providers", () => {
       figmaMcpEnabled: true,
       notionMcpEnabled: true,
     });
+  });
+
+  it("defaults the runner provider to Codex app-server", () => {
+    expect(loadConfig().runner.provider).toBe("codex-app-server");
   });
 
   it("rejects unknown runner providers", () => {
@@ -375,5 +379,13 @@ describe("loadConfig runner providers", () => {
       memoryMcpEnabled: false,
       isolatedHomePath: "/tmp/junior-codex-home-test",
     });
+  });
+
+  it("rejects the removed standalone Codex CLI transport", () => {
+    process.env.CODEX_MODE = "cli";
+
+    expect(() => loadConfig()).toThrow(
+      "Invalid CODEX_MODE: cli (only app-server is supported; standalone Codex CLI is not a Junior base runner)",
+    );
   });
 });

@@ -1,6 +1,6 @@
 # Codex Runner
 
-> **Historical design record.** Codex app-server is now implemented under `src/codex-app-server` and selected with `RUNNER_PROVIDER=codex-app-server`. Use [`runner-providers.md`](runner-providers.md) and [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md) for the current contract. The implementation-plan language below is retained for context.
+> **Historical design record.** Codex app-server is now implemented under `src/codex-app-server` and is Junior's default Codex/base provider. Standalone `codex exec` is not a supported Junior base runner. Use [`runner-providers.md`](runner-providers.md) and [`../code_index/codex-app-server.md`](../code_index/codex-app-server.md) for the current contract; the CLI material below is historical research only.
 
 > Original audit: 2026-05-15 against `src/` at `4aa25ab` (main) and `codex-cli 0.130.0`; initial draft 2026-04-28 against `codex-cli 0.125.0`.
 
@@ -14,8 +14,8 @@ We want Junior to be able to run Codex as well, without forking the whole app or
 **What happens today:** Junior selects `claude`, `opencode`, `opencode-sdk`, or
 `codex-app-server` through `src/runners/index.ts`. Each adapter owns its native
 flags/protocol and maps events into the shared runner contract consumed by
-sessions and Slack. `opencode` is the default; Codex app-server is selected with
-`RUNNER_PROVIDER=codex-app-server`.
+sessions and Slack. Codex app-server is the default; standalone `codex exec` is
+not a supported base provider.
 **Painful part:** Codex has equivalents for the core runner features, but its CLI flags, JSONL stream schema, permissions model, and MCP configuration are different enough that it is not a drop-in replacement.
 **"Finally" moment:** Junior can run either Claude or Codex behind the same session manager contract, while Slack still gets useful live status updates and final responses.
 
@@ -43,9 +43,11 @@ Claude assumptions also leak into:
 - **`session.cwd` override bypasses MCP config.** Spawner skips `--mcp-config` when `session.cwd` is set (utility commands need cloud integrations, not local MCP). The Codex spawner needs the same carve-out.
 - **MCP config is project-wide, not per-thread.** Despite CLAUDE.md rule #9 saying "MCP config is per-thread", the spawner today reads a single `PROJECT_MCP_CONFIG` resolved from the junior repo root. Either fix the rule or fix the code before layering Codex on top of an unstated discrepancy.
 
-## Codex Equivalents
+## Historical Codex CLI Equivalence Research
 
 Re-checked against `codex-cli 0.130.0`. Confirmed flags marked ✓; flags that drifted from the 0.125.0 draft are flagged.
+This section is retained for historical context only and is not an implementation
+or provider-selection contract.
 
 | Junior/Claude usage | Codex equivalent | Notes |
 |---|---|---|
@@ -89,7 +91,7 @@ Junior needs a Codex parser and a provider-neutral normalized event model. Prete
 Introduce a runner abstraction. **Status:** `src/runners/` does not yet exist. The whole abstraction is greenfield.
 
 ```ts
-export type RunnerProvider = "claude" | "codex";
+export type RunnerProvider = "claude" | "codex-app-server";
 
 export interface RunnerEventInit {
   type: "init";
@@ -255,8 +257,8 @@ New top-level subcommands of interest (won't drive v1 but worth knowing):
 
 | Question | Status |
 |---|---|
-| Provider selection global (`RUNNER_PROVIDER=codex`) or per thread (`!provider codex`)? | Open. |
-| Should `session.sessionId` store provider-native IDs directly, or should `ThreadSession` gain `provider` and provider-specific session ID fields? | Leaning toward single `sessionId` + `provider: "claude" \| "codex"`. |
+| Provider selection global or per thread? | Resolved: use `RUNNER_PROVIDER` and `!provider` with current values `codex-app-server`, `claude`, `opencode`, and `opencode-sdk`. |
+| Should `session.sessionId` store provider-native IDs directly, or should `ThreadSession` gain `provider` and provider-specific session ID fields? | Resolved: single `sessionId` plus the provider value; Codex uses `codex-app-server`. |
 | Does Codex reliably persist and resume thread IDs in service mode? | Partial: `--ephemeral` for skip; default sessions persist under `$CODEX_HOME/sessions`. Verify perms when Junior runs as a service user. |
 | Codex web search exposure? | Codex 0.130.0 `exec --help` no longer mentions `--search`. Either gone or moved behind feature flags (`--enable web-search`?). Verify before relying on. |
 | Codex MCP tool naming shape? | Open. Claude uses `mcp__<server>__<tool>`. Run a spawn against the slack-bot MCP and read what Codex actually shows the model. |
@@ -344,8 +346,9 @@ codex --ask-for-approval never exec --json --ephemeral --skip-git-repo-check --s
 Let Junior choose Claude or Codex.
 
 **What it adds:**
-- Config: `RUNNER_PROVIDER=claude|codex`, plus a `config.codex` block (`timeoutMs`, `defaultModel`, `defaultSandbox`).
-- Optional command: `!provider claude|codex`.
+- Config: `RUNNER_PROVIDER=codex-app-server|claude|opencode|opencode-sdk`, plus a
+  `config.codex` block (`timeoutMs`, `defaultModel`, `defaultSandbox`).
+- Optional command: `!provider claude|codex-app-server|opencode|opencode-sdk`.
 - Home/status display includes provider.
 - `home.ts` resume hint uses the correct CLI command per provider.
 

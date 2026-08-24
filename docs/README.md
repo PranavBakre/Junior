@@ -17,8 +17,8 @@ indexes, and the source links in those documents.
 
 ## Current runtime surfaces
 
-- [Runner providers](features/runner-providers.md): OpenCode CLI (default),
-  OpenCode SDK, Claude headless/tmux, and Codex app-server.
+- [Runner providers](features/runner-providers.md): Codex app-server (default),
+  OpenCode CLI/SDK, and Claude headless/tmux.
 - [Session management](features/session-management.md) and
   [session persistence](features/session-persistence.md): buffering, resume,
   SQLite state, cleanup, and provider-specific recovery.

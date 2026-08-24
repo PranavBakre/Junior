@@ -79,6 +79,11 @@ describe("spawnCodexAppServer", () => {
         };
         const result = await spawnCodexAppServer(session, "needs approval", config).result;
         expect(result.error).toBeNull();
+        expect(result.completion).toEqual({
+          status: "success",
+          reason: "completed",
+          retryable: false,
+        });
 
         const messages = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
           .trim().split("\n").map((line) => JSON.parse(line));
@@ -176,6 +181,12 @@ describe("spawnCodexAppServer", () => {
 
       expect(result.exitCode).toBe(42);
       expect(result.error).toContain("Codex app-server exited before replying to pending requests");
+      expect(result.completion).toEqual({
+        status: "failure",
+        reason: "process_error",
+        retryable: false,
+        providerSubtype: "app-server-process",
+      });
     } finally {
       fakeCodex.cleanup();
     }

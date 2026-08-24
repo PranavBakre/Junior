@@ -9,20 +9,20 @@ and resume semantics.
 
 ## Status
 
-The provider abstraction and all four configured providers are implemented: OpenCode CLI, OpenCode SDK, Claude headless/tmux, and Codex app-server. OpenCode is the default provider (`RUNNER_PROVIDER=opencode`). The provider boundary is also used by workflow and memory-consolidation runs.
+The provider abstraction and all four configured providers are implemented: Codex app-server, OpenCode CLI, OpenCode SDK, and Claude headless/tmux. Codex app-server is the default provider (`RUNNER_PROVIDER=codex-app-server`). Standalone Codex CLI turns (`codex exec`) are not a supported Junior base provider; the `codex` executable is used only to launch the app-server integration. The provider boundary is also used by workflow and memory-consolidation runs.
 
 | Provider value | Runtime | Continuity / interrupt behavior |
 |---|---|---|
+| `codex-app-server` | Codex app-server protocol | `thread/resume`; optional idle interrupt/continue |
 | `opencode` | `opencode run --format json` | Optional `--session`; CLI idle recovery requires `OPENCODE_CONTINUITY_ENABLED` |
 | `opencode-sdk` | OpenCode server/SDK session | Native session attach/abort; server-owned process |
 | `claude` | `claude -p` or opt-in tmux driver | `--resume`; tmux keeps an interactive process alive |
-| `codex-app-server` | Codex app-server protocol | `thread/resume`; optional idle interrupt/continue |
 
-The older Codex planning documents are design history; use this document and
-the code index for the current provider contract.
+The older Codex planning documents, including standalone `codex exec` research,
+are design history only; use this document and the code index for the current
+provider contract.
 
-OpenCode is currently a better replacement candidate than Codex for Junior's
-specific needs because it has:
+OpenCode remains a supported alternate provider with:
 
 - `opencode run` for one-turn headless execution
 - `--format json` for parseable event streaming
@@ -41,10 +41,12 @@ uses that API for interrupt. Current logs prove normal `--session` reuse across
 completed turns, not CLI SIGINT-plus-resume recovery. Treat continuity as
 session reuse unless an abort-recovery fixture proves more.
 
-Codex remains viable, but OpenCode gives a cleaner story for dynamic Junior
-agent prompts.
+Codex app-server is the default because its developer-instructions field,
+thread lifecycle, approvals, and streamed events fit Junior's server-owned
+session contract. OpenCode remains available when its CLI or SDK behavior is
+preferred.
 
-## Why OpenCode First
+## OpenCode as an Alternate Provider
 
 System prompts are the load-bearing surface for Junior. Junior's value is not
 just "run a coding CLI from Slack"; it is dynamic personas and workflows: build,
@@ -57,11 +59,9 @@ OpenCode has a credible provider-native replacement:
 - override the built-in `build` primary agent with `agent.build.prompt`
 - run `opencode run --agent build`
 
-Codex CLI does not expose the same flag, but the implemented app-server adapter
-uses its developer-instructions field for the composed prompt. The isolated CLI
-fallback can prepend the prompt to its first user turn when app-server mode is
-not selected; that path remains weaker and must not be confused with the
-app-server contract.
+The Codex app-server adapter uses its developer-instructions field for the
+composed prompt. There is no standalone Codex CLI fallback in Junior's base
+provider contract.
 
 Configuration ergonomics also favor OpenCode:
 
@@ -78,9 +78,9 @@ Configuration ergonomics also favor OpenCode:
   `session.abort()` API for interrupt/kill when that provider is active. When
   disabled, each run starts fresh.
 
-Risk profile matters. The Codex CLI surface has moved quickly, and the
-Codex-specific doc already caught flag drift. The first non-Claude adapter should
-be the one with the stronger prompt surface and simpler generated config story.
+Risk profile matters. Provider-specific flags and protocol details stay inside
+their adapters; standalone Codex CLI flag research is historical and does not
+define the Junior provider contract.
 
 ## Provider Contract
 
@@ -104,7 +104,20 @@ export type RunnerEvent =
       input: Record<string, unknown>;
       status?: "started" | "completed";
     }
-  | { type: "done"; provider: RunnerProvider; usage?: Record<string, unknown> };
+  | {
+      type: "done";
+      provider: RunnerProvider;
+      usage?: Record<string, unknown>;
+      completion?: RunnerCompletion;
+    };
+
+export interface RunnerCompletion {
+  status: "success" | "incomplete" | "failure";
+  reason: "completed" | "interrupted" | "max_turns" | "missing_result" | "provider_error" | "process_error" | "timeout";
+  retryable: boolean;
+  providerSubtype?: string;
+  turns?: number;
+}
 
 export interface SpawnResult {
   provider: RunnerProvider;
@@ -113,8 +126,14 @@ export interface SpawnResult {
   events: RunnerEvent[];
   exitCode: number | null;
   error: string | null;
+  completion?: RunnerCompletion;
 }
 ```
+
+`RunnerCompletion` is the provider-neutral terminal outcome. It is authoritative
+for pipeline settlement and recovery; a zero process exit alone is not treated as
+successful completion. Codex app-server derives it from `turn/completed` status
+and reports missing terminal events or process failures explicitly.
 
 Provider-native parser fixtures belong inside the provider adapter tests.
 Session manager, Slack formatting, home tab, and timeout code should only depend
@@ -478,7 +497,7 @@ Start with global config:
 RUNNER_PROVIDER=opencode|opencode-sdk|codex-app-server|claude
 ```
 
-Default when unset: `opencode`.
+Default when unset: `codex-app-server`.
 
 Then add a thread command:
 
@@ -489,8 +508,9 @@ Then add a thread command:
 !provider codex-app-server
 ```
 
-`codex-app-server` is implemented. `CODEX_MODE=app-server` is the current
-transport; `CODEX_MODE=cli` is an isolated fallback for supported runs.
+`codex-app-server` is implemented and is the default. `CODEX_MODE=app-server`
+is retained as a legacy selector; standalone `codex exec` is not a supported
+Junior base transport.
 
 Home/status output should show:
 
@@ -503,7 +523,7 @@ Interactive resume hints:
 ```text
 claude --resume <id>
 opencode --session <id>
-codex exec resume <id>
+Codex app-server resume is managed by Junior's `thread/resume` flow.
 ```
 
 ## Historical implementation plan
@@ -590,11 +610,10 @@ Exit criteria:
 - Claude and OpenCode sessions can coexist.
 - Provider mismatch is blocked or requires reset.
 
-### 7. Codex Later
+### 7. Codex app-server
 
-After OpenCode is working, add Codex as another provider using the same runner
-contract. Its adapter remains useful for environments where Codex CLI/auth is
-preferred, but it should not drive the initial abstraction.
+Codex app-server is implemented as another provider using the same runner
+contract. Standalone Codex CLI is not part of the base-provider contract.
 
 ## Test Matrix
 
@@ -610,9 +629,7 @@ preferred, but it should not drive the initial abstraction.
 
 ## Updated Position
 
-Do not build "Codex runner" as the next step. Build "runner providers."
-
-The first production replacement candidate should be OpenCode because its
-headless JSON mode, sessions, generated config, MCP config, and custom primary
-agent prompt line up better with Junior's current Claude surface. Codex can fit
-the same contract later, but OpenCode should shape the non-Claude adapter first.
+The production default is Codex app-server because its thread-oriented protocol,
+developer instructions, approvals, and native resume line up with Junior's
+server-owned session model. OpenCode and Claude remain supported alternates.
+Standalone Codex CLI is historical research, not a supported base provider.

@@ -1,4 +1,8 @@
-import type { RunnerEvent, RunnerEventTool } from "../runners/types.ts";
+import type {
+  RunnerCompletion,
+  RunnerEvent,
+  RunnerEventTool,
+} from "../runners/types.ts";
 import { log } from "../logger.ts";
 
 export interface CodexJsonRpcNotification {
@@ -17,6 +21,7 @@ export interface CodexAppServerEventMapper {
   readonly response: string;
   readonly error: string | null;
   readonly warning: string | null;
+  readonly completion: RunnerCompletion | null;
   map(notification: CodexJsonRpcNotification): RunnerEvent[];
 }
 
@@ -152,6 +157,7 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
   let pendingText = "";
   let error: string | null = null;
   let warning: string | null = null;
+  let completion: RunnerCompletion | null = null;
   // App-server emits token usage separately from turn/completed. Keep the last
   // per-turn snapshot until the matching completion notification arrives.
   const usageByTurnId = new Map<string, Record<string, unknown>>();
@@ -178,6 +184,9 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
     },
     get warning(): string | null {
       return warning;
+    },
+    get completion(): RunnerCompletion | null {
+      return completion;
     },
     map(notification: CodexJsonRpcNotification): RunnerEvent[] {
       const params = notification.params;
@@ -250,15 +259,54 @@ export function createCodexAppServerEventMapper(): CodexAppServerEventMapper {
           (turnId ? usageByTurnId.get(turnId) : undefined) ??
           latestUsage;
         if (turnId) usageByTurnId.delete(turnId);
+        completion = classifyCodexAppServerCompletion(params, error);
         events.push({
           type: "done",
           provider: "codex-app-server",
           ...(usage ? { usage } : {}),
+          completion,
         });
       }
 
       return events;
     },
+  };
+}
+
+export function classifyCodexAppServerCompletion(
+  params: Record<string, unknown> | undefined,
+  diagnostic: string | null = null,
+): RunnerCompletion {
+  const turn = asRecord(params?.turn);
+  const rawStatus = stringValue(turn?.status) ?? stringValue(params?.status);
+  const status = rawStatus?.toLowerCase() ?? "completed";
+  const turnError = asRecord(turn?.error) ?? asRecord(params?.error);
+  const providerSubtype =
+    stringValue(turnError?.code) ?? stringValue(asRecord(turnError?.error)?.code) ?? rawStatus;
+
+  if (status === "interrupted" || status === "aborted" || status === "cancelled") {
+    return {
+      status: "incomplete",
+      reason: "interrupted",
+      retryable: true,
+      ...(providerSubtype ? { providerSubtype } : {}),
+    };
+  }
+
+  if (diagnostic || turnError || status === "failed" || status === "error") {
+    return {
+      status: "failure",
+      reason: "provider_error",
+      retryable: false,
+      ...(providerSubtype ? { providerSubtype } : {}),
+    };
+  }
+
+  return {
+    status: "success",
+    reason: "completed",
+    retryable: false,
+    ...(providerSubtype ? { providerSubtype } : {}),
   };
 }
 

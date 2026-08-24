@@ -1,6 +1,6 @@
 # junior
 
-A Slack bot that acts as the control plane for coding-agent sessions. OpenCode is the default runner provider; Claude Code, OpenCode SDK, and Codex app-server are also supported. Headless CLI turns are short-lived, while Claude tmux mode is an opt-in interactive driver. Each Slack thread has durable session state and provider-native resume continuity.
+A Slack bot that acts as the control plane for coding-agent sessions. Codex app-server is the default runner provider; OpenCode, OpenCode SDK, and Claude Code are also supported. Headless CLI turns are short-lived, while Claude tmux mode is an opt-in interactive driver. Each Slack thread has durable session state and provider-native resume continuity.
 
 Successor to the OpenClaw-based agent system at [PranavBakre/openclaw-agents](https://github.com/PranavBakre/openclaw-agents) — same role (orchestrator + sub-agent dispatcher), rebuilt on top of coding-agent CLIs.
 
@@ -12,7 +12,8 @@ For deep architecture and the canonical "critical rules" list, see [CLAUDE.md](.
 
 Junior orchestrates external coding agents and optional observability integrations. Install the tools required by the providers, workflows, and private `agents-org` overlay you enable:
 
-- **[OpenCode](https://opencode.ai)** (default runner provider)
+- **Codex app-server** (default runner provider; requires the `codex` executable)
+- **[OpenCode](https://opencode.ai)**
 - **[Claude Code CLI](https://anthropic.com)** (Claude provider and tmux driver)
 - **Vercel, New Relic, and Sentry CLIs** only if the private overlay's support agents use them
 - **tmux 3.4+** (required only for `DEFAULT_CLAUDE_DRIVER=tmux`)
@@ -157,7 +158,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `SESSION_DB_PATH` | `data/sessions.db` | SQLite file path |
 | `HTTP_DASHBOARD_PORT` | *(unset)* | If set, starts the localhost dashboard |
 | `MCP_PORT` | `3456` | Port for the in-process Slack MCP server |
-| `RUNNER_PROVIDER` | `opencode` | Default runner provider: `opencode`, `opencode-sdk`, `codex-app-server`, or `claude` |
+| `RUNNER_PROVIDER` | `codex-app-server` | Default runner provider: `codex-app-server`, `opencode`, `opencode-sdk`, or `claude` |
 | `CLAUDE_MAX_TURNS` | `100` | Max turns per `claude -p` / `claude -p --resume` invocation |
 | `CLAUDE_TIMEOUT_MS` | `300000` | Per-turn timeout before SIGINT |
 | `CLAUDE_MODEL` | *(unset)* | Override default Claude model |
@@ -170,7 +171,7 @@ All config is loaded from environment variables in [`src/config.ts`](src/config.
 | `OPENCODE_SLACK_MCP_ENABLED` | `true` | Include Slack MCP in generated OpenCode config |
 | `OPENCODE_MIXPANEL_MCP_ENABLED` | `true` | Include Mixpanel MCP when configured |
 | `OPENCODE_MONGODB_MCP_ENABLED` | `true` | Include MongoDB MCP when configured |
-| `CODEX_MODE` | `app-server` | Codex transport: `app-server` or the isolated `cli` fallback |
+| `CODEX_MODE` | `app-server` | Legacy Codex transport selector; only the app-server transport is supported |
 | `CODEX_MODEL` | *(unset)* | Override default Codex app-server model |
 | `CODEX_REASONING_EFFORT` | `medium` | Codex model reasoning effort |
 | `CODEX_TIMEOUT_MS` | `300000` | Per-turn Codex timeout before SIGINT |

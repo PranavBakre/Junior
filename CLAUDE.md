@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-junior is a Slack bot that acts as the control plane for coding-agent sessions. OpenCode is the default runner provider; OpenCode SDK, Claude Code, and Codex app-server are also implemented. Claude tmux is an opt-in interactive driver. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents).
+junior is a Slack bot that acts as the control plane for coding-agent sessions. Codex app-server is the default runner provider; OpenCode, OpenCode SDK, and Claude Code are also implemented. Claude tmux is an opt-in interactive driver. It's the successor to the OpenClaw-based agent system (PranavBakre/openclaw-agents).
 
 The server owns the lifecycle. When a Slack message arrives in a thread, the bot spawns a runner turn through the selected provider. Headless OpenCode/Claude turns are short-lived subprocesses; Claude tmux mode keeps an interactive process alive behind a per-thread driver flag. Each thread gets its own isolated session and optional target-repo worktree.
 
@@ -75,17 +75,17 @@ Slack Bot Server (Bun)
 ## Prerequisites
 
 Install and authenticate the tools required by the provider and agents you enable:
-- **OpenCode** (default runner provider)
+- **OpenCode** (supported alternate runner provider)
 - **Claude Code CLI** (Claude provider and tmux driver)
-- **Codex CLI/app-server** (Codex provider)
+- **Codex app-server** (Codex provider; launched through the `codex` executable)
 - Observability CLIs such as Vercel, New Relic, or Sentry only when the
   private overlay agents that use them are enabled.
 - **tmux 3.4+** (required only for `DEFAULT_CLAUDE_DRIVER=tmux`)
 
 ## Critical Rules
 
-1. **Use the provider boundary.** OpenCode CLI is the default; OpenCode SDK,
-   Claude, and Codex app-server are implemented adapters. Keep provider-specific
+1. **Use the provider boundary.** Codex app-server is the default; OpenCode,
+   OpenCode SDK, and Claude are implemented adapters. Keep provider-specific
    arguments, parsing, and policy inside their adapter modules.
 2. **Match lifecycle to the provider.** Headless CLI turns are short-lived
    processes; server-attached OpenCode SDK/Codex providers own their connection;

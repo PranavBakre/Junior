@@ -29,7 +29,7 @@ Entry point, configuration, logging, persona loading, and boot sequence. The pro
 | `SLACK_BOT_TOKEN` | yes | — | Bolt + MCP server + file uploads |
 | `SLACK_APP_TOKEN` | yes | — | Socket Mode |
 | `SLACK_SIGNING_SECRET` | no | `""` | Bolt request verification |
-| `RUNNER_PROVIDER` | no | `opencode` | `claude` \| `opencode` \| `opencode-sdk` \| `codex-app-server` |
+| `RUNNER_PROVIDER` | no | `codex-app-server` | `codex-app-server` \| `claude` \| `opencode` \| `opencode-sdk` |
 | `CLAUDE_MAX_TURNS` | no | `100` | `--max-turns` per `claude -p` / `claude -p --resume` invocation |
 | `CLAUDE_TIMEOUT_MS` | no | `300000` | Process timeout guard |
 | `CLAUDE_PERMISSION_MODE` | no | `bypassPermissions` | `--permission-mode` |

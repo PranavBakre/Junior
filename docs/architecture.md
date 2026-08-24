@@ -10,7 +10,7 @@ System architecture for junior — the Slack bot that orchestrates coding-agent 
 | Slack SDK | @slack/bolt (Socket Mode) | Official SDK. Socket Mode = no public URL needed, works from a laptop. |
 | Language | TypeScript (strict, ESM) | Type safety across the session state machine and stream parser. |
 | Persistence | SQLite (`bun:sqlite`) | Survives restarts without an external service; memory store remains available for tests/dev. |
-| Runner providers | OpenCode CLI by default; OpenCode SDK, Claude, and Codex app-server | Provider adapters normalize args, events, resume semantics, cwd, env, policy, and MCP wiring. |
+| Runner providers | Codex app-server by default; OpenCode CLI/SDK and Claude are supported alternates | Provider adapters normalize args, events, resume semantics, cwd, env, policy, and MCP wiring. |
 | Driver modes | Headless by default, Claude tmux opt-in | Headless uses one subprocess per turn; tmux keeps an interactive Claude session alive behind a flag. |
 
 ## System Diagram

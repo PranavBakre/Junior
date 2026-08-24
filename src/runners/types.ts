@@ -38,6 +38,7 @@ export type RunnerCompletionStatus = "success" | "incomplete" | "failure";
 
 export type RunnerCompletionReason =
   | "completed"
+  | "interrupted"
   | "max_turns"
   | "missing_result"
   | "provider_error"
