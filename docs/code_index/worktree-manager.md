@@ -13,6 +13,7 @@ Creates, removes, and inspects git worktrees in target repos for per-thread code
 | `removeWorktree(repoName, threadId)` | `manager.ts` | `git worktree remove --force` + `git branch -D` (queries actual branch name from the worktree first to handle `branchOverride`) |
 | `worktreeExists(repoName, threadId)` | `manager.ts` | Filesystem check via `node:fs/promises.stat` |
 | `isWorktreeDirty(worktreePath)` | `manager.ts` | `git status --porcelain` |
+| `getWorktreeStatus(worktreePath, repoName?)` | `manager.ts` | Reports tracked/untracked changes, unpushed commits, and ignored dotenv paths (path names only; contents are never read). |
 | `getWorktreePath(repoName, threadId)` | `manager.ts` | `<repo.path>.junior-worktrees/slack-<threadId>` — sibling, NOT under `.claude/` |
 | `getBranchName(threadId)` | `manager.ts` | `slack/<threadId>` |
 | `getRepo(name)` | `manager.ts` | Lookup in `repos` |
@@ -62,7 +63,9 @@ from `REPOS`, so workflows can perform the routine Git work in one process and
 leave only preservation exceptions and reporting to the runner. The engine
 allows generated PNG artifacts and `next-env.d.ts` as harmless residual state;
 other meaningful changes, ignored dotenv files, locks, active processes, and
-unmerged worktrees remain protected.
+unmerged worktrees remain protected. The Slack cleanup action uses the same
+ignored-dotenv path classifier and refuses cleanup when those paths are
+present, without logging their contents.
 
 ## Key Concepts
 

@@ -252,12 +252,15 @@ function registeredWorktrees(session: ThreadSession): Array<{ repo: string; path
   return [];
 }
 
-function unsafeCleanupReason(status: WorktreeStatus): string | null {
+export function unsafeCleanupReason(status: WorktreeStatus): string | null {
   if (status.unpushedCommits > 0) {
     return `branch has ${status.unpushedCommits} commit${status.unpushedCommits === 1 ? "" : "s"} not in ${status.unpushedBase ?? "upstream"}`;
   }
   if (status.tracked.length > 0) {
     return `tracked changes present (${status.tracked.join(", ")})`;
+  }
+  if (status.ignoredDotenv.length > 0) {
+    return `ignored dotenv files present (${status.ignoredDotenv.join(", ")}); preservation review required`;
   }
   const unsafeUntracked = status.untracked.filter((path) => !isAllowedUntracked(path));
   if (unsafeUntracked.length > 0) {

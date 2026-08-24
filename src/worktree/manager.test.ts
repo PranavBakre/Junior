@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import {
   mkdtempSync,
+  mkdirSync,
   rmSync,
   writeFileSync,
   readFileSync,
@@ -39,6 +40,7 @@ beforeAll(async () => {
   await runIn(repoRoot, ["git", "config", "user.email", "test@example.com"]);
   await runIn(repoRoot, ["git", "config", "user.name", "test"]);
   writeFileSync(join(repoRoot, "README.md"), "hello\n");
+  writeFileSync(join(repoRoot, ".gitignore"), ".env*\n.cache/\n");
   await runIn(repoRoot, ["git", "add", "."]);
   await runIn(repoRoot, ["git", "commit", "-q", "-m", "init"]);
   // Add a second commit on a different ref so we can test baseRef forwarding.
@@ -713,10 +715,52 @@ git worktree add "$TARGET" -b "$BRANCH" "$BASE"
 
     expect(status.tracked).toEqual([]);
     expect(status.untracked).toEqual([]);
+    expect(status.ignoredDotenv).toEqual([]);
     expect(status.unpushedCommits).toBe(0);
     expect(status.unpushedBase).toBe("origin/main");
 
     await wm.removeWorktree("clean-status", "clean-status-thread");
+  });
+
+  it("enumerates ignored dotenv paths without reading multiline secret contents", async () => {
+    const repos: RepoConfig[] = [
+      { name: "dotenv-status", path: repoRoot, defaultBase: "origin/main" },
+    ];
+    const wm = new WorktreeManager(repos);
+
+    const wtPath = await wm.createWorktree("dotenv-status", "dotenv-status-thread");
+    const secret = "API_KEY=one\nPRIVATE_KEY=two\n";
+    writeFileSync(join(wtPath, ".env.local"), secret);
+
+    const status = await wm.getWorktreeStatus(wtPath, "dotenv-status");
+
+    expect(status.ignoredDotenv).toEqual([".env.local"]);
+    expect(JSON.stringify(status)).not.toContain(secret);
+
+    await wm.removeWorktree("dotenv-status", "dotenv-status-thread");
+  });
+
+  it("finds dotenv state even when unrelated ignored output exceeds the git stream cap", async () => {
+    const repos: RepoConfig[] = [
+      { name: "dotenv-noise-status", path: repoRoot, defaultBase: "origin/main" },
+    ];
+    const wm = new WorktreeManager(repos);
+    const wtPath = await wm.createWorktree(
+      "dotenv-noise-status",
+      "dotenv-noise-status-thread",
+    );
+    const noiseDir = join(wtPath, ".cache");
+    mkdirSync(noiseDir);
+    for (let i = 0; i < 5_000; i += 1) {
+      writeFileSync(join(noiseDir, `ignored-${i.toString().padStart(5, "0")}`), "x");
+    }
+    writeFileSync(join(wtPath, ".env.local"), "SECRET=preserve\n");
+
+    const status = await wm.getWorktreeStatus(wtPath, "dotenv-noise-status");
+
+    expect(status.ignoredDotenv).toEqual([".env.local"]);
+
+    await wm.removeWorktree("dotenv-noise-status", "dotenv-noise-status-thread");
   });
 
   it("detects committed local-only work when no upstream branch is configured", async () => {

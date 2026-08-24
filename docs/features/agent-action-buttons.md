@@ -49,6 +49,10 @@ Junior validates the JSON, strips it from the Slack-visible text, renders Slack 
 - `Re-review` resumes an active durable run when one exists. If the original review run is already terminal, it dispatches a direct review follow-up and does not create a second generic default run.
 - `cleanup_worktree` may be clicked by any thread participant.
 - Worktree cleanup refuses tracked changes and unknown untracked files.
+- Cleanup also enumerates ignored `.env` / `.env.*` paths without reading their
+  contents and refuses removal when any are present. This keeps credentials
+  and multiline dotenv values in place for preservation review; diagnostics
+  contain only the path names.
 - Cleanup may proceed when the only untracked paths are `learnings.md`, `.codex/`, `.claude/`, or `.DS_Store`.
 - `review: approved` does **not** automatically clean up worktrees. Cleanup is explicit via the Cleanup worktree button (or a later terminal-pipeline transition). Merge/retry buttons stay available after approval.
 - Mutating PR actions (`review:merge-gxt-admin`) require a complete structured `resourceAnchor` (`repo`, `prNumber`, `headSha`, `expectedBase`). Generic merge buttons without an exact anchor are not rendered.
@@ -75,6 +79,8 @@ Validation:
 - No persistent agent in the thread may be busy.
 - Tracked changes refuse cleanup.
 - Unknown untracked files refuse cleanup.
+- Ignored dotenv files refuse cleanup, including nested paths and files with
+  multiline values.
 
 ## Storage
 

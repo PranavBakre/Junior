@@ -3,6 +3,7 @@ import { realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import type { RepoConfig } from "../config.ts";
 import { cleanGitHubEnvironment, GitHubAuthResolver } from "../github/auth.ts";
+import { isDotenvPath } from "./safety.ts";
 
 export interface WorktreePruneScope {
   repoNames?: readonly string[];
@@ -151,10 +152,6 @@ function isDevServerWorktree(worktree: ListedWorktree): boolean {
   return worktree.branch === "slack-dev-server" ||
     worktree.branch?.startsWith("dev-server-slot/") === true ||
     basename(worktree.path) === "slack-dev-server";
-}
-
-function isDotenvPath(path: string): boolean {
-  return basename(path) === ".env" || basename(path).startsWith(".env.");
 }
 
 function isPrunableResidualPath(path: string): boolean {
