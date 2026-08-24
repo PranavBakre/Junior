@@ -1,5 +1,5 @@
 export { ProfileStore } from "./store.ts";
-export { createProfileStore } from "./factory.ts";
+export { createProfileStore, resolveMemoryProfileRoot } from "./factory.ts";
 export {
   parseDocument,
   serializeDocument,

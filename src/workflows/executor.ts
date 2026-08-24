@@ -35,7 +35,7 @@ import {
 } from "../memory/consolidation/index.ts";
 import { createRunnerInvoke } from "../memory/consolidation/runner.ts";
 import { formatDedupSweep, runDedupSweep } from "../memory/dedup-sweep.ts";
-import { createProfileStore } from "../memory/profiles/factory.ts";
+import { createProfileStore, resolveMemoryProfileRoot } from "../memory/profiles/factory.ts";
 import type { ProfileStore } from "../memory/profiles/store.ts";
 import type { EmbeddingProvider } from "../memory/embedding/types.ts";
 import type { ConsolidationInvoke } from "../memory/consolidation/types.ts";
@@ -540,7 +540,8 @@ export class WorkflowExecutor {
     // calls (several threads clubbed per call), persisting episodes / profiles /
     // claims through the gates. The legacy deterministic `memoryStore.consolidate()`
     // is intentionally no longer called here.
-    const profileStore = this.consolidationDeps?.profileStore ?? createProfileStore();
+    const profileStore = this.consolidationDeps?.profileStore
+      ?? createProfileStore({ root: this.config.memory.profileRoot ?? resolveMemoryProfileRoot() });
     const embedder = this.consolidationDeps?.embedder ?? (await loadLocalEmbedder());
     const invoke = this.consolidationDeps?.invoke ?? createRunnerInvoke({});
     const resolvePeople =

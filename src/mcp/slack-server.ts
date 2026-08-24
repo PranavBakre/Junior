@@ -17,7 +17,7 @@ import { readdir, readFile } from "fs/promises";
 import { loadAgentDefinition } from "../agents/loader.ts";
 import { log } from "../logger.ts";
 import { createMemoryStore } from "../memory/factory.ts";
-import { createProfileStore } from "../memory/profiles/index.ts";
+import { createProfileStore, resolveMemoryProfileRoot } from "../memory/profiles/index.ts";
 import type { ProfileStore, Profile } from "../memory/profiles/index.ts";
 import {
   createSlackPeopleResolver,
@@ -144,7 +144,7 @@ async function getEmbeddingProvider(): Promise<EmbeddingProvider> {
 }
 
 function getProfileStore(): ProfileStore {
-  if (!profileStoreSingleton) profileStoreSingleton = createProfileStore();
+  if (!profileStoreSingleton) profileStoreSingleton = createProfileStore({ root: resolveMemoryProfileRoot() });
   return profileStoreSingleton;
 }
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { resolve } from "node:path";
 import { loadConfig } from "./config.ts";
 
 const ENV_KEYS = [
@@ -47,6 +48,7 @@ const ENV_KEYS = [
   "SESSION_SHORT_FOLLOWUP_INTERRUPT_ENABLED",
   "SESSION_SHORT_FOLLOWUP_MAX_LENGTH",
   "MEMORY_DB_PATH",
+  "MEMORY_PROFILE_ROOT",
   "SLACK_ARCHIVE_ENABLED",
   "SLACK_ARCHIVE_DB_PATH",
   "SLACK_ARCHIVE_EXPORT_PATH",
@@ -131,6 +133,7 @@ describe("loadConfig runner providers", () => {
       isolatedHomePath: "data/codex-home",
     });
     expect(config.memory.sqlitePath).toBe("data/memory.db");
+    expect(config.memory.profileRoot).toBe(resolve("data/profiles"));
     expect(config.memory.preRecall?.synthesisEnabled).toBe(false);
     expect(config.session.idleTimeoutMs).toBe(300000);
     expect(config.session.maxIdleInterrupts).toBe(3);
@@ -153,6 +156,11 @@ describe("loadConfig runner providers", () => {
     const config = loadConfig();
 
     expect(config.memory.sqlitePath).toBe("data/test-memory.db");
+  });
+
+  it("resolves the profile root to an absolute path", () => {
+    process.env.MEMORY_PROFILE_ROOT = "data/test-profiles";
+    expect(loadConfig().memory.profileRoot).toBe(resolve("data/test-profiles"));
   });
 
   it("defaults Slack archive off and parses its paths when enabled", () => {
