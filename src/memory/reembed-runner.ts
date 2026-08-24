@@ -52,6 +52,24 @@ export function buildNoToolsComposerArgs(model: string): string[] {
   ];
 }
 
+/** Keep only runtime and Claude authentication variables; model tools are off. */
+export function sterileComposerEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const path = env.PATH;
+  const home = env.HOME;
+  if (!path || !home) throw new Error("re-embed runner: PATH and HOME are required");
+  return {
+    PATH: path,
+    HOME: home,
+    ...(env.USER ? { USER: env.USER } : {}),
+    ...(env.LOGNAME ? { LOGNAME: env.LOGNAME } : {}),
+    ...(env.SHELL ? { SHELL: env.SHELL } : {}),
+    ...(env.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY } : {}),
+    ...(env.ANTHROPIC_BASE_URL ? { ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL } : {}),
+  };
+}
+
 export interface IsolatedComposerRequest {
   prompt: string;
   model?: string;
@@ -74,7 +92,7 @@ export function armComposerTimeout(
   return { didTimeout: () => timedOut, clear: () => clearTimeout(timer) };
 }
 
-async function readBounded(
+export async function readBoundedComposerStream(
   stream: ReadableStream<Uint8Array> | null,
   maxBytes: number,
   label: string,
@@ -135,17 +153,36 @@ export async function runNoToolsComposer(
   const root = await mkdtemp(join(tmpdir(), "junior-reembed-claude-"));
   try {
     const proc = Bun.spawn(
-      ["claude", ...buildNoToolsComposerArgs(request.model ?? DEFAULT_COMPOSER_MODEL), request.prompt],
-      { cwd: root, stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true },
+      ["claude", ...buildNoToolsComposerArgs(request.model ?? DEFAULT_COMPOSER_MODEL)],
+      {
+        cwd: root,
+        env: sterileComposerEnvironment(),
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: new TextEncoder().encode(request.prompt),
+        detached: true,
+      },
     );
     const timeoutMs = request.timeoutMs ?? DEFAULT_COMPOSER_TIMEOUT_MS;
     const timeout = armComposerTimeout(proc, timeoutMs);
     try {
-      const [stdout, stderr, exitCode] = await Promise.all([
-        readBounded(proc.stdout, MAX_COMPOSER_STDOUT_BYTES, "stdout"),
-        readBounded(proc.stderr, MAX_COMPOSER_STDERR_BYTES, "stderr"),
-        proc.exited,
-      ]);
+      let stdout: string;
+      let stderr: string;
+      let exitCode: number;
+      try {
+        [stdout, stderr, exitCode] = await Promise.all([
+          readBoundedComposerStream(proc.stdout, MAX_COMPOSER_STDOUT_BYTES, "stdout"),
+          readBoundedComposerStream(proc.stderr, MAX_COMPOSER_STDERR_BYTES, "stderr"),
+          proc.exited,
+        ]);
+      } catch (error) {
+        await terminateProcessTree(proc.pid, {
+          signal: "SIGINT",
+          forceAfterMs: 5_000,
+          waitAfterForceMs: 1_000,
+        });
+        throw error;
+      }
       if (timeout.didTimeout()) throw new Error(`re-embed runner: Claude timed out after ${timeoutMs}ms`);
       if (exitCode !== 0) throw new Error(`re-embed runner: Claude exited ${exitCode}${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
       return parseNoToolsComposerOutput(stdout);

@@ -185,7 +185,8 @@ untrusted. Cursor Agent is deliberately not used there because its CLI cannot
 provide a no-tool/no-ambient-config contract. Instead `reembed-runner.ts`
 launches Claude in safe mode with its explicit empty `--tools ""` allowlist,
 empty setting sources, strict empty MCP configuration, and no persisted session.
-The corpus is sent as one prompt from a fresh temporary directory. Its
+The corpus is sent only on stdin from a fresh temporary directory under a
+sterile allowlisted environment. Its
 schema-constrained JSON envelope, stderr, and rewrite count are bounded; a hard
 timeout SIGINTs then SIGKILLs the full process tree. The resulting text is
 locally bound to the tool-owned source hash before it can be reviewed or applied.
