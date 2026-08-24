@@ -394,11 +394,7 @@ export class TmuxDriver implements ClaudeDriver {
           ...input,
           session: { ...input.session, sessionId: effectiveResumeId },
         };
-  const claudeArgs = buildInteractiveClaudeArgs(
-    effectiveInput,
-      runtime.needsProjectMcp,
-      cwd,
-    );
+    const claudeArgs = buildInteractiveClaudeArgs(effectiveInput, cwd);
     await this.execImpl(this.tmuxBin, [
       "new-session",
       "-d",
@@ -665,7 +661,6 @@ function encodeCwd(cwd: string): string {
 
 function buildInteractiveClaudeArgs(
   input: DriverSendInput,
-  _needsProjectMcp: boolean,
   cwd: string,
 ): string[] {
   // Lean on the existing arg builder but strip the `-p <prompt>` and
