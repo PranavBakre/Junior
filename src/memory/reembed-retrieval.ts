@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 
 import { createEmbeddingProvider } from "./embedding/factory.ts";
 import type { EmbeddingProvider } from "./embedding/types.ts";
+import { DEFAULT_COMPOSER_MODEL, runNoToolsComposer } from "./reembed-runner.ts";
 import { buildLessonRetrievalTexts } from "./retrieval-text.ts";
 import { SqliteMemoryStore, serializeEmbedding } from "./sqlite.ts";
 
@@ -156,33 +157,6 @@ export function validateRewrites(
   }
 }
 
-function parseJsonArray(
-  text: string,
-): Array<{ id: string; retrievalText: string }> {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-  const candidate = fenced ?? text.slice(text.indexOf("["), text.lastIndexOf("]") + 1);
-  const parsed = JSON.parse(candidate) as unknown;
-  if (!Array.isArray(parsed)) throw new Error("Composer output is not a JSON array");
-  return parsed.map((value) => {
-    if (!value || typeof value !== "object") {
-      throw new Error("Composer output contains a non-object entry");
-    }
-    const record = value as Record<string, unknown>;
-    if (
-      typeof record.id !== "string" ||
-      typeof record.retrievalText !== "string"
-    ) {
-      throw new Error(
-        "Composer output entries require string id and retrievalText",
-      );
-    }
-    return {
-      id: record.id,
-      retrievalText: record.retrievalText,
-    };
-  });
-}
-
 export function bindComposerRewrites(
   sources: Array<{
     id: string;
@@ -270,7 +244,7 @@ If the input retrievalSource is longer and all details are necessary, the output
 up to the input's own length, but never more than ${MAX_COMPOSER_RETRIEVAL_CHARS} characters.
 The hard limit is mechanically enforced. For an oversized source, retain its decisions
 and operational traps while compressing repeated rationale, measurements, and examples first.
-Return only a JSON array, with no markdown.`;
+Return only a JSON object with one key, rewrites, containing the array. No markdown.`;
 }
 
 export function composerCheckpointMetadata(
@@ -292,7 +266,7 @@ export function isCompatibleComposerCheckpoint(
     actual.recipeHash === expected.recipeHash;
 }
 
-function composerPrompt(batch: CorpusEntry[]): string {
+export function composerPrompt(batch: Array<Pick<CorpusEntry, "id" | "kind" | "retrievalText">>): string {
   return `${composerInstructions()}
 
 INPUT:
@@ -307,31 +281,11 @@ async function runComposerBatch(
   batch: CorpusEntry[],
   model: string,
 ): Promise<RetrievalRewrite[]> {
-  const proc = Bun.spawn(
-    [
-      "cursor-agent",
-      "--print",
-      "--mode",
-      "ask",
-      "--model",
-      model,
-      "--output-format",
-      "text",
-      composerPrompt(batch),
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(
-      `cursor-agent failed (${exitCode}): ${stderr.trim() || stdout.trim()}`,
-    );
-  }
-  return bindComposerRewrites(batch, parseJsonArray(stdout));
+  const outputs = await runNoToolsComposer({
+    prompt: composerPrompt(batch),
+    model,
+  });
+  return bindComposerRewrites(batch, outputs);
 }
 
 async function readJsonl(path: string): Promise<RetrievalRewrite[]> {
@@ -509,7 +463,7 @@ async function main(): Promise<void> {
   };
   const dbPath = resolve(option("--db") ?? process.env.MEMORY_DB_PATH ?? "data/memory.db");
   const workDir = resolve(option("--work-dir") ?? "work/memory-reembed");
-  const model = option("--model") ?? "composer-2.5";
+  const model = option("--model") ?? DEFAULT_COMPOSER_MODEL;
   const batchSize = Number(option("--batch-size") ?? DEFAULT_BATCH_SIZE);
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) {
     throw new Error("--batch-size must be an integer between 1 and 100");
