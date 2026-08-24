@@ -28,6 +28,7 @@ import {
   isProcessTreeAlive,
   terminateProcessTree,
 } from "../lifecycle/process-tree.ts";
+import { buildSterileRunnerEnv } from "../runners/runtime.ts";
 import { sanitizeClaudeModel } from "./consolidation/runner.ts";
 import { createOpenCodeStreamParser, createOpenCodeEventMapper } from "../opencode/parser.ts";
 import { log as _log } from "../logger.ts";
@@ -712,6 +713,7 @@ export async function claudeRunText(req: RunTextRequest): Promise<string> {
 
   const proc = Bun.spawn(["claude", ...args], {
     cwd: tmpdir(),
+    env: buildSterileRunnerEnv(),
     stdout: "pipe",
     stderr: "pipe",
     stdin: new TextEncoder().encode(req.prompt),
@@ -744,7 +746,7 @@ function extractClaudeAssistantText(stdout: string): string {
 
 // ── OpenCode subprocess ──────────────────────────────────────────────────────
 
-async function openCodeRunText(req: RunTextRequest): Promise<string> {
+export async function openCodeRunText(req: RunTextRequest): Promise<string> {
   // OpenCode does not support --system-prompt, so bake the system prompt
   // into the user prompt.
   const combinedPrompt = `${SYNTHESIS_SYSTEM_PROMPT}\n\n---\n\n${req.prompt}`;
@@ -756,8 +758,8 @@ async function openCodeRunText(req: RunTextRequest): Promise<string> {
   // (no junior project config/MCP discovery), an inline config that denies
   // every tool (synthesis only needs text-in/text-out), and no
   // OPENCODE_CONFIG env layer from the developer shell.
-  const env: Record<string, string | undefined> = {
-    ...process.env,
+  const env: Record<string, string> = {
+    ...buildSterileRunnerEnv(),
     OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { "*": "deny" } }),
   };
   delete env.OPENCODE_CONFIG;
@@ -801,6 +803,7 @@ export async function codexRunText(req: RunTextRequest): Promise<string> {
 
   const proc = Bun.spawn(["codex", ...args], {
     cwd: tmpdir(),
+    env: buildSterileRunnerEnv(),
     stdin: new TextEncoder().encode(combinedPrompt),
     stdout: "ignore",
     stderr: "pipe",

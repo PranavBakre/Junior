@@ -26,6 +26,39 @@ export const DATABASE_CREDENTIAL_ENV_KEYS = [
 ] as const;
 
 /**
+ * Credentials which belong to Junior's control plane rather than a text-only
+ * child process.  Keep these as explicit empty values at the process boundary:
+ * Bun loads dotenv files after it receives an environment, so deleting a key
+ * can let a hostile cwd rehydrate it from `.env`.
+ */
+export const STERILE_RUNNER_SECRET_ENV_KEYS = [
+  "MCP_CONTEXT_SECRET",
+  "SLACK_BOT_TOKEN",
+  "SLACK_APP_TOKEN",
+  "SLACK_SIGNING_SECRET",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  ...DATABASE_CREDENTIAL_ENV_KEYS,
+] as const;
+
+/**
+ * Build a fresh child environment for untrusted, text-only runner work.
+ *
+ * Authentication for the model CLIs may still come from their ordinary user
+ * state, but Junior's Slack, GitHub, MCP-signing, and database credentials are
+ * never useful to a pre-recall subprocess.  Do not omit these keys: an empty
+ * sentinel wins over a dotenv value discovered in the child's cwd.
+ */
+export function buildSterileRunnerEnv(
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const env = { ...parentEnv } as Record<string, string>;
+  for (const key of STERILE_RUNNER_SECRET_ENV_KEYS) env[key] = "";
+  return env;
+}
+
+/**
  * Whether this provider invocation will resume a prior model session.
  *
  * Prompt construction must inject bounded thread/assignment/artifact/memory
