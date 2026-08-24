@@ -23,6 +23,10 @@ default hot path; bounded LLM synthesis is optional through
 | `runPreRecallExited` / `runPreRecallProcess` / `readBoundedTextFile` | `src/memory/pre-recall.ts` | Timeout + process-tree SIGINT/SIGKILL guard shared by the claude/opencode/codex runners. Both provider pipes are drained immediately; stdout and stderr retain bounded tails, and oversized stdout/Codex output files are rejected. |
 | `recallMemory({ recordUsage })` | `src/mcp/slack-server.ts` | Retrieval. Pre-recall passes `false`; the `memory_recall` MCP tool keeps the default `true`. Each claim carries fused `score`, raw `cosine`, `lexicalScore`, and expanded parent-source context when available. |
 | `MemoryStore.markClaimsUsed(ids, now)` | `src/memory/store.ts`, `src/memory/sqlite.ts` | Deferred `last_used_at` bump for the claims that actually reached the prompt. |
+| `pre_recall_observation` / `pre_recall_feedback` | `src/memory/sqlite.ts` | Durable per-turn audit trail: every injected recall persists all candidate and selected claim ids with its Slack thread, while `memory_feedback(pre_recall_id, useful)` records a linked post-turn judgment and updates only selected claims. |
+
+Observations and linked feedback are retained for 90 days. The production health
+interval deletes at most 500 expired observations (and their feedback) per run.
 
 ## Flow
 

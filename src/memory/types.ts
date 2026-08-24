@@ -184,6 +184,14 @@ export interface ClaimFeedbackResult {
   unhelpfulCount: number;
 }
 
+export interface PreRecallObservation {
+  id: string;
+  threadId: string | null;
+  candidateIds: string[];
+  selectedIds: string[];
+  createdAt: number;
+}
+
 export interface CollapseDuplicateClaimsOptions {
   /** The claim that keeps its row and absorbs the duplicates' counters. */
   survivorId: string;

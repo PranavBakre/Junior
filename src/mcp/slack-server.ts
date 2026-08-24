@@ -1653,18 +1653,26 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
       inputSchema: {
         claim_ids: z
           .array(z.string().min(1).max(200))
-          .min(1)
           .max(50)
-          .describe("Claim ids returned by memory_recall that share this judgment"),
+          .optional()
+          .describe("Claim ids returned by memory_recall, or a subset selected by pre_recall_id"),
+        pre_recall_id: z.string().min(1).optional().describe("Feedback reference emitted by automatic pre-recall"),
         useful: z
           .boolean()
           .describe("True when these claims materially helped or were correct; false otherwise"),
       },
     },
-    async ({ claim_ids, useful }) => {
+    async ({ claim_ids, pre_recall_id, useful }) => {
       return withMemoryStore(async (memory) => {
+        if (!pre_recall_id && (!claim_ids || claim_ids.length === 0)) {
+          throw new Error("memory_feedback: claim_ids or pre_recall_id is required");
+        }
+        if (pre_recall_id) {
+          const updated = await memory.recordPreRecallFeedback(pre_recall_id, useful, claim_ids);
+          return { content: [{ type: "text" as const, text: JSON.stringify({ useful, updated, preRecallId: pre_recall_id }, null, 2) }] };
+        }
         const result = await recordMemoryFeedback(
-          { claimIds: claim_ids, useful },
+          { claimIds: claim_ids!, useful },
           { store: memory },
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };

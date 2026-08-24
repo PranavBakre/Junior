@@ -2365,6 +2365,7 @@ export class SessionManager {
         // Scope recall to the session's repo so another repo's conventions
         // can't inject into this session's prompt.
         const preRecallBlock = await this.preRecall(rawMessage, {
+          threadId: session.threadId,
           repo: session.targetRepo,
           agent: agentName,
           // Agent identity is trusted routing context, not a keyword guessed

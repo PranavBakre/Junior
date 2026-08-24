@@ -22,6 +22,7 @@ import type {
   MemoryFactInput,
   MemoryLessonInput,
   MemorySourceRecord,
+  PreRecallObservation,
   RecallLogInput,
   SearchableMemoryKind,
   SourceRecordQueryOptions,
@@ -1055,6 +1056,39 @@ export class SqliteMemoryStore implements MemoryStore {
     return txn.immediate();
   }
 
+  async appendPreRecallObservation(observation: PreRecallObservation): Promise<void> {
+    this.db.query(`INSERT INTO pre_recall_observation
+      (id, thread_id, candidate_ids_json, selected_ids_json, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(observation.id, observation.threadId, JSON.stringify(unique(observation.candidateIds)), JSON.stringify(unique(observation.selectedIds)), observation.createdAt);
+  }
+
+  async recordPreRecallFeedback(observationId: string, useful: boolean, claimIds?: string[]): Promise<ClaimFeedbackResult[]> {
+    const row = this.db.query<{ selected_ids_json: string }, [string]>("SELECT selected_ids_json FROM pre_recall_observation WHERE id = ?").get(observationId);
+    if (!row) throw new Error("memory_feedback: unknown pre-recall reference");
+    let selected: string[];
+    try { selected = JSON.parse(row.selected_ids_json); } catch { throw new Error("memory_feedback: invalid pre-recall record"); }
+    const ids = unique((claimIds?.length ? claimIds : selected).filter((id) => selected.includes(id)));
+    if (ids.length === 0) throw new Error("memory_feedback: no selected claims for pre-recall reference");
+    const updated = await this.recordClaimFeedback(ids, useful);
+    this.db.query(`INSERT INTO pre_recall_feedback (id, observation_id, claim_ids_json, useful, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .run(crypto.randomUUID(), observationId, JSON.stringify(ids), useful ? 1 : 0, Date.now());
+    return updated;
+  }
+
+  async deletePreRecallObservationsOlderThan(before: number, limit: number): Promise<number> {
+    const ids = this.db.query<{ id: string }, [number, number]>(
+      "SELECT id FROM pre_recall_observation WHERE created_at < ? ORDER BY created_at LIMIT ?",
+    ).all(before, limit).map((row) => row.id);
+    if (ids.length === 0) return 0;
+    const placeholders = ids.map(() => "?").join(",");
+    const txn = this.db.transaction(() => {
+      this.db.query(`DELETE FROM pre_recall_feedback WHERE observation_id IN (${placeholders})`).run(...ids);
+      this.db.query(`DELETE FROM pre_recall_observation WHERE id IN (${placeholders})`).run(...ids);
+    });
+    txn.immediate();
+    return ids.length;
+  }
+
   // --- memory v3: consolidation source-record bookkeeping -------------------
 
   /**
@@ -1480,6 +1514,8 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.run(`CREATE TABLE IF NOT EXISTS ingestion_correction (id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL, field TEXT NOT NULL, incorrect_value TEXT, correct_value TEXT, corrected_by TEXT NOT NULL, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS consolidation_decision (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, source_ids_json TEXT NOT NULL, extractor TEXT NOT NULL, created_at INTEGER NOT NULL)`);
     this.db.run(`CREATE TABLE IF NOT EXISTS recall_log (id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT, tags_json TEXT, entities_json TEXT, kinds_json TEXT, caller_intent TEXT, returned_ids_json TEXT NOT NULL, result_count INTEGER NOT NULL, created_at INTEGER NOT NULL)`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS pre_recall_observation (id TEXT PRIMARY KEY, thread_id TEXT, candidate_ids_json TEXT NOT NULL, selected_ids_json TEXT NOT NULL, created_at INTEGER NOT NULL)`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS pre_recall_feedback (id TEXT PRIMARY KEY, observation_id TEXT NOT NULL, claim_ids_json TEXT NOT NULL, useful INTEGER NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY (observation_id) REFERENCES pre_recall_observation(id))`);
     // memory v3: semantic claim store (text + embedding co-located) — mirrors the lesson/memory_node relationship.
     this.db.run(`CREATE TABLE IF NOT EXISTS claim (id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('lesson', 'fact', 'preference', 'decision', 'situation-claim')), text TEXT NOT NULL, retrieval_text TEXT, embedding BLOB, embed_model TEXT, dim INTEGER, repo TEXT, tags TEXT, source_episode TEXT, source_path TEXT, source_heading TEXT, source_text TEXT, helpful_count INTEGER DEFAULT 0, unhelpful_count INTEGER DEFAULT 0, weight REAL DEFAULT 1.0, created_at INTEGER, last_used_at INTEGER, active INTEGER DEFAULT 1, FOREIGN KEY (id) REFERENCES memory_node(id))`);
     this.db.run(`CREATE TABLE IF NOT EXISTS claim_embedding (claim_id TEXT NOT NULL, variant INTEGER NOT NULL, retrieval_text TEXT NOT NULL, embedding BLOB NOT NULL, embed_model TEXT, dim INTEGER NOT NULL, PRIMARY KEY (claim_id, variant), FOREIGN KEY (claim_id) REFERENCES claim(id))`);
