@@ -1,14 +1,24 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstat, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  buildClaudeConsolidationArgs,
   buildCodexConsolidationArgs,
+  buildOpenCodeConsolidationEnv,
   buildOpenCodeConsolidationArgs,
   createRunnerInvoke,
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_CODEX_MODEL,
   DEFAULT_OPENCODE_MODEL,
+  CONSOLIDATION_OPENCODE_AGENT,
   extractOpenCodeAssistantText,
   parseConsolidationOutput,
+  provisionOpenCodeAuth,
+  resolveOpenCodeAuthPath,
+  withIsolatedOpenCodeRuntime,
   sanitizeClaudeModel,
   type RunText,
 } from "./runner.ts";
@@ -176,19 +186,150 @@ describe("createRunnerInvoke", () => {
 });
 
 describe("opencode consolidation runText helpers", () => {
-  it("builds a stripped one-shot argv: run --format json --model <m> <prompt>", () => {
+  it("builds a no-plugin, deny-by-config one-shot argv", () => {
     expect(buildOpenCodeConsolidationArgs("THE PROMPT", "opencode-go/deepseek-v4-pro")).toEqual([
       "run",
+      "--pure",
       "--format",
       "json",
       "--model",
       "opencode-go/deepseek-v4-pro",
+      "--agent",
+      CONSOLIDATION_OPENCODE_AGENT,
+      "--",
       "THE PROMPT",
     ]);
   });
 
-  it("omits --model when none is given (no session/dir/agent/mcp flags either)", () => {
-    expect(buildOpenCodeConsolidationArgs("THE PROMPT")).toEqual(["run", "--format", "json", "THE PROMPT"]);
+  it("uses -- so a hostile prompt cannot become an OpenCode flag", () => {
+    const prompt = "--model attacker --dir /sensitive";
+    const args = buildOpenCodeConsolidationArgs(prompt);
+    expect(args).toEqual([
+      "run",
+      "--pure",
+      "--format",
+      "json",
+      "--agent",
+      CONSOLIDATION_OPENCODE_AGENT,
+      "--",
+      prompt,
+    ]);
+    expect(args.slice(args.indexOf("--") + 1)).toEqual([prompt]);
+  });
+
+  it("denies every OpenCode tool and discards shell-provided config", () => {
+    const env = buildOpenCodeConsolidationEnv({
+      OPENCODE_CONFIG: "/hostile/opencode.json",
+      OPENCODE_CONFIG_DIR: "/hostile/.opencode",
+      OPENCODE_PERMISSION: '{"*":"allow"}',
+      PRESERVE_ME: "yes",
+    });
+    expect(env.OPENCODE_CONFIG).toBeUndefined();
+    expect(env.OPENCODE_CONFIG_DIR).toBeUndefined();
+    expect(env.OPENCODE_PERMISSION).toBeUndefined();
+    expect(env.PRESERVE_ME).toBe("yes");
+    expect(env.OPENCODE_DISABLE_DEFAULT_PLUGINS).toBe("true");
+    expect(env.OPENCODE_DISABLE_CLAUDE_CODE).toBe("true");
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+    expect(config.permission).toEqual({ "*": "deny" });
+    expect(config.tools).toEqual({ "*": false });
+    expect(config.default_agent).toBe(CONSOLIDATION_OPENCODE_AGENT);
+    expect(config.agent[CONSOLIDATION_OPENCODE_AGENT]).toMatchObject({
+      mode: "primary",
+      permission: { "*": "deny" },
+      tools: { "*": false },
+    });
+  });
+
+  it("does not merge a hostile user config in a live OpenCode config probe", async () => {
+    const opencode = Bun.which("opencode");
+    if (!opencode) return;
+
+    const root = mkdtempSync(join(tmpdir(), "junior-consolidation-opencode-probe-"));
+    const hostileHome = join(root, "hostile-home");
+    const isolatedHome = join(root, "isolated-home");
+    try {
+      const configDir = join(hostileHome, ".config", "opencode");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, "opencode.json"), JSON.stringify({
+        mcp: { hostile_mcp: { type: "remote", url: "https://example.invalid/mcp" } },
+        instructions: ["HOSTILE_USER_CONTEXT_MUST_NOT_APPEAR"],
+      }));
+      mkdirSync(isolatedHome, { recursive: true });
+
+      const env = buildOpenCodeConsolidationEnv({
+        ...process.env,
+        HOME: hostileHome,
+        XDG_CONFIG_HOME: join(hostileHome, ".config"),
+      }, isolatedHome);
+      const proc = Bun.spawn([opencode, "debug", "config", "--pure"], {
+        cwd: tmpdir(),
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      expect(await proc.exited).toBe(0);
+      expect(stderr).not.toContain("hostile_mcp");
+      expect(stdout).not.toContain("hostile_mcp");
+      expect(stdout).not.toContain("HOSTILE_USER_CONTEXT_MUST_NOT_APPEAR");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("copies only the regular auth file into the sterile data root with 0600 permissions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-consolidation-opencode-auth-"));
+    const sourceDataHome = join(root, "source-data");
+    const isolatedHome = join(root, "isolated-home");
+    try {
+      const sourceAuth = resolveOpenCodeAuthPath({ XDG_DATA_HOME: sourceDataHome });
+      mkdirSync(join(sourceDataHome, "opencode"), { recursive: true });
+      writeFileSync(sourceAuth, '{"provider":{"token":"test-only"}}', { mode: 0o644 });
+      // Deliberately place a sibling file that must never cross the boundary.
+      writeFileSync(join(sourceDataHome, "opencode", "settings.json"), "HOSTILE_SETTINGS");
+
+      expect(await provisionOpenCodeAuth({ XDG_DATA_HOME: sourceDataHome }, isolatedHome)).toBe(true);
+      const destination = join(isolatedHome, ".local", "share", "opencode", "auth.json");
+      expect(await readFile(destination, "utf8")).toBe('{"provider":{"token":"test-only"}}');
+      expect((await lstat(destination)).mode & 0o777).toBe(0o600);
+      await expect(lstat(join(isolatedHome, ".local", "share", "opencode", "settings.json"))).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the configured auth path is not a regular file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-consolidation-opencode-bad-auth-"));
+    const sourceDataHome = join(root, "source-data");
+    try {
+      mkdirSync(join(sourceDataHome, "opencode", "auth.json"), { recursive: true });
+      await expect(provisionOpenCodeAuth({ XDG_DATA_HOME: sourceDataHome }, join(root, "isolated-home")))
+        .rejects.toThrow(/must be a regular file/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes the sterile auth root when process creation throws synchronously", async () => {
+    const root = mkdtempSync(join(tmpdir(), "junior-consolidation-opencode-spawn-"));
+    const sourceDataHome = join(root, "source-data");
+    let isolatedHome = "";
+    try {
+      const sourceAuth = resolveOpenCodeAuthPath({ XDG_DATA_HOME: sourceDataHome });
+      mkdirSync(join(sourceDataHome, "opencode"), { recursive: true });
+      writeFileSync(sourceAuth, '{"provider":{"token":"test-only"}}');
+
+      await expect(withIsolatedOpenCodeRuntime({ XDG_DATA_HOME: sourceDataHome }, ({ home }) => {
+        isolatedHome = home;
+        throw new Error("synthetic synchronous spawn failure");
+      })).rejects.toThrow(/synthetic synchronous spawn failure/);
+      expect(isolatedHome).not.toBe("");
+      await expect(lstat(isolatedHome)).rejects.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("extracts the final assistant text from an opencode NDJSON envelope", () => {
@@ -203,6 +344,23 @@ describe("opencode consolidation runText helpers", () => {
     expect(text).toBe(payload);
     // And it round-trips through the consolidation parser.
     expect(parseConsolidationOutput(text)).toEqual({ episodes: [], profiles: [], claims: [] });
+  });
+});
+
+describe("claude consolidation runText helpers", () => {
+  it("uses a no-tools, strict-MCP, hooks-disabled argv with no prompt argument", () => {
+    const args = buildClaudeConsolidationArgs("claude-opus-5[1M]");
+    expect(args).toEqual(expect.arrayContaining([
+      "-p",
+      "--output-format", "json",
+      "--tools", "",
+      "--strict-mcp-config",
+      "--safe-mode",
+      "--settings", '{"disableAllHooks":true}',
+      "--no-session-persistence",
+      "--model", "claude-opus-5",
+    ]));
+    expect(args).not.toContain("untrusted Slack prompt");
   });
 });
 
