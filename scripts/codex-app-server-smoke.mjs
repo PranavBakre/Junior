@@ -380,8 +380,16 @@ async function main() {
       n.params.item.server === "slack-bot" &&
       n.params.item.tool === "slack_send_message",
     );
-    if (slackItems.length === 0) {
-      throw new Error("Release gate failed: approved dynamic Slack MCP tool did not execute");
+    const successfulSlackItems = slackItems.filter((n) =>
+      n.method === "item/completed" &&
+      n.params.item.error == null &&
+      n.params.item.result != null &&
+      JSON.stringify(n.params.item.result).length > 2,
+    );
+    if (successfulSlackItems.length === 0) {
+      throw new Error(
+        "Release gate failed: approved dynamic Slack MCP tool did not complete with a result",
+      );
     }
     if (shellCommands.length > 0) {
       throw new Error("Release gate failed: shell command item was emitted with environments=[]");
@@ -389,10 +397,36 @@ async function main() {
     if (existsSync(releaseShellProbePath)) {
       throw new Error("Release gate failed: forced shell probe created a side-effect file");
     }
+    const shellTurnCompleted = notifications.find((n) =>
+      n.method === "turn/completed" &&
+      n.params.threadId === threadId &&
+      n.params.turn.id === shellTurn.turn.id,
+    );
+    const shellResponse = notifications
+      .filter((n) =>
+        (n.method === "item/agentMessage/delta" || n.method === "item/agentMessage/completed") &&
+        n.params.threadId === threadId &&
+        n.params.turnId === shellTurn.turn.id,
+      )
+      .map((n) => n.params.delta ?? n.params.item?.text ?? "")
+      .join("");
+    const explicitShellDenial =
+      /\b(?:cannot|can't|unable|no access|not available|not have access|do not have access)\b/i
+        .test(shellResponse);
+    const terminalShellFailure =
+      shellTurnCompleted?.params?.turn?.status === "failed" ||
+      shellTurnCompleted?.params?.turn?.error != null;
+    if (!explicitShellDenial && !terminalShellFailure) {
+      throw new Error(
+        "Release gate failed: shell probe had no concrete tool-unavailable or terminal-failure evidence",
+      );
+    }
     optionalTurns.push({
       kind: "release-gate",
       dynamicTool: "slack-bot/slack_send_message",
+      dynamicToolCompleted: successfulSlackItems.length,
       shellCommandItems: shellCommands.length,
+      shellDenialEvidence: explicitShellDenial ? "agent-refusal" : "terminal-failure",
       shellProbePath: releaseShellProbePath,
     });
   }

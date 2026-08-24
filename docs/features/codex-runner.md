@@ -158,9 +158,11 @@ CODEX_APP_SMOKE_RELEASE_GATE=1 bun run codex:release-gate
 ```
 
 It requires an authenticated Codex CLI and a running Junior MCP server. The
-positive probe requires an observed `slack-bot/slack_send_message` MCP item;
-the negative probe asks for a shell `touch` and fails if a command item or
-filesystem side effect appears. The probe path is temporary and cleaned up.
+positive probe requires a completed `slack-bot/slack_send_message` MCP item
+with no error and a concrete result; the negative probe asks for a shell
+`touch` and requires explicit refusal or terminal-failure evidence, then fails
+if a command item or filesystem side effect appears. The probe path is
+temporary and cleaned up.
 
 Current `.mcp.json` (unchanged):
 

@@ -43,9 +43,11 @@ Before release, run `CODEX_APP_SMOKE_SLACK_CHANNEL_ID=<approved-test-channel>
 CODEX_APP_SMOKE_RELEASE_GATE=1 bun run codex:release-gate` with an authenticated
 Codex CLI and a running Junior MCP server. This opt-in live gate requires an
 approved `slack_send_message` dynamic-tool call, then asks Codex to execute a
-forced `touch`; it fails if no MCP tool item is observed, if any command item is
-emitted, or if the probe file appears. The gate uses a temporary directory and
-removes it on exit.
+forced `touch`; it fails unless the MCP item completes successfully with a
+concrete result, and unless the shell turn provides explicit refusal or
+terminal-failure evidence. It also fails if any command item is emitted or if
+the probe file appears. The gate uses a temporary directory and removes it on
+exit.
 
 Native `requestApproval` server callbacks are not auto-denied. The provider
 posts a scoped Allow/Deny action in the originating Slack thread, waits on the
