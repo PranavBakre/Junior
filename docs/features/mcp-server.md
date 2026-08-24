@@ -77,7 +77,7 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
 
 ## Configuration
 
-- `.mcp.json` documents the local `slack-bot` endpoint and optional hosted Figma/Notion entries. Claude receives a generated per-session MCP config under `data/mcp-configs/`; OpenCode and Codex receive equivalent generated provider config. All normal worktree and Junior-root runs get the local Slack MCP; explicit utility `session.cwd` runs do not.
+- `.mcp.json` documents only the local `slack-bot` endpoint. Claude receives a generated per-session MCP config under `data/mcp-configs/`; OpenCode and Codex receive equivalent generated provider config. All normal worktree and Junior-root runs get the local Slack MCP; explicit utility `session.cwd` runs do not. Hosted Figma/Notion OAuth servers are emitted only for agents whose `wantsMcp` capability includes the requested server.
 - `.claude/settings.json` grants `mcp__slack-bot__*` permissions
 - Port configurable via `MCP_PORT` env var (default 3456)
 - `--mcp-config` flag injected by `spawner.ts` for every non-utility Claude run (not only when cwd differs from project root)

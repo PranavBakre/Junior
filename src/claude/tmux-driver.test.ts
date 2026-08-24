@@ -49,6 +49,7 @@ function claudeConfig(): Config["claude"] {
     timeoutMs: 300_000,
     permissionMode: "bypassPermissions",
     defaultModel: null,
+    settingSources: "project",
     defaultDriver: "tmux",
     tmuxIdleTtlMs: 14_400_000,
     tmuxSweepIntervalMs: 900_000,
@@ -302,6 +303,68 @@ describe("TmuxDriver with stubbed exec", () => {
     expect(mcpConfig.mcpServers["slack-bot"].url).toContain(
       "agent=lead&channel=C01&thread=T-thread1",
     );
+  });
+
+  it("keeps hosted OAuth MCP and user settings scoped for a root run", async () => {
+    const { driver, calls } = setup();
+    const session = makeSession({
+      activeAgentName: "designer",
+      agentPermissions: { intent: "normal", mcp: ["figma"], tools: [] },
+    });
+
+    const handle = driver.send({
+      session,
+      prompt: "inspect the design",
+      config: claudeConfig(),
+      threadId: session.threadId,
+      agentName: "designer",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    handle.kill();
+
+    const startCall = calls.find((c) => c.args[0] === "new-session");
+    expect(startCall).toBeDefined();
+    const mcpArgIndex = startCall!.args.indexOf("--mcp-config");
+    expect(mcpArgIndex).toBeGreaterThan(0);
+    const mcpConfig = JSON.parse(readFileSync(startCall!.args[mcpArgIndex + 1], "utf8"));
+    expect(mcpConfig.mcpServers.figma).toEqual({
+      type: "http",
+      url: "https://mcp.figma.com/mcp",
+    });
+    const settingIndex = startCall!.args.indexOf("--setting-sources");
+    expect(startCall!.args[settingIndex + 1]).toBe("user,project");
+  });
+
+  it("keeps hosted OAuth MCP and user settings scoped for a worktree run", async () => {
+    const { driver, calls } = setup();
+    const cwd = mkdtempSync(join(tmpdir(), "junior-oauth-worktree-"));
+    const session = makeSession({
+      worktreePath: cwd,
+      activeAgentName: "designer",
+      agentPermissions: { intent: "normal", mcp: ["notion"], tools: [] },
+    });
+
+    const handle = driver.send({
+      session,
+      prompt: "inspect the docs",
+      config: claudeConfig(),
+      threadId: session.threadId,
+      agentName: "designer",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    handle.kill();
+
+    const startCall = calls.find((c) => c.args[0] === "new-session");
+    expect(startCall).toBeDefined();
+    const mcpArgIndex = startCall!.args.indexOf("--mcp-config");
+    expect(mcpArgIndex).toBeGreaterThan(0);
+    const mcpConfig = JSON.parse(readFileSync(startCall!.args[mcpArgIndex + 1], "utf8"));
+    expect(mcpConfig.mcpServers.notion).toEqual({
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+    });
+    const settingIndex = startCall!.args.indexOf("--setting-sources");
+    expect(startCall!.args[settingIndex + 1]).toBe("user,project");
   });
 
   it("does not pass generated MCP config for utility cwd runs", async () => {

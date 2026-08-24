@@ -115,6 +115,9 @@ export interface Config {
     playwrightMcpEnabled: boolean;
     mixpanelMcpEnabled: boolean;
     mongodbMcpEnabled: boolean;
+    /** Hosted OAuth MCPs are still capability-gated by the active agent. */
+    figmaMcpEnabled?: boolean;
+    notionMcpEnabled?: boolean;
   };
   codex: {
     mode: "app-server" | "cli";
@@ -131,6 +134,9 @@ export interface Config {
     playwrightMcpEnabled: boolean;
     mixpanelMcpEnabled: boolean;
     mongodbMcpEnabled: boolean;
+    /** Hosted OAuth MCPs are still capability-gated by the active agent. */
+    figmaMcpEnabled?: boolean;
+    notionMcpEnabled?: boolean;
     memoryMcpEnabled: boolean;
     isolatedHomePath: string | null;
   };
@@ -330,6 +336,8 @@ export function loadConfig(): Config {
         true,
       ),
       mongodbMcpEnabled: parseBooleanEnv("OPENCODE_MONGODB_MCP_ENABLED", true),
+      figmaMcpEnabled: parseBooleanEnv("OPENCODE_FIGMA_MCP_ENABLED", true),
+      notionMcpEnabled: parseBooleanEnv("OPENCODE_NOTION_MCP_ENABLED", true),
     },
     codex: {
       mode: parseCodexMode(optional("CODEX_MODE", "app-server")),
@@ -348,6 +356,8 @@ export function loadConfig(): Config {
       playwrightMcpEnabled: parseBooleanEnv("CODEX_PLAYWRIGHT_MCP_ENABLED", true),
       mixpanelMcpEnabled: parseBooleanEnv("CODEX_MIXPANEL_MCP_ENABLED", true),
       mongodbMcpEnabled: parseBooleanEnv("CODEX_MONGODB_MCP_ENABLED", true),
+      figmaMcpEnabled: parseBooleanEnv("CODEX_FIGMA_MCP_ENABLED", true),
+      notionMcpEnabled: parseBooleanEnv("CODEX_NOTION_MCP_ENABLED", true),
       memoryMcpEnabled: parseBooleanEnv("CODEX_MEMORY_MCP_ENABLED", true),
       isolatedHomePath:
         process.env.CODEX_ISOLATED_HOME_PATH?.trim() || "data/codex-home",

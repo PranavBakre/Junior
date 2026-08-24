@@ -97,6 +97,31 @@ describe("buildCodexMcpConfig", () => {
       "slack-bot": expect.any(Object),
     });
   });
+
+  it("keeps hosted OAuth MCPs capability-scoped", () => {
+    const session = createSession("t", "c");
+    session.agentPermissions = { intent: "normal", mcp: ["figma", "notion"], tools: [] };
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toEqual({
+      figma: {
+        transport: "http",
+        url: "https://mcp.figma.com/mcp",
+      },
+      notion: {
+        transport: "http",
+        url: "https://mcp.notion.com/mcp",
+      },
+    });
+  });
+
+  it("respects hosted OAuth MCP feature flags", () => {
+    const session = createSession("t", "c");
+    session.agentPermissions = { intent: "normal", mcp: ["figma"], tools: [] };
+    const config = makeConfig();
+    config.codex.figmaMcpEnabled = false;
+
+    expect(buildCodexMcpConfig(config, session, true)).toBeNull();
+  });
 });
 
 describe("buildCodexConfigToml", () => {

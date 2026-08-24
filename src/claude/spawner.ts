@@ -18,6 +18,8 @@ import {
   mixpanelMcpUrl,
   mongoMcpUrl,
   needsUserSettings,
+  figmaMcpUrl,
+  notionMcpUrl,
   playwrightMcpCommand,
   slackMcpUrl,
   wantsMcp,
@@ -53,12 +55,11 @@ export function spawnClaude(
     session.activeAgentName ?? session.agentType,
   );
   const forceSlackMcp = config.approvalEnabled !== false && intent === "human-gated";
-  const mcpConfigPath = shouldUseClaudeMcpConfig(session, runtime.needsProjectMcp, forceSlackMcp)
-    ? writeClaudeMcpConfig(session, forceSlackMcp)
-    : undefined;
-  const effectiveConfig = needsUserSettings()
-    ? widenSettingSources(config)
-    : config;
+  const mcpConfigPath = resolveClaudeMcpConfigPath(session, forceSlackMcp);
+  // User-level settings are needed only for hosted OAuth MCPs, and only when
+  // this run actually receives Junior's generated MCP config. Utility cwd
+  // runs intentionally receive neither and remain project-settings-only.
+  const effectiveConfig = resolveClaudeInvocationConfig(config, session, mcpConfigPath);
   const activeSkill = session.activeSkill
     ? resolveTrustedSkill(session.activeSkill.name)
     : null;
@@ -216,6 +217,27 @@ export function shouldUseClaudeMcpConfig(
   return true;
 }
 
+/** Resolve the generated MCP config consistently for headless and tmux runs. */
+export function resolveClaudeMcpConfigPath(
+  session: ThreadSession,
+  forceSlackMcp = false,
+): string | undefined {
+  return shouldUseClaudeMcpConfig(session, false, forceSlackMcp)
+    ? writeClaudeMcpConfig(session, forceSlackMcp)
+    : undefined;
+}
+
+/** Apply the user-OAuth settings exception only to an MCP-enabled run. */
+export function resolveClaudeInvocationConfig(
+  config: Config["claude"],
+  session: ThreadSession,
+  mcpConfigPath: string | undefined,
+): Config["claude"] {
+  return mcpConfigPath && needsUserSettings(session)
+    ? widenSettingSources(config)
+    : config;
+}
+
 export function writeClaudeMcpConfig(
   session: ThreadSession,
   forceSlackMcp = false,
@@ -223,6 +245,14 @@ export function writeClaudeMcpConfig(
   mkdirSync(MCP_CONFIG_DIR, { recursive: true });
   const agent = session.activeAgentName ?? "default";
   const path = join(MCP_CONFIG_DIR, `${session.threadId}-${agent}.json`);
+  writeFileSync(path, JSON.stringify(buildClaudeMcpConfig(session, forceSlackMcp), null, 2));
+  return path;
+}
+
+export function buildClaudeMcpConfig(
+  session: ThreadSession,
+  forceSlackMcp = false,
+): { mcpServers: Record<string, unknown> } {
   const mcpServers: Record<string, unknown> = {};
   if (forceSlackMcp || wantsMcp(session, "slack-bot")) {
     mcpServers["slack-bot"] = {
@@ -242,17 +272,13 @@ export function writeClaudeMcpConfig(
       url: mongoMcpUrl(session),
     };
   }
-  mcpServers.figma = {
-    type: "http",
-    url: "https://mcp.figma.com/mcp",
-  };
-  mcpServers.notion = {
-    type: "http",
-    url: "https://mcp.notion.com/mcp",
-  };
-  const config = { mcpServers };
-  writeFileSync(path, JSON.stringify(config, null, 2));
-  return path;
+  if (wantsMcp(session, "figma")) {
+    mcpServers.figma = { type: "http", url: figmaMcpUrl() };
+  }
+  if (wantsMcp(session, "notion")) {
+    mcpServers.notion = { type: "http", url: notionMcpUrl() };
+  }
+  return { mcpServers };
 }
 
 function isFeatureMetricsSession(session: ThreadSession): boolean {
@@ -375,7 +401,7 @@ function claudeDoneUsage(
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
-function widenSettingSources(config: Config["claude"]): Config["claude"] {
+export function widenSettingSources(config: Config["claude"]): Config["claude"] {
   const base = config.settingSources ?? "";
   if (!base || base.includes("user")) return config;
   return { ...config, settingSources: `user,${base}` };

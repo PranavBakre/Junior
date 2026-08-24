@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { createSession } from "../session/types.ts";
 import {
+  buildClaudeMcpConfig,
   classifyClaudeCompletion,
+  widenSettingSources,
   selectClaudeResponse,
   shouldUseClaudeMcpConfig,
 } from "./spawner.ts";
@@ -26,6 +28,32 @@ describe("shouldUseClaudeMcpConfig", () => {
     const session = createSession("thread-1", "C01");
 
     expect(shouldUseClaudeMcpConfig(session, true)).toBe(true);
+  });
+});
+
+describe("Claude MCP capability gating", () => {
+  it("does not expose hosted OAuth servers to the default agent", () => {
+    const session = createSession("thread-1", "C01");
+    session.agentPermissions = { intent: "normal", mcp: [], tools: [] };
+
+    expect(buildClaudeMcpConfig(session)).toEqual({ mcpServers: {} });
+  });
+
+  it("exposes only the hosted OAuth server requested by the active agent", () => {
+    const session = createSession("thread-1", "C01");
+    session.agentPermissions = { intent: "normal", mcp: ["figma"], tools: [] };
+
+    expect(buildClaudeMcpConfig(session)).toEqual({
+      mcpServers: {
+        figma: { type: "http", url: "https://mcp.figma.com/mcp" },
+      },
+    });
+  });
+
+  it("widens settings only for the OAuth-enabled run", () => {
+    const config = { settingSources: "project" } as Parameters<typeof widenSettingSources>[0];
+    expect(widenSettingSources(config).settingSources).toBe("user,project");
+    expect((config.settingSources ?? "")).toBe("project");
   });
 });
 

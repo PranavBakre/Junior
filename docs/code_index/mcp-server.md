@@ -46,7 +46,7 @@ operations using the bot token and signed run context.
 
 | File | What |
 |---|---|
-| `.mcp.json` | Root config contains `slack-bot`, Figma, and Notion servers. Per-agent generated configs add Playwright, MongoDB, and the multi-region Mixpanel proxy as needed. |
+| `.mcp.json` | Root config contains only the local `slack-bot` server. Per-agent generated configs add Playwright, MongoDB, Mixpanel, and capability-gated hosted Figma/Notion servers as needed. |
 | `.claude/settings.json` | `permissions.allow: ["mcp__slack-bot__*"]` |
 | `src/claude/spawner.ts` | Passes `--mcp-config` for worktree spawns |
 | `src/codex-app-server/spawner.ts` | Routes native approval callbacks through the shared Slack approval bridge |

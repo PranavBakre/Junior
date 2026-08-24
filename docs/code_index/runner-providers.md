@@ -11,7 +11,7 @@ and MCP wiring.
 | Symbol | File | Purpose |
 |---|---|---|
 | `spawnRunner(session, prompt, config, ...)` | `index.ts` | Selects `claude`, `opencode`, `opencode-sdk`, or `codex-app-server` and dispatches to the adapter. |
-| `buildOpenCodeMcpConfig(config)` | `index.ts` | Builds OpenCode MCP entries (`slack-bot`, `playwright` by default unless disabled). |
+| `buildOpenCodeMcpConfig(config, session)` | `mcp-config.ts` | Builds per-session MCP entries; hosted Figma/Notion OAuth servers require the agent capability plus their provider feature flags. |
 | `buildRunnerRuntime(options)` | `runtime.ts` | Shared cwd/env contract for provider adapters. |
 | `resolveRunnerCwd(session, targetRepoCwd?)` | `runtime.ts` | Cwd priority: `session.cwd` → `worktreePath` → target repo → Junior root. |
 | `needsProjectMcp(session, cwd)` | `runtime.ts` | Claude-only project-MCP policy for worktree-backed runs. OpenCode has its own generated-config policy. |
@@ -58,3 +58,7 @@ through pipeline artifacts/outcomes rather than a direct Slack response.
 
 Provider MCP configuration is still compiled independently from the validated
 assignment capabilities.
+
+Hosted OAuth parity: Claude, OpenCode, and Codex all add Figma/Notion only when
+`wantsMcp(session, name)` is true. OpenCode and Codex also honor their
+provider-specific `*_FIGMA_MCP_ENABLED` / `*_NOTION_MCP_ENABLED` kill switches.

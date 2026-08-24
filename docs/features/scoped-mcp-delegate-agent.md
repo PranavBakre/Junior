@@ -1,6 +1,7 @@
 # Scoped MCP via Delegate Agents (figma / notion gating)
 
-**Status:** Scoping — deferred. Tracked in [v2-backlog.md](./v2-backlog.md#scoped-mcp-via-delegate-agents).
+**Status:** Implemented. Hosted OAuth MCPs are capability-gated per session;
+the backlog item remains as historical context for the original design.
 
 ## Problem
 
@@ -51,24 +52,26 @@ uses figma — not to every run.
   (`src/session/manager.ts:1070`) → `allowedMcpServers()` /
   `wantsMcp()` (`src/runners/mcp-config.ts:12`).
 
-## Scope (to be refined)
+## Implementation
 
-1. **Gate figma/notion behind `wantsMcp`.** Replace the unconditional injection
-   in `writeClaudeMcpConfig` with `if (wantsMcp(session, "figma")) { ... }` (and
-   notion), matching every other server. Drop the now-dead distinction in the
-   `allowedMcpServers` allow-list.
-2. **Make widening session-aware.** Change `needsUserSettings()` to take the
-   session and return `true` only when the session's agent wants a user-OAuth
-   server (figma/notion). Result: only the delegate agent's runs widen
-   setting-sources; the default agent and all others return to `project`-only
-   isolation.
-3. **Add a dedicated delegate agent** (e.g. `designer`) at
-   `.claude/agents/designer.md` with `permissions.mcp: figma` (and/or `notion`),
-   that Junior's default agent routes to via `!designer`. This is where the
-   user-OAuth widening is contained.
-4. **OpenCode parity.** Add figma/notion to `buildOpenCodeMcpConfig` gated by
-   `wantsMcp` + a `config.opencode.figmaMcpEnabled` flag, mirroring the
-   slack-bot/mongodb pattern, so the delegate agent works under both providers.
+1. `writeClaudeMcpConfig` and the generated OpenCode/Codex configs add Figma or
+   Notion only when `wantsMcp(session, ...)` is true.
+2. `needsUserSettings(session)` is true only for a session requesting Figma or
+   Notion. Claude widens `--setting-sources` only for those non-utility runs;
+   default and utility sessions retain project-only settings isolation.
+3. OpenCode and Codex expose the same capability-gated servers. Their optional
+   `OPENCODE_FIGMA_MCP_ENABLED`, `OPENCODE_NOTION_MCP_ENABLED`,
+   `CODEX_FIGMA_MCP_ENABLED`, and `CODEX_NOTION_MCP_ENABLED` flags provide an
+   operator kill switch (default enabled, still requiring `wantsMcp`).
+4. The root `.mcp.json` contains only the local Slack server. The interactive
+   `bin/claude-with-mcp.sh` launcher defaults hosted OAuth servers off; set
+   `CLAUDE_MCP_FIGMA=true` or `CLAUDE_MCP_NOTION=true` for an explicit manual
+   OAuth test.
+
+No dedicated agent is created by this change. Existing trusted agent
+definitions can opt in through `permissions.mcp: figma` and/or `notion`; this
+keeps OAuth authority explicit at the agent boundary instead of silently
+granting it to the default orchestrator.
 
 ## Open questions
 
@@ -83,7 +86,8 @@ uses figma — not to every run.
   both figma and notion, vs. separate agents. Leaning toward one delegate that
   owns design/doc integrations to keep the widened-settings surface minimal.
 - **Should figma/notion ever be available to the default agent at all,** or is
-  delegation always required? Delegation-only keeps the blast radius smallest.
+  delegation always required? The runtime now requires an explicit capability;
+  the trusted catalog decides which agent receives that capability.
 - **Identity registration** for the new agent (Star Trek naming convention; org
   overlay vs. public `.claude/agents/`).
 

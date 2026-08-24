@@ -5,7 +5,8 @@
 # Use this to manually test MCP connectivity (Figma, Notion, Slack, Playwright,
 # MongoDB) from an interactive Claude session outside Junior.
 #
-# MCP servers are toggled via env flags (all default to true):
+# MCP servers are toggled via env flags. Local servers default to true;
+# hosted OAuth servers default to false and must be explicitly opted into:
 #
 #   CLAUDE_MCP_SLACK=true|false
 #   CLAUDE_MCP_PLAYWRIGHT=true|false
@@ -39,8 +40,8 @@ parse_bool() {
 
 SLACK=$(parse_bool "CLAUDE_MCP_SLACK" "${CLAUDE_MCP_SLACK:-}" true)
 PLAYWRIGHT=$(parse_bool "CLAUDE_MCP_PLAYWRIGHT" "${CLAUDE_MCP_PLAYWRIGHT:-}" true)
-FIGMA=$(parse_bool "CLAUDE_MCP_FIGMA" "${CLAUDE_MCP_FIGMA:-}" true)
-NOTION=$(parse_bool "CLAUDE_MCP_NOTION" "${CLAUDE_MCP_NOTION:-}" true)
+FIGMA=$(parse_bool "CLAUDE_MCP_FIGMA" "${CLAUDE_MCP_FIGMA:-}" false)
+NOTION=$(parse_bool "CLAUDE_MCP_NOTION" "${CLAUDE_MCP_NOTION:-}" false)
 MONGODB=$(parse_bool "CLAUDE_MCP_MONGODB" "${CLAUDE_MCP_MONGODB:-}" true)
 
 CONFIG='{"mcpServers":{}}'
@@ -72,7 +73,7 @@ if [ "$MONGODB" = "true" ]; then
     '.mcpServers.mongodb = {type: "http", url: $url}')
 fi
 
-MCP_CONFIG=$(mktemp /tmp/claude-mcp-XXXXXX.json)
+MCP_CONFIG=$(mktemp /tmp/claude-mcp-XXXXXX)
 echo "$CONFIG" > "$MCP_CONFIG"
 trap 'rm -f "$MCP_CONFIG"' EXIT
 
