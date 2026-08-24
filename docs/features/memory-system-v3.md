@@ -180,6 +180,15 @@ rebuildable. Lexical scoring considers those fields plus source provenance.
 Recall returns the atomic `text` and a `contextText` expanded from `source_text`
 when available.
 
+The optional LLM rewrite stage of `memory:reembed` treats every corpus row as
+untrusted. Cursor Agent is deliberately not used there because its CLI cannot
+provide a no-tool/no-ambient-config contract. Instead `reembed-runner.ts`
+launches a one-shot Codex process from a fresh empty temporary directory with
+an allowlisted environment, no persisted session, no user/project config or
+rules, no MCP configuration, and a read-only sandbox. The corpus prompt enters
+only through stdin and its final text is locally parsed, bounded, and bound to
+the tool-owned source hash before it can be reviewed or applied.
+
 Lesson claims carry three retrieval projections in `claim_embedding`. Both
 `add-lesson` and generic `add-claim --kind lesson` populate the complete set;
 generic lesson writes with a caller-supplied base embedding are rejected because

@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 
 import { createEmbeddingProvider } from "./embedding/factory.ts";
 import type { EmbeddingProvider } from "./embedding/types.ts";
+import { runIsolatedComposerText } from "./reembed-runner.ts";
 import { buildLessonRetrievalTexts } from "./retrieval-text.ts";
 import { SqliteMemoryStore, serializeEmbedding } from "./sqlite.ts";
 
@@ -83,6 +84,8 @@ const TARGET_COMPOSER_RETRIEVAL_CHARS = 2_000;
 const MAX_COMPOSER_RETRIEVAL_CHARS = 2_500;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_EMBEDDING_BATCH_SIZE = 64;
+/** Pinned Codex model used for isolated retrieval-projection rewrites. */
+export const DEFAULT_COMPOSER_MODEL = "gpt-5.6-sol";
 
 export function deterministicRetrievalText(row: CorpusRow): string {
   const authoritativeText = row.text.replace(/\s+/g, " ").trim();
@@ -292,7 +295,7 @@ export function isCompatibleComposerCheckpoint(
     actual.recipeHash === expected.recipeHash;
 }
 
-function composerPrompt(batch: CorpusEntry[]): string {
+export function composerPrompt(batch: Array<Pick<CorpusEntry, "id" | "kind" | "retrievalText">>): string {
   return `${composerInstructions()}
 
 INPUT:
@@ -307,30 +310,14 @@ async function runComposerBatch(
   batch: CorpusEntry[],
   model: string,
 ): Promise<RetrievalRewrite[]> {
-  const proc = Bun.spawn(
-    [
-      "cursor-agent",
-      "--print",
-      "--mode",
-      "ask",
-      "--model",
-      model,
-      "--output-format",
-      "text",
-      composerPrompt(batch),
-    ],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(
-      `cursor-agent failed (${exitCode}): ${stderr.trim() || stdout.trim()}`,
-    );
-  }
+  // Cursor Agent's CLI cannot disable its inherited tool/config surface. Corpus
+  // text is untrusted, so do not send it to Cursor. The hardened Codex boundary
+  // runs from a fresh empty directory with no user/project config, rules, MCP
+  // configuration, writable tools, or inherited application environment.
+  const stdout = await runIsolatedComposerText({
+    prompt: composerPrompt(batch),
+    model,
+  });
   return bindComposerRewrites(batch, parseJsonArray(stdout));
 }
 
@@ -509,7 +496,7 @@ async function main(): Promise<void> {
   };
   const dbPath = resolve(option("--db") ?? process.env.MEMORY_DB_PATH ?? "data/memory.db");
   const workDir = resolve(option("--work-dir") ?? "work/memory-reembed");
-  const model = option("--model") ?? "composer-2.5";
+  const model = option("--model") ?? DEFAULT_COMPOSER_MODEL;
   const batchSize = Number(option("--batch-size") ?? DEFAULT_BATCH_SIZE);
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) {
     throw new Error("--batch-size must be an integer between 1 and 100");
