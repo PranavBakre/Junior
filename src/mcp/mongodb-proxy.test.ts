@@ -31,6 +31,13 @@ describe("MongoDB MCP read-only proxy", () => {
                     type: "object",
                     additionalProperties: true,
                   },
+                  limit: {
+                    type: "number",
+                    minimum: 0,
+                    maximum: 1000,
+                    description: "Upstream page size",
+                    "x-upstream": "preserved",
+                  },
                 },
                 required: ["connectionId", "database", "collection"],
               },
@@ -72,7 +79,14 @@ describe("MongoDB MCP read-only proxy", () => {
         },
       });
       expect(tools[0]?.inputSchema.properties).not.toHaveProperty("connectionId");
-      expect(tools[0]?.inputSchema.required).toEqual(["database", "collection"]);
+      expect(tools[0]?.inputSchema.properties?.limit).toEqual({
+        type: "integer",
+        minimum: 1,
+        maximum: 100,
+        description: "Upstream page size. Must be between 1 and 100.",
+        "x-upstream": "preserved",
+      });
+      expect(tools[0]?.inputSchema.required).toEqual(["database", "collection", "limit"]);
 
       const filter = {
         status: { $in: ["active", "trial"] },
@@ -84,6 +98,7 @@ describe("MongoDB MCP read-only proxy", () => {
           database: "app",
           collection: "members",
           filter,
+          limit: 50,
         },
       });
 
@@ -95,8 +110,61 @@ describe("MongoDB MCP read-only proxy", () => {
           database: "app",
           collection: "members",
           filter,
+          limit: 50,
         },
       }]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("rejects unbounded and over-cap finds before touching the backend", async () => {
+    let called = false;
+    const server = createMongoProxyServer(RUN_CONTEXT, async () => ({
+      client: {
+        async listTools() { return { tools: [] }; },
+        async callTool() { called = true; return { content: [{ type: "text" as const, text: "unexpected" }] }; },
+      } as never,
+    }));
+    const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      for (const limit of [undefined, 101, 0]) {
+        const result = await client.callTool({
+          name: "find",
+          arguments: { database: "app", collection: "members", ...(limit === undefined ? {} : { limit }) },
+        });
+        expect(result.isError).toBe(true);
+      }
+      expect(called).toBe(false);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("requires a signed run context before any bounded find", async () => {
+    let called = false;
+    const server = createMongoProxyServer(null, async () => ({
+      client: {
+        async listTools() { return { tools: [] }; },
+        async callTool() { called = true; return { content: [{ type: "text" as const, text: "unexpected" }] }; },
+      } as never,
+    }));
+    const client = new Client({ name: "mongo-proxy-test", version: "0.1.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const result = await client.callTool({
+        name: "find",
+        arguments: { database: "app", collection: "members", limit: 10 },
+      });
+      expect(result.isError).toBe(true);
+      expect(called).toBe(false);
     } finally {
       await client.close();
       await server.close();

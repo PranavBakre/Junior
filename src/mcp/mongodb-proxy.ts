@@ -16,6 +16,7 @@ const MONGODB_PROXY_IDLE_TTL_MS = Number(process.env.MONGODB_MCP_PROXY_IDLE_TTL_
 const MONGODB_PROXY_REQUEST_TIMEOUT_MS = Number(process.env.MONGODB_MCP_PROXY_REQUEST_TIMEOUT_MS ?? "120000");
 const MONGODB_PRECONFIGURED_CONNECTION_ID = "preconfigured";
 const MONGODB_MCP_PACKAGE = "mongodb-mcp-server@2.1.0";
+export const MONGODB_FIND_MAX_LIMIT = 100;
 const MONGODB_TOOL_NAMES = [
   "aggregate",
   "collection-schema",
@@ -87,6 +88,8 @@ export function createMongoProxyServer(
     }
 
     try {
+      const validation = validateMongoToolArguments(name, args ?? {});
+      if (validation) return mongoProxyError(validation);
       const { client } = await backendProvider();
       armIdleTimer();
       return await client.callTool(
@@ -113,17 +116,49 @@ export function createMongoProxyServer(
   return server;
 }
 
-function hideMongoConnectionId<T extends { inputSchema: Record<string, unknown> }>(
+function hideMongoConnectionId<T extends { name: string; description?: string; inputSchema: Record<string, unknown> }>(
   tool: T,
 ): T {
   const schema = tool.inputSchema;
-  const properties = schema.properties && typeof schema.properties === "object"
+  let properties = schema.properties && typeof schema.properties === "object"
     ? { ...(schema.properties as Record<string, unknown>) }
     : undefined;
   if (properties) delete properties.connectionId;
   const required = Array.isArray(schema.required)
     ? schema.required.filter((name) => name !== "connectionId")
     : schema.required;
+  if (tool.name === "find") {
+    properties ??= {};
+    const upstreamLimit = properties.limit && typeof properties.limit === "object"
+      ? properties.limit as Record<string, unknown>
+      : {};
+    const upstreamMinimum = typeof upstreamLimit.minimum === "number"
+      ? upstreamLimit.minimum
+      : 1;
+    const upstreamMaximum = typeof upstreamLimit.maximum === "number"
+      ? upstreamLimit.maximum
+      : MONGODB_FIND_MAX_LIMIT;
+    properties.limit = {
+      ...upstreamLimit,
+      type: "integer",
+      minimum: Math.max(1, upstreamMinimum),
+      maximum: Math.min(MONGODB_FIND_MAX_LIMIT, upstreamMaximum),
+      description: typeof upstreamLimit.description === "string"
+        ? `${upstreamLimit.description}. Must be between 1 and ${MONGODB_FIND_MAX_LIMIT}.`
+        : `Required bounded page size; results never exceed ${MONGODB_FIND_MAX_LIMIT} documents.`,
+    };
+    const findRequired = Array.isArray(required) ? [...required] : [];
+    if (!findRequired.includes("limit")) findRequired.push("limit");
+    return {
+      ...tool,
+      description: `${tool.description ?? ""} Results are bounded to an explicit limit of 100 or fewer; use a separate export workflow for complete datasets.`,
+      inputSchema: {
+        ...schema,
+        properties,
+        required: findRequired,
+      },
+    };
+  }
   return {
     ...tool,
     inputSchema: {
@@ -132,6 +167,18 @@ function hideMongoConnectionId<T extends { inputSchema: Record<string, unknown> 
       ...(required ? { required } : {}),
     },
   };
+}
+
+function validateMongoToolArguments(
+  name: string,
+  args: Record<string, unknown>,
+): string | null {
+  if (name !== "find") return null;
+  const limit = args.limit;
+  if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > MONGODB_FIND_MAX_LIMIT) {
+    return `find requires an explicit integer limit from 1 to ${MONGODB_FIND_MAX_LIMIT}; broad or capped partial results are refused. Use an approved export workflow for complete datasets.`;
+  }
+  return null;
 }
 
 export async function closeMongoMcpBackend(): Promise<void> {

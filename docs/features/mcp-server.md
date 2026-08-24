@@ -125,6 +125,11 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
   declares `permissions.mcp: mongodb` or lists `mcp__mongodb__*` tools.
   Disable with `OPENCODE_MONGODB_MCP_ENABLED=false` /
   `CODEX_MONGODB_MCP_ENABLED=false`.
+  The proxy requires every `find` call to provide an explicit integer
+  `limit` from 1 through 100 and rejects unbounded/over-cap requests before
+  contacting MongoDB. This makes capped results explicit rather than silently
+  presenting a partial dataset; complete exports must use a separately
+  approved schema-preserving export workflow.
 
 ### Agent registry tools
 
