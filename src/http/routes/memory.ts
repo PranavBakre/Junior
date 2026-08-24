@@ -6,7 +6,7 @@
  */
 import path from "node:path";
 import type { MemoryStore } from "../../memory/store.ts";
-import type { ClaimKind } from "../../memory/types.ts";
+import type { ClaimKind, ClaimRecallResult, MemoryFactInput } from "../../memory/types.ts";
 import type { EmbeddingProviderKind } from "../../memory/embedding/factory.ts";
 import { projectClaims } from "../projection.ts";
 
@@ -69,6 +69,7 @@ export async function handleMemoryRecall(
 ): Promise<Response> {
   const query = params.get("query") ?? undefined;
   const kinds = csv(params.get("kinds")) as ClaimKind[] | undefined;
+  const factKinds = csv(params.get("fact_kinds")) as MemoryFactInput["kind"][] | undefined;
   // Embed the query at this boundary — recallClaims never embeds. Skipped when
   // no query is given (then recall ranks by weight under the filters).
   let queryVector: Float32Array | undefined;
@@ -76,21 +77,65 @@ export async function handleMemoryRecall(
     const embedder = await getDashboardEmbedder();
     [queryVector] = await embedder.embed([query], "query");
   }
-  const results = await store.recallClaims({
-    queryVector,
-    queryText: query,
-    filters: {
-      repo: params.get("repo") ?? undefined,
-      // ClaimRecallFilters carries a single kind; use the first requested.
-      kind: kinds && kinds.length > 0 ? kinds[0] : undefined,
-      tags: csv(params.get("tags")),
-    },
-    limit: numberParam(params.get("limit")),
-    // Operator browsing the dashboard is inspection, not real recall traffic:
-    // don't bump last_used_at or pollute the fade signal.
-    recordUsage: false,
-  });
+  const limit = recallLimit(params.get("limit"));
+  const scopes = claimRecallScopes(kinds ?? [], factKinds ?? []);
+  const seen = new Set<string>();
+  const merged: ClaimRecallResult[] = [];
+  for (const scope of scopes) {
+    const results = await store.recallClaims({
+      queryVector,
+      queryText: query,
+      filters: {
+        repo: params.get("repo") ?? undefined,
+        kind: scope.kind,
+        factKind: scope.factKind,
+        tags: csv(params.get("tags")),
+      },
+      // Every scope needs the global cap to contribute potential winners; apply
+      // the one real limit only after cross-kind dedupe and ranking.
+      limit,
+      // Operator browsing the dashboard is inspection, not real recall traffic:
+      // don't bump last_used_at or pollute the fade signal.
+      recordUsage: false,
+    });
+    for (const result of results) {
+      if (seen.has(result.id)) continue;
+      seen.add(result.id);
+      merged.push(result);
+    }
+  }
+  // `score` can be reciprocal-rank fusion computed within an individual scope,
+  // so scores from two scopes are not comparable. Re-rank the union using raw
+  // retrieval evidence, which is comparable for every candidate.
+  merged.sort((a, b) =>
+    (b.cosine ?? -Infinity) - (a.cosine ?? -Infinity) ||
+    (b.lexicalScore ?? -Infinity) - (a.lexicalScore ?? -Infinity) ||
+    b.weight - a.weight ||
+    a.id.localeCompare(b.id),
+  );
+  const results = merged.slice(0, limit);
   return Response.json({ results });
+}
+
+/**
+ * `ClaimRecallFilters` accepts one kind/subtype. Expand a dashboard request
+ * into independent scopes so `kinds=lesson,decision` and `fact_kinds=procedure`
+ * are a union, not a silently truncated first value.
+ */
+function claimRecallScopes(
+  kinds: ClaimKind[],
+  factKinds: MemoryFactInput["kind"][],
+): Array<{ kind?: ClaimKind; factKind?: MemoryFactInput["kind"] }> {
+  const scopes: Array<{ kind?: ClaimKind; factKind?: MemoryFactInput["kind"] }> = [];
+  for (const kind of new Set(kinds)) {
+    if (kind !== "fact") scopes.push({ kind });
+  }
+  if (factKinds.length > 0) {
+    for (const factKind of new Set(factKinds)) scopes.push({ kind: "fact", factKind });
+  } else if (kinds.includes("fact")) {
+    scopes.push({ kind: "fact" });
+  }
+  return scopes.length > 0 ? scopes : [{}];
 }
 
 /**
@@ -181,4 +226,11 @@ function numberParam(value: string | null): number | undefined {
   if (!value) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Dashboard limits are always a positive bounded count, never a negative slice offset. */
+function recallLimit(value: string | null): number {
+  const parsed = numberParam(value);
+  if (parsed == null) return 5;
+  return Math.min(Math.max(Math.trunc(parsed), 1), 50);
 }
