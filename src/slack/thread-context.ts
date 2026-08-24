@@ -255,7 +255,7 @@ export async function buildPromptPreamble(
       `Channel: #${channelName} (${channel})`,
       `Thread: ${threadTs}`,
       `You are responding in this thread. You already have the full thread history below.`,
-      `Do NOT use Slack search or read tools to find this thread — you already have all the context you need.`,
+      `Do NOT use Slack search or read tools to find this current thread — you already have all the current-thread context you need. If the message includes a <referenced-slack-context> block, that bounded quoted context was fetched server-side; do not broaden the lookup with Slack tools.`,
       `To tag a user, use their Slack mention format \`<@USERID>\` (shown in thread history as \`User(Name <@USERID>)\`). Plain \`@Name\` does not notify them.`,
       `The message you are responding to appears at the end of this prompt, prefixed with its author in the same \`User(Name <@USERID>)\` format. Read that attribution — never assume who is speaking. Anyone in the workspace can message you; requests apply to the person who sent them unless they say otherwise.`,
       `A turn may instead deliver several messages that arrived while you were busy, each wrapped in its own \`<buffered-message from="User(Name <@USERID>)">\` block — the \`from\` attribute is the author of everything inside that block (a block without \`from\` is an internal system message).`,

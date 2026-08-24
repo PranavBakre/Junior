@@ -8,6 +8,7 @@ import type {
   SlackArchiveFile,
   SlackArchiveMessageInput,
 } from "./archive-types.ts";
+import { resolveReferencedSlackContext } from "./permalink-context.ts";
 
 /**
  * Detect whether a self-bot message contains at least one `!<persistent-agent>`
@@ -155,6 +156,7 @@ export function registerEventHandlers(
   autoTriggerChannels?: Set<string>,
   onArchiveMessage?: OnArchiveMessageCallback,
   archiveApprovedChannels?: ReadonlySet<string>,
+  slackWorkspaceOrigin?: string,
 ): void {
   app.event("message", async ({ event }) => {
     const archiveChannelType = "channel_type" in event ? event.channel_type : undefined;
@@ -270,11 +272,20 @@ export function registerEventHandlers(
         ? (event as { bot_id: string }).bot_id
         : undefined;
 
+    const referencedContext = await resolveReferencedSlackContext(
+      app.client,
+      deliveredText,
+      {
+        workspaceOrigin: slackWorkspaceOrigin,
+        currentChannel: event.channel,
+        currentThreadTs: threadId,
+      },
+    );
     await onMessage({
       threadId,
       channel: event.channel,
       user,
-      text: deliveredText,
+      text: referencedContext ? `${deliveredText}\n\n${referencedContext}` : deliveredText,
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,
@@ -324,11 +335,20 @@ export function registerEventHandlers(
         : undefined;
     const isSelfBot = !!(botId && selfBotId && botId === selfBotId);
 
+    const referencedContext = await resolveReferencedSlackContext(
+      app.client,
+      deliveredText,
+      {
+        workspaceOrigin: slackWorkspaceOrigin,
+        currentChannel: event.channel,
+        currentThreadTs: threadId,
+      },
+    );
     await onMessage({
       threadId,
       channel: event.channel,
       user: event.user,
-      text: deliveredText,
+      text: referencedContext ? `${deliveredText}\n\n${referencedContext}` : deliveredText,
       ts: event.ts,
       command: parsed.command,
       files: files.length > 0 ? files : undefined,

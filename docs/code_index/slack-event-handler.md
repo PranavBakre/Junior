@@ -9,7 +9,7 @@ Slack Bolt app setup, event filtering (with self-bot directive escape hatch), ho
 | Symbol | File | Purpose |
 |---|---|---|
 | `createSlackApp(config)` | `app.ts` | Bolt app with Socket Mode + `ignoreSelf: false` (lead's self-bot directives must be observed) |
-| `registerEventHandlers(app, onMessage, store?, selfBotId?, selfUserId?, autoTriggerChannels?, onArchiveMessage?, archiveApprovedChannels?)` | `events.ts` | Wires `message` + `app_mention` handlers with filtering and optional passive Slack-archive capture |
+| `registerEventHandlers(app, onMessage, store?, selfBotId?, selfUserId?, autoTriggerChannels?, onArchiveMessage?, archiveApprovedChannels?)` | `events.ts` | Wires `message` + `app_mention` handlers with filtering, optional passive Slack-archive capture, and bounded server-side resolution of referenced Slack permalinks |
 | `isForeignBotThinking(text)` | `events.ts` | Detects sibling Claude bots' streaming "✽ Thinking..." messages — drop those |
 | `extractFiles(event)` (private) | `events.ts` | Pulls `{ url_private_download, name, mimetype }` from `event.files` |
 | `registerHomeTab(app, store, windowMs)` | `home.ts` | `app_home_opened` listener |
@@ -23,6 +23,7 @@ Slack Bolt app setup, event filtering (with self-bot directive escape hatch), ho
 | `SlackMessageEvent` | `events.ts` | `{ threadId, channel, user, text, ts, command, files?, isSelfBot?, botId?, botUsername?, mentionsJunior?, dedupeKey?, pipelineInvocation?, attributionUserId?, conversationalText? }`; durable default runs bound the `files` refs before persistence and restore them on pump dispatch. |
 | `boundSlackFileAttachments` / `parseSlackFileAttachments` | `files.ts` | Caps serialized Slack file refs and validates JSON-restored refs before they re-enter a synthetic event. |
 | `SlackFileAttachment` | `events.ts` | `{ url, name, mimetype }` |
+| `parseSlackPermalinks` / `resolveReferencedSlackContext` | `permalink-context.ts` | Parses up to three canonical archive links, fetches referenced message/thread context with bounded reads, and omits context on permission or fetch failure. |
 | `OnMessageCallback` | `events.ts` | `(event: SlackMessageEvent) => void` |
 
 ## Event Flow
@@ -41,11 +42,13 @@ Slack WebSocket (Socket Mode)
   │     ├── thread + non-auto-trigger + no session in store → drop
   │     ├── stripOwnMention (uses selfUserId)
   │     ├── parseCommand + extractFiles
+  │     ├── resolve bounded referenced permalink context (read-only)
   │     └── onMessage(SlackMessageEvent)
   │
   └── app_mention
         ├── no user / foreign-bot thinking → drop
         ├── stripOwnMention + parseCommand + extractFiles
+        ├── resolve bounded referenced permalink context (read-only)
         └── onMessage(SlackMessageEvent)
 ```
 
@@ -73,6 +76,18 @@ Friday and Doraemon stream "✽ Thinking…" updates. `isForeignBotThinking` dro
 ### Session-gated threads
 
 In a thread reply (not DM, not auto-trigger), the handler skips messages whose `thread_ts` has no row in the session store. This prevents random thread chatter from spawning Claude.
+
+### Cross-thread permalink context
+
+Ingress recognizes canonical Slack archive URLs on the workspace origin
+returned by Slack `auth.test` and resolves up to three unique links before
+dispatch. Arbitrary hosts are rejected. Each lookup is capped to one exact
+message history read plus an eight-message reply window, and the final quoted
+context is capped at 6,000 characters. The resolver escapes structural
+delimiters and treats Slack permission/API failures as a best-effort miss, so
+the original message still routes. The runner's no-read rule is scoped to the
+current thread; the injected `<referenced-slack-context>` is the only
+server-fetched cross-thread context supplied for that turn.
 
 ### Dedupe via `dedupeKey`
 
