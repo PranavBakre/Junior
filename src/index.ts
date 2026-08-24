@@ -95,6 +95,8 @@ const permalinkCache = new SlackPermalinkCache({
 const memoryStore = createMemoryStore(config.memory.sqlitePath, {
   dedupThreshold: config.memory.dedupThreshold,
 });
+const PRE_RECALL_FEEDBACK_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const PRE_RECALL_FEEDBACK_CLEANUP_LIMIT = 500;
 const profileStore = createProfileStore();
 const memoryIngestor = new MemoryIngestor(memoryStore);
 const runbookCatalogStore = new CatalogStore(
@@ -641,6 +643,10 @@ void pipelineBoot;
 
 // Periodic health checks
 setInterval(() => {
+  memoryStore.deletePreRecallObservationsOlderThan(
+    Date.now() - PRE_RECALL_FEEDBACK_RETENTION_MS,
+    PRE_RECALL_FEEDBACK_CLEANUP_LIMIT,
+  ).catch((err) => log.warn("cleanup", `pre-recall feedback cleanup failed: ${String(err)}`));
   checkOrphanedSessions(store).then((orphaned) => {
     if (orphaned.length > 0) {
       log.warn("health", `Found ${orphaned.length} orphaned sessions: ${orphaned.join(", ")}`);

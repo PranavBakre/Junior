@@ -122,6 +122,11 @@ whether the claim was useful.
 That is wrong today and gets worse under this design, because synthesis exists
 precisely to discard most candidates. Filtered-out spam would be marked fresh on
 every turn it is retrieved, and `archiveStaleClaims` ("stale **and** low-value")
+only acts on genuinely surfaced claims. Each injected block carries a durable
+feedback reference: candidate and selected claim IDs are persisted, and the
+agent records a linked helpful/unhelpful judgment with `memory_feedback` after
+the turn. These records are retained for 90 days; production cleanup deletes a
+bounded batch of 500 expired observations and their feedback per interval.
 would never fade it. The claims that most need to decay are the ones a filter
 keeps rejecting.
 

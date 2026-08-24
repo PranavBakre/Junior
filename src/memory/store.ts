@@ -83,6 +83,7 @@ export interface MemoryStore {
   recordClaimFeedback(ids: string[], useful: boolean): Promise<ClaimFeedbackResult[]>;
   appendPreRecallObservation(observation: PreRecallObservation): Promise<void>;
   recordPreRecallFeedback(observationId: string, useful: boolean, claimIds?: string[]): Promise<ClaimFeedbackResult[]>;
+  deletePreRecallObservationsOlderThan(before: number, limit: number): Promise<number>;
   /**
    * Decay: ARCHIVE (set `active = 0`, never delete — keep provenance) claims that
    * are BOTH stale AND low-value. Batch/offline only, never a hot-path TTL.

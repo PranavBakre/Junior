@@ -1075,6 +1075,20 @@ export class SqliteMemoryStore implements MemoryStore {
     return updated;
   }
 
+  async deletePreRecallObservationsOlderThan(before: number, limit: number): Promise<number> {
+    const ids = this.db.query<{ id: string }, [number, number]>(
+      "SELECT id FROM pre_recall_observation WHERE created_at < ? ORDER BY created_at LIMIT ?",
+    ).all(before, limit).map((row) => row.id);
+    if (ids.length === 0) return 0;
+    const placeholders = ids.map(() => "?").join(",");
+    const txn = this.db.transaction(() => {
+      this.db.query(`DELETE FROM pre_recall_feedback WHERE observation_id IN (${placeholders})`).run(...ids);
+      this.db.query(`DELETE FROM pre_recall_observation WHERE id IN (${placeholders})`).run(...ids);
+    });
+    txn.immediate();
+    return ids.length;
+  }
+
   // --- memory v3: consolidation source-record bookkeeping -------------------
 
   /**

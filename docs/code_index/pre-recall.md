@@ -25,6 +25,9 @@ default hot path; bounded LLM synthesis is optional through
 | `MemoryStore.markClaimsUsed(ids, now)` | `src/memory/store.ts`, `src/memory/sqlite.ts` | Deferred `last_used_at` bump for the claims that actually reached the prompt. |
 | `pre_recall_observation` / `pre_recall_feedback` | `src/memory/sqlite.ts` | Durable per-turn audit trail: every injected recall persists all candidate and selected claim ids with its Slack thread, while `memory_feedback(pre_recall_id, useful)` records a linked post-turn judgment and updates only selected claims. |
 
+Observations and linked feedback are retained for 90 days. The production health
+interval deletes at most 500 expired observations (and their feedback) per run.
+
 ## Flow
 
 ```
