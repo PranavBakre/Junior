@@ -20,6 +20,8 @@ export interface RunbookRunEvidence {
   startedAt: number;
   completedAt?: number;
   intentFingerprint: string;
+  /** Original operator request; retained so promotion authoring has intent. */
+  request?: string;
 }
 
 export function createRunEvidence(
@@ -38,6 +40,7 @@ export function createRunEvidence(
     status: "selected",
     startedAt,
     intentFingerprint: createIntentFingerprint(request, runbook),
+    request: request.trim(),
   };
 }
 
