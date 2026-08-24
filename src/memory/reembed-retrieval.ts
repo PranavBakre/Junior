@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 
 import { createEmbeddingProvider } from "./embedding/factory.ts";
 import type { EmbeddingProvider } from "./embedding/types.ts";
-import { runIsolatedComposerText } from "./reembed-runner.ts";
+import { DEFAULT_COMPOSER_MODEL, runNoToolsComposer } from "./reembed-runner.ts";
 import { buildLessonRetrievalTexts } from "./retrieval-text.ts";
 import { SqliteMemoryStore, serializeEmbedding } from "./sqlite.ts";
 
@@ -84,8 +84,6 @@ const TARGET_COMPOSER_RETRIEVAL_CHARS = 2_000;
 const MAX_COMPOSER_RETRIEVAL_CHARS = 2_500;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_EMBEDDING_BATCH_SIZE = 64;
-/** Pinned Codex model used for isolated retrieval-projection rewrites. */
-export const DEFAULT_COMPOSER_MODEL = "gpt-5.6-sol";
 
 export function deterministicRetrievalText(row: CorpusRow): string {
   const authoritativeText = row.text.replace(/\s+/g, " ").trim();
@@ -157,33 +155,6 @@ export function validateRewrites(
       `Rewrite set is incomplete: missing ${missing.length} active claims (first: ${missing[0]})`,
     );
   }
-}
-
-function parseJsonArray(
-  text: string,
-): Array<{ id: string; retrievalText: string }> {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-  const candidate = fenced ?? text.slice(text.indexOf("["), text.lastIndexOf("]") + 1);
-  const parsed = JSON.parse(candidate) as unknown;
-  if (!Array.isArray(parsed)) throw new Error("Composer output is not a JSON array");
-  return parsed.map((value) => {
-    if (!value || typeof value !== "object") {
-      throw new Error("Composer output contains a non-object entry");
-    }
-    const record = value as Record<string, unknown>;
-    if (
-      typeof record.id !== "string" ||
-      typeof record.retrievalText !== "string"
-    ) {
-      throw new Error(
-        "Composer output entries require string id and retrievalText",
-      );
-    }
-    return {
-      id: record.id,
-      retrievalText: record.retrievalText,
-    };
-  });
 }
 
 export function bindComposerRewrites(
@@ -273,7 +244,7 @@ If the input retrievalSource is longer and all details are necessary, the output
 up to the input's own length, but never more than ${MAX_COMPOSER_RETRIEVAL_CHARS} characters.
 The hard limit is mechanically enforced. For an oversized source, retain its decisions
 and operational traps while compressing repeated rationale, measurements, and examples first.
-Return only a JSON array, with no markdown.`;
+Return only a JSON object with one key, rewrites, containing the array. No markdown.`;
 }
 
 export function composerCheckpointMetadata(
@@ -310,15 +281,11 @@ async function runComposerBatch(
   batch: CorpusEntry[],
   model: string,
 ): Promise<RetrievalRewrite[]> {
-  // Cursor Agent's CLI cannot disable its inherited tool/config surface. Corpus
-  // text is untrusted, so do not send it to Cursor. The hardened Codex boundary
-  // runs from a fresh empty directory with no user/project config, rules, MCP
-  // configuration, writable tools, or inherited application environment.
-  const stdout = await runIsolatedComposerText({
+  const outputs = await runNoToolsComposer({
     prompt: composerPrompt(batch),
     model,
   });
-  return bindComposerRewrites(batch, parseJsonArray(stdout));
+  return bindComposerRewrites(batch, outputs);
 }
 
 async function readJsonl(path: string): Promise<RetrievalRewrite[]> {

@@ -16,7 +16,7 @@ import {
   validComposerCheckpoint,
   type CorpusRow,
 } from "./reembed-retrieval.ts";
-import { buildIsolatedComposerArgs } from "./reembed-runner.ts";
+import { armComposerTimeout, buildNoToolsComposerArgs, parseNoToolsComposerOutput } from "./reembed-runner.ts";
 import { HashingEmbeddingProvider } from "./embedding/hashing.ts";
 import type { EmbeddingProvider } from "./embedding/types.ts";
 
@@ -224,27 +224,52 @@ describe("retrieval corpus migration", () => {
     );
   });
 
-  it("uses the hardened Codex invocation for hostile corpus text", () => {
-    const args = buildIsolatedComposerArgs("gpt-5.6-sol", "/tmp/out.txt");
+  it("uses an explicit zero-tool invocation for hostile corpus text", () => {
+    const args = buildNoToolsComposerArgs("claude-opus-5");
 
     expect(args).toEqual(expect.arrayContaining([
-      "--ask-for-approval",
-      "never",
-      "exec",
-      "--ephemeral",
-      "--ignore-user-config",
-      "--ignore-rules",
-      "--skip-git-repo-check",
-      "-s",
-      "read-only",
-      "--color",
-      "never",
-      "-",
+      "--safe-mode",
+      "-p",
+      "--tools",
+      "",
+      "--setting-sources",
+      "",
+      "--strict-mcp-config",
+      "--no-session-persistence",
+      "--json-schema",
     ]));
     expect(args).not.toContain("cursor-agent");
-    expect(args.at(-1)).toBe("-");
-    expect(args).not.toContain("--search");
-    expect(args).not.toContain("--add-dir");
+    expect(args).not.toContain("Bash");
+    expect(args).not.toContain("Read");
+    expect(args).not.toContain("Edit");
+  });
+
+  it("rejects an oversized structured model result before binding rewrites", () => {
+    const oversized = JSON.stringify({
+      is_error: false,
+      result: JSON.stringify({
+        rewrites: Array.from({ length: 101 }, (_, index) => ({
+          id: `claim-${index}`,
+          retrievalText: "bounded",
+        })),
+      }),
+    });
+    expect(() => parseNoToolsComposerOutput(oversized)).toThrow("oversized rewrite array");
+  });
+
+  it("hard-stops a timed-out no-tool subprocess tree", async () => {
+    const proc = Bun.spawn(["sleep", "30"], { detached: true, stdout: "ignore", stderr: "ignore" });
+    const timeout = armComposerTimeout(proc, 10);
+    try {
+      const exitCode = await Promise.race([
+        proc.exited,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("process was not killed")), 2_000)),
+      ]);
+      expect(exitCode).not.toBe(0);
+      expect(timeout.didTimeout()).toBe(true);
+    } finally {
+      timeout.clear();
+    }
   });
 
   it("dry-runs read-only against a pre-retrieval_text schema", async () => {
