@@ -45,6 +45,16 @@ failure it surfaces short per-stream tail diagnostics plus a pointer to the
 complete incrementally written `0600` transcript under `logs/worktree-setup/`;
 the bounded outward message remains safe for Slack delivery.
 
+All manager-owned subprocesses go through one bounded executor: each runs
+detached in a process group, drains both streams concurrently into bounded
+tails, and on timeout terminates the process tree before cancelling stream
+readers. This covers the case where a setup wrapper exits but a grandchild
+keeps stdout/stderr open. Git commands default to 30 seconds
+(`WORKTREE_GIT_TIMEOUT_MS`), setup scripts to 15 minutes
+(`WORKTREE_SETUP_TIMEOUT_MS`), and the force-kill grace is 1 second
+(`WORKTREE_TERMINATION_GRACE_MS`). The command environment disables terminal
+prompts, requires batch-mode SSH, and injects an empty Git credential helper.
+
 Before delegated setup, Junior requires 2 GiB of free space by default (`WORKTREE_SETUP_MIN_FREE_BYTES` overrides it). A script failure after `git worktree add` triggers rollback of the registered worktree and its branch; the surfaced stdout/stderr tails are capped independently.
 
 `scripts/worktree-prune.ts` runs the deterministic prune engine directly
