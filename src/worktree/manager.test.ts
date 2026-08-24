@@ -188,6 +188,40 @@ exit 1
 `,
   );
   chmodSync(partialFailScript, 0o755);
+
+  // Exits immediately but leaves a child with inherited stdout/stderr open.
+  // This proves the timeout terminates the full process group, not just a
+  // wrapper whose `exited` promise has already resolved.
+  const pipeHolderScript = join(repoRoot, "pipe-holder-setup.sh");
+  writeFileSync(pipeHolderScript, [
+    "#!/usr/bin/env bash",
+    "( sleep 30 ) &",
+    "exit 0",
+    "",
+  ].join("\n"));
+  chmodSync(pipeHolderScript, 0o755);
+
+  const environmentProbeScript = join(repoRoot, "environment-probe-setup.sh");
+  writeFileSync(environmentProbeScript, [
+    "#!/usr/bin/env bash",
+    "set -e",
+    `printf '%s\\n' " + "\"GIT_TERMINAL_PROMPT=$GIT_TERMINAL_PROMPT\" > \"${join(repoRoot, "environment-probe.txt")}\"`,
+    `printf '%s\\n' " + "\"GIT_SSH_COMMAND=$GIT_SSH_COMMAND\" >> \"${join(repoRoot, "environment-probe.txt")}\"`,
+    `printf '%s\\n' " + "\"GIT_CONFIG_KEY_0=$GIT_CONFIG_KEY_0\" >> \"${join(repoRoot, "environment-probe.txt")}\"`,
+    `printf '%s\\n' " + "\"GIT_CONFIG_VALUE_0=$GIT_CONFIG_VALUE_0\" >> \"${join(repoRoot, "environment-probe.txt")}\"`,
+    "BRANCH=\"$1\"",
+    "shift",
+    "while [[ $# -gt 0 ]]; do",
+    "  case \"$1\" in",
+    "    --path) TARGET=\"$2\"; shift 2 ;;",
+    "    --base) BASE=\"$2\"; shift 2 ;;",
+    "    *) shift ;;",
+    "  esac",
+    "done",
+    "git worktree add \"$TARGET\" -b \"$BRANCH\" \"$BASE\"",
+    "",
+  ].join("\n"));
+  chmodSync(environmentProbeScript, 0o755);
 });
 
 afterAll(() => {
@@ -477,6 +511,44 @@ git worktree add "$TARGET" -b "$BRANCH" "$BASE"
     expect(logPath).toBeDefined();
     expect(readFileSync(logPath!, "utf8")).toContain("stdout progress line 12000");
     rmSync(logPath!, { force: true });
+  });
+
+  it("bounds a setup whose exited wrapper leaves a descendant holding pipes", async () => {
+    const wm = new WorktreeManager([{
+      name: "pipe-holder-flow",
+      path: repoRoot,
+      defaultBase: "origin/main",
+      worktreeSetupCommand: "pipe-holder-setup.sh",
+    }], {
+      setupMinFreeBytes: 0,
+      setupCommandTimeoutMs: 250,
+      terminationGraceMs: 25,
+    });
+
+    const started = Date.now();
+    await expect(wm.createWorktree("pipe-holder-flow", "pipe-holder-thread"))
+      .rejects.toThrow(/timed out after 250ms/);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("sets fail-fast noninteractive Git transport for delegated setup", async () => {
+    const probe = join(repoRoot, "environment-probe.txt");
+    rmSync(probe, { force: true });
+    const wm = new WorktreeManager([{
+      name: "environment-probe-flow",
+      path: repoRoot,
+      defaultBase: "origin/main",
+      worktreeSetupCommand: "environment-probe-setup.sh",
+    }], { setupMinFreeBytes: 0 });
+
+    await wm.createWorktree("environment-probe-flow", "environment-probe-thread");
+    const environment = readFileSync(probe, "utf8");
+    expect(environment).toContain("GIT_TERMINAL_PROMPT=0");
+    expect(environment).toContain("-oBatchMode=yes");
+    expect(environment).toContain("GIT_CONFIG_KEY_0=credential.helper");
+    expect(environment).toContain("GIT_CONFIG_VALUE_0=");
+    await wm.removeWorktree("environment-probe-flow", "environment-probe-thread");
+    rmSync(probe, { force: true });
   });
 
   it("refuses dependency-heavy setup when disk headroom is too low", async () => {

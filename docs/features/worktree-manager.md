@@ -63,6 +63,15 @@ The bug-pipeline + dev-server fields are optional. Repos that only need the `!re
 - `syncRepo(repoName) → Promise<void>` — refreshes `origin/*` from the configured checkout before any reused managed worktree is handed to a runner. Pipeline dispatch refreshes every reused repo; ordinary `!repo` and inferred-review turns refresh their selected repo. Sandboxed providers cannot update the shared Git metadata behind linked worktrees, so this pre-turn fetch belongs to Junior rather than the model process.
 - When `githubUser` is set, Junior resolves that account with `gh auth token --user`, verifies it with `gh api user`, and applies the resulting `GH_TOKEN` only to that repo's worktree setup, runner, and GitHub API child processes. It never switches the host-wide active `gh` account. Repos without `githubUser` retain the existing host-auth fallback.
 - Delegated setup requires 2 GiB of free filesystem headroom by default (`WORKTREE_SETUP_MIN_FREE_BYTES` overrides it). Junior streams stdout and stderr concurrently into a restricted transcript while retaining only bounded tails in memory, so verbose installers cannot deadlock on full pipes or exhaust the bot heap. If the setup script fails after registering a worktree, Junior transactionally removes that worktree and its new branch; the surfaced error is a bounded per-stream tail plus a pointer to the complete owner-only (`0600`) transcript under `logs/worktree-setup/`.
+- Every Git command and delegated setup script runs in its own process group with
+  a hard wall-clock bound. Git defaults to 30 seconds
+  (`WORKTREE_GIT_TIMEOUT_MS`); setup defaults to 15 minutes
+  (`WORKTREE_SETUP_TIMEOUT_MS`). On expiry Junior terminates the entire group,
+  force-kills it after `WORKTREE_TERMINATION_GRACE_MS` (1 second default), and
+  cancels pipe readers so a grandchild holding stdout/stderr cannot keep the
+  Slack turn alive. These processes are always noninteractive:
+  `GIT_TERMINAL_PROMPT=0`, batch-mode SSH, and an injected empty credential
+  helper prevent credential prompts from becoming hangs.
 - `removeWorktree(repoName, threadId) → Promise<void>` — reads the actual current branch via `git -C <wt> branch --show-current` before deletion (so cleanup works for `branchOverride` callers), force-removes the worktree, and `git branch -D`s the branch. Both lookup and delete are wrapped in try/catch so missing/detached state is non-fatal.
 - `worktreeExists(repoName, threadId) → Promise<boolean>` and `isWorktreeDirty(worktreePath) → Promise<boolean>` — used by cleanup.
 - `getWorktreePath(repoName, threadId) → string` and `getBranchName(threadId) → string` — pure helpers (no I/O).

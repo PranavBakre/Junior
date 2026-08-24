@@ -9,17 +9,28 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { terminateProcessTree } from "../lifecycle/process-tree.ts";
 
 const DEFAULT_SETUP_MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+const DEFAULT_GIT_COMMAND_TIMEOUT_MS = 30_000;
+const DEFAULT_SETUP_COMMAND_TIMEOUT_MS = 15 * 60_000;
+const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 // Keep the outward error below Slack's long-error withholding threshold. The
 // complete stdout/stderr transcript remains available in the restricted log.
 const MAX_COMMAND_STREAM_CHARS = 110;
+const MAX_GIT_STREAM_CHARS = 64 * 1024;
 const SETUP_LOG_DIR = join(import.meta.dir, "..", "..", "logs", "worktree-setup");
 
 export interface WorktreeManagerOptions {
   setupMinFreeBytes?: number;
   availableBytes?: (path: string) => Promise<number>;
   githubAuth?: GitHubAuthResolver;
+  /** Hard bound for local git operations. Defaults to 30 seconds. */
+  gitCommandTimeoutMs?: number;
+  /** Hard bound for delegated repo setup scripts. Defaults to 15 minutes. */
+  setupCommandTimeoutMs?: number;
+  /** Grace period before a timed-out process group is force-killed. */
+  terminationGraceMs?: number;
 }
 
 export interface WorktreeStatus {
@@ -34,6 +45,9 @@ export class WorktreeManager {
   private setupMinFreeBytes: number;
   private availableBytes: (path: string) => Promise<number>;
   private githubAuth: GitHubAuthResolver;
+  private gitCommandTimeoutMs: number;
+  private setupCommandTimeoutMs: number;
+  private terminationGraceMs: number;
 
   constructor(repos: RepoConfig[], options: WorktreeManagerOptions = {}) {
     this.repos = repos;
@@ -48,6 +62,21 @@ export class WorktreeManager {
       return stats.bavail * stats.bsize;
     });
     this.githubAuth = options.githubAuth ?? new GitHubAuthResolver(repos);
+    this.gitCommandTimeoutMs = this.resolveTimeout(
+      options.gitCommandTimeoutMs,
+      "WORKTREE_GIT_TIMEOUT_MS",
+      DEFAULT_GIT_COMMAND_TIMEOUT_MS,
+    );
+    this.setupCommandTimeoutMs = this.resolveTimeout(
+      options.setupCommandTimeoutMs,
+      "WORKTREE_SETUP_TIMEOUT_MS",
+      DEFAULT_SETUP_COMMAND_TIMEOUT_MS,
+    );
+    this.terminationGraceMs = this.resolveTimeout(
+      options.terminationGraceMs,
+      "WORKTREE_TERMINATION_GRACE_MS",
+      DEFAULT_TERMINATION_GRACE_MS,
+    );
   }
 
   /**
@@ -308,23 +337,29 @@ export class WorktreeManager {
     cwd: string,
     githubEnv?: Record<string, string>,
   ): Promise<string> {
-    const proc = Bun.spawn(["git", ...args], {
+    const result = await this.runBoundedCommand(
+      ["git", "--no-pager", "-c", "credential.helper=", ...args],
       cwd,
-      ...(githubEnv ? { env: this.commandEnvironment(githubEnv) } : {}),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
-      throw new Error(`git ${args[0]} failed: ${stderr.trim()}`);
+      githubEnv,
+      this.gitCommandTimeoutMs,
+      MAX_GIT_STREAM_CHARS,
+    );
+    if (result.timedOut) {
+      throw new Error(`git ${args[0]} timed out after ${this.gitCommandTimeoutMs}ms`);
     }
-    return await new Response(proc.stdout).text();
+    if (result.exitCode !== 0) {
+      throw new Error(`git ${args[0]} failed: ${result.stderr}`);
+    }
+    return result.stdout;
   }
 
-  private async tryRunGit(args: string[], cwd: string): Promise<string> {
+  private async tryRunGit(
+    args: string[],
+    cwd: string,
+    githubEnv?: Record<string, string>,
+  ): Promise<string> {
     try {
-      return await this.runGit(args, cwd);
+      return await this.runGit(args, cwd, githubEnv);
     } catch {
       return "";
     }
@@ -340,25 +375,39 @@ export class WorktreeManager {
     cwd: string,
     githubEnv?: Record<string, string>,
   ): Promise<void> {
-    const proc = Bun.spawn(args, {
-      cwd,
-      ...(githubEnv ? { env: this.commandEnvironment(githubEnv) } : {}),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
     // Stream both pipes concurrently. Keeping only bounded tails prevents a
     // runaway installer from either filling an OS pipe or filling Junior's
     // heap; the complete output is written incrementally to a restricted log.
     const commandLog = this.openCommandLog(args, cwd);
     let stdout = "";
     let stderr = "";
-    let exitCode: number;
     try {
-      [stdout, stderr, exitCode] = await Promise.all([
-        this.drainCommandOutput(proc.stdout, "stdout", commandLog?.fd ?? null),
-        this.drainCommandOutput(proc.stderr, "stderr", commandLog?.fd ?? null),
-        proc.exited,
-      ]);
+      const result = await this.runBoundedCommand(
+        args,
+        cwd,
+        githubEnv,
+        this.setupCommandTimeoutMs,
+        MAX_COMMAND_STREAM_CHARS,
+        commandLog?.fd ?? null,
+      );
+      stdout = result.stdout;
+      stderr = result.stderr;
+      if (result.timedOut) {
+        const pointer = commandLog ? ` (full output: ${commandLog.path})` : "";
+        throw new Error(`command ${args[0]} timed out after ${this.setupCommandTimeoutMs}ms${pointer}`);
+      }
+      if (result.exitCode !== 0) {
+        const bounded = [
+          ["stdout", stdout],
+          ["stderr", stderr],
+        ].flatMap(([label, value]) => {
+          if (!value) return [];
+          return [`${label}: ${value}`];
+        }).join("\n");
+        const pointer = commandLog ? ` (full output: ${commandLog.path})` : "";
+        const suffix = bounded ? `: ${bounded}` : "";
+        throw new Error(`command ${args[0]} failed with exit ${result.exitCode}${pointer}${suffix}`);
+      }
     } finally {
       if (commandLog) {
         try {
@@ -367,18 +416,6 @@ export class WorktreeManager {
           // The process result remains authoritative if transcript close fails.
         }
       }
-    }
-    if (exitCode !== 0) {
-      const bounded = [
-        ["stdout", stdout],
-        ["stderr", stderr],
-      ].flatMap(([label, value]) => {
-        if (!value) return [];
-        return [`${label}: ${value}`];
-      }).join("\n");
-      const pointer = commandLog ? ` (full output: ${commandLog.path})` : "";
-      const suffix = bounded ? `: ${bounded}` : "";
-      throw new Error(`command ${args[0]} failed with exit ${exitCode}${pointer}${suffix}`);
     }
     if (commandLog) {
       try {
@@ -409,17 +446,18 @@ export class WorktreeManager {
     }
   }
 
-  private async drainCommandOutput(
+  private startOutputDrain(
     stream: ReadableStream<Uint8Array>,
     label: "stdout" | "stderr",
+    maxChars: number,
     logFd: number | null,
-  ): Promise<string> {
+  ): { done: Promise<void>; tail: () => string; cancel: () => void } {
     const decoder = new TextDecoder();
     const reader = stream.getReader();
     let tail = "";
     const consume = (text: string): void => {
       if (!text) return;
-      tail = `${tail}${text}`.slice(-MAX_COMMAND_STREAM_CHARS);
+      tail = `${tail}${text}`.slice(-maxChars);
       if (logFd !== null) {
         try {
           writeSync(logFd, text);
@@ -435,13 +473,74 @@ export class WorktreeManager {
         // Keep draining without a transcript.
       }
     }
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      consume(decoder.decode(value, { stream: true }));
+    const done = (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          consume(decoder.decode(value, { stream: true }));
+        }
+        consume(decoder.decode());
+      } catch {
+        // A hard timeout cancels the reader after terminating its process group.
+        // The partial bounded tail is still useful in the surfaced error.
+      }
+    })();
+    return {
+      done,
+      tail: () => tail.trim(),
+      cancel: () => { void reader.cancel().catch(() => undefined); },
+    };
+  }
+
+  /**
+   * Run all worktree subprocesses in a dedicated process group with a hard
+   * wall-clock bound. Waiting for `exited` alone is unsafe: a setup wrapper can
+   * leave a grandchild holding stdout/stderr open after the wrapper exits.
+   */
+  private async runBoundedCommand(
+    args: string[],
+    cwd: string,
+    githubEnv: Record<string, string> | undefined,
+    timeoutMs: number,
+    maxStreamChars: number,
+    logFd: number | null = null,
+  ): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+    const proc = Bun.spawn(args, {
+      cwd,
+      env: this.commandEnvironment(githubEnv),
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: true,
+    });
+    const stdout = this.startOutputDrain(proc.stdout, "stdout", maxStreamChars, logFd);
+    const stderr = this.startOutputDrain(proc.stderr, "stderr", maxStreamChars, logFd);
+    const completed = Promise.all([proc.exited, stdout.done, stderr.done]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+    try {
+      const outcome = await Promise.race([completed, timeout]);
+      if (outcome === "timeout") {
+        await terminateProcessTree(proc.pid, {
+          signal: "SIGTERM",
+          forceAfterMs: this.terminationGraceMs,
+          waitAfterForceMs: this.terminationGraceMs,
+        });
+        stdout.cancel();
+        stderr.cancel();
+        return { exitCode: null, stdout: stdout.tail(), stderr: stderr.tail(), timedOut: true };
+      }
+      return {
+        exitCode: outcome[0],
+        stdout: stdout.tail(),
+        stderr: stderr.tail(),
+        timedOut: false,
+      };
+    } finally {
+      clearTimeout(timer);
     }
-    consume(decoder.decode());
-    return tail.trim();
   }
 
   private async assertSetupDiskCapacity(path: string): Promise<void> {
@@ -467,7 +566,7 @@ export class WorktreeManager {
         repoPath,
         githubEnv,
       );
-      await this.tryRunGit(["branch", "-D", branchName], repoPath);
+      await this.tryRunGit(["branch", "-D", branchName], repoPath, githubEnv);
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : String(err);
@@ -489,13 +588,39 @@ export class WorktreeManager {
   }
 
   private commandEnvironment(
-    githubEnv: Record<string, string>,
+    githubEnv?: Record<string, string>,
   ): Record<string, string> {
     const env = { ...(process.env as Record<string, string>), ...githubEnv };
-    // An inherited GITHUB_TOKEN would take precedence over the selected
-    // account in some GitHub tooling. The repo-scoped GH_TOKEN is authoritative.
-    delete env.GITHUB_TOKEN;
-    delete env.GH_ENTERPRISE_TOKEN;
-    return env;
+    if (githubEnv) {
+      // An inherited GITHUB_TOKEN would take precedence over the selected
+      // account in some GitHub tooling. The repo-scoped GH_TOKEN is authoritative.
+      delete env.GITHUB_TOKEN;
+      delete env.GH_ENTERPRISE_TOKEN;
+    }
+    // Git's prompt paths can outlive a child process (credential helpers and
+    // SSH read /dev/tty directly), so every inline Git command and delegated
+    // setup script receives a fail-fast, noninteractive transport contract.
+    // The injected empty credential.helper resets any inherited helper list.
+    const configuredSsh = env.GIT_SSH_COMMAND?.trim() || "ssh";
+    return {
+      ...env,
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_ASKPASS: "/bin/false",
+      SSH_ASKPASS: "/bin/false",
+      GCM_INTERACTIVE: "Never",
+      GIT_SSH_COMMAND: `${configuredSsh} -oBatchMode=yes -oNumberOfPasswordPrompts=0 -oConnectTimeout=10`,
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.helper",
+      GIT_CONFIG_VALUE_0: "",
+    };
+  }
+
+  private resolveTimeout(
+    override: number | undefined,
+    envName: string,
+    fallback: number,
+  ): number {
+    const candidate = override ?? Number(process.env[envName] ?? fallback);
+    return Number.isFinite(candidate) && candidate > 0 ? candidate : fallback;
   }
 }
