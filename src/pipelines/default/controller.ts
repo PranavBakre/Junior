@@ -1,5 +1,7 @@
 import type { Clock } from "../../time/clock.ts";
 import { systemClock } from "../../time/clock.ts";
+import { boundSlackFileAttachments } from "../../slack/files.ts";
+import type { SlackFileAttachment } from "../../slack/events.ts";
 import type { PipelineStore } from "../store/interface.ts";
 import {
   PIPELINE_DEFINITION_VERSION,
@@ -16,6 +18,7 @@ export type CreateDefaultRunInput = {
   sourceAgent?: string | "human" | "system";
   /** Original human Slack user ID for prompt attribution. */
   sourceSlackUserId?: string | null;
+  files?: SlackFileAttachment[];
   repoRefs?: string[];
   acceptanceCriteria?: string[];
   runId?: string;
@@ -51,6 +54,7 @@ export async function createDefaultRun(
 
   const runId = input.runId ?? crypto.randomUUID();
   const assignmentId = crypto.randomUUID();
+  const files = boundSlackFileAttachments(input.files);
   const run: DefaultRun = {
     id: runId,
     kind: "default",
@@ -83,6 +87,7 @@ export async function createDefaultRun(
       sourceSlackUserId: input.sourceSlackUserId ?? null,
       targetAgent: input.targetAgent,
       objective: input.objective,
+      files,
       contextRefs: [`source-message:${input.messageTs}`],
       artifactRefs: [],
       acceptanceCriteria: input.acceptanceCriteria ?? [],
@@ -126,6 +131,7 @@ export async function createDefaultRun(
         targetAgent: input.targetAgent,
         sourceMessageTs: input.messageTs,
         sourceSlackUserId: input.sourceSlackUserId ?? null,
+        ...(files.length > 0 ? { files } : {}),
       },
       idempotencyKey: `default-dispatch:${assignmentKey}`,
     }],

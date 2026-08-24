@@ -4,6 +4,8 @@
  */
 
 import type { SlackMessageEvent } from "../slack/events.ts";
+import type { SlackFileAttachment } from "../slack/events.ts";
+import { boundSlackFileAttachments } from "../slack/files.ts";
 import type { PipelineInvocationRef, ThreadSession } from "../session/types.ts";
 import type { Assignment, PipelineRun } from "./types.ts";
 import {
@@ -52,6 +54,8 @@ export type DispatchAssignmentInput = {
   conversationalText?: string;
   /** Shared idempotency / dedupe key for the synthetic Slack event. */
   dedupeKey?: string;
+  /** Bounded Slack files restored from the durable assignment/outbox. */
+  files?: SlackFileAttachment[];
   pipelineInvocation?: PipelineInvocationRef;
 };
 
@@ -187,6 +191,7 @@ export async function dispatchAssignment(
   const syntheticTs =
     input.sourceMessageTs ??
     `pipeline:${run.id}:${assignment.id}:${assignment.updatedAt}`;
+  const files = boundSlackFileAttachments(input.files ?? assignment.files);
 
   const event: SlackMessageEvent = {
     threadId: run.threadId,
@@ -197,6 +202,7 @@ export async function dispatchAssignment(
     text: prompt,
     ts: syntheticTs,
     command: null,
+    ...(files.length > 0 ? { files } : {}),
     isSelfBot: true,
     botUsername: "pipeline",
     dedupeKey,

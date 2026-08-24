@@ -77,7 +77,11 @@ import {
   resolveEffectivePermissionIntent,
   type AgentContextProfile,
 } from "../agents/loader.ts";
-import { downloadSlackFiles, sanitizeFileName } from "../slack/files.ts";
+import {
+  boundSlackFileAttachments,
+  downloadSlackFiles,
+  sanitizeFileName,
+} from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
 import {
   inferReviewRepo,
@@ -3899,9 +3903,7 @@ export class SessionManager {
     agentName: string,
     session: ThreadSession,
   ): Promise<boolean> {
-    // TODO: Persist and forward event.files through default-run outbox dispatches.
-    // The synthetic assignment event currently keeps only text/metadata, so an
-    // image attached to the original Slack message is invisible to the runner.
+    const files = boundSlackFileAttachments(event.files);
     if (event.dashboardContinue) return false;
     if (event.pipelineInvocation || !this.pipelineStore) return false;
     if ((this.config.pipeline?.runtimeMode ?? "off") !== "active") return false;
@@ -3968,6 +3970,7 @@ export class SessionManager {
               sourceSlackUserId: event.isSelfBot ? null : event.user,
               targetAgent: durableTarget,
               objective: recoveryContext,
+              files,
               contextRefs: [
                 ...(parent?.contextRefs ?? []),
                 "control-branch:human-input",
@@ -4002,6 +4005,7 @@ export class SessionManager {
                 prompt: event.text,
                 sourceMessageTs: event.ts,
                 sourceSlackUserId: event.isSelfBot ? null : event.user,
+                ...(files.length > 0 ? { files } : {}),
                 resumeReason: "human follow-up on active durable task",
               },
               idempotencyKey:
@@ -4020,6 +4024,7 @@ export class SessionManager {
               prompt: event.text,
               sourceMessageTs: event.ts,
               sourceSlackUserId: event.isSelfBot ? null : event.user,
+              ...(files.length > 0 ? { files } : {}),
               resumeReason: "human follow-up on active durable task",
             },
             idempotencyKey:
@@ -4056,6 +4061,7 @@ export class SessionManager {
         targetAgent: durableTarget,
         sourceAgent: event.isSelfBot ? "system" : "human",
         sourceSlackUserId: event.isSelfBot ? null : event.user,
+        files,
         repoRefs,
       },
     );

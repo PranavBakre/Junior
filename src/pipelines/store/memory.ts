@@ -161,6 +161,7 @@ export class InMemoryPipelineStore implements PipelineStore {
         capabilityRefs: [...(assignmentInput.capabilityRefs ?? [])],
         status: assignmentInput.status ?? "pending",
         objective: assignmentInput.objective,
+        files: [...(assignmentInput.files ?? [])],
         contextRefs: [...assignmentInput.contextRefs],
         artifactRefs: [...assignmentInput.artifactRefs],
         acceptanceCriteria: [...assignmentInput.acceptanceCriteria],
@@ -309,6 +310,7 @@ export class InMemoryPipelineStore implements PipelineStore {
       capabilityRefs: [...(input.capabilityRefs ?? [])],
       status: input.status ?? "pending",
       objective: input.objective,
+      files: [...(input.files ?? [])],
       contextRefs: [...input.contextRefs],
       artifactRefs: [...input.artifactRefs],
       acceptanceCriteria: [...input.acceptanceCriteria],
@@ -1540,6 +1542,7 @@ function cloneAssignment(a: Assignment): Assignment {
   return {
     ...a,
     capabilityRefs: [...a.capabilityRefs],
+    files: [...(a.files ?? [])],
     contextRefs: [...a.contextRefs],
     artifactRefs: [...a.artifactRefs],
     acceptanceCriteria: [...a.acceptanceCriteria],
