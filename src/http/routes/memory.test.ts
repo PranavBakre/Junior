@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteMemoryStore } from "../../memory/sqlite.ts";
+import type { MemoryStore } from "../../memory/store.ts";
 import { handleMemoryProjection, handleMemoryRecall } from "./memory.ts";
 
 function withStore<T>(fn: (store: SqliteMemoryStore) => Promise<T>): Promise<T> {
@@ -19,14 +20,17 @@ async function seedClaim(
   id: string,
   vector: number[],
   text = id,
+  kind: "lesson" | "fact" | "preference" | "decision" | "situation-claim" = "fact",
+  weight = 1,
 ): Promise<void> {
   await store.upsertClaim({
     id,
-    kind: "fact",
+    kind,
     text,
     embedding: Float32Array.from(vector),
     dim: vector.length,
     tags: ["t-" + id],
+    weight,
     createdAt: Date.now(),
     // The projection tests seed deliberately TIGHT clusters (cosine ~0.99) to
     // check that neighbourhood structure survives the 3D projection. The store's
@@ -46,6 +50,66 @@ describe("memory HTTP routes", () => {
       const body = (await response.json()) as { results: Array<{ id: string }> };
       expect(body.results.map((result) => result.id)).toContain("claim-1");
     });
+  });
+
+  it("unions requested kinds and fact subtypes, then globally ranks and limits without usage writes", async () => {
+    await withStore(async (store) => {
+      await seedClaim(store, "lesson", [1, 0, 0, 0, 0, 0, 0, 0], "lesson", "lesson", 1);
+      await seedClaim(store, "decision", [1, 0, 0, 0, 0, 0, 0, 0], "decision", "decision", 3);
+      await store.upsertFact({ id: "procedure", kind: "procedure", body: "procedure", createdAt: Date.now() });
+      await seedClaim(store, "procedure", [1, 0, 0, 0, 0, 0, 0, 0], "procedure", "fact", 2);
+      await store.upsertFact({ id: "curated", kind: "curated_fact", body: "curated", createdAt: Date.now() });
+      await seedClaim(store, "curated", [1, 0, 0, 0, 0, 0, 0, 0], "curated", "fact", 4);
+
+      const response = await handleMemoryRecall(store, new URLSearchParams({
+        kinds: "lesson,decision,fact",
+        fact_kinds: "procedure",
+        limit: "3",
+      }));
+      const body = (await response.json()) as { results: Array<{ id: string; lastUsedAt?: number | null }> };
+      // `curated` is a fact but not the requested procedure subtype. The three
+      // requested scopes are merged and sorted by score/weight before limit.
+      expect(body.results.map((result) => result.id)).toEqual(["decision", "procedure", "lesson"]);
+      const rows = await store.recallClaims({ filters: { kind: "lesson" }, limit: 10, recordUsage: false });
+      expect(rows.find((row) => row.id === "lesson")?.lastUsedAt).toBeNull();
+    });
+  });
+
+  it("re-ranks scope results by comparable evidence rather than scope-local fusion score", async () => {
+    const calls: Array<{ limit?: number; recordUsage?: boolean }> = [];
+    const store = {
+      recallClaims: async (options: { filters?: { kind?: string }; limit?: number; recordUsage?: boolean }) => {
+        calls.push(options);
+        return options.filters?.kind === "lesson"
+          ? [{ id: "lesson", score: 99, cosine: 0.2, lexicalScore: 0.1, weight: 1 }]
+          : [{ id: "decision", score: 0.01, cosine: 0.9, lexicalScore: 0.1, weight: 1 }];
+      },
+    } as unknown as MemoryStore;
+
+    const response = await handleMemoryRecall(store, new URLSearchParams({
+      kinds: "lesson,decision",
+      limit: "2",
+    }));
+    const body = (await response.json()) as { results: Array<{ id: string }> };
+    expect(body.results.map((result) => result.id)).toEqual(["decision", "lesson"]);
+    expect(calls.every((call) => call.recordUsage === false && call.limit === 2)).toBe(true);
+  });
+
+  it("clamps a negative dashboard recall limit to one", async () => {
+    const calls: Array<{ limit?: number }> = [];
+    const store = {
+      recallClaims: async (options: { limit?: number }) => {
+        calls.push(options);
+        return [
+          { id: "first", score: 1, cosine: null, lexicalScore: null, weight: 2 },
+          { id: "second", score: 1, cosine: null, lexicalScore: null, weight: 1 },
+        ];
+      },
+    } as unknown as MemoryStore;
+    const response = await handleMemoryRecall(store, new URLSearchParams({ limit: "-10" }));
+    const body = (await response.json()) as { results: Array<{ id: string }> };
+    expect(body.results.map((result) => result.id)).toEqual(["first"]);
+    expect(calls[0]?.limit).toBe(1);
   });
 
   it("returns a well-formed {points, edges} projection for seeded claims", async () => {

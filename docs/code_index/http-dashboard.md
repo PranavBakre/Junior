@@ -34,7 +34,7 @@ Spend capture (`usage_events`) and audit retention deletes are always-on: they a
 | `handleProfiles(store, params)` | `routes/profiles.ts` | `GET /api/profiles` — read-only profile list/filter; never bumps `last_used_at` |
 | `handleMemoryList()` | `routes/memory.ts` | `GET /api/memory` — list files under `docs/` |
 | `handleMemoryRead(filePath)` | `routes/memory.ts` | `GET /api/memory/:path` — read a doc file (path-traversal guarded) |
-| `handleMemoryRecall(store, params)` | `routes/memory.ts` | `GET /api/memory/recall` — semantic claim recall without recording dashboard usage |
+| `handleMemoryRecall(store, params)` | `routes/memory.ts` | `GET /api/memory/recall` — semantic claim recall without recording dashboard usage; expands multi-kind / `fact_kinds` filters into scopes, then dedupes and re-ranks by comparable raw cosine/lexical evidence (never scope-local RRF scores) before applying one positive bounded global limit |
 | `handleMemoryProjection(store, params?)` | `routes/memory.ts` | `GET /api/memory/projection` — 3D PCA + spread + KNN projection for the memory galaxy; memoised per claim set, `?refresh=1` rebuilds |
 | `parseLimit` / `parseTimeBound` / `startOfLocalDay` | `query.ts` | Shared query parsing (host-local day bounds) |
 | `resumeCmd(provider, sessionId, resumeCwd)` | `public/js/threads.js` | Renders provider-correct Claude, OpenCode, or Codex resume commands from detail `resumeCwd`. Continue/stop composer lives in the same module. |
