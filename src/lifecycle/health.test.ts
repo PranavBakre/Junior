@@ -4,6 +4,28 @@ import { isProcessTreeAlive, terminateProcessGroup } from "./process-tree.ts";
 import { InMemorySessionStore } from "../session/store/memory.ts";
 import { createSession } from "../session/types.ts";
 
+class SnapshotBarrierStore extends InMemorySessionStore {
+  private snapshotReadyResolve!: () => void;
+  private continueResolve!: () => void;
+  readonly snapshotReady = new Promise<void>((resolve) => {
+    this.snapshotReadyResolve = resolve;
+  });
+  private readonly continue = new Promise<void>((resolve) => {
+    this.continueResolve = resolve;
+  });
+
+  override async getAll() {
+    const snapshot = await super.getAll();
+    this.snapshotReadyResolve();
+    await this.continue;
+    return snapshot;
+  }
+
+  releaseHealthCheck(): void {
+    this.continueResolve();
+  }
+}
+
 function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -90,6 +112,44 @@ describe("checkOrphanedSessions", () => {
       expect(repaired.agentSessions.worker.pid).toBeNull();
       expect(repaired.lastError?.message).toContain("Agent worker");
     } finally {
+      await terminateProcessGroup(leaderPid, {
+        signal: "SIGKILL",
+        forceAfterMs: 100,
+        waitAfterForceMs: 100,
+      });
+    }
+  });
+
+  it("does not clear a replacement turn that reused the orphan PID", async () => {
+    const { leaderPid, helperPid } = await spawnOrphanedWrapper();
+    const store = new SnapshotBarrierStore();
+    const session = createSession("thread-pid-reuse", "channel-1");
+    session.status = "busy";
+    session.pid = leaderPid;
+    await store.set(session.threadId, session);
+
+    try {
+      const healthCheck = checkOrphanedSessions(store);
+      await store.snapshotReady;
+
+      // Simulate a reset/restart between the health snapshot and orphan
+      // teardown. The numerical PID is deliberately unchanged to model reuse;
+      // only the durable ownership version distinguishes this new turn.
+      const replacement = { ...(await store.get(session.threadId))! };
+      replacement.sessionId = "new-turn";
+      replacement.activeTurnGeneration = "new-generation";
+      await store.set(session.threadId, replacement);
+      store.releaseHealthCheck();
+
+      await expect(healthCheck).resolves.toEqual([]);
+      await waitFor(() => !isPidAlive(helperPid));
+
+      const current = (await store.get(session.threadId))!;
+      expect(current.status).toBe("busy");
+      expect(current.pid).toBe(leaderPid);
+      expect(current.sessionId).toBe("new-turn");
+    } finally {
+      store.releaseHealthCheck();
       await terminateProcessGroup(leaderPid, {
         signal: "SIGKILL",
         forceAfterMs: 100,

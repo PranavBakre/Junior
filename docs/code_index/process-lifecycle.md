@@ -49,7 +49,7 @@ On timeout: `handle.kill()`, result resolves with `{ exitCode: null, error: "Pro
 
 ### Orphan detection
 
-A session/agent is "orphaned" when `status === "busy"` but `process.kill(pid, 0)` throws. `health.ts` walks both the top-level `session.pid` and every `agentSessions[*].pid`; before it clears the dead leader's state, it sends `SIGTERM` to its surviving detached process group (with SIGKILL fallback). This prevents a wrapper that exited first from leaving helpers behind. It then marks the lead idle or the agent failed and records the interruption on the parent session.
+A session/agent is "orphaned" when `status === "busy"` but `process.kill(pid, 0)` throws. `health.ts` walks both the top-level `session.pid` and every `agentSessions[*].pid`; before it clears the dead leader's state, it sends `SIGTERM` to its surviving detached process group (with SIGKILL fallback). This prevents a wrapper that exited first from leaving helpers behind. The final state mutation must match the snapshot's `stateVersion` as well as status/PID, so a replacement turn with a recycled PID is never cleared. It then marks the lead idle or the agent failed and records the interruption on the parent session.
 
 ### Stale cleanup
 
