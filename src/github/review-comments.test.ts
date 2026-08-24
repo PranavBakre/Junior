@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  collectPaginatedGitHubApi,
   githubEnvironmentForEndpoint,
   postGitHubReview,
   readGitHubReviewState,
@@ -369,5 +370,72 @@ describe("GitHub review API identity", () => {
     } finally {
       setGitHubAuthResolver(undefined);
     }
+  });
+});
+
+describe("bounded GitHub review pagination", () => {
+  it("preserves per_page and appends page numbers, stopping at a short page", async () => {
+    const endpoints: string[] = [];
+    const result = await collectPaginatedGitHubApi(
+      "repos/GrowthX-Club/gx-backend/pulls/123/reviews?per_page=100",
+      async (endpoint) => {
+        endpoints.push(endpoint);
+        const page = endpoints.length === 1
+          ? Array.from({ length: 100 }, (_, id) => ({ id }))
+          : [{ id: 101 }];
+        return { ok: true, status: 0, stdout: JSON.stringify(page), stderr: "" };
+      },
+    );
+
+    expect(endpoints).toEqual([
+      "repos/GrowthX-Club/gx-backend/pulls/123/reviews?per_page=100&page=1",
+      "repos/GrowthX-Club/gx-backend/pulls/123/reviews?per_page=100&page=2",
+    ]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.stderr);
+    expect(JSON.parse(result.stdout)).toHaveLength(2);
+  });
+
+  it("stops after ten full pages rather than requesting an unbounded eleventh page", async () => {
+    const endpoints: string[] = [];
+    const result = await collectPaginatedGitHubApi(
+      "repos/GrowthX-Club/gx-backend/pulls/123/comments?per_page=100",
+      async (endpoint) => {
+        endpoints.push(endpoint);
+        return {
+          ok: true,
+          status: 0,
+          stdout: JSON.stringify(Array.from({ length: 100 }, (_, id) => ({ id }))),
+          stderr: "",
+        };
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(endpoints).toHaveLength(10);
+    expect(endpoints.at(-1)).toEndWith("page=10");
+  });
+
+  it("rejects aggregate pagination output below the individual command cap", async () => {
+    const endpoints: string[] = [];
+    const page = Array.from({ length: 100 }, (_, id) => ({ id, body: "x".repeat(40) }));
+    const individualBytes = new TextEncoder().encode(JSON.stringify(page)).byteLength;
+    const result = await collectPaginatedGitHubApi(
+      "repos/GrowthX-Club/gx-backend/pulls/123/comments?per_page=100",
+      async (endpoint) => {
+        endpoints.push(endpoint);
+        return { ok: true, status: 0, stdout: JSON.stringify(page), stderr: "" };
+      },
+      { maxResponseBytes: individualBytes + 4 },
+    );
+
+    expect(individualBytes).toBeLessThan(512 * 1024);
+    expect(result).toEqual({
+      ok: false,
+      status: -1,
+      stdout: "",
+      stderr: "gh api paginated response exceeded output limit",
+    });
+    expect(endpoints).toHaveLength(2);
   });
 });

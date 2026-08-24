@@ -24,6 +24,7 @@ import type {
   PrSnapshot,
 } from "./types.ts";
 import { cleanGitHubEnvironment, type GitHubAuthResolver } from "./auth.ts";
+import { runBoundedGitHubCommand } from "./cli.ts";
 
 const DEFAULT_API_URL = "https://api.github.com/graphql";
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -103,20 +104,21 @@ export function createGitHubClient(options: GitHubClientOptions = {}): GitHubCli
   const runCli =
     options.runCli ??
     (async (args: string[], env?: Record<string, string>) => {
-      const proc = Bun.spawn(["gh", ...args], {
-        env,
-        stdout: "pipe",
-        stderr: "pipe",
+      const result = await runBoundedGitHubCommand(args, {
+        env: env ?? (process.env as Record<string, string>),
+        timeoutMs,
       });
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      const status = await proc.exited;
+      const status = result.status ?? -1;
       return {
-        ok: status === 0,
+        ok: status === 0 && !result.timedOut && !result.outputExceeded,
         status: status === 0 ? 200 : status,
-        body: status === 0 ? stdout : stderr || stdout,
+        body: result.timedOut
+          ? "gh api graphql timed out"
+          : result.outputExceeded
+          ? "gh api graphql exceeded output limit"
+          : status === 0
+          ? result.stdout
+          : result.stderr || result.stdout,
         headers: {},
       };
     });
