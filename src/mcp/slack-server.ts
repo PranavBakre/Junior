@@ -1377,11 +1377,21 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
           startedAt: z.number(),
           completedAt: z.number().optional(),
           intentFingerprint: z.string(),
+          request: z.string().optional().describe("Authoritative operator request used to derive the promotion candidate intent"),
         }).describe("RunbookRunEvidence from a completed run"),
+        request: z.string().optional().describe("Authoritative operator request; overrides evidence.request when supplied"),
       },
     },
-    async ({ evidence }) => {
-      promotionRecordExecution(evidence as RunbookRunEvidence);
+    async ({ evidence, request }) => {
+      const authoritativeRequest =
+        request?.trim() || evidence.request?.trim() || evidence.runbookName.trim();
+      promotionRecordExecution(
+        evidence as RunbookRunEvidence,
+        authoritativeRequest,
+        {
+          authoritative: Boolean(request?.trim() || evidence.request?.trim()),
+        },
+      );
       const check = promotionCheckThreshold(evidence.intentFingerprint);
       return {
         content: [

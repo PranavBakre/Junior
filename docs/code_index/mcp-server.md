@@ -38,6 +38,7 @@ operations using the bot token and signed run context.
 | `agent_dispatch` | Junior internal | agent, prompt, thread context | repo refs; automatic repo-less isolation for Mongo-read agents with no repo, optional explicit `workspace_mode`; synthetic user/timestamp |
 | `memory_recall` / `memory_add` / `memory_consolidate` | Memory v3 | tool-specific | filters/options; `fact_kinds` exposes procedure/routing/curated-fact subtypes |
 | `runbook_select` | Runbooks + Memory v3 | `request` | Select reviewed runbook; on miss perform procedure-memory recall |
+| `promotion_record` / `runbook_propose` | Runbook promotion + authoring | promotion evidence plus optional authoritative `request`; proposal `fingerprint` | Promotion retains normalized request intent (with legacy runbook-name fallback), so proposals produce usable names/descriptions and dry-run PR content. |
 | `github_read_pr_review_state` / `github_post_review` | Fixed GitHub API surface | review-specific | inline comments |
 | `pipeline_*` | Durable pipeline store | tool-specific | artifact/check fields |
 | `whatsapp_*` | Read-only archive | tool-specific | time/group filters |
@@ -68,6 +69,18 @@ Called by lead/intake to create a per-thread worktree for a repo and persist its
 ### Agent registry tools
 
 `agent_search` scans `.claude/agents` and `agents-org` from disk and annotates each result with whether `AGENT_IDENTITIES` currently makes it dispatchable. `reload_agent_registry` reruns `loadOverlayIdentities("agents-org")`, which lets newly added private workers become dispatchable without a full process restart. Existing identities are not overwritten; prompts are already resolved from disk per turn.
+
+### Promotion intent continuity
+
+`promotion_record` accepts an authoritative operator request either at the
+top level or inside the evidence object. It normalizes that request before
+creating/updating the in-memory promotion candidate; legacy evidence without a
+request falls back to its runbook name and is marked non-authoritative. A later
+authoritative request replaces that fallback for the same fingerprint.
+`runbook_propose` consumes the same
+candidate and therefore receives a non-empty `normalizedIntent` for filename,
+description, routing examples, and proposal content. The evidence schema keeps
+`request` optional for backward compatibility.
 
 ## Dependencies
 

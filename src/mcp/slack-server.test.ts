@@ -18,6 +18,7 @@ import {
 import { createMemoryStore } from "../memory/factory.ts";
 import { HashingEmbeddingProvider } from "../memory/embedding/hashing.ts";
 import { createProfileStore } from "../memory/profiles/index.ts";
+import { clearCandidatesForTests } from "../runbooks/promotion.ts";
 
 describe("MCP Slack tool catalogue", () => {
   it("serializes every registered tool through tools/list", async () => {
@@ -60,6 +61,102 @@ describe("MCP Slack tool catalogue", () => {
         ]),
       });
     } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+});
+
+describe("MCP promotion authoring", () => {
+  it("carries the authoritative request from promotion_record into runbook_propose", async () => {
+    clearCandidatesForTests();
+    const server = new McpServer({ name: "slack-bot-promotion-test", version: "0.1.0" });
+    registerTools(server);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "slack-bot-promotion-client", version: "0.1.0" });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const fingerprint = `mcp-promotion-${Date.now()}`;
+    try {
+      const recorded = await client.callTool({
+        name: "promotion_record",
+        arguments: {
+          evidence: {
+            runId: "mcp-promotion-run",
+            runbookName: "legacy-placeholder",
+            contentDigest: "digest",
+            ownerAgent: "build",
+            risk: "production-write",
+            boundInputs: {},
+            status: "completed",
+            startedAt: 1_000,
+            completedAt: 2_000,
+            intentFingerprint: fingerprint,
+          },
+        },
+      });
+      const recordedResult = recorded as unknown as {
+        content: Array<{ text: string }>;
+      };
+      const recordedPayload = JSON.parse(
+        recordedResult.content[0]!.text,
+      ) as { candidate: { normalizedIntent: string } };
+      expect(recordedPayload.candidate.normalizedIntent).toBe(
+        "legacy placeholder",
+      );
+
+      const upgraded = await client.callTool({
+        name: "promotion_record",
+        arguments: {
+          evidence: {
+            runId: "mcp-promotion-run-2",
+            runbookName: "legacy-placeholder",
+            contentDigest: "digest",
+            ownerAgent: "build",
+            risk: "production-write",
+            boundInputs: {},
+            status: "completed",
+            startedAt: 3_000,
+            completedAt: 4_000,
+            intentFingerprint: fingerprint,
+          },
+          request: "Transfer six months of membership",
+        },
+      });
+      const upgradedResult = upgraded as unknown as {
+        content: Array<{ text: string }>;
+      };
+      const upgradedPayload = JSON.parse(upgradedResult.content[0]!.text) as {
+        candidate: {
+          normalizedIntent: string;
+          normalizedIntentAuthoritative?: boolean;
+        };
+      };
+      expect(upgradedPayload.candidate).toMatchObject({
+        normalizedIntent: "transfer six months of membership",
+        normalizedIntentAuthoritative: true,
+      });
+
+      const proposed = await client.callTool({
+        name: "runbook_propose",
+        arguments: { fingerprint, dry_run: true },
+      });
+      const proposedResult = proposed as unknown as {
+        content: Array<{ text: string }>;
+      };
+      const proposalPayload = JSON.parse(
+        proposedResult.content[0]!.text,
+      ) as { rendered: { ok: boolean; filename?: string; content?: string } };
+      expect(proposalPayload.rendered.ok).toBe(true);
+      expect(proposalPayload.rendered.filename).toBe(
+        "transfer-six-months-of-membership.runbook.md",
+      );
+      expect(proposalPayload.rendered.content).toContain(
+        "transfer six months of membership",
+      );
+    } finally {
+      clearCandidatesForTests();
       await client.close();
       await server.close();
     }
