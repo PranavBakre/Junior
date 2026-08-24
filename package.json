@@ -13,6 +13,7 @@
     "mixpanel:oauth": "bun run src/mcp/mixpanel-oauth-cli.ts",
     "memory:reembed": "bun run src/memory/reembed-retrieval.ts",
     "memory:benchmark:lesson-cues": "bun run src/memory/lesson-retrieval-benchmark.ts",
+    "memory:replay": "bun test src/memory/historical-replay.test.ts",
     "slack:archive:import": "bun run src/slack/archive-cli.ts import",
     "slack:archive:embed": "bun run src/slack/archive-cli.ts embed",
     "slack:archive:index": "bun run src/slack/archive-cli.ts index",
