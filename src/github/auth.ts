@@ -2,6 +2,7 @@ import type { RepoConfig } from "../config.ts";
 import { chmodSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runBoundedGitHubCommand } from "./cli.ts";
 
 const GITHUB_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$/;
 
@@ -162,17 +163,17 @@ async function runGitHubCommand(
   args: string[],
   env: Record<string, string>,
 ): Promise<GitHubCommandResult> {
-  const proc = Bun.spawn(["gh", ...args], {
-    env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, status] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { status, stdout, stderr };
+  const result = await runBoundedGitHubCommand(args, { env });
+  if (result.timedOut || result.outputExceeded) {
+    return {
+      status: -1,
+      stdout: result.stdout,
+      stderr: result.timedOut
+        ? "gh command timed out"
+        : "gh command exceeded output limit",
+    };
+  }
+  return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
 }
 
 function commandError(result: GitHubCommandResult): string {

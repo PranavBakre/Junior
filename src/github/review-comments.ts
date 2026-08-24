@@ -4,6 +4,7 @@ import {
   cleanGitHubEnvironment,
   type GitHubAuthResolver,
 } from "./auth.ts";
+import { runBoundedGitHubCommand } from "./cli.ts";
 import type { SlackMcpRunContext } from "../mcp/context.ts";
 import { pipelineLog } from "../pipelines/logging.ts";
 
@@ -26,6 +27,8 @@ export function setGitHubAuthResolver(
 }
 
 const MAX_READ_REVIEW_ITEMS = 100;
+const MAX_GITHUB_PAGES = 10;
+const MAX_GITHUB_PAGINATED_RESPONSE_BYTES = 512 * 1024;
 
 export interface GitHubInlineReviewComment {
   path: string;
@@ -586,11 +589,10 @@ async function runGitHubApi(
     paginate: request.paginate ?? false,
     has_body: request.body !== undefined,
   });
-  const args = ["gh", "api", request.endpoint];
+  const args = ["api", request.endpoint];
   if (request.method !== "GET") {
     args.push("--method", request.method, "--input", "-");
   }
-  if (request.paginate) args.push("--paginate", "--slurp");
 
   let env: Record<string, string>;
   try {
@@ -605,31 +607,86 @@ async function runGitHubApi(
     return { ok: false, status: 0, stdout: "", stderr: reason };
   }
 
-  const proc = Bun.spawn(args, {
-    stdin: request.body === undefined ? "ignore" : "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env,
-  });
-  if (request.body !== undefined && proc.stdin) {
-    proc.stdin.write(JSON.stringify(request.body));
-    proc.stdin.end();
-  }
-  const [stdout, stderr, status] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  const result = { ok: status === 0, status, stdout, stderr };
+  const result = request.paginate
+    ? await runPaginatedGitHubApi(args, env)
+    : await runGitHubApiCommand(args, env, request.body);
   pipelineLog(result.ok ? "info" : "warn", "github.api.completed", {
     method: request.method,
     endpoint: request.endpoint,
-    status,
-    http_status: extractHttpStatus(stderr || stdout),
+    status: result.status,
+    http_status: extractHttpStatus(result.stderr || result.stdout),
     ok: result.ok,
     duration_ms: Math.round(performance.now() - startedAt),
   });
   return result;
+}
+
+async function runGitHubApiCommand(
+  args: string[],
+  env: Record<string, string>,
+  body?: unknown,
+): Promise<GitHubApiResult> {
+  const result = await runBoundedGitHubCommand(args, {
+    env,
+    input: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return {
+    ok: result.status === 0 && !result.timedOut && !result.outputExceeded,
+    status: result.status ?? -1,
+    stdout: result.stdout,
+    stderr: result.timedOut
+      ? "gh api timed out"
+      : result.outputExceeded
+      ? "gh api exceeded output limit"
+      : result.stderr,
+  };
+}
+
+/**
+ * `gh api --paginate --slurp` buffers every remote page in one process. Read
+ * review state only needs a bounded history, so fetch fixed pages one at a
+ * time and stop at the first short page. The returned outer array preserves
+ * the old --slurp parsing contract.
+ */
+async function runPaginatedGitHubApi(
+  args: string[],
+  env: Record<string, string>,
+): Promise<GitHubApiResult> {
+  const pages: unknown[] = [];
+  let responseBytes = 2; // JSON outer-array delimiters.
+  for (let page = 1; page <= MAX_GITHUB_PAGES; page += 1) {
+    const result = await runGitHubApiCommand(
+      [args[0]!, appendPage(args[1]!, page)],
+      env,
+    );
+    if (!result.ok) return result;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch {
+      return { ...result, ok: false, stderr: "invalid JSON from gh api pagination" };
+    }
+    if (!Array.isArray(parsed)) {
+      return { ...result, ok: false, stderr: "expected an array from gh api pagination" };
+    }
+    const pageBytes = new TextEncoder().encode(JSON.stringify(parsed)).byteLength;
+    if (responseBytes + pageBytes > MAX_GITHUB_PAGINATED_RESPONSE_BYTES) {
+      return {
+        ok: false,
+        status: -1,
+        stdout: "",
+        stderr: "gh api paginated response exceeded output limit",
+      };
+    }
+    responseBytes += pageBytes;
+    pages.push(parsed);
+    if (parsed.length < 100) break;
+  }
+  return { ok: true, status: 0, stdout: JSON.stringify(pages), stderr: "" };
+}
+
+function appendPage(endpoint: string, page: number): string {
+  return `${endpoint}${endpoint.includes("?") ? "&" : "?"}page=${page}`;
 }
 
 export async function githubEnvironmentForEndpoint(
