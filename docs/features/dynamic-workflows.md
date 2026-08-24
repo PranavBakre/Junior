@@ -205,6 +205,26 @@ Authorization uses existing Junior admins plus `ownerSlackUserIds` from the work
 
 The dashboard uses the same `canManage` / admin checks with actor `ADMIN_SLACK_USER_ID` or `dashboard-operator`. Create/edit/reload require admin (open-mode still allows them, matching Slack). Dashboard run/start/stop/reload/create/edit write `dashboard_audit`. If the definition has a `slack` or `slack-thread` output, the dashboard also posts a one-liner there. **If it has none, git + `dashboard_audit` is a weaker trail than Slack `!` commands** — accepted for the no-auth loopback console, not Slack-parity. Continue/stop on sessions remain full Slack-thread records; see [http-dashboard.md](http-dashboard.md).
 
+## Git provenance
+
+Workflow files are executable operational configuration, so loading from the
+working tree is not sufficient proof that a definition was published. On every
+scan the registry verifies public files and private overlay files against their
+repository's configured default ref (`origin/main` by default). The working
+tree bytes must match the blob at that ref and the ref must contain the file.
+Untracked files, feature-branch-only definitions, dirty edits, missing default
+refs, and definitions absent from the default tree remain unpublished: they are
+reported in registry errors and are neither active nor schedulable. An
+unpublished edit also evicts any previously loaded version, so a last-known-good
+cache cannot preserve unverified authority.
+
+Verified definitions retain the default-ref commit SHA. New `workflow_runs`
+rows persist that SHA in `verified_commit_sha`, and the run artifact includes it
+alongside the content hash and source path. This makes each run traceable to the
+published definition snapshot used to authorize it. Dashboard authoring may
+commit a definition on a named branch, but it becomes runnable only after that
+commit is merged into the configured default branch and the watcher reloads.
+
 ## Hot Reload
 
 Junior uses `fs.watch` on both fixed workflow roots. Watch events are debounced and followed by a full rescan of each root because file watchers can coalesce, duplicate, or miss exact filenames across platforms.
