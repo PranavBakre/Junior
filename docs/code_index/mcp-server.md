@@ -12,8 +12,8 @@ operations using the bot token and signed run context.
 |---|---|---|
 | `startMcpServer(deps)` | `slack-server.ts` | Starts HTTP server on `MCP_PORT` (default 3456), binding `127.0.0.1` and best-effort `::1`. Optional dependencies wire stores and pipeline services. |
 | `registerTools(server)` (internal) | `slack-server.ts` | Registers Slack, worktree, and agent-registry tools on a fresh `McpServer` per request. |
-| `handleMongoMcpRequest(req, res)` | `mongodb-proxy.ts` | Serves `/mcp/mongodb` as a stateless HTTP MCP proxy to one shared read-only MongoDB stdio backend; hides upstream connection selection, injects the environment-backed `preconfigured` ID, and requires explicit `find.limit` values from 1–100. |
-| `closeMongoMcpBackend()` | `mongodb-proxy.ts` | Closes the shared backend immediately; also used by the idle TTL. |
+| `handleMongoMcpRequest(req, res)` | `mongodb-proxy.ts` | Serves `/mcp/mongodb` as a stateless HTTP MCP proxy to named read-only MongoDB stdio backends; adds a required configured-connection selector, injects each backend's upstream `preconfigured` ID, and requires explicit `find.limit` values from 1–100. |
+| `closeMongoMcpBackend()` | `mongodb-proxy.ts` | Closes all configured Mongo backends immediately; also used by the idle TTL. |
 | `handleMixpanelMcpRequest(req, res)` | `mixpanel-proxy.ts` | Serves `/mcp/mixpanel` as one signed read-only MCP surface over all configured Mixpanel regions. |
 | `createMixpanelProxyServer(...)` | `mixpanel-proxy.ts` | Unions safe upstream tools, adds the required `region` selector, strips it before forwarding, and rejects write tools. |
 | `closeMixpanelMcpBackends()` | `mixpanel-proxy.ts` | Closes the shared per-region HTTP clients immediately; also used by the idle TTL. |

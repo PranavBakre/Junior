@@ -17,6 +17,7 @@ const MONGODB_PROXY_REQUEST_TIMEOUT_MS = Number(process.env.MONGODB_MCP_PROXY_RE
 const MONGODB_PRECONFIGURED_CONNECTION_ID = "preconfigured";
 const MONGODB_MCP_PACKAGE = "mongodb-mcp-server@2.1.0";
 export const MONGODB_FIND_MAX_LIMIT = 100;
+const MONGODB_CONNECTION_ID_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const MONGODB_TOOL_NAMES = [
   "aggregate",
   "collection-schema",
@@ -26,15 +27,20 @@ const MONGODB_TOOL_NAMES = [
   "list-databases",
 ] as const;
 
+export interface MongoConnectionConfig {
+  id: string;
+  connectionString: string;
+}
+
 interface MongoBackend {
   client: Client;
   transport: StdioClientTransport;
 }
 
 type MongoBackendClient = Pick<Client, "callTool" | "listTools">;
-type MongoBackendProvider = () => Promise<{ client: MongoBackendClient }>;
+type MongoBackendProvider = (connectionId: string) => Promise<{ client: MongoBackendClient }>;
 
-let backend: Promise<MongoBackend> | null = null;
+const backends = new Map<string, Promise<MongoBackend>>();
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
 export async function handleMongoMcpRequest(
@@ -61,6 +67,7 @@ export async function handleMongoMcpRequest(
 export function createMongoProxyServer(
   runContext: SlackMcpRunContext | null,
   backendProvider: MongoBackendProvider = getMongoBackend,
+  configuredConnections: string[] = configuredMongoConnectionIds(),
 ): Server {
   const server = new Server(
     { name: "mongodb", version: "0.1.0" },
@@ -68,18 +75,27 @@ export function createMongoProxyServer(
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const { client } = await backendProvider();
+    if (configuredConnections.length === 0) {
+      throw new Error("No MongoDB MCP connections are configured");
+    }
+    const byConnection = await Promise.all(configuredConnections.map(async (connectionId) => {
+      const { client } = await backendProvider(connectionId);
+      return { connectionId, tools: (await client.listTools()).tools };
+    }));
     armIdleTimer();
-    const { tools } = await client.listTools();
+    const union = new Map<string, (typeof byConnection)[number]["tools"][number]>();
+    for (const { tools } of byConnection) {
+      for (const tool of tools) {
+        if (isAllowedMongoTool(tool.name) && !union.has(tool.name)) union.set(tool.name, tool);
+      }
+    }
     return {
-      tools: tools
-        .filter((tool) => isAllowedMongoTool(tool.name))
-        .map(hideMongoConnectionId),
+      tools: [...union.values()].map((tool) => addConnectionToSchema(tool, configuredConnections)),
     };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+    const { name, arguments: rawArgs } = request.params;
     if (!isAllowedMongoTool(name)) {
       return mongoProxyError(`tool "${name}" is not available through the read-only proxy.`);
     }
@@ -88,9 +104,17 @@ export function createMongoProxyServer(
     }
 
     try {
+      const args = { ...(rawArgs ?? {}) };
+      const connectionId = args.connection;
+      delete args.connection;
+      if (typeof connectionId !== "string" || !configuredConnections.includes(connectionId)) {
+        return mongoProxyError(
+          `connection must be one of the configured connections: ${configuredConnections.join(", ") || "none"}.`,
+        );
+      }
       const validation = validateMongoToolArguments(name, args ?? {});
       if (validation) return mongoProxyError(validation);
-      const { client } = await backendProvider();
+      const { client } = await backendProvider(connectionId);
       armIdleTimer();
       return await client.callTool(
         {
@@ -184,12 +208,13 @@ function validateMongoToolArguments(
 export async function closeMongoMcpBackend(): Promise<void> {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = null;
-  const current = backend;
-  backend = null;
-  if (!current) return;
-  const { client, transport } = await current.catch(() => ({ client: null, transport: null }));
-  await client?.close().catch(() => undefined);
-  await transport?.close().catch(() => undefined);
+  const active = [...backends.values()];
+  backends.clear();
+  await Promise.all(active.map(async (current) => {
+    const { client, transport } = await current.catch(() => ({ client: null, transport: null }));
+    await client?.close().catch(() => undefined);
+    await transport?.close().catch(() => undefined);
+  }));
 }
 
 function isAllowedMongoTool(name: string): name is typeof MONGODB_TOOL_NAMES[number] {
@@ -206,16 +231,60 @@ function mongoProxyError(message: string): CallToolResult {
   };
 }
 
-function getMongoBackend(): Promise<MongoBackend> {
-  if (!backend) backend = startMongoBackend();
-  armIdleTimer();
-  return backend;
+export function configuredMongoConnections(): MongoConnectionConfig[] {
+  const raw = process.env.MDB_MCP_CONNECTIONS?.trim();
+  if (!raw) {
+    const legacy = process.env.MDB_MCP_CONNECTION_STRING?.trim();
+    return legacy ? [{ id: "preconfigured", connectionString: legacy }] : [];
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("MDB_MCP_CONNECTIONS must be a JSON object mapping connection IDs to MongoDB URIs");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("MDB_MCP_CONNECTIONS must be a JSON object mapping connection IDs to MongoDB URIs");
+  }
+
+  const connections = Object.entries(parsed as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([id, value]) => {
+      if (!MONGODB_CONNECTION_ID_PATTERN.test(id)) {
+        throw new Error(`Invalid MongoDB MCP connection ID "${id}"`);
+      }
+      if (typeof value !== "string" || !value.trim()) {
+        throw new Error(`MongoDB MCP connection "${id}" must have a non-empty URI`);
+      }
+      return { id, connectionString: value.trim() };
+    });
+  if (connections.length === 0) {
+    throw new Error("MDB_MCP_CONNECTIONS must configure at least one connection");
+  }
+  return connections;
 }
 
-async function startMongoBackend(): Promise<MongoBackend> {
-  if (!process.env.MDB_MCP_CONNECTION_STRING?.trim()) {
-    throw new Error("MDB_MCP_CONNECTION_STRING is not configured");
+export function configuredMongoConnectionIds(): string[] {
+  return configuredMongoConnections().map(({ id }) => id);
+}
+
+function getMongoBackend(connectionId: string): Promise<MongoBackend> {
+  let current = backends.get(connectionId);
+  if (!current) {
+    const connection = configuredMongoConnections().find(({ id }) => id === connectionId);
+    if (!connection) throw new Error(`MongoDB MCP connection "${connectionId}" is not configured`);
+    current = startMongoBackend(connection).catch((err) => {
+      backends.delete(connectionId);
+      throw err;
+    });
+    backends.set(connectionId, current);
   }
+  armIdleTimer();
+  return current;
+}
+
+async function startMongoBackend(connection: MongoConnectionConfig): Promise<MongoBackend> {
   const transport = new StdioClientTransport({
     command: resolve(
       import.meta.dirname ?? ".",
@@ -224,7 +293,8 @@ async function startMongoBackend(): Promise<MongoBackend> {
     args: ["--", "npx", "-y", MONGODB_MCP_PACKAGE, "--readOnly"],
     env: {
       ...process.env,
-      MDB_MCP_CONNECTION_STRING: process.env.MDB_MCP_CONNECTION_STRING ?? "",
+      MDB_MCP_CONNECTIONS: "",
+      MDB_MCP_CONNECTION_STRING: connection.connectionString,
     },
     stderr: "pipe",
   });
@@ -232,17 +302,39 @@ async function startMongoBackend(): Promise<MongoBackend> {
     log.warn("mongodb-mcp", `backend error: ${err.message}`);
   };
   transport.onclose = () => {
-    backend = null;
-    log.info("mongodb-mcp", "backend closed");
+    backends.delete(connection.id);
+    log.info("mongodb-mcp", `${connection.id} backend closed`);
   };
 
   const client = new Client(
-    { name: "junior-mongodb-mcp-proxy", version: "0.1.0" },
+    { name: `junior-mongodb-${connection.id}-proxy`, version: "0.1.0" },
     { capabilities: {} },
   );
   await client.connect(transport);
-  log.info("mongodb-mcp", `backend started pid=${transport.pid ?? "unknown"}`);
+  log.info("mongodb-mcp", `${connection.id} backend started pid=${transport.pid ?? "unknown"}`);
   return { client, transport };
+}
+
+function addConnectionToSchema<T extends { name: string; description?: string; inputSchema: Record<string, unknown> }>(
+  tool: T,
+  connections: string[],
+): T {
+  const sanitized = hideMongoConnectionId(tool);
+  const schema = sanitized.inputSchema;
+  const properties = schema.properties && typeof schema.properties === "object"
+    ? { ...(schema.properties as Record<string, unknown>) }
+    : {};
+  properties.connection = {
+    type: "string",
+    enum: connections,
+    description: "Configured MongoDB connection for this request.",
+  };
+  const required = Array.isArray(schema.required) ? [...schema.required] : [];
+  if (!required.includes("connection")) required.unshift("connection");
+  return {
+    ...sanitized,
+    inputSchema: { ...schema, type: "object", properties, required },
+  };
 }
 
 function armIdleTimer(): void {
