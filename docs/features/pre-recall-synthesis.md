@@ -346,6 +346,18 @@ labels the two paths differently: fallback lines are "recalled verbatim",
 synthesized lines are "a model's summary … prefer the underlying claim when a
 specific matters".
 
+**Provider pipes are drained and bounded.** `claude`, OpenCode, and Codex all
+run behind `runPreRecallProcess`/`runPreRecallExited`. The stdout and stderr
+readers start before waiting for process exit and consume chunks concurrently;
+otherwise a provider that emits enough diagnostics to fill stderr can block
+forever before its exit promise resolves. Only bounded tails are retained
+(64 KiB for stdout and 8 KiB for stderr). A successful synthesis that exceeds
+the stdout cap is rejected rather than parsed from an incomplete or
+unbounded result. Timeout cleanup still terminates the detached process tree,
+then cancels any reader whose pipe was inherited by a child, with a bounded
+drain grace period. The boundary tests cover stderr beyond OS pipe capacity
+and a never-ending stdout producer.
+
 Known limitation: a claim cited in `used` is marked used even if it did not
 really contribute, so a lying citation mildly refreshes that claim's decay
 clock. Bounded by the shortlist (≤ 20) and strictly better than the previous

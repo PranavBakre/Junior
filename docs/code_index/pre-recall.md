@@ -20,7 +20,7 @@ default hot path; bounded LLM synthesis is optional through
 | `buildSynthesisPrompt` / `parseSynthesisResult` | `src/memory/pre-recall.ts` | Request wrapped in a **per-call nonce delimiter** (`<request-a3f9>`) and labelled untrusted — a fixed tag is bypassable by nesting (`</req</request>uest>`). `{"notes":[…],"used":[1,4]}` envelope. Parse failure — missing, non-array, or an array with nothing usable in it — returns `null` → fallback. Only an explicit `"notes": []` is a rejection. |
 | `formatPreRecallBlock(notes, { verbatim })` | `src/memory/pre-recall.ts` | The `<pre-recall>` block prepended to the prompt. Labels provenance: fallback lines are corpus text, synthesized lines are a model summary. |
 | `buildPreRecallClaudeArgs` | `src/memory/pre-recall.ts` | Locked-down `claude -p` args (no tools, no MCP, no hooks; prompt on stdin). |
-| `runPreRecallExited` / `runPreRecallProcess` | `src/memory/pre-recall.ts` | Timeout + process-tree SIGINT/SIGKILL guard shared by the claude/opencode/codex runners. |
+| `runPreRecallExited` / `runPreRecallProcess` | `src/memory/pre-recall.ts` | Timeout + process-tree SIGINT/SIGKILL guard shared by the claude/opencode/codex runners. Both provider pipes are drained immediately; stdout and stderr retain bounded tails, and oversized stdout is rejected. |
 | `recallMemory({ recordUsage })` | `src/mcp/slack-server.ts` | Retrieval. Pre-recall passes `false`; the `memory_recall` MCP tool keeps the default `true`. Each claim carries fused `score`, raw `cosine`, `lexicalScore`, and expanded parent-source context when available. |
 | `MemoryStore.markClaimsUsed(ids, now)` | `src/memory/store.ts`, `src/memory/sqlite.ts` | Deferred `last_used_at` bump for the claims that actually reached the prompt. |
 

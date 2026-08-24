@@ -119,6 +119,12 @@ export const FALLBACK_MIN_LEXICAL = 0.75;
 /** Synthesized lines kept, and their length, so the injected block stays small. */
 const MAX_NOTES = 5;
 const MAX_NOTE_CHARS = 500;
+/** Maximum stdout retained from a synthesis subprocess. */
+const MAX_PRE_RECALL_STDOUT_CHARS = 64 * 1024;
+/** Maximum stderr retained for a bounded error message. */
+const MAX_PRE_RECALL_STDERR_CHARS = 8 * 1024;
+/** Do not wait forever for a pipe inherited by a provider child. */
+const STREAM_DRAIN_GRACE_MS = 1_000;
 
 // ── Synthesis system prompt ──────────────────────────────────────────────────
 const SYNTHESIS_SYSTEM_PROMPT = `You curate recalled operational memory for a coding agent.
@@ -800,16 +806,9 @@ export async function codexRunText(req: RunTextRequest): Promise<string> {
   });
 
   try {
-    const exitCode = await runPreRecallExited(proc, req.timeoutMs, "codex");
-    if (exitCode !== 0) {
-      let stderr = "";
-      try {
-        stderr = (await new Response(proc.stderr).text()).trim();
-      } catch {
-        // best-effort
-      }
-      throw new Error(`pre-recall: codex exited ${exitCode}${stderr ? `: ${stderr}` : ""}`);
-    }
+    // Reuse the shared bounded drainer. Codex writes its answer to a file,
+    // but its stderr is still a pipe that can block the provider before exit.
+    await runPreRecallProcess(proc, req.timeoutMs, "codex", () => "");
     let text: string;
     try {
       text = await readFile(outFile, "utf8");
@@ -856,6 +855,88 @@ type PreRecallProc = {
   stdout?: ReadableStream<Uint8Array> | number | null;
   stderr?: ReadableStream<Uint8Array> | number | null;
 };
+
+interface BoundedStreamCapture {
+  readonly promise: Promise<{ text: string; truncated: boolean }>;
+  cancel(): Promise<void>;
+}
+
+/**
+ * Drain a provider pipe as soon as the process starts writing, while retaining
+ * only a bounded tail. Waiting until exit before reading stderr can deadlock a
+ * provider whose diagnostics exceed the OS pipe capacity; retaining the whole
+ * stdout can turn a runaway provider into an unbounded-memory failure.
+ */
+function startBoundedStreamCapture(
+  stream: ReadableStream<Uint8Array> | number | null | undefined,
+  maxChars: number,
+): BoundedStreamCapture {
+  if (!stream || typeof stream === "number") {
+    return { promise: Promise.resolve({ text: "", truncated: false }), cancel: async () => {} };
+  }
+
+  const reader = stream.getReader();
+  const promise = (async () => {
+    const decoder = new TextDecoder();
+    let text = "";
+    let totalChars = 0;
+    let truncated = false;
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        const decoded = decoder.decode(chunk.value, { stream: true });
+        totalChars += decoded.length;
+        if (totalChars > maxChars) truncated = true;
+        // Avoid briefly retaining a provider-sized chunk in addition to the
+        // bounded tail when a stream implementation hands us a large read.
+        const boundedChunk = decoded.length > maxChars ? decoded.slice(-maxChars) : decoded;
+        text = `${text}${boundedChunk}`;
+        if (text.length > maxChars) text = text.slice(-maxChars);
+      }
+      const remainder = decoder.decode();
+      if (remainder) {
+        totalChars += remainder.length;
+        if (totalChars > maxChars) truncated = true;
+        text = `${text}${remainder}`.slice(-maxChars);
+      }
+      return { text, truncated };
+    } catch {
+      // Cancellation is expected during timeout cleanup. The caller has a
+      // separate process error/timeout to report, so a broken pipe contributes
+      // only the bounded tail captured before it closed.
+      return { text, truncated };
+    } finally {
+      reader.releaseLock();
+    }
+  })();
+
+  return {
+    promise,
+    cancel: async () => {
+      await reader.cancel().catch(() => {});
+    },
+  };
+}
+
+async function finishBoundedStreamCapture(
+  capture: BoundedStreamCapture,
+): Promise<{ text: string; truncated: boolean }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      capture.promise,
+      new Promise<{ text: string; truncated: boolean }>((resolve) => {
+        timer = setTimeout(() => {
+          void capture.cancel();
+          resolve({ text: "", truncated: true });
+        }, STREAM_DRAIN_GRACE_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function runPreRecallExited(
   proc: PreRecallProc,
@@ -906,36 +987,40 @@ async function runPreRecallExited(
   }
 }
 
-async function runPreRecallProcess(
+export async function runPreRecallProcess(
   proc: PreRecallProc,
   timeoutMs: number,
   label: string,
   extract: (stdout: string) => string,
 ): Promise<string> {
+  // Both pipes must be consumed concurrently from the moment the process is
+  // spawned. In particular, stderr is not safe to read only after exit: a
+  // provider can fill it while still waiting for its caller, deadlocking both
+  // sides before `exited` resolves.
+  const stdoutCapture = startBoundedStreamCapture(
+    proc.stdout,
+    MAX_PRE_RECALL_STDOUT_CHARS,
+  );
+  const stderrCapture = startBoundedStreamCapture(
+    proc.stderr,
+    MAX_PRE_RECALL_STDERR_CHARS,
+  );
   try {
-    // Start reading stdout immediately so the pipe cannot fill and stall.
-    const stdoutStream = proc.stdout;
-    const stdoutPromise =
-      stdoutStream && typeof stdoutStream !== "number"
-        ? new Response(stdoutStream).text()
-        : Promise.resolve("");
     const exitCode = await runPreRecallExited(proc, timeoutMs, label);
-    const stdout = await stdoutPromise;
+    const [stdout, stderr] = await Promise.all([
+      finishBoundedStreamCapture(stdoutCapture),
+      finishBoundedStreamCapture(stderrCapture),
+    ]);
+    if (stdout.truncated) {
+      throw new Error(`pre-recall: ${label} produced more than ${MAX_PRE_RECALL_STDOUT_CHARS} stdout characters`);
+    }
     if (exitCode !== 0) {
-      let stderr = "";
-      try {
-        const stderrStream = proc.stderr;
-        if (stderrStream && typeof stderrStream !== "number") {
-          stderr = (await new Response(stderrStream).text()).trim();
-        }
-      } catch {
-        // best-effort
-      }
+      const stderrText = stderr.text.trim();
       throw new Error(
-        `pre-recall: ${label} exited ${exitCode}${stderr ? `: ${stderr}` : ""}`,
+        `pre-recall: ${label} exited ${exitCode}${stderrText ? `: ${stderrText}` : ""}`,
       );
     }
-    return extract(stdout);
+    return extract(stdout.text);
   } catch (err) {
     if (isProcessTreeAlive(proc.pid)) {
       await terminateProcessTree(proc.pid, {
@@ -945,6 +1030,13 @@ async function runPreRecallProcess(
       });
     }
     throw err;
+  } finally {
+    // If timeout/kill left a descendant holding a pipe open, cancellation
+    // keeps this cleanup bounded and prevents a stale reader from lingering.
+    await Promise.all([
+      finishBoundedStreamCapture(stdoutCapture),
+      finishBoundedStreamCapture(stderrCapture),
+    ]);
   }
 }
 

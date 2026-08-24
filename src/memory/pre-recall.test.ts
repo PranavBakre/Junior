@@ -13,6 +13,7 @@ import {
   maxCosine,
   parseSynthesisResult,
   recallCandidates,
+  runPreRecallProcess,
   selectFallbackCandidates,
   selectSynthesisCandidates,
   type RunTextFn,
@@ -32,6 +33,31 @@ describe("buildPreRecallCodexArgs", () => {
     expect(args[args.indexOf("-c") + 1]).toBe('model_reasoning_effort="medium"');
     expect(args.at(-1)).toBe("-");
   });
+});
+
+describe("pre-recall subprocess stream boundaries", () => {
+  test("drains stderr beyond pipe capacity without retaining it all", async () => {
+    const proc = Bun.spawn(
+      ["sh", "-c", "head -c 262144 /dev/zero >&2; printf ok"],
+      { stdout: "pipe", stderr: "pipe", detached: true },
+    );
+
+    await expect(
+      runPreRecallProcess(proc, 5_000, "stream-test", (stdout) => stdout),
+    ).resolves.toBe("ok");
+  });
+
+  test("bounds runaway stdout and cleans up a never-ending producer", async () => {
+    const proc = Bun.spawn(["yes", "runaway"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: true,
+    });
+
+    await expect(
+      runPreRecallProcess(proc, 150, "stream-test", (stdout) => stdout),
+    ).rejects.toThrow(/timed out|hung|stdout characters/);
+  }, 10_000);
 });
 import type { Config } from "../config.ts";
 import { addMemory, type MemoryToolDeps } from "../mcp/slack-server.ts";
