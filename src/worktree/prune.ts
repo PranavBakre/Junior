@@ -169,7 +169,7 @@ async function canonicalPath(path: string): Promise<string> {
 async function git(cwd: string, args: string[], githubEnv?: Record<string, string>): Promise<string> {
   const proc = Bun.spawn(["git", ...args], {
     cwd,
-    env: githubEnv ? { ...cleanGitHubEnvironment(), ...githubEnv } : undefined,
+    env: { ...cleanGitHubEnvironment({ isolatedConfig: true }), ...githubEnv },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -185,7 +185,7 @@ async function git(cwd: string, args: string[], githubEnv?: Record<string, strin
 async function gitExitCode(cwd: string, args: string[], githubEnv?: Record<string, string>): Promise<number> {
   const proc = Bun.spawn(["git", ...args], {
     cwd,
-    env: githubEnv ? { ...cleanGitHubEnvironment(), ...githubEnv } : undefined,
+    env: { ...cleanGitHubEnvironment({ isolatedConfig: true }), ...githubEnv },
     stdout: "ignore",
     stderr: "ignore",
   });

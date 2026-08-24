@@ -13,8 +13,16 @@ const repo: RepoConfig = {
 describe("GitHubAuthResolver", () => {
   it("resolves and caches the configured account without changing global gh state", async () => {
     const calls: Array<{ args: string[]; env: Record<string, string> }> = [];
-    const previousToken = process.env.GITHUB_TOKEN;
+    const previous = {
+      GH_TOKEN: process.env.GH_TOKEN,
+      GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+      GH_ENTERPRISE_TOKEN: process.env.GH_ENTERPRISE_TOKEN,
+      GH_CONFIG_DIR: process.env.GH_CONFIG_DIR,
+    };
+    process.env.GH_TOKEN = "wrong-global-token";
     process.env.GITHUB_TOKEN = "wrong-account-token";
+    process.env.GH_ENTERPRISE_TOKEN = "wrong-enterprise-token";
+    process.env.GH_CONFIG_DIR = "/tmp/wrong-gh-config";
     try {
       const resolver = new GitHubAuthResolver([repo], async (args, env) => {
         calls.push({ args, env });
@@ -28,10 +36,12 @@ describe("GitHubAuthResolver", () => {
         "growthx-club/gx-client-next",
       );
 
-      expect(first).toEqual({
+      if (!first) throw new Error("configured repository did not resolve an identity");
+      expect(first).toMatchObject({
         GH_TOKEN: "selected-token",
         GH_PROMPT_DISABLED: "1",
       });
+      expect(first.GH_CONFIG_DIR).toContain("junior-gh-isolated");
       expect(second).toEqual(first);
       expect(calls).toHaveLength(2);
       expect(calls[0]?.args).toEqual([
@@ -40,11 +50,17 @@ describe("GitHubAuthResolver", () => {
         "--user",
         "pranav-growthx",
       ]);
+      expect(calls[0]?.env.GH_TOKEN).toBeUndefined();
       expect(calls[0]?.env.GITHUB_TOKEN).toBeUndefined();
+      expect(calls[0]?.env.GH_ENTERPRISE_TOKEN).toBeUndefined();
+      expect(calls[0]?.env.GH_CONFIG_DIR).toBeUndefined();
       expect(calls[1]?.env.GH_TOKEN).toBe("selected-token");
+      expect(calls[1]?.env.GH_CONFIG_DIR).toBeUndefined();
     } finally {
-      if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
-      else process.env.GITHUB_TOKEN = previousToken;
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   });
 
@@ -60,12 +76,38 @@ describe("GitHubAuthResolver", () => {
     );
   });
 
-  it("leaves repos without a selection on the existing host auth path", async () => {
+  it("does not produce GitHub credentials for repos without a selection", async () => {
     const unselected = { ...repo, githubUser: undefined };
     const resolver = new GitHubAuthResolver([
       unselected,
     ]);
 
     expect(await resolver.environmentForRepo(unselected)).toBeUndefined();
+  });
+
+  it("fails closed when a GitHub repository is missing its configured identity", async () => {
+    const resolver = new GitHubAuthResolver([{
+      ...repo,
+      githubUser: undefined,
+    }]);
+
+    await expect(
+      resolver.environmentForRepoRef("GrowthX-Club/gx-client-next"),
+    ).rejects.toThrow("must configure githubUser");
+    await expect(
+      resolver.environmentForRepoRef("GrowthX-Club/other-repo"),
+    ).rejects.toThrow("No GitHub identity is configured");
+  });
+
+  it("rejects a selected account that lacks an exact repository mapping", async () => {
+    const resolver = new GitHubAuthResolver([{
+      ...repo,
+      githubRepo: undefined,
+    }]);
+
+    await expect(resolver.environmentForRepo({
+      ...repo,
+      githubRepo: undefined,
+    })).rejects.toThrow("must configure githubRepo with githubUser");
   });
 });

@@ -1,4 +1,7 @@
 import type { RepoConfig } from "../config.ts";
+import { chmodSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const GITHUB_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,38}$/;
 
@@ -19,6 +22,7 @@ export type GitHubCommandRunner = (
  */
 export class GitHubAuthResolver {
   private readonly reposByGitHubRef: Map<string, RepoConfig>;
+  private readonly reposByName: Map<string, RepoConfig>;
   private readonly verifiedTokens = new Map<string, string>();
   private readonly runCommand: GitHubCommandRunner;
 
@@ -31,23 +35,31 @@ export class GitHubAuthResolver {
         .filter((repo) => repo.githubRepo)
         .map((repo) => [normalizeRepoRef(repo.githubRepo!), repo]),
     );
+    this.reposByName = new Map(repos.map((repo) => [repo.name, repo]));
     this.runCommand = runCommand;
   }
 
   async environmentForRepoName(
     repoName: string,
   ): Promise<Record<string, string> | undefined> {
-    const repo = [...this.reposByGitHubRef.values()].find(
-      (candidate) => candidate.name === repoName,
-    );
+    const repo = this.reposByName.get(repoName);
     return repo ? this.environmentForRepo(repo) : undefined;
   }
 
   async environmentForRepoRef(
     repoRef: string,
-  ): Promise<Record<string, string> | undefined> {
+  ): Promise<Record<string, string>> {
     const repo = this.reposByGitHubRef.get(normalizeRepoRef(repoRef));
-    return repo ? this.environmentForRepo(repo) : undefined;
+    if (!repo) {
+      throw new Error(`No GitHub identity is configured for repository ${repoRef}`);
+    }
+    const environment = await this.environmentForRepo(repo);
+    if (!environment) {
+      throw new Error(
+        `Repository ${repo.name} must configure githubUser for GitHub operations`,
+      );
+    }
+    return environment;
   }
 
   async environmentForRepo(
@@ -55,6 +67,11 @@ export class GitHubAuthResolver {
   ): Promise<Record<string, string> | undefined> {
     const configuredUser = repo.githubUser?.trim();
     if (!configuredUser) return undefined;
+    if (!repo.githubRepo?.trim()) {
+      throw new Error(
+        `Repository ${repo.name} must configure githubRepo with githubUser for GitHub operations`,
+      );
+    }
     if (!GITHUB_USER_PATTERN.test(configuredUser)) {
       throw new Error(
         `Invalid githubUser "${configuredUser}" for repo ${repo.name}`,
@@ -62,11 +79,13 @@ export class GitHubAuthResolver {
     }
 
     const token = await this.tokenForUser(configuredUser, repo.name);
-    // GH_TOKEN is intentionally explicit for this child process. Remove
-    // inherited GITHUB_TOKEN at the call site so it cannot override it.
+    // GH_TOKEN is intentionally explicit for this child process. An empty,
+    // Junior-owned gh config prevents a selected token from falling back to
+    // whichever account happens to be active in the host's GH_CONFIG_DIR.
     return {
       GH_TOKEN: token,
       GH_PROMPT_DISABLED: "1",
+      GH_CONFIG_DIR: isolatedGitHubConfigDir(),
     };
   }
 
@@ -109,13 +128,34 @@ export function normalizeRepoRef(value: string): string {
   return value.trim().replace(/\.git$/i, "").toLowerCase();
 }
 
-export function cleanGitHubEnvironment(): Record<string, string> {
+export function cleanGitHubEnvironment(options: {
+  isolatedConfig?: boolean;
+} = {}): Record<string, string> {
   const env = { ...(process.env as Record<string, string>) };
   delete env.GH_TOKEN;
   delete env.GITHUB_TOKEN;
   delete env.GH_ENTERPRISE_TOKEN;
+  delete env.GITHUB_RECONCILE_TOKEN;
+  delete env.GH_CONFIG_DIR;
+  delete env.GH_HOST;
+  delete env.GH_REPO;
+  if (options.isolatedConfig) {
+    env.GH_CONFIG_DIR = isolatedGitHubConfigDir();
+  }
   env.GH_PROMPT_DISABLED = "1";
   return env;
+}
+
+/**
+ * Keep every gh child that already has an explicitly verified GH_TOKEN away
+ * from the host-wide gh account database. The directory contains no tokens;
+ * its only purpose is to make ambient account selection impossible.
+ */
+function isolatedGitHubConfigDir(): string {
+  const directory = join(tmpdir(), `junior-gh-isolated-${process.pid}`);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  return directory;
 }
 
 async function runGitHubCommand(

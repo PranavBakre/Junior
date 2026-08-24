@@ -1,11 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import {
+  githubEnvironmentForEndpoint,
   postGitHubReview,
   readGitHubReviewState,
+  setGitHubAuthResolver,
   type GitHubApiRequest,
   type GitHubApiRunner,
   type GitHubReviewInput,
 } from "./review-comments.ts";
+import { GitHubAuthResolver } from "./auth.ts";
 
 const SHA = "a".repeat(40);
 
@@ -332,5 +335,39 @@ describe("readGitHubReviewState", () => {
       { ...target, reviewId: -1 },
       never,
     )).resolves.toEqual({ ok: false, reason: "reviewId must be a positive integer" });
+  });
+});
+
+describe("GitHub review API identity", () => {
+  it("requires an exact configured repository identity and isolates gh config", async () => {
+    setGitHubAuthResolver(undefined);
+    await expect(
+      githubEnvironmentForEndpoint("repos/GrowthX-Club/gx-backend/pulls/123"),
+    ).rejects.toThrow("configured identity resolver");
+
+    const resolver = new GitHubAuthResolver([{
+      name: "gx-backend",
+      path: "/tmp/gx-backend",
+      defaultBase: "origin/main",
+      githubRepo: "GrowthX-Club/gx-backend",
+      githubUser: "gxt-admin",
+    }], async (args) => args[0] === "auth"
+      ? { status: 0, stdout: "selected-token", stderr: "" }
+      : { status: 0, stdout: "gxt-admin", stderr: "" });
+    setGitHubAuthResolver(resolver);
+    try {
+      const env = await githubEnvironmentForEndpoint(
+        "repos/growthx-club/gx-backend/pulls/123",
+      );
+      expect(env.GH_TOKEN).toBe("selected-token");
+      expect(env.GH_CONFIG_DIR).toContain("junior-gh-isolated");
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+
+      await expect(
+        githubEnvironmentForEndpoint("repos/GrowthX-Club/other/pulls/123"),
+      ).rejects.toThrow("No GitHub identity is configured");
+    } finally {
+      setGitHubAuthResolver(undefined);
+    }
   });
 });

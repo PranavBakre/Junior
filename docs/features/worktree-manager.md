@@ -61,7 +61,13 @@ The bug-pipeline + dev-server fields are optional. Repos that only need the `!re
 
 - `createWorktree(repoName, threadId, baseRef?, branchOverride?) → Promise<worktreePath>` — creates a worktree at `<repo.path>.junior-worktrees/slack-<threadId>` (or whatever path `getWorktreePath` derives — note this is a sibling directory to the repo, deliberately outside `.claude/`). The new branch is `branchOverride ?? slack/<threadId>`; the starting ref is `baseRef ?? repo.defaultBase`. If `repo.worktreeSetupCommand` is set, the manager runs `<repo.path>/<command> <worktreePath> <branch>` instead of `git fetch + git worktree add`.
 - `syncRepo(repoName) → Promise<void>` — refreshes `origin/*` from the configured checkout before any reused managed worktree is handed to a runner. Pipeline dispatch refreshes every reused repo; ordinary `!repo` and inferred-review turns refresh their selected repo. Sandboxed providers cannot update the shared Git metadata behind linked worktrees, so this pre-turn fetch belongs to Junior rather than the model process.
-- When `githubUser` is set, Junior resolves that account with `gh auth token --user`, verifies it with `gh api user`, and applies the resulting `GH_TOKEN` only to that repo's worktree setup, runner, and GitHub API child processes. It never switches the host-wide active `gh` account. Repos without `githubUser` retain the existing host-auth fallback.
+- GitHub CLI/API operations require both the exact configured `githubRepo` and
+  `githubUser`. Junior resolves that account with `gh auth token --user`,
+  verifies it with `gh api user`, and applies the resulting `GH_TOKEN` only to
+  that repo's worktree setup, runner, and GitHub API child processes. Each
+  `gh` child gets an isolated `GH_CONFIG_DIR`; inherited GitHub tokens and
+  account/config selectors are removed. Unknown repos or repos without
+  `githubUser` fail closed rather than using the host's active `gh` account.
 - Delegated setup requires 2 GiB of free filesystem headroom by default (`WORKTREE_SETUP_MIN_FREE_BYTES` overrides it). Junior streams stdout and stderr concurrently into a restricted transcript while retaining only bounded tails in memory, so verbose installers cannot deadlock on full pipes or exhaust the bot heap. If the setup script fails after registering a worktree, Junior transactionally removes that worktree and its new branch; the surfaced error is a bounded per-stream tail plus a pointer to the complete owner-only (`0600`) transcript under `logs/worktree-setup/`.
 - Every Git command and delegated setup script runs in its own process group with
   a hard wall-clock bound. Git defaults to 30 seconds

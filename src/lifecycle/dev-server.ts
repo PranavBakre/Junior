@@ -168,7 +168,7 @@ export class DevServerManager {
     log.info("dev-server", `spawn repo=${repoName} cmd=${cmdParts.join(" ")} cwd=${worktreePath}`);
     const proc = Bun.spawn(cmdParts, {
       cwd: worktreePath,
-      env: githubEnv ? { ...cleanGitHubEnvironment(), ...githubEnv } : undefined,
+      env: { ...cleanGitHubEnvironment({ isolatedConfig: true }), ...githubEnv },
       stdout: "pipe",
       stderr: "pipe",
       detached: true,
@@ -462,7 +462,7 @@ function sleep(ms: number): Promise<void> {
 async function runGit(args: string[], cwd: string, githubEnv?: Record<string, string>): Promise<string> {
   const proc = Bun.spawn(["git", ...args], {
     cwd,
-    env: githubEnv ? { ...cleanGitHubEnvironment(), ...githubEnv } : undefined,
+    env: { ...cleanGitHubEnvironment({ isolatedConfig: true }), ...githubEnv },
     stdout: "pipe",
     stderr: "pipe",
   });

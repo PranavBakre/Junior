@@ -1,5 +1,6 @@
 import { mkdirSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { cleanGitHubEnvironment } from "../github/auth.ts";
 import type { AgentIdentity, RunnerProvider, ThreadSession } from "../session/types.ts";
 
 export interface RunnerRuntimeOptions {
@@ -170,7 +171,7 @@ export function buildRunnerEnv(
   githubAuthEnv?: Record<string, string>,
 ): Record<string, string> {
   const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
+    ...cleanGitHubEnvironment({ isolatedConfig: true }),
     JUNIOR_SPAWNED: "1",
     SLACK_CHANNEL: session.channel,
     SLACK_THREAD_TS: session.threadId,
@@ -179,9 +180,14 @@ export function buildRunnerEnv(
   };
   if (githubAuthEnv) {
     Object.assign(env, githubAuthEnv);
-    delete env.GITHUB_TOKEN;
-    delete env.GH_ENTERPRISE_TOKEN;
   }
+  // Empty sentinels prevent Bun-launched providers from reloading credentials
+  // from a target repository's dotenv file. A verified GH_TOKEN above is the
+  // sole exception.
+  if (!githubAuthEnv?.GH_TOKEN) env.GH_TOKEN = "";
+  env.GITHUB_TOKEN = "";
+  env.GH_ENTERPRISE_TOKEN = "";
+  env.GITHUB_RECONCILE_TOKEN = "";
   // MCP_CONTEXT_SECRET authenticates the agent identity embedded in MCP URLs.
   // A child that receives it could forge a different agent's capability token.
   delete env.MCP_CONTEXT_SECRET;

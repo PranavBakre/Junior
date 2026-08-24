@@ -138,16 +138,31 @@ export function createGitHubClient(options: GitHubClientOptions = {}): GitHubCli
       const repoRef = typeof variables.owner === "string" && typeof variables.repo === "string"
         ? `${variables.owner}/${variables.repo}`
         : undefined;
-      const selectedEnv = repoRef && options.githubAuth
-        ? await options.githubAuth.environmentForRepoRef(repoRef)
-        : undefined;
+      if (!repoRef) {
+        return githubIdentityFailure(
+          "GitHub CLI fallback requires an exact configured repository identity",
+        );
+      }
+      if (!options.githubAuth) {
+        return githubIdentityFailure(
+          "GitHub CLI fallback requires a GitHub identity resolver",
+        );
+      }
+      let selectedEnv: Record<string, string>;
+      try {
+        selectedEnv = await options.githubAuth.environmentForRepoRef(repoRef);
+      } catch (error) {
+        return githubIdentityFailure(
+          error instanceof Error ? error.message : String(error),
+        );
+      }
       const result = await runCli([
         "api",
         "graphql",
         "-f",
         `query=${query}`,
         ...serializeCliVariables(variables),
-      ], selectedEnv ? { ...cleanGitHubEnvironment(), ...selectedEnv } : undefined);
+      ], { ...cleanGitHubEnvironment(), ...selectedEnv });
       if (!result.ok) {
         return {
           ok: false,
@@ -411,6 +426,16 @@ export function createGitHubClient(options: GitHubClientOptions = {}): GitHubCli
       };
     },
   };
+}
+
+function githubIdentityFailure(error: string): {
+  ok: false;
+  error: string;
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+} {
+  return { ok: false, error, status: 0, headers: {}, body: "" };
 }
 
 function serializeCliVariables(
