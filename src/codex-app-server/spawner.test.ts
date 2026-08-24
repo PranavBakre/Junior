@@ -234,6 +234,43 @@ describe("spawnCodexAppServer", () => {
     }
   });
 
+  it("enables the local Codex environment only for a registered review worktree", async () => {
+    const fakeCodex = installFakeCodex(recordingFakeCodexScript());
+    process.env.CODEX_BIN = fakeCodex.command;
+
+    try {
+      const session = createSession("review-thread", "C01");
+      session.provider = "codex-app-server";
+      session.activeAgentName = "review";
+      session.worktreePath = join(fakeCodex.root, "repo.junior-worktrees", "slack-review-thread");
+      mkdirSync(session.worktreePath, { recursive: true });
+      session.worktreePaths = { repo: session.worktreePath };
+      session.agentPermissions = { intent: "read-only", mcp: [], tools: [] };
+      const config = {
+        ...testConfig,
+        codex: {
+          ...testConfig.codex,
+          isolatedHomePath: join(fakeCodex.root, "codex-home"),
+        },
+      };
+
+      await spawnCodexAppServer(
+        session,
+        "review",
+        config,
+        session.worktreePath,
+      ).result;
+      const requests = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const threadStart = requests.find((request) => request.method === "thread/start");
+      expect(threadStart.params).not.toHaveProperty("environments");
+    } finally {
+      fakeCodex.cleanup();
+    }
+  });
+
   it("invokes an assignment skill as a structured turn item without changing developer instructions", async () => {
     const fakeCodex = installFakeCodex(recordingFakeCodexScript());
     process.env.CODEX_BIN = fakeCodex.command;

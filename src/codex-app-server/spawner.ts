@@ -18,6 +18,7 @@ import { signalProcessTree } from "../lifecycle/process-tree.ts";
 import { resolveTrustedSkill } from "../skills/registry.ts";
 import { skillInvocationPrompt } from "../skills/runtime.ts";
 import { requestSlackApproval } from "../mcp/slack-approval-bridge.ts";
+import { subjectHasCapability } from "../agents/capabilities.ts";
 
 interface JsonRpcResponse {
   id: number;
@@ -244,9 +245,7 @@ export function spawnCodexAppServer(
             approvalPolicy: policy.approvalPolicy,
             sandbox: policy.sandbox,
             sandboxPolicy: policy.sandboxPolicy,
-            // Do not expose Codex's default local environment. Junior's
-            // scoped MCP wiring is the only tool surface for this thread.
-            environments: [],
+            ...codexEnvironmentSelection(session, runtime.cwd),
             developerInstructions: developerInstructions(session),
             excludeTurns: true,
             persistExtendedHistory: false,
@@ -464,9 +463,7 @@ function threadStartParams(options: {
     approvalPolicy: options.policy.approvalPolicy,
     sandbox: options.policy.sandbox,
     sandboxPolicy: options.policy.sandboxPolicy,
-    // Keep the built-in local command environment disabled. Tool access must
-    // come from Junior's scoped MCP contract.
-    environments: [],
+    ...codexEnvironmentSelection(options.session, options.cwd),
     // Omit baseInstructions so Codex retains its native coding-agent operating
     // prompt. Junior is an additive developer layer, not a replacement for
     // Codex's tool, persistence, safety, and editing contract.
@@ -476,6 +473,26 @@ function threadStartParams(options: {
     persistExtendedHistory: false,
     threadSource: "user",
   };
+}
+
+function codexEnvironmentSelection(
+  session: ThreadSession,
+  cwd: string,
+): { environments?: [] } {
+  const worktreeRoots = [
+    session.worktreePath,
+    ...Object.values(session.worktreePaths ?? {}),
+  ].filter((root): root is string => Boolean(root));
+  if (
+    subjectHasCapability(session, "worktree-verify") &&
+    worktreeRoots.includes(cwd)
+  ) {
+    // Omission selects Codex's default local environment. The compiled
+    // read-only/workspace sandbox remains authoritative for this worktree.
+    return {};
+  }
+  // All other Junior sessions stay on the capability-scoped MCP surface.
+  return { environments: [] };
 }
 
 function emitThreadStarted(

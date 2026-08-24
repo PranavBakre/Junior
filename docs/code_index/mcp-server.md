@@ -51,7 +51,8 @@ operations using the bot token and signed run context.
 | `.mcp.json` | Root config contains only the local `slack-bot` server. Per-agent generated configs add Playwright, MongoDB, Mixpanel, and capability-gated hosted Figma/Notion servers as needed. |
 | `.claude/settings.json` | `permissions.allow: ["mcp__slack-bot__*"]` |
 | `src/claude/spawner.ts` | Passes `--mcp-config` for worktree spawns |
-| `src/codex-app-server/spawner.ts` | Routes native approval callbacks through the shared Slack approval bridge |
+| `src/codex-app-server/spawner.ts` | Routes native approval callbacks through the shared Slack approval bridge; enables the local Codex environment only for registered worktree-verification sessions. |
+| `src/codex-app-server/config.ts` | Generates isolated Codex config with inherited connected apps disabled and only Junior's capability-scoped MCP servers enabled. |
 
 ## Key Concepts
 
