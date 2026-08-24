@@ -11,6 +11,7 @@ import {
   type WorkflowValidationError,
 } from "./types.ts";
 import { loadWorkflowDefinition } from "./definition.ts";
+import { verifyWorkflowProvenance } from "./provenance.ts";
 
 export interface WorkflowRegistrySnapshot {
   definitions: Map<string, WorkflowDefinition>;
@@ -19,7 +20,9 @@ export interface WorkflowRegistrySnapshot {
 
 export interface WorkflowRegistryOptions {
   repos: RepoConfig[];
-  roots?: Array<{ path: string; sourceRoot: WorkflowSourceRoot }>;
+  roots?: Array<{ path: string; sourceRoot: WorkflowSourceRoot; defaultRef?: string }>;
+  /** Test-only escape hatch; production always verifies default-branch provenance. */
+  verifyProvenance?: boolean;
   builtInCommands?: Set<string>;
   debounceMs?: number;
 }
@@ -29,7 +32,7 @@ export type WorkflowRegistryEvent =
   | { type: "watch-error"; error: Error };
 
 export class WorkflowRegistry {
-  private roots: Array<{ path: string; sourceRoot: WorkflowSourceRoot }>;
+  private roots: Array<{ path: string; sourceRoot: WorkflowSourceRoot; defaultRef?: string }>;
   private repos: RepoConfig[];
   private builtInCommands: Set<string>;
   private debounceMs: number;
@@ -41,12 +44,14 @@ export class WorkflowRegistry {
   private reloadsPaused = false;
   private pauseDepth = 0;
   private writeLock: Promise<void> = Promise.resolve();
+  private verifyProvenance: boolean;
 
   constructor(options: WorkflowRegistryOptions) {
     this.roots = options.roots ?? [
-      { path: PUBLIC_WORKFLOW_ROOT, sourceRoot: "public" },
-      { path: OVERLAY_WORKFLOW_ROOT, sourceRoot: "overlay" },
+      { path: PUBLIC_WORKFLOW_ROOT, sourceRoot: "public", defaultRef: "origin/main" },
+      { path: OVERLAY_WORKFLOW_ROOT, sourceRoot: "overlay", defaultRef: "origin/main" },
     ];
+    this.verifyProvenance = options.verifyProvenance ?? true;
     this.repos = options.repos;
     this.builtInCommands = options.builtInCommands ?? new Set();
     this.debounceMs = options.debounceMs ?? 350;
@@ -128,7 +133,20 @@ export class WorkflowRegistry {
             repos: this.repos,
             builtInCommands: this.builtInCommands,
           });
-          if (definition) byName.set(definition.name, definition);
+          if (definition) {
+            if (this.verifyProvenance) {
+              const provenance = await verifyWorkflowProvenance({
+                path: definition.sourcePath,
+                sourceRoot: root.sourceRoot,
+                defaultRef: root.defaultRef,
+              });
+              if (provenance.status !== "verified") {
+                throw new WorkflowUnpublishedError(provenance.reason);
+              }
+              definition.verifiedCommitSha = provenance.commitSha;
+            }
+            byName.set(definition.name, definition);
+          }
         } catch (err) {
           errors.push({
             path: join(root.path, file),
@@ -154,6 +172,15 @@ export class WorkflowRegistry {
       const previousDefinition = [...previous.values()].find(
         (definition) => definition.sourcePath === error.path,
       );
+      if (this.verifyProvenance && error.message.startsWith("Workflow is unpublished:")) {
+        // An unverified overlay must not expose its public counterpart. It is
+        // also not safe to keep the previous overlay after its file becomes
+        // dirty/unpublished: the bytes on disk are no longer authoritative.
+        if (sourceRootForPath(error.path, this.roots) === "overlay") {
+          next.delete(workflowNameFromFilePath(error.path));
+        }
+        continue;
+      }
       if (previousDefinition) {
         next.set(previousDefinition.name, previousDefinition);
         continue;
@@ -241,6 +268,13 @@ export class WorkflowRegistry {
         );
       }
     }
+  }
+}
+
+class WorkflowUnpublishedError extends Error {
+  constructor(reason: string) {
+    super(`Workflow is unpublished: ${reason}`);
+    this.name = "WorkflowUnpublishedError";
   }
 }
 

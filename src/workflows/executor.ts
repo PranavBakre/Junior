@@ -132,6 +132,7 @@ export class WorkflowExecutor {
       workflowName: request.definition.name,
       workflowVersionHash: request.definition.versionHash,
       sourcePath: request.definition.sourcePath,
+      verifiedCommitSha: request.definition.verifiedCommitSha ?? null,
       reason: request.reason,
       actorSlackUserId: request.actorSlackUserId ?? null,
       status: "running",
@@ -719,6 +720,7 @@ function renderArtifact(options: {
     `Run ID: ${options.run.id}`,
     `Workflow version: ${options.definition.versionHash}`,
     `Source: ${options.definition.sourcePath}`,
+    `Verified default-branch commit: ${options.run.verifiedCommitSha ?? "unverified"}`,
     `Reason: ${options.run.reason}`,
     `Actor: ${options.run.actorSlackUserId ?? "system"}`,
     options.triggerContext

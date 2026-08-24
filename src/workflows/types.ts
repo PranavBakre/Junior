@@ -106,6 +106,8 @@ export interface WorkflowDefinition {
   versionHash: string;
   sourcePath: string;
   sourceRoot: WorkflowSourceRoot;
+  /** Set only after the definition matches the configured default branch tree. */
+  verifiedCommitSha?: string | null;
 }
 
 export interface WorkflowState {
@@ -125,6 +127,8 @@ export interface WorkflowRun {
   workflowName: string;
   workflowVersionHash: string;
   sourcePath: string;
+  /** Default-branch commit whose workflow blob was verified for this run. */
+  verifiedCommitSha?: string | null;
   reason: WorkflowRunReason;
   actorSlackUserId: string | null;
   status: WorkflowRunStatus;

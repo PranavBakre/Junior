@@ -637,6 +637,7 @@ describe("workflow create/edit routes", () => {
       mkdirSync(join(dir, "workflows"), { recursive: true });
       const registry = new WorkflowRegistry({
         repos: [],
+        verifyProvenance: false,
         roots: [{ path: join(dir, "workflows"), sourceRoot: "public" }],
       });
       await registry.reload();

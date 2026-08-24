@@ -82,6 +82,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         workflow_name TEXT NOT NULL,
         workflow_version_hash TEXT NOT NULL,
         source_path TEXT NOT NULL,
+        verified_commit_sha TEXT,
         reason TEXT NOT NULL CHECK (reason IN ('schedule', 'command', 'event', 'manual')),
         actor_slack_user_id TEXT,
         status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed', 'skipped')),
@@ -95,6 +96,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
       )
     `);
     ensureColumn(this.db, "workflow_runs", "provider_session_id", "TEXT");
+    ensureColumn(this.db, "workflow_runs", "verified_commit_sha", "TEXT");
     this.db.run(`
       CREATE INDEX IF NOT EXISTS workflow_runs_workflow_started_idx
       ON workflow_runs (workflow_name, started_at DESC)
@@ -156,8 +158,8 @@ export class SqliteWorkflowStore implements WorkflowStore {
     this.db
       .query(
         `INSERT INTO workflow_runs
-         (id, workflow_name, workflow_version_hash, source_path, reason, actor_slack_user_id, status, started_at, finished_at, artifact_path, provider_session_id, slack_channel, slack_thread_ts, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, workflow_name, workflow_version_hash, source_path, verified_commit_sha, reason, actor_slack_user_id, status, started_at, finished_at, artifact_path, provider_session_id, slack_channel, slack_thread_ts, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            status = excluded.status,
            finished_at = excluded.finished_at,
@@ -171,6 +173,7 @@ export class SqliteWorkflowStore implements WorkflowStore {
         run.workflowName,
         run.workflowVersionHash,
         run.sourcePath,
+        run.verifiedCommitSha ?? null,
         run.reason,
         run.actorSlackUserId,
         run.status,
@@ -218,6 +221,7 @@ interface RunRow {
   workflow_name: string;
   workflow_version_hash: string;
   source_path: string;
+  verified_commit_sha: string | null;
   reason: WorkflowRun["reason"];
   actor_slack_user_id: string | null;
   status: WorkflowRunStatus;
@@ -250,6 +254,7 @@ function runFromRow(row: RunRow): WorkflowRun {
     workflowName: row.workflow_name,
     workflowVersionHash: row.workflow_version_hash,
     sourcePath: row.source_path,
+    verifiedCommitSha: row.verified_commit_sha,
     reason: row.reason,
     actorSlackUserId: row.actor_slack_user_id,
     status: row.status,
