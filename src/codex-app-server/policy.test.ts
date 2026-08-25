@@ -64,6 +64,33 @@ describe("mapCodexRunPolicy", () => {
     });
   });
 
+  it("lets db-executioner prepare files inside its registered worktree", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "db-executioner";
+    session.worktreePath = "/gx-backend.junior-worktrees/slack-t";
+    session.assignmentCapabilities = ["repo-write", "worktree-mutate"];
+    session.agentPermissions = {
+      intent: "human-gated",
+      mcp: ["mongodb"],
+      tools: ["Read", "Write", "Edit", "Bash"],
+    };
+
+    expect(
+      mapCodexRunPolicy({ config, session, cwd: session.worktreePath }),
+    ).toEqual({
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [session.worktreePath],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      },
+      mcpAllowed: true,
+    });
+  });
+
   it("gives review workspace-write only inside registered worktrees", () => {
     const session = createSession("t", "c");
     session.activeAgentName = "review";

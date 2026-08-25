@@ -45,6 +45,12 @@ calls as approval-required. The setting is scoped to MCP tools only; shell and
 file approvals continue through the normal Codex policy and Slack approval
 bridge.
 
+Human-gated roles are read-only unless their trusted catalog entry declares
+both `repo-write` and `worktree-mutate`. Those builders receive
+`workspaceWrite` only when `cwd` is a registered worktree, with network access
+disabled, so they can prepare a reviewable script without gaining ungated
+production execution.
+
 Thread creation and resume send `environments: []` for MCP-only and untrusted
 runs. Trusted agents with `worktree-verify` receive Codex's local command
 environment only in an exact registered worktree or the fixed workflow utility

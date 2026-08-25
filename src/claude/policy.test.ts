@@ -314,6 +314,27 @@ describe("mapClaudeRunPolicy", () => {
     expect(policy.disallowedTools).toContain("Bash(rm *)");
   });
 
+  test("lets db-executioner prepare files while keeping shell execution gated", () => {
+    const session = createSession("t", "c");
+    session.activeAgentName = "db-executioner";
+    session.worktreePath = "/repo";
+    session.assignmentCapabilities = ["repo-write", "worktree-mutate"];
+    session.agentPermissions = {
+      intent: "human-gated",
+      mcp: ["mongodb"],
+      tools: ["Read", "Write", "Edit", "Bash"],
+    };
+
+    const policy = mapClaudeRunPolicy({ config, session, cwd: "/repo" });
+
+    expect(policy.permissionMode).toBe("default");
+    expect(policy.allowedTools).toContain("Write");
+    expect(policy.allowedTools).toContain("Edit");
+    expect(policy.allowedTools).not.toContain("Bash");
+    expect(policy.disallowedTools).not.toContain("Write");
+    expect(policy.disallowedTools).not.toContain("Edit");
+  });
+
   test("declared intent cannot widen catalog ceiling for restricted roles", () => {
     // Phase 3: target-repo / session overrides must not grant review product-code writes.
     const session = sessionWith({ intent: "normal", mcp: [], tools: [] });

@@ -89,6 +89,11 @@ function isMutatingToolSpec(spec: string): boolean {
   );
 }
 
+function isWorkspaceFileTool(spec: string): boolean {
+  const name = spec.trim();
+  return name === "Edit" || name === "Write" || name === "NotebookEdit";
+}
+
 export function mapClaudeRunPolicy(options: {
   config: Config["claude"];
   session: ThreadSession;
@@ -223,28 +228,43 @@ export function mapClaudeRunPolicy(options: {
   }
 
   if (intent === "human-gated") {
+    const mayPrepareWorkspaceFiles =
+      subjectHasCapability(session, "repo-write") &&
+      subjectHasCapability(session, "worktree-mutate") &&
+      hasRegisteredWorktreeCwd;
     // Planners need the durable control plane even though product/worktree
-    // mutation remains blocked. Claude plan mode rejects mutating MCP tools,
-    // so use a strict default-mode allowlist when trusted capabilities add
-    // those tools; filesystem mutations remain explicitly disallowed.
+    // mutation remains blocked. Trusted workspace builders may also prepare
+    // reviewable files before requesting approval for the gated operation.
     //
     // Mutating tools MUST NOT be pre-allowed: when the approval round-trip is
     // active the spawner switches to `default` mode, and anything in
     // --allowedTools skips the permission prompt entirely — a declared
-    // Write/Edit would silently bypass the human gate it exists for. Leaving
-    // them un-allowed routes each mutation through the approval tool
-    // (approval mode) or blocks it (plan mode).
+    // Write/Edit would silently bypass the human gate it exists for. The only
+    // exception is a trusted workspace mutation capability; Bash remains gated.
     return {
-      permissionMode: capabilityTools.length > 0 ? "default" : "plan",
+      permissionMode:
+        capabilityTools.length > 0 || mayPrepareWorkspaceFiles
+          ? "default"
+          : "plan",
       allowedTools: [
         ...new Set([
-          ...declaredTools.filter((tool) => !isMutatingToolSpec(tool)),
+          ...declaredTools.filter(
+            (tool) =>
+              !isMutatingToolSpec(tool) ||
+              (mayPrepareWorkspaceFiles && isWorkspaceFileTool(tool)),
+          ),
           ...capabilityTools,
         ]),
       ],
       disallowedTools:
         capabilityTools.length > 0
-          ? [...READ_ONLY_DISALLOWED, ...PROVIDER_NATIVE_FANOUT_DISALLOWED]
+          ? [
+              ...READ_ONLY_DISALLOWED.filter(
+                (tool) =>
+                  !mayPrepareWorkspaceFiles || !isWorkspaceFileTool(tool),
+              ),
+              ...PROVIDER_NATIVE_FANOUT_DISALLOWED,
+            ]
           : [...PROVIDER_NATIVE_FANOUT_DISALLOWED],
       addDirs: [cwd],
     };

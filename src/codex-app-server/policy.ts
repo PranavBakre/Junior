@@ -94,6 +94,22 @@ export function mapCodexRunPolicy(options: {
   }
 
   if (intent === "human-gated") {
+    const mayPrepareWorkspaceFiles =
+      subjectHasCapability(session, "repo-write") &&
+      subjectHasCapability(session, "worktree-mutate") &&
+      worktreeRoots.includes(cwd);
+    if (mayPrepareWorkspaceFiles) {
+      return {
+        // Trusted human-gated builders (for example db-executioner) may prepare
+        // reviewable scripts in their managed worktree before asking approval
+        // to execute them. Network remains disabled, so production execution
+        // still crosses the explicit approval boundary.
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        sandboxPolicy: workspaceWritePolicy(cwd, worktreeRoots),
+        mcpAllowed: !session.cwd,
+      };
+    }
     // Read-only sandbox, NOT workspace-write: with a writable workspace and
     // `on-request`, ordinary in-workspace edits never trigger an approval —
     // the sandbox permits them and the model only asks when IT chooses. A

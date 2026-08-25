@@ -72,6 +72,13 @@ trusted compiler to every published agent. It restores local inspection and
 verification in a managed worktree without widening mutation policy, sandbox,
 or human-gated operations.
 
+Human-gated agents remain read-only by default. A trusted agent with both
+`repo-write` and `worktree-mutate` may prepare reviewable files inside its
+registered worktree before requesting approval for the gated operation. Codex
+grants workspace-only writes with network disabled; Claude pre-allows file
+editors while keeping Bash gated. This lets DB Executioner draft a migration
+script before asking to run it without granting an ungated production write.
+
 This check is performed independently for the public Junior checkout and the
 `agents-org` submodule checkout. Target-repository definitions remain
 prompt-only and are never catalog sources.
