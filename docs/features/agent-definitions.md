@@ -117,7 +117,9 @@ The most immediately useful agent. PR review is the most common async task.
   build-config, publishing, and generated-artifact changes require an executed
   check or inspected artifact before approval. Durable review completion records
   one pinned `review` receipt and one `runtime-evidence` receipt; static/docs-only
-  reviews must explicitly record `not-applicable:<reason>`.
+  reviews must explicitly record `not-applicable:<reason>`. Private overrides
+  retain the `pipeline-outcome` common contract and must settle the durable
+  outcome after GitHub posting but before returning the Slack verdict.
 
 **Test:** Load the agent definition. Inject as system prompt. Give Claude a PR diff. Output should be structured review with severity-tagged inline comments.
 **Defers:** Other agents, common preamble.
