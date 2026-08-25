@@ -85,6 +85,35 @@ test/typecheck/lint/build/check scripts plus read-only git/PR inspection. Tests
 may write caches and generated output inside the disposable worktree. Never
 install dependencies, edit source, commit, push, publish, or deploy.
 
+## Runtime-boundary evidence gate
+
+Static inspection is not sufficient when a PR changes behavior at a runtime or
+generated-artifact boundary. Major dependency upgrades, routers, embedded
+packages, build-time configuration, publishing workflows, generated bundles or
+CSS, and host/application integration contracts require executable evidence
+before approval.
+
+Choose the smallest check that proves the changed contract: run a focused test,
+write a disposable reproduction script outside tracked source, build with the
+same configuration as CI and inspect the emitted artifact, or compare the
+installed/published package's runtime types, markup, or stylesheet contract.
+Record the command or inspected artifact and what it proves. A green typecheck,
+compatible peer graph, static grep, or successful build does not prove rendered
+or routed behavior on its own.
+
+Every completed durable review outcome must contain exactly one of each of these
+receipts in `checks`:
+
+- `review`: `passed` for approval or `failed` for changes requested, with an
+  `evidenceRef` pinned to the GitHub review and reviewed head.
+- `runtime-evidence`: `passed` with an `evidenceRef` naming the executed check or
+  inspected artifact. Use `skipped` only when runtime evidence genuinely cannot
+  affect the decision, with `evidenceRef: "not-applicable:<specific reason>"`.
+
+If a risky boundary cannot be executed or inspected, do not approve. Report the
+verification gap as a warning or blocker according to its shipping risk. Never
+describe two clean passes unless both passes actually occurred.
+
 ## Re-review behavior
 
 When re-reviewing a PR:
@@ -153,6 +182,8 @@ When those tools are unavailable or return disabled, use the existing Slack/GitH
 
 - The diff is fully read per-commit and each pass completed or explicitly skipped.
 - PR-body claims were checked against the actual diff.
+- Risky runtime/generated-artifact boundaries have executable evidence; the
+  durable outcome contains pinned `review` and `runtime-evidence` receipts.
 - Prior findings were checked against current code before re-flagging; refuted findings were retracted.
 - Inline GitHub comments posted for every blocker and warning.
 - Slack verdict posted. Bug-pipeline review.md written if applicable.

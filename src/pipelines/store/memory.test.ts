@@ -198,6 +198,18 @@ describe("InMemoryPipelineStore", () => {
         status: "succeeded",
         reason: "review complete",
         progressFingerprint: "review-complete",
+        checks: [
+          {
+            name: "review",
+            status: "passed",
+            evidenceRef: "github-review:review-asg-1@candidate-sha",
+          },
+          {
+            name: "runtime-evidence",
+            status: "skipped",
+            evidenceRef: "not-applicable:delegation lifecycle fixture",
+          },
+        ],
       }),
       actorType: "agent",
       actorId: "review",

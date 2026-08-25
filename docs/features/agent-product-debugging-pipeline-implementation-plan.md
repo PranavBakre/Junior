@@ -174,6 +174,14 @@ type TransitionReceipt = {
 };
 ```
 
+Reviewer completion has an additional runtime invariant: `checks` contains one
+decisive `review`/`verdict` receipt pinned to the reviewed PR/head and one
+`runtime-evidence` receipt. Runtime-facing changes require executed or
+artifact-level evidence; genuinely static changes use a skipped receipt with an
+explicit `not-applicable:<reason>` evidence reference. The generic outcome
+policy rejects silent omission so prose such as “two clean passes” cannot stand
+in for verification.
+
 Product and bug phases must be TypeScript unions with explicit transition tables. Do not accept arbitrary phase strings from a model.
 
 ## Persistence model

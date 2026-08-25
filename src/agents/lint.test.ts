@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 
 const agentsDir = path.resolve(import.meta.dir, "../../.claude/agents");
+const agentsOrgDir = path.resolve(import.meta.dir, "../../agents-org");
 const commonDir = path.join(agentsDir, "common");
 const supportSkillsDir = path.resolve(import.meta.dir, "../../support/skills");
 
@@ -146,6 +147,21 @@ describe("prompt lint", () => {
     it.each(ALL_PUBLIC_AGENTS)("%s.md contains '## Done means'", async (name) => {
       const content = await readAgent(name);
       expect(content).toContain("## Done means");
+    });
+  });
+
+  describe("review agent requires runtime-boundary evidence", () => {
+    it.each([
+      ["public", path.join(agentsDir, "review.md")],
+      ["GrowthX overlay", path.join(agentsOrgDir, "review.md")],
+    ])("keeps the executable evidence contract in the %s prompt", async (_source, file) => {
+      const content = await fs.readFile(file, "utf-8");
+      expect(content).toContain("Runtime-boundary evidence gate");
+      expect(content).toContain("runtime-evidence");
+      expect(content).toContain("not-applicable:<specific reason>");
+      expect(content).toContain(
+        "Never\ndescribe two clean passes unless both passes actually occurred",
+      );
     });
   });
 

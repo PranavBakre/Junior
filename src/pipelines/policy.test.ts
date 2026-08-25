@@ -234,6 +234,88 @@ describe("validateOutcome", () => {
     expect(result).toEqual({ ok: true, receiptStatus: "accepted" });
   });
 
+  it("rejects reviewer completion without verdict and runtime evidence receipts", () => {
+    const result = validateOutcome({
+      run: productRun({ phase: "reviewing" }),
+      assignment: assignment({ targetAgent: "review" }),
+      outcome: outcome({ action: "complete", status: "succeeded" }),
+      recentFingerprints: [],
+      now: 1_000,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("review/verdict check"),
+    });
+  });
+
+  it("accepts reviewer completion with pinned verdict and runtime evidence", () => {
+    const result = validateOutcome({
+      run: productRun({ phase: "reviewing" }),
+      assignment: assignment({ targetAgent: "review" }),
+      outcome: outcome({
+        action: "complete",
+        status: "succeeded",
+        checks: [
+          {
+            name: "review",
+            status: "passed",
+            evidenceRef: "github-review:5017170778@b8c65c3",
+          },
+          {
+            name: "runtime-evidence",
+            status: "passed",
+            evidenceRef: "test:rich-text-list-markers:passed",
+          },
+        ],
+      }),
+      recentFingerprints: [],
+      now: 1_000,
+    });
+
+    expect(result).toEqual({ ok: true, receiptStatus: "accepted" });
+  });
+
+  it("requires an explicit reason when runtime evidence is not applicable", () => {
+    const base = outcome({
+      action: "complete",
+      status: "failed",
+      checks: [
+        {
+          name: "verdict",
+          status: "failed",
+          evidenceRef: "github-review:42@deadbeef",
+        },
+        {
+          name: "runtime-evidence",
+          status: "skipped",
+          evidenceRef: "could-not-run",
+        },
+      ],
+    });
+    const context = {
+      run: productRun({ phase: "reviewing" }),
+      assignment: assignment({ targetAgent: "review" }),
+      recentFingerprints: [],
+      now: 1_000,
+    };
+
+    expect(validateOutcome({ ...context, outcome: base })).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("not-applicable:<reason>"),
+    });
+    expect(validateOutcome({
+      ...context,
+      outcome: {
+        ...base,
+        checks: base.checks.map((check) =>
+          check.name === "runtime-evidence"
+            ? { ...check, evidenceRef: "not-applicable:docs-only change" }
+            : check),
+      },
+    })).toEqual({ ok: true, receiptStatus: "accepted" });
+  });
+
   it("requires handoff targetAgent and nextAssignment", () => {
     const missing = validateOutcome({
       run: productRun(),

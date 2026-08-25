@@ -714,7 +714,18 @@ describe("backend feature → ready-for-human-merge", () => {
         status: "succeeded",
         reason: "LGTM",
         progressFingerprint: "rev-ok",
-        checks: [{ name: "review", status: "passed" }],
+        checks: [
+          {
+            name: "review",
+            status: "passed",
+            evidenceRef: "github-review:approved@sha-be-1",
+          },
+          {
+            name: "runtime-evidence",
+            status: "passed",
+            evidenceRef: "focused-tests:invites:passed",
+          },
+        ],
       }),
     });
     expect(r.status).toBe("accepted");
@@ -1112,6 +1123,11 @@ describe("review → fix → new revision → re-review", () => {
             status: "failed",
             evidenceRef: "null-check-missing",
           },
+          {
+            name: "runtime-evidence",
+            status: "passed",
+            evidenceRef: "reproduction:null-input:failed",
+          },
         ],
       }),
     });
@@ -1203,7 +1219,18 @@ describe("review → fix → new revision → re-review", () => {
         status: "succeeded",
         reason: "LGTM after fix",
         progressFingerprint: "rev-ok-2",
-        checks: [{ name: "review", status: "passed" }],
+        checks: [
+          {
+            name: "review",
+            status: "passed",
+            evidenceRef: `github-review:approved@${rev2.digest}`,
+          },
+          {
+            name: "runtime-evidence",
+            status: "passed",
+            evidenceRef: "focused-tests:null-input:passed",
+          },
+        ],
         evidenceRefs: [`revision:${rev2.digest}`],
       }),
     });
@@ -1259,6 +1286,11 @@ describe("unchanged findings escalate", () => {
             name: "review",
             status: "failed",
             evidenceRef: "missing-tests",
+          },
+          {
+            name: "runtime-evidence",
+            status: "skipped",
+            evidenceRef: "not-applicable:review failed on missing required coverage",
           },
         ],
       }),

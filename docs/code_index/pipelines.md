@@ -16,6 +16,7 @@ disabled by default (`PIPELINE_RUNTIME_MODE=off`) and can run in `shadow` or
 | Persistence | `src/pipelines/store/*` | Memory and SQLite stores, versioned writes, and transactional outcome handling. |
 | Reliability | `src/pipelines/outbox.ts`, `recovery.ts`, `settlement-recovery` paths | At-least-once outbox delivery, lease recovery, and settlement repair. |
 | Outcomes | `src/pipelines/outcomes.ts`, `revision.ts`, `artifacts.ts` | Idempotent agent outcomes, revisions, artifacts, and handoffs. |
+| Generic outcome policy | `src/pipelines/policy.ts` | Validates transition shape, authority-sensitive blockers, progress fingerprints, and reviewer completion evidence. Review completion requires a head-pinned verdict receipt plus a runtime-evidence receipt (or explicit `not-applicable:<reason>`). |
 | Slack/`!status` summary | `src/pipelines/projection.ts` | Human-readable `projectRunSummary` for Slack status. Not the dashboard HTTP projector. |
 | Dashboard operator projection | `src/http/routes/pipelines.ts` | List + detail + artifact read. Hides `kind=default` unless `includeDefault=1` or `kind=default`. Detail expands leases, full-run outbox (payload stripped), attempt-scoped gates, GitHub resources, dev-server jobs, artifact refs. |
 | Retention cleanup | `src/pipelines/gc.ts` | Pipeline retention GC (`PIPELINE_RETENTION_DAYS`). |

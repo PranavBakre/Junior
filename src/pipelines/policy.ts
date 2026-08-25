@@ -106,6 +106,18 @@ export function validateOutcome(ctx: PolicyContext): PolicyResult {
     };
   }
 
+  const reviewEvidenceError = validateReviewCompletionEvidence(
+    assignment,
+    outcome,
+  );
+  if (reviewEvidenceError) {
+    return {
+      ok: false,
+      receiptStatus: "rejected",
+      reason: reviewEvidenceError,
+    };
+  }
+
   switch (outcome.action) {
     case "wait":
       return validateWait(outcome, now);
@@ -126,6 +138,59 @@ export function validateOutcome(ctx: PolicyContext): PolicyResult {
       };
     }
   }
+}
+
+/**
+ * A reviewer may not turn a prose claim such as "two clean passes" into a
+ * durable approval without recording both the verdict and how runtime-facing
+ * behavior was verified. Static/docs-only changes may use an explicit
+ * not-applicable receipt, but silent omission is rejected.
+ */
+function validateReviewCompletionEvidence(
+  assignment: Assignment,
+  outcome: AgentOutcome,
+): string | null {
+  if (assignment.targetAgent !== "review" || outcome.action !== "complete") {
+    return null;
+  }
+
+  const verdictChecks = outcome.checks.filter(
+    (check) => check.name === "review" || check.name === "verdict",
+  );
+  const decisiveVerdicts = verdictChecks.filter(
+    (check) => check.status === "passed" || check.status === "failed",
+  );
+  if (decisiveVerdicts.length !== 1) {
+    return "review completion requires exactly one passed or failed review/verdict check";
+  }
+  if (!decisiveVerdicts[0]!.evidenceRef?.trim()) {
+    return "review verdict check requires evidenceRef pinned to the reviewed PR/head";
+  }
+  const verdict = decisiveVerdicts[0]!;
+  if (
+    (verdict.status === "passed" && outcome.status !== "succeeded") ||
+    (verdict.status === "failed" && outcome.status !== "failed")
+  ) {
+    return `review outcome is contradictory: status=${outcome.status}, verdict=${verdict.status}`;
+  }
+
+  const runtimeEvidence = outcome.checks.filter(
+    (check) => check.name === "runtime-evidence",
+  );
+  if (runtimeEvidence.length !== 1) {
+    return "review completion requires exactly one runtime-evidence check";
+  }
+  const verification = runtimeEvidence[0]!;
+  if (!verification.evidenceRef?.trim()) {
+    return "runtime-evidence check requires evidenceRef";
+  }
+  if (
+    verification.status === "skipped" &&
+    !verification.evidenceRef.startsWith("not-applicable:")
+  ) {
+    return "skipped runtime-evidence requires a not-applicable:<reason> evidenceRef";
+  }
+  return null;
 }
 
 function validateWait(outcome: AgentOutcome, now: number): PolicyResult {

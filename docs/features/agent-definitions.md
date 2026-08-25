@@ -113,6 +113,11 @@ The most immediately useful agent. PR review is the most common async task.
 - Reads the full diff before forming opinions
 - Severity levels: blocker, warning, nit
 - Completion criteria: two consecutive clean passes before approving
+- Runtime-boundary evidence gate: major dependency, routing, packaging,
+  build-config, publishing, and generated-artifact changes require an executed
+  check or inspected artifact before approval. Durable review completion records
+  one pinned `review` receipt and one `runtime-evidence` receipt; static/docs-only
+  reviews must explicitly record `not-applicable:<reason>`.
 
 **Test:** Load the agent definition. Inject as system prompt. Give Claude a PR diff. Output should be structured review with severity-tagged inline comments.
 **Defers:** Other agents, common preamble.
