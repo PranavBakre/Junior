@@ -397,7 +397,7 @@ function parseCatalogEntry(
   }
 
   const name = required(frontmatter, "name", sourcePath);
-  const capabilities = parseFrontmatterCsv(
+  const declaredCapabilities = parseFrontmatterCsv(
     required(frontmatter, "operational.capabilities", sourcePath),
   ).map((capability) => {
     if (!CAPABILITIES.has(capability as AgentCapability)) {
@@ -405,6 +405,15 @@ function parseCatalogEntry(
     }
     return capability as AgentCapability;
   });
+  // Local verification is baseline runtime access for every trusted agent.
+  // Mutation authority still comes from permission intent, mutation policy,
+  // sandbox compilation, and managed cwd checks.
+  const capabilities = [
+    ...new Set<AgentCapability>([
+      ...declaredCapabilities,
+      "worktree-verify",
+    ]),
+  ];
   const permissionIntent = enumValue(
     frontmatter,
     "permissions.intent",

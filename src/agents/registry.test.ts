@@ -212,7 +212,12 @@ describe("capabilities", () => {
     expect(hasCapability("build", "worktree-mutate")).toBe(true);
     expect(hasCapability("review", "worktree-mutate")).toBe(false);
     expect(hasCapability("review", "worktree-verify")).toBe(true);
-    expect(hasCapability("reproducer", "worktree-verify")).toBe(false);
+  });
+
+  it("grants local worktree verification to every registered agent", () => {
+    for (const agent of listCatalogAgents()) {
+      expect(hasCapability(agent, "worktree-verify")).toBe(true);
+    }
   });
 
   it("grants pipeline starts only to trusted orchestrators", () => {

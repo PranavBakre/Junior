@@ -7,7 +7,10 @@ import type {
   SpawnHandle,
   SpawnResult,
 } from "../runners/types.ts";
-import { buildRunnerRuntime } from "../runners/runtime.ts";
+import {
+  buildRunnerRuntime,
+  WORKFLOW_UTILITY_CWD,
+} from "../runners/runtime.ts";
 import {
   buildCodexMcpConfig,
   prepareCodexHome,
@@ -485,10 +488,11 @@ function codexEnvironmentSelection(
   ].filter((root): root is string => Boolean(root));
   if (
     subjectHasCapability(session, "worktree-verify") &&
-    worktreeRoots.includes(cwd)
+    (worktreeRoots.includes(cwd) || cwd === WORKFLOW_UTILITY_CWD)
   ) {
     // Omission selects Codex's default local environment. The compiled
-    // read-only/workspace sandbox remains authoritative for this worktree.
+    // read-only/workspace sandbox remains authoritative for managed worktrees
+    // and the fixed utility cwd used by trusted workflow definitions.
     return {};
   }
   // All other Junior sessions stay on the capability-scoped MCP surface.

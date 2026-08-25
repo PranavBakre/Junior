@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import type { WebClient } from "@slack/web-api";
 import type { Config, RepoConfig } from "../config.ts";
 import { spawnRunner } from "../runners/index.ts";
+import { WORKFLOW_UTILITY_CWD } from "../runners/runtime.ts";
+export { WORKFLOW_UTILITY_CWD } from "../runners/runtime.ts";
 import type { RunnerEvent, SpawnHandle, SpawnRunnerFn } from "../runners/types.ts";
 import {
   normalizeRunnerUsage,
@@ -45,7 +47,6 @@ import {
   type SlackArchiveMaintenanceReport,
 } from "../slack/archive-maintenance.ts";
 
-export const WORKFLOW_UTILITY_CWD = "/tmp/junior-utility";
 const DEFAULT_MAX_IDLE_INTERRUPTS = 3;
 
 export interface WorkflowExecutorOptions {

@@ -9,8 +9,8 @@ metadata; TypeScript parses, validates, and enforces that catalog.
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `operational.*` frontmatter | `.claude/agents/*.md`, `agents-org/*.md` | Single source for each trusted role's lifecycle, capabilities, mutation policy, and handoffs. |
-| `loadTrustedAgentCatalog()` | `src/agents/manifest.ts` | Compiles trusted frontmatter and fails on invalid metadata, duplicate names, MCP-only tools outside capability-derived safe lists, or unresolved handoffs. An empty uninitialized `agents-org` gitlink is treated as an absent optional overlay; a populated overlay remains strict. |
+| `operational.*` frontmatter | `.claude/agents/*.md`, `agents-org/*.md` | Source for each trusted role's lifecycle, role-specific capabilities, mutation policy, and handoffs. |
+| `loadTrustedAgentCatalog()` | `src/agents/manifest.ts` | Compiles trusted frontmatter, adds baseline `worktree-verify` to every published agent, and fails on invalid metadata, duplicate names, MCP-only tools outside capability-derived safe lists, or unresolved handoffs. An empty uninitialized `agents-org` gitlink is treated as an absent optional overlay; a populated overlay remains strict. |
 | `AGENT_IDENTITIES` | `src/support/agents.ts` | Public Slack identities and dispatch aliases. Core identities are `default`, `lead`, `reproducer`, `review`, and `echo`; support-channel `lead` sessions resolve to the `default` definition. |
 | `loadOverlayIdentities()` | `src/support/agents.ts` | Loads private `agents-org` identities from frontmatter without replacing existing public entries. |
 | `AgentRegistry` | `src/agents/registry.ts` | Loads/reloads definitions and resolves dispatchable agents. |

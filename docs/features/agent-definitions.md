@@ -67,6 +67,11 @@ publishes an authority-bearing definition. Unpublished definitions do not add ca
 permissions, mutation policy, aliases, variants, or handoff edges. If this
 removes the required `default` orchestrator, startup fails closed.
 
+`worktree-verify` is the one catalog-wide baseline capability added by the
+trusted compiler to every published agent. It restores local inspection and
+verification in a managed worktree without widening mutation policy, sandbox,
+or human-gated operations.
+
 This check is performed independently for the public Junior checkout and the
 `agents-org` submodule checkout. Target-repository definitions remain
 prompt-only and are never catalog sources.

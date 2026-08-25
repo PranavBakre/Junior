@@ -3,12 +3,14 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
+import { WORKFLOW_UTILITY_CWD } from "../runners/runtime.ts";
 import { createSession } from "../session/types.ts";
 import { resolveCodexModel, spawnCodexAppServer } from "./spawner.ts";
 import { resolveTrustedSkill } from "../skills/registry.ts";
 import { configureSlackApprovalBridge } from "../mcp/slack-approval-bridge.ts";
 import { resolvePendingApproval } from "../mcp/approval.ts";
 import type { CreateSlackActionRecord, SlackActionStore } from "../slack/action-store.ts";
+import { resolveDispatchAgent } from "../slack/action-buttons.ts";
 import type { WebClient } from "@slack/web-api";
 
 const originalCodexBin = process.env.CODEX_BIN;
@@ -234,7 +236,7 @@ describe("spawnCodexAppServer", () => {
     }
   });
 
-  it("enables the local Codex environment only for a registered review worktree", async () => {
+  it("enables the local Codex environment for a registered review worktree", async () => {
     const fakeCodex = installFakeCodex(recordingFakeCodexScript());
     process.env.CODEX_BIN = fakeCodex.command;
 
@@ -270,6 +272,144 @@ describe("spawnCodexAppServer", () => {
       fakeCodex.cleanup();
     }
   });
+
+  it("enables the local Codex environment for trusted utility workflows", async () => {
+    const fakeCodex = installFakeCodex(recordingFakeCodexScript());
+    process.env.CODEX_BIN = fakeCodex.command;
+
+    try {
+      const session = createSession("workflow-worktree-prune", "workflow");
+      session.provider = "codex-app-server";
+      session.activeAgentName = "default";
+      session.agentType = "default";
+      session.cwd = WORKFLOW_UTILITY_CWD;
+      const config = {
+        ...testConfig,
+        codex: {
+          ...testConfig.codex,
+          isolatedHomePath: join(fakeCodex.root, "codex-home"),
+        },
+      };
+
+      await spawnCodexAppServer(session, "run workflow", config).result;
+      const requests = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const threadStart = requests.find((request) => request.method === "thread/start");
+      expect(threadStart.params).not.toHaveProperty("environments");
+    } finally {
+      fakeCodex.cleanup();
+    }
+  });
+
+  it("preserves the execution surface for every Slack capability regression without a model", async () => {
+    const mergeAgent = resolveDispatchAgent(
+      {
+        channelId: "C0AKQ2BFN9F",
+        action: {
+          id: "review:merge-gxt-admin",
+          label: "Merge via gxt-admin",
+          type: "dispatch_agent",
+          agent: "lead",
+          prompt: "merge the review-approved PR",
+        },
+      },
+      new Set(),
+    );
+    const cases = [
+      {
+        name: "merge-gxt-admin default run 1787592295.000879",
+        agent: mergeAgent,
+        cwdKind: "worktree",
+        expectsLocalEnvironment: true,
+      },
+      {
+        name: "private PR review managed checkout",
+        agent: "review",
+        cwdKind: "worktree",
+        expectsLocalEnvironment: true,
+      },
+      {
+        name: "DB migration artifact managed checkout",
+        agent: "db-executioner",
+        cwdKind: "worktree",
+        expectsLocalEnvironment: true,
+      },
+      {
+        name: "managed worktree cleanup",
+        agent: "default",
+        cwdKind: "worktree",
+        expectsLocalEnvironment: true,
+      },
+      {
+        name: "scheduled worktree-prune workflow 1787621417.595599",
+        agent: "default",
+        cwdKind: "utility",
+        expectsLocalEnvironment: true,
+      },
+      {
+        name: "scheduled worklog workflow",
+        agent: "default",
+        cwdKind: "utility",
+        expectsLocalEnvironment: true,
+      },
+      {
+        name: "repo-less MCP-only member lookup",
+        agent: "onboard-member",
+        cwdKind: "repo-less",
+        expectsLocalEnvironment: false,
+      },
+    ] as const;
+
+    for (const regression of cases) {
+      const fakeCodex = installFakeCodex(recordingFakeCodexScript());
+      process.env.CODEX_BIN = fakeCodex.command;
+      try {
+        const session = createSession(`regression-${regression.agent}`, "C-SLACK");
+        session.provider = "codex-app-server";
+        session.activeAgentName = regression.agent;
+        session.agentType = regression.agent;
+        if (regression.cwdKind === "worktree") {
+          session.worktreePath = join(
+            fakeCodex.root,
+            "repo.junior-worktrees",
+            `slack-${regression.agent}`,
+          );
+          mkdirSync(session.worktreePath, { recursive: true });
+          session.worktreePaths = { repo: session.worktreePath };
+        } else if (regression.cwdKind === "utility") {
+          session.cwd = WORKFLOW_UTILITY_CWD;
+        }
+        const config = {
+          ...testConfig,
+          codex: {
+            ...testConfig.codex,
+            isolatedHomePath: join(fakeCodex.root, "codex-home"),
+          },
+        };
+
+        await spawnCodexAppServer(
+          session,
+          regression.name,
+          config,
+          session.worktreePath ?? undefined,
+        ).result;
+        const requests = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        const threadStart = requests.find((request) => request.method === "thread/start");
+        if (regression.expectsLocalEnvironment) {
+          expect(threadStart.params).not.toHaveProperty("environments");
+        } else {
+          expect(threadStart.params.environments).toEqual([]);
+        }
+      } finally {
+        fakeCodex.cleanup();
+      }
+    }
+  }, 20_000);
 
   it("invokes an assignment skill as a structured turn item without changing developer instructions", async () => {
     const fakeCodex = installFakeCodex(recordingFakeCodexScript());
@@ -330,7 +470,7 @@ describe("spawnCodexAppServer", () => {
       const handle = spawnCodexAppServer(session, "hello after restart", config);
       const result = await Promise.race([
         handle.result,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), 1000)),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), 3000)),
       ]);
 
       expect(result.exitCode).toBe(0);

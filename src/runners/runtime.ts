@@ -17,6 +17,8 @@ export interface RunnerRuntime {
   env: Record<string, string>;
 }
 
+export const WORKFLOW_UTILITY_CWD = "/tmp/junior-utility";
+
 export const DATABASE_CREDENTIAL_ENV_KEYS = [
   "MDB_MCP_CONNECTIONS",
   "MDB_MCP_CONNECTION_STRING",

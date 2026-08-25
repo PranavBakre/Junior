@@ -96,8 +96,11 @@ Status pill updates that agents post mid-run go through `slack_send_message` wit
 - Isolated Codex runtimes disable inherited connected apps. A personal Codex
   GitHub connection must not bypass Junior's repository-selected identity or
   capability-scoped MCP tools. Worktree-verification agents receive Codex's
-  local command environment only when their cwd is a registered managed
-  worktree; the compiled sandbox and approval policy still apply.
+  local command environment when their cwd is a registered managed worktree or
+  the fixed `/tmp/junior-utility` cwd used by trusted workflow definitions; the
+  compiled sandbox and approval policy still apply. Every registered agent has
+  `worktree-verify` so capability routing cannot silently remove local Git and
+  filesystem access from an otherwise authorized workflow.
 - The Mixpanel MCP is intentionally **not** in `.mcp.json` and is injected only
   for `feature-metrics` sessions. Junior exposes one signed, read-only HTTP MCP
   at `/mcp/mixpanel`; it maintains one upstream connection for each configured
