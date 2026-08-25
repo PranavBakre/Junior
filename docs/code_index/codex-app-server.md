@@ -14,6 +14,7 @@ Junior base provider.
 | Protocol parsing | `src/codex-app-server/parser.ts` | Parses JSONL app-server messages into normalized events and typed terminal completion outcomes. |
 | Configuration | `src/codex-app-server/config.ts` | Builds app-server launch and MCP configuration. |
 | Policy | `src/codex-app-server/policy.ts` | Maps sandbox, approval, search, and agent policy to Codex options. |
+| Mock provider | `src/support/mock-codex-provider.ts` | Runs the production JSON-RPC adapter without a model, attempts configured local commands when authorized, records denials, and emits Codex tool lifecycle events. |
 | Slack approval bridge | `src/mcp/slack-approval-bridge.ts`, `src/mcp/approval.ts` | Converts native app-server approval callbacks into blocking Slack Allow/Deny actions and defaults closed. |
 | Shared boundary | `src/runners/types.ts`, `src/runners/index.ts` | Provider-neutral `SpawnHandle`, events, resume, and provider selection. |
 
@@ -44,10 +45,14 @@ calls as approval-required. The setting is scoped to MCP tools only; shell and
 file approvals continue through the normal Codex policy and Slack approval
 bridge.
 
-Thread creation and resume explicitly send `environments: []`. This disables
-Codex's default local command environment so the thread's tool surface stays
-limited to Junior's scoped MCP configuration; the invariant is covered by the
-app-server spawner regression tests for both fresh and resumed threads.
+Thread creation and resume send `environments: []` for MCP-only and untrusted
+runs. Trusted agents with `worktree-verify` receive Codex's local command
+environment only in an exact registered worktree or the fixed workflow utility
+directory. The app-server regression suite uses the zero-network mock provider
+to attempt commands across the historical Slack failure cases, verify normalized
+started/completed tool events and results, and prove repo-less MCP-only runs do
+not execute the attempted command. These tests never contact a model or consume
+provider quota.
 
 Before release, run `CODEX_APP_SMOKE_SLACK_CHANNEL_ID=<approved-test-channel>
 CODEX_APP_SMOKE_RELEASE_GATE=1 bun run codex:release-gate` with an authenticated

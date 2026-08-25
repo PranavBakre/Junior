@@ -12,6 +12,7 @@ import { resolvePendingApproval } from "../mcp/approval.ts";
 import type { CreateSlackActionRecord, SlackActionStore } from "../slack/action-store.ts";
 import { resolveDispatchAgent } from "../slack/action-buttons.ts";
 import type { WebClient } from "@slack/web-api";
+import { installMockCodexProvider } from "../support/mock-codex-provider.ts";
 
 const originalCodexBin = process.env.CODEX_BIN;
 
@@ -303,7 +304,7 @@ describe("spawnCodexAppServer", () => {
     }
   });
 
-  it("preserves the execution surface for every Slack capability regression without a model", async () => {
+  it("executes tools through a mock provider for every Slack capability regression without a model", async () => {
     const mergeAgent = resolveDispatchAgent(
       {
         channelId: "C0AKQ2BFN9F",
@@ -363,7 +364,10 @@ describe("spawnCodexAppServer", () => {
     ] as const;
 
     for (const regression of cases) {
-      const fakeCodex = installFakeCodex(recordingFakeCodexScript());
+      const fakeCodex = installMockCodexProvider({
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('mock-tool-ok')"],
+      });
       process.env.CODEX_BIN = fakeCodex.command;
       try {
         const session = createSession(`regression-${regression.agent}`, "C-SLACK");
@@ -389,21 +393,37 @@ describe("spawnCodexAppServer", () => {
           },
         };
 
-        await spawnCodexAppServer(
+        const result = await spawnCodexAppServer(
           session,
           regression.name,
           config,
           session.worktreePath ?? undefined,
         ).result;
-        const requests = readFileSync(join(fakeCodex.root, "requests.jsonl"), "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line));
+        const requests = fakeCodex.readProtocolMessages();
         const threadStart = requests.find((request) => request.method === "thread/start");
+        const attempts = fakeCodex.readToolAttempts();
+        expect(attempts).toHaveLength(1);
+        expect(attempts[0]?.attempted).toBe(true);
         if (regression.expectsLocalEnvironment) {
-          expect(threadStart.params).not.toHaveProperty("environments");
+          expect(threadStart?.params).not.toHaveProperty("environments");
+          expect(attempts[0]).toMatchObject({
+            executed: true,
+            exitCode: 0,
+            stdout: "mock-tool-ok",
+          });
+          expect(result.events).toContainEqual(expect.objectContaining({
+            type: "tool",
+            name: "Bash",
+            status: "completed",
+          }));
+          expect(result.response).toBe("mock tool completed");
         } else {
-          expect(threadStart.params.environments).toEqual([]);
+          expect((threadStart?.params as Record<string, unknown>).environments).toEqual([]);
+          expect(attempts[0]).toMatchObject({
+            executed: false,
+            error: "tool_unavailable",
+          });
+          expect(result.response).toBe("mock tool unavailable");
         }
       } finally {
         fakeCodex.cleanup();
