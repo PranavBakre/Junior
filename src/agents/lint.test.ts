@@ -162,6 +162,10 @@ describe("prompt lint", () => {
       expect(content).toContain(
         "Never\ndescribe two clean passes unless both passes actually occurred",
       );
+      expect(content).toContain("pipeline_report_outcome");
+      expect(content.indexOf("pipeline_report_outcome")).toBeLessThan(
+        content.lastIndexOf("return the Slack verdict"),
+      );
     });
   });
 
