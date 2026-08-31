@@ -86,6 +86,12 @@ describe("loadAgentDefinition", () => {
     expect(def!.permissions.mcp).toEqual(
       expect.arrayContaining(["slack-bot", "mixpanel", "mongodb"]),
     );
+    expect(def!.permissions.tools).toEqual(
+      expect.arrayContaining([
+        "mcp__slack-bot__pipeline_write_artifact",
+        "mcp__slack-bot__slack_upload_file",
+      ]),
+    );
   });
 
   it("parses typed permission frontmatter", async () => {

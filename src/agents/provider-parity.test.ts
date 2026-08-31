@@ -144,6 +144,14 @@ describe("provider parity — catalog permissions", () => {
       expect(declared).toBe(manifest!.permissionIntent);
     },
   );
+
+  it("grants feature-metrics bounded artifact delivery without product mutation", () => {
+    const manifest = resolveAgentManifest("feature-metrics");
+
+    expect(manifest).not.toBeNull();
+    expect(manifest!.capabilities).toContain("pipeline-artifact-write");
+    expect(manifest!.mutationPolicy).toBe("none");
+  });
 });
 
 describe("provider parity — handoff graph vs canDispatch", () => {

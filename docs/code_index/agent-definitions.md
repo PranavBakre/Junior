@@ -39,3 +39,9 @@ Skills use a separate path: `skill_dispatch` creates a durable child assignment
 containing `skillRef` and exact `capabilityRefs`; `SessionManager` validates that
 envelope and each provider loads the selected `SKILL.md` natively. Skill bodies
 and catalogs are not appended to ordinary agent prompts.
+
+Report-producing private agents may declare `pipeline-artifact-write` while
+retaining `operational.mutationPolicy: none`. This grants the bounded
+`pipeline_write_artifact` path for generated CSV/Markdown/HTML deliverables;
+the agent can then attach the returned file with `slack_upload_file` without
+receiving product-repository or production-data mutation authority.
