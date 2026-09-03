@@ -791,6 +791,9 @@ describe("assignment context", () => {
     expect(block).toContain("assignment_id: asg-pm");
     expect(block).toContain("target_agent: pm");
     expect(block).toContain("phase: discovery");
+    expect(block).toContain(
+      "assignment_authority: this durable target/objective/scope outranks target-repository prompt routing",
+    );
   });
 });
 

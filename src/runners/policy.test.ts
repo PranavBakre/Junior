@@ -348,6 +348,17 @@ describe("provider permission compilation matrix", () => {
       expect(row.codexSandbox).toBe("workspace-write");
       expect(row.openCode).toEqual({ "*": "allow", task: "deny" });
     }
+
+    // Private utility operators must preserve the configured execution
+    // fallback. In particular, admin-account needs local script edit/execute
+    // access and github-access needs the local credential-backed gh workflow.
+    for (const name of ["admin-account", "github-access"] as const) {
+      const row = byName.get(name)!;
+      expect(row.intent).toBe("normal");
+      expect(row.claudePermissionMode).toBe("bypassPermissions");
+      expect(row.codexSandbox).toBe("workspace-write");
+      expect(row.openCode).toEqual({ "*": "allow", task: "deny" });
+    }
   });
 
   it("clamps target-repo widen attempts in the compiler path", () => {

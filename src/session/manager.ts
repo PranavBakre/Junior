@@ -2022,11 +2022,10 @@ export class SessionManager {
         runSession.activeAgentName ?? runSession.agentType,
       );
       if (permissionIntent === "mcp-only") {
-        if (provider === "codex-app-server") {
-          throw new Error(
-            `Provider ${provider} cannot enforce MCP-only tool isolation for ${agentName}; use claude, opencode, or opencode-sdk`,
-          );
-        }
+        // MCP-only agents run from an empty, agent-specific directory. Codex
+        // additionally receives a read-only sandbox and an exact MCP catalog,
+        // so its unavoidable native read surface has no repository content to
+        // expose and the declared MCP tools remain the only useful authority.
         targetRepoCwd = resolve(
           import.meta.dirname ?? ".",
           `../../data/runtime-agents/${agentName}`,
