@@ -129,6 +129,12 @@ export interface ThreadSession {
    */
   verificationPackageManager?: import("../worktree/package-manager.ts").JavaScriptPackageManager | null;
   targetRepo: string | null;
+  /**
+   * Repo whose GitHub identity this thread authenticates with when no worktree
+   * is bound — a PR-URL-only directive needs credentials but not a checkout,
+   * and the binding must outlive the turn that named it.
+   */
+  identityRepo?: string | null;
   baseRef: string | null;
   agentType: string | null;
   systemPrompt: string | null;
@@ -288,6 +294,7 @@ export function createSession(
     worktreePath: null,
     worktreePaths: {},
     targetRepo: null,
+    identityRepo: null,
     baseRef: null,
     agentType: null,
     systemPrompt: null,

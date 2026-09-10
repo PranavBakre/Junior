@@ -83,7 +83,7 @@ import {
   sanitizeFileName,
 } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
-import { resolveIdentityRepoName } from "../github/identity-routing.ts";
+import { resolveIdentityRepo } from "../github/identity-routing.ts";
 import {
   inferReviewRepo,
   reviewRepoRefs,
@@ -1961,14 +1961,24 @@ export class SessionManager {
         : targetRepo?.path;
       // Identity is resolved independently of the checkout: binding targetRepo
       // for a PR-URL-only directive would also force a worktree it does not need.
-      const identityRepoName = resolveIdentityRepoName({
+      const identityRepo = resolveIdentityRepo({
         targetRepoName: targetRepo?.name,
+        durableIdentityRepo: session.identityRepo,
         repos: this.config.repos,
         prompt,
       });
-      const githubAuthEnv = identityRepoName && this.worktreeManager &&
+      if (
+        identityRepo && !targetRepo &&
+        session.identityRepo !== identityRepo.name
+      ) {
+        session = await this.mutateSession(session.threadId, (fresh) => {
+          assertRunOwnership();
+          fresh.identityRepo = identityRepo.name;
+        });
+      }
+      const githubAuthEnv = identityRepo && this.worktreeManager &&
         typeof this.worktreeManager.getGitHubEnvironment === "function"
-        ? await this.worktreeManager.getGitHubEnvironment(identityRepoName)
+        ? await this.worktreeManager.getGitHubEnvironment(identityRepo.name)
         : undefined;
 
       // Build after worktree routing/creation so provider policy and cwd see
@@ -2425,7 +2435,7 @@ export class SessionManager {
           botToken: this.config.slack.botToken,
           agentIdentity,
           githubAuthEnv,
-          githubUser: targetRepo?.githubUser,
+          githubUser: identityRepo?.githubUser,
           threadId: session.threadId,
           agentName,
         });
@@ -2664,6 +2674,8 @@ export class SessionManager {
               targetRepoCwd,
               botToken: this.config.slack.botToken,
               agentIdentity,
+              githubAuthEnv,
+              githubUser: identityRepo?.githubUser,
               threadId: session.threadId,
               agentName,
             });
@@ -2676,6 +2688,7 @@ export class SessionManager {
               this.config.slack.botToken,
               agentIdentity,
               [],
+              githubAuthEnv,
             );
           }
           const retryHandle = withTimeout(
