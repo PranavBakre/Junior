@@ -83,6 +83,7 @@ import {
   sanitizeFileName,
 } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
+import { resolveIdentityRepoName } from "../github/identity-routing.ts";
 import {
   inferReviewRepo,
   reviewRepoRefs,
@@ -1958,9 +1959,16 @@ export class SessionManager {
       let targetRepoCwd: string | undefined = session.worktreePath
         ? undefined
         : targetRepo?.path;
-      const githubAuthEnv = targetRepo && this.worktreeManager &&
+      // Identity is resolved independently of the checkout: binding targetRepo
+      // for a PR-URL-only directive would also force a worktree it does not need.
+      const identityRepoName = resolveIdentityRepoName({
+        targetRepoName: targetRepo?.name,
+        repos: this.config.repos,
+        prompt,
+      });
+      const githubAuthEnv = identityRepoName && this.worktreeManager &&
         typeof this.worktreeManager.getGitHubEnvironment === "function"
-        ? await this.worktreeManager.getGitHubEnvironment(targetRepo.name)
+        ? await this.worktreeManager.getGitHubEnvironment(identityRepoName)
         : undefined;
 
       // Build after worktree routing/creation so provider policy and cwd see
