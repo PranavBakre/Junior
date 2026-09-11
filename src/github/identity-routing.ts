@@ -17,7 +17,12 @@ function githubCoordinates(prompt: string): string[] {
   for (const pattern of patterns) {
     for (const match of prompt.matchAll(pattern)) {
       const owner = match[1];
-      const repo = match[2]?.replace(/\.git$/i, "");
+      // Trailing sentence punctuation before `.git`: a bare repo URL ending a
+      // sentence otherwise captures "gx-backend." and matches no configured
+      // repo, silently resolving no identity with no error to explain it.
+      const repo = match[2]
+        ?.replace(/[.,;:!?]+$/, "")
+        .replace(/\.git$/i, "");
       if (!owner || !repo) continue;
       const ref = `${owner}/${repo}`;
       const key = ref.toLowerCase();

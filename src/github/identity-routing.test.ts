@@ -52,6 +52,15 @@ describe("resolveIdentityRepoName", () => {
     );
   });
 
+  it("binds a bare repository URL that ends a sentence", () => {
+    expect(resolve("merge https://github.com/GrowthX-Club/gx-backend.")).toBe(
+      "gx-backend",
+    );
+    expect(
+      resolve("look at https://github.com/GrowthX-Club/gx-backend, then merge"),
+    ).toBe("gx-backend");
+  });
+
   it("binds a gh --repo argument", () => {
     expect(resolve("gh pr merge 1 --repo GrowthX-Club/gx-backend")).toBe(
       "gx-backend",

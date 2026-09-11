@@ -2005,7 +2005,7 @@ export class SessionManager {
       // before the lookup would let one transient token failure become durable,
       // turning every later turn on the thread into a hard setup error.
       if (
-        githubAuthEnv && identityRepo && !targetRepo && !identityIsUtility &&
+        githubAuthEnv && identityRepo && !targetRepo &&
         session.identityRepo !== identityRepo.name
       ) {
         const durable = await this.mutateSession(session.threadId, (fresh) => {
