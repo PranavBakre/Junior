@@ -1984,13 +1984,17 @@ export class SessionManager {
         // and restores repository trust it was never granted.
         session = this.projectInvocationSession(durable, pipelineRole);
       }
-      // A repo merely mentioned in passing must not fail the turn; a missing or
-      // lapsed token here leaves the agent unauthenticated rather than dead.
-      const githubAuthEnv = identityRepo && this.worktreeManager &&
+      // A repository named only in passing must not fail the turn, but a
+      // durable binding that cannot authenticate is a real config fault. A
+      // failed worktree setup withholds credentials too, matching the previous
+      // behaviour where the cleared targetRepo left no identity at all.
+      const githubAuthEnv = !worktreeSetupFailed && identityRepo &&
+        this.worktreeManager &&
         typeof this.worktreeManager.getGitHubEnvironment === "function"
         ? await this.worktreeManager
             .getGitHubEnvironment(identityRepo.name)
             .catch((error) => {
+              if (targetRepo) throw error;
               _log.warn(
                 "manager",
                 `github.identity.unavailable thread=${session.threadId} repo=${identityRepo.name} err=${error instanceof Error ? error.message : String(error)}`,
@@ -1998,12 +2002,11 @@ export class SessionManager {
               return undefined;
             })
         : undefined;
-      // Withhold the block when a requested worktree failed to set up — the
-      // only remaining instruction would be to work directly against the
-      // shared origin repo, which no rule in that block forbids.
-      const preambleIdentityRepo = worktreeSetupFailed
-        ? undefined
-        : identityRepo?.name;
+      // The block asserts authentication, so render it only when the runner
+      // actually received credentials.
+      const preambleIdentityRepo = githubAuthEnv
+        ? identityRepo?.name
+        : undefined;
 
       // Build after worktree routing/creation so provider policy and cwd see
       // the newly registered isolated checkout on this same turn.
