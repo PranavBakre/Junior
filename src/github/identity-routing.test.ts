@@ -56,8 +56,9 @@ describe("resolveIdentityRepoName", () => {
     expect(resolve("merge https://github.com/GrowthX-Club/gx-backend.")).toBe(
       "gx-backend",
     );
+    // Punctuation is stripped before `.git`, so both tails resolve.
     expect(
-      resolve("look at https://github.com/GrowthX-Club/gx-backend, then merge"),
+      resolve("see https://github.com/GrowthX-Club/gx-backend.git."),
     ).toBe("gx-backend");
   });
 

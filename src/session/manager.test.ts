@@ -4550,6 +4550,43 @@ describe("typed pipeline settlement", () => {
     expect(spawnedAuthEnv[0]).toBeUndefined();
   });
 
+  it("withholds credentials when the bound repo's worktree fails", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    // Stale binding from an earlier turn. Suppression matches on repo name, so
+    // without the refresh this survives and hands the turn a token for a repo
+    // the directive never mentioned.
+    seeded.identityRepo = "frontend";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawnedAuthEnv: Array<Record<string, string> | undefined> = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(
+      sessionStore,
+      testConfig,
+      (_s, _p, _c, _cwd, _tok, _i, _img, githubAuthEnv) => {
+        spawnedAuthEnv.push(githubAuthEnv);
+        return handle;
+      },
+    );
+    manager.worktreeManager = {
+      createWorktree: mock(async () => {
+        throw new Error("worktree setup failed");
+      }),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "U123",
+      text: "merge PR #321 via gxt-admin",
+    }), "default");
+    await waitFor(() => spawnedAuthEnv.length === 1);
+
+    expect(spawnedAuthEnv[0]).toBeUndefined();
+  });
+
   it("does not bind an identity that failed to authenticate", async () => {
     const sessionStore = new InMemorySessionStore();
     await sessionStore.set("thread-1", createSession("thread-1", "C123"));

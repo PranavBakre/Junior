@@ -1884,6 +1884,18 @@ export class SessionManager {
         }
       }
 
+      // A durable worktree binding is this thread's repo, so keep the identity
+      // binding in step with it. A stale value survives the worktree-failure
+      // suppression below — which matches on repo name — and would hand the
+      // turn a live token for a repo its directive never mentioned.
+      const boundRepoName = targetRepo?.name;
+      if (boundRepoName && session.identityRepo !== boundRepoName) {
+        session = await this.mutateSession(session.threadId, (fresh) => {
+          assertRunOwnership();
+          fresh.identityRepo = boundRepoName;
+        });
+      }
+
       // Always create a worktree when a target repo is set — Junior must never
       // edit the shared origin repo path directly. (Previously this was gated on
       // agentType === "build" || "frontend", which let other agents cwd into the
