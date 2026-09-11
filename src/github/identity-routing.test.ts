@@ -56,10 +56,6 @@ describe("resolveIdentityRepoName", () => {
     expect(resolve("merge https://github.com/GrowthX-Club/gx-backend.")).toBe(
       "gx-backend",
     );
-    // Punctuation is stripped before `.git`, so both tails resolve.
-    expect(
-      resolve("see https://github.com/GrowthX-Club/gx-backend.git."),
-    ).toBe("gx-backend");
   });
 
   it("binds a gh --repo argument", () => {

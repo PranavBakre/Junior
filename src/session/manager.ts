@@ -1884,17 +1884,13 @@ export class SessionManager {
         }
       }
 
-      // A durable worktree binding is this thread's repo, so keep the identity
-      // binding in step with it. A stale value survives the worktree-failure
-      // suppression below — which matches on repo name — and would hand the
-      // turn a live token for a repo its directive never mentioned.
+      // A durable worktree binding is this thread's repo. Prefer it over a stale
+      // durable identity for this turn, or the worktree-failure suppression
+      // below — which matches on repo name — would hand the turn a live token
+      // for a repo its directive never mentioned. Deliberately not persisted
+      // here: binding before the credential lookup would let an unauthenticated
+      // identity become durable.
       const boundRepoName = targetRepo?.name;
-      if (boundRepoName && session.identityRepo !== boundRepoName) {
-        session = await this.mutateSession(session.threadId, (fresh) => {
-          assertRunOwnership();
-          fresh.identityRepo = boundRepoName;
-        });
-      }
 
       // Always create a worktree when a target repo is set — Junior must never
       // edit the shared origin repo path directly. (Previously this was gated on
@@ -1987,7 +1983,7 @@ export class SessionManager {
         ? undefined
         : resolveIdentityRepo({
             targetRepoName: targetRepo?.name,
-            durableIdentityRepo: session.identityRepo,
+            durableIdentityRepo: boundRepoName ?? session.identityRepo,
             repos: this.config.repos,
             prompt,
           });

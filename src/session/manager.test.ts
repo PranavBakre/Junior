@@ -4550,6 +4550,32 @@ describe("typed pipeline settlement", () => {
     expect(spawnedAuthEnv[0]).toBeUndefined();
   });
 
+  it("does not bind a worktree-bound identity that failed to authenticate", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, () => handle);
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+
+    // The turn fails loudly (durable binding), but must not leave an
+    // unauthenticated binding behind — later repo-less turns would treat it as
+    // durable and die in setup, or receive a token for a detached repo.
+    await manager
+      .handleAgentMessage(makeEvent({ user: "U123", text: "status?" }), "default")
+      .catch(() => undefined);
+
+    expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
+  });
+
   it("withholds credentials when the bound repo's worktree fails", async () => {
     const sessionStore = new InMemorySessionStore();
     const seeded = createSession("thread-1", "C123");
