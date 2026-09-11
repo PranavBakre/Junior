@@ -1967,12 +1967,18 @@ export class SessionManager {
       // for a PR-URL-only directive would also force a worktree it does not need.
       const priorIdentityRepo = session.identityRepo;
       const identityIsUtility = pipelineRole === "utility";
-      const identityRepo = resolveIdentityRepo({
-        targetRepoName: targetRepo?.name,
-        durableIdentityRepo: session.identityRepo,
-        repos: this.config.repos,
-        prompt,
-      });
+      // A utility invocation is repo-less by contract and gets no identity at
+      // all — not from the thread, and not from its own directive. Main withheld
+      // credentials here, and this agent class is not a containment boundary:
+      // `intent: normal` reaches bypassPermissions with Bash.
+      const identityRepo = identityIsUtility
+        ? undefined
+        : resolveIdentityRepo({
+            targetRepoName: targetRepo?.name,
+            durableIdentityRepo: session.identityRepo,
+            repos: this.config.repos,
+            prompt,
+          });
       // Only a binding the thread already held is a config fault worth failing
       // on; one this turn's own directive introduced must not kill the turn.
       const identityIsDurable = Boolean(targetRepo) ||

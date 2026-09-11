@@ -4498,11 +4498,17 @@ describe("typed pipeline settlement", () => {
     await sessionStore.set(seeded.threadId, seeded);
 
     const spawnedSessions: ThreadSession[] = [];
+    const spawnedAuthEnv: Array<Record<string, string> | undefined> = [];
     const handle = createMockHandle();
-    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
-      spawnedSessions.push(structuredClone(runSession));
-      return handle;
-    });
+    const manager = new SessionManager(
+      sessionStore,
+      testConfig,
+      (runSession, _prompt, _c, _cwd, _tok, _ident, _img, githubAuthEnv) => {
+        spawnedSessions.push(structuredClone(runSession));
+        spawnedAuthEnv.push(githubAuthEnv);
+        return handle;
+      },
+    );
     manager.pipelineStore = pipelineStore;
     const createWorktree = mock(async () => "/tmp/should-not-be-created");
     manager.worktreeManager = {
@@ -4537,8 +4543,11 @@ describe("typed pipeline settlement", () => {
       targetRepo: null,
     });
     // A utility invocation is repo-less by contract and must not seed durable
-    // repo affinity that a later, unrelated repo-less turn would inherit.
+    // repo affinity that a later, unrelated repo-less turn would inherit...
     expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
+    // ...nor receive credentials resolved from the repo its directive names,
+    // which main also withheld.
+    expect(spawnedAuthEnv[0]).toBeUndefined();
   });
 
   it("does not bind an identity that failed to authenticate", async () => {
