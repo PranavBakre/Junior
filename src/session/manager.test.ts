@@ -4538,6 +4538,48 @@ describe("typed pipeline settlement", () => {
     expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
   });
 
+  it("does not bind an identity that failed to authenticate", async () => {
+    const sessionStore = new InMemorySessionStore();
+    await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+
+    const spawned: ThreadSession[] = [];
+    const handles = [createMockHandle(), createMockHandle()];
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawned.push(structuredClone(runSession));
+      return handles[spawned.length - 1]!;
+    });
+    const getGitHubEnvironment = mock(async () => {
+      throw new Error("GitHub user gxt-admin is not available for repo junior");
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/should-not-be-created"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment,
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "U123",
+      text: "see https://github.com/GrowthX-Club/junior/pull/229",
+    }), "default");
+    await waitFor(() => spawned.length === 1);
+    expect(getGitHubEnvironment).toHaveBeenCalled();
+    handles[0]!._complete("ok");
+    await waitFor(async () =>
+      (await sessionStore.get("thread-1"))?.status === "idle"
+    );
+
+    // A transient token failure must not become a durable binding: if it did,
+    // this unrelated follow-up would die in setup instead of running.
+    await manager.handleAgentMessage(makeEvent({
+      user: "U123",
+      text: "what do you think?",
+      ts: "1234567891.000001",
+    }), "default");
+    await waitFor(() => spawned.length === 2);
+
+    expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
+  });
+
   it("preserves trusted Mixpanel and pipeline MCP access for repo-less feature-metrics assignments", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));

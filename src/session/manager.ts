@@ -1973,19 +1973,6 @@ export class SessionManager {
         repos: this.config.repos,
         prompt,
       });
-      if (
-        identityRepo && !targetRepo && !identityIsUtility &&
-        session.identityRepo !== identityRepo.name
-      ) {
-        const durable = await this.mutateSession(session.threadId, (fresh) => {
-          assertRunOwnership();
-          fresh.identityRepo = identityRepo.name;
-        });
-        // The reload returns the durable row, dropping invocation-only
-        // isolation. Reapply it, or a repo-less turn inherits a stale worktree
-        // and restores repository trust it was never granted.
-        session = this.projectInvocationSession(durable, pipelineRole);
-      }
       // Only a binding the thread already held is a config fault worth failing
       // on; one this turn's own directive introduced must not kill the turn.
       const identityIsDurable = Boolean(targetRepo) ||
@@ -2008,6 +1995,22 @@ export class SessionManager {
               return undefined;
             })
         : undefined;
+      // Bind durably only once the identity has actually authenticated. Binding
+      // before the lookup would let one transient token failure become durable,
+      // turning every later turn on the thread into a hard setup error.
+      if (
+        githubAuthEnv && identityRepo && !targetRepo && !identityIsUtility &&
+        session.identityRepo !== identityRepo.name
+      ) {
+        const durable = await this.mutateSession(session.threadId, (fresh) => {
+          assertRunOwnership();
+          fresh.identityRepo = identityRepo.name;
+        });
+        // The reload returns the durable row, dropping invocation-only
+        // isolation. Reapply it, or a repo-less turn inherits a stale worktree
+        // and restores repository trust it was never granted.
+        session = this.projectInvocationSession(durable, pipelineRole);
+      }
       // The block asserts authentication, so render it only when the runner
       // actually received credentials.
       const preambleIdentityRepo = githubAuthEnv
