@@ -2290,6 +2290,7 @@ export class SessionManager {
               worktreePaths,
               this.config.repos,
               preambleProfile,
+              identityRepo?.name,
             );
             assertRunOwnership();
             prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;

@@ -142,6 +142,7 @@ export function buildWorkspaceBlock(
   worktreePaths?: Record<string, string>,
   repos?: RepoConfig[],
   threadId?: string,
+  identityRepoName?: string | null,
 ): string | null {
   // Multi-repo format for bug-pipeline threads.
   if (worktreePaths && Object.keys(worktreePaths).length > 0) {
@@ -181,6 +182,26 @@ export function buildWorkspaceBlock(
     ].join("\n");
   }
 
+  // Identity-only: a repo-less turn still authenticates against a repository
+  // (a merge needs credentials, not a checkout), and the agent has to be told
+  // which one to use them against — otherwise it holds a valid token and still
+  // reports itself unable to act.
+  if (!workspace && identityRepoName) {
+    const repoConfig = repos?.find((repo) => repo.name === identityRepoName);
+    if (repoConfig) {
+      return [
+        `<github-identity>`,
+        `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
+        `You hold GitHub credentials scoped to this repository for this turn, so \`gh\` works against it.`,
+        ...(repoConfig.githubUser
+          ? [`Authenticated as \`${repoConfig.githubUser}\`.`]
+          : []),
+        `No worktree is checked out for this thread — act on the repository directly instead of expecting a local checkout, and do not create one unless the task needs to edit files.`,
+        `</github-identity>`,
+      ].join("\n");
+    }
+  }
+
   // Single-repo format (existing !repo flow).
   if (!workspace) return null;
   return [
@@ -218,6 +239,7 @@ export async function buildPromptPreamble(
   worktreePaths?: Record<string, string>,
   repos?: RepoConfig[],
   contextProfile: AgentContextProfile = DEFAULT_CONTEXT_PROFILE,
+  identityRepoName?: string | null,
 ): Promise<string> {
   // Only fetch the data we'll actually emit — skipping thread history matters
   // for lightweight task agents, both for tokens and for latency.
@@ -271,7 +293,13 @@ export async function buildPromptPreamble(
   }
 
   if (contextProfile.workspace) {
-    const workspaceBlock = buildWorkspaceBlock(workspace, worktreePaths, repos, threadTs);
+    const workspaceBlock = buildWorkspaceBlock(
+      workspace,
+      worktreePaths,
+      repos,
+      threadTs,
+      identityRepoName,
+    );
     if (workspaceBlock) {
       parts.push(``, workspaceBlock);
     }

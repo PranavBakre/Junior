@@ -21,6 +21,58 @@ describe("buildWorkspaceBlock", () => {
     expect(buildWorkspaceBlock(undefined, {})).toBeNull();
   });
 
+  it("names the authenticated repo when there is no worktree", () => {
+    const ghRepos: RepoConfig[] = [
+      {
+        name: "app-backend",
+        path: "/repos/app-backend",
+        defaultBase: "origin/main",
+        githubRepo: "GrowthX-Club/gx-backend",
+        githubUser: "gxt-admin",
+      },
+    ];
+    const block = buildWorkspaceBlock(null, undefined, ghRepos, "t1", "app-backend");
+
+    expect(block).toContain("<github-identity>");
+    expect(block).toContain("app-backend (GrowthX-Club/gx-backend)");
+    expect(block).toContain("Authenticated as `gxt-admin`");
+    expect(block).toContain("</github-identity>");
+    // Must not imply a checkout exists, nor inherit the workspace write rules.
+    expect(block).not.toContain("Worktree (your sandbox)");
+    expect(block).not.toContain("ALL reads, writes, edits");
+  });
+
+  it("prefers the worktree block when a workspace exists", () => {
+    const ghRepos: RepoConfig[] = [
+      {
+        name: "app-backend",
+        path: "/repos/app-backend",
+        defaultBase: "origin/main",
+        githubRepo: "GrowthX-Club/gx-backend",
+      },
+    ];
+    const block = buildWorkspaceBlock(
+      {
+        worktreePath: "/repos/app-backend.junior-worktrees/slack-t1",
+        repoName: "app-backend",
+        repoPath: "/repos/app-backend",
+        branchName: "slack/t1",
+      },
+      undefined,
+      ghRepos,
+      "t1",
+      "app-backend",
+    );
+
+    expect(block).toContain("<workspace>");
+    expect(block).not.toContain("<github-identity>");
+  });
+
+  it("returns null for an unbound or unknown identity repo", () => {
+    expect(buildWorkspaceBlock(null, undefined, repos, "t1")).toBeNull();
+    expect(buildWorkspaceBlock(null, undefined, repos, "t1", "not-configured")).toBeNull();
+  });
+
   it("renders the single-repo format from a WorkspaceContext", () => {
     const ws: WorkspaceContext = {
       worktreePath: "/repos/app-backend.junior-worktrees/slack-t1",
