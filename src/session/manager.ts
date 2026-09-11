@@ -1891,7 +1891,7 @@ export class SessionManager {
       const reusedManagedWorktree = Boolean(session.worktreePath);
       // A failed setup below clears targetRepo, which would otherwise make the
       // identity block describe a checkout that was requested and did not happen.
-      let worktreeSetupFailed = false;
+      let failedWorktreeRepo: string | null = null;
       if (
         this.worktreeManager &&
         targetRepo &&
@@ -1921,8 +1921,8 @@ export class SessionManager {
           );
           // Don't silently cwd into the real repo — clear targetRepo for this run
           // so the spawner falls back to junior's project root instead.
+          failedWorktreeRepo = targetRepo.name;
           targetRepo = undefined;
-          worktreeSetupFailed = true;
         }
       }
 
@@ -1965,6 +1965,8 @@ export class SessionManager {
         : targetRepo?.path;
       // Identity is resolved independently of the checkout: binding targetRepo
       // for a PR-URL-only directive would also force a worktree it does not need.
+      const priorIdentityRepo = session.identityRepo;
+      const identityIsUtility = pipelineRole === "utility";
       const identityRepo = resolveIdentityRepo({
         targetRepoName: targetRepo?.name,
         durableIdentityRepo: session.identityRepo,
@@ -1972,7 +1974,7 @@ export class SessionManager {
         prompt,
       });
       if (
-        identityRepo && !targetRepo &&
+        identityRepo && !targetRepo && !identityIsUtility &&
         session.identityRepo !== identityRepo.name
       ) {
         const durable = await this.mutateSession(session.threadId, (fresh) => {
@@ -1984,17 +1986,21 @@ export class SessionManager {
         // and restores repository trust it was never granted.
         session = this.projectInvocationSession(durable, pipelineRole);
       }
-      // A repository named only in passing must not fail the turn, but a
-      // durable binding that cannot authenticate is a real config fault. A
-      // failed worktree setup withholds credentials too, matching the previous
-      // behaviour where the cleared targetRepo left no identity at all.
-      const githubAuthEnv = !worktreeSetupFailed && identityRepo &&
+      // Only a binding the thread already held is a config fault worth failing
+      // on; one this turn's own directive introduced must not kill the turn.
+      const identityIsDurable = Boolean(targetRepo) ||
+        (priorIdentityRepo != null && priorIdentityRepo === identityRepo?.name);
+      // Suppress only for the repo whose worktree setup actually failed; a
+      // different repo named in this directive is unaffected.
+      const identityBlockedByWorktreeFailure = failedWorktreeRepo !== null &&
+        failedWorktreeRepo === identityRepo?.name;
+      const githubAuthEnv = !identityBlockedByWorktreeFailure && identityRepo &&
         this.worktreeManager &&
         typeof this.worktreeManager.getGitHubEnvironment === "function"
         ? await this.worktreeManager
             .getGitHubEnvironment(identityRepo.name)
             .catch((error) => {
-              if (targetRepo) throw error;
+              if (identityIsDurable) throw error;
               _log.warn(
                 "manager",
                 `github.identity.unavailable thread=${session.threadId} repo=${identityRepo.name} err=${error instanceof Error ? error.message : String(error)}`,
@@ -4181,6 +4187,7 @@ export class SessionManager {
       targetRepo: null,
       worktreePath: null,
       worktreePaths: {},
+      identityRepo: null,
     };
   }
 

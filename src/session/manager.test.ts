@@ -4533,8 +4533,9 @@ describe("typed pipeline settlement", () => {
       worktreePath: null,
       targetRepo: null,
     });
-    // The binding is still persisted for later turns.
-    expect((await sessionStore.get("thread-1"))?.identityRepo).toBe("junior");
+    // A utility invocation is repo-less by contract and must not seed durable
+    // repo affinity that a later, unrelated repo-less turn would inherit.
+    expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
   });
 
   it("preserves trusted Mixpanel and pipeline MCP access for repo-less feature-metrics assignments", async () => {
