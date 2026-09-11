@@ -50,6 +50,7 @@ interface ThreadSession {
   worktreePath: string | null;             // single-repo flow
   worktreePaths: Record<string, string>;   // multi-repo (bug pipeline)
   targetRepo: string | null;
+  identityRepo?: string | null;            // repo to authenticate as when no worktree is bound
   baseRef: string | null;
   agentType: string | null;
   systemPrompt: string | null;

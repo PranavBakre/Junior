@@ -8,8 +8,9 @@ Builds the prompt preamble that gives spawned Claude processes identity, channel
 
 | Symbol | Purpose |
 |---|---|
-| `buildPromptPreamble(app, channel, threadTs, latestTs, botUserId?, workspace?, worktreePaths?, repos?, contextProfile?)` | Composes the full preamble. Each block (`identity`, `slack-context`, `workspace`, `thread-context`) emitted only if its flag in `contextProfile` is true. Defaults to all-true via `DEFAULT_CONTEXT_PROFILE`. |
-| `buildWorkspaceBlock(workspace, worktreePaths?, repos?, threadId?)` | Standalone workspace-rules block. Used in the full preamble AND on resumed turns (cheap safety reminder). Multi-repo format when `worktreePaths` non-empty, single-repo format otherwise. |
+| `buildPromptPreamble(app, channel, threadTs, latestTs, botUserId?, workspace?, worktreePaths?, repos?, contextProfile?, identityRepoName?)` | Composes the full preamble. Each block (`identity`, `slack-context`, `workspace`, `thread-context`) emitted only if its flag in `contextProfile` is true. Defaults to all-true via `DEFAULT_CONTEXT_PROFILE`. |
+| `buildWorkspaceBlock(workspace, worktreePaths?, repos?, threadId?, identityRepoName?)` | Standalone workspace-rules block. Used in the full preamble AND on resumed turns (cheap safety reminder). Multi-repo format when `worktreePaths` non-empty; single-repo when a workspace exists; a `<github-identity>` block when neither does but a repo is bound for authentication; `null` otherwise. |
+| `<github-identity>` block | Names the repo a repo-less turn is authenticated for, so a turn holding `GH_TOKEN` without a checkout knows what to use it against. Emitted under the `workspace` flag. The caller passes `identityRepoName` only when credentials were actually resolved *and* no requested worktree failed to set up — the block asserts authentication, so it must not be rendered otherwise. |
 | `resolveSlackMentions(app, text)` | Rewrites `<@U…>` → `@DisplayName (<@U…>)` so agents can address users by name. Pre-resolves unique IDs in parallel, then single-pass regex replace. |
 | `WorkspaceContext` | Type: `{ worktreePath, repoName, repoPath, branchName }` |
 

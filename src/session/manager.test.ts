@@ -4479,6 +4479,64 @@ describe("typed pipeline settlement", () => {
     );
   });
 
+  it("keeps repo-less isolation when the prompt names a repository for identity", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ repoRefs: ["junior"] }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-mongo-read-identity",
+      targetAgent: "db-executioner",
+      capabilityRefs: ["mongodb-read"],
+      contextRefs: ["workspace-mode:repo-less"],
+      mutationScope: [],
+      objective: "read a member roadmap",
+      idempotencyKey: "asg-mongo-read-identity-key",
+    }));
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/stale-worktree";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawnedSessions: ThreadSession[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawnedSessions.push(structuredClone(runSession));
+      return handle;
+    });
+    manager.pipelineStore = pipelineStore;
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getBranchName: () => "slack/thread-1",
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "pipeline-internal",
+      text:
+        "<pipeline-assignment>read a member roadmap https://github.com/GrowthX-Club/junior/pull/229</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:mongo-read-identity",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-mongo-read-identity",
+        dispatchKey: "mongo-read-identity",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "db-executioner");
+    await waitFor(() => spawnedSessions.length === 1);
+
+    // Resolving an identity must not leak the durable repo binding back into a
+    // repo-less invocation: resolveRunnerCwd prefers worktreePath, so a stale
+    // value here moves the runner out of its isolated agent directory.
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(spawnedSessions[0]).toMatchObject({
+      worktreePath: null,
+      targetRepo: null,
+    });
+    // The binding is still persisted for later turns.
+    expect((await sessionStore.get("thread-1"))?.identityRepo).toBe("junior");
+  });
+
   it("preserves trusted Mixpanel and pipeline MCP access for repo-less feature-metrics assignments", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
