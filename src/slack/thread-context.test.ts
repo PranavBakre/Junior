@@ -35,7 +35,7 @@ describe("buildWorkspaceBlock", () => {
 
     expect(block).toContain("<github-identity>");
     expect(block).toContain("app-backend (GrowthX-Club/gx-backend)");
-    expect(block).toContain("Authenticated as `gxt-admin`");
+    expect(block).toContain("`gh` is authenticated as `gxt-admin` for this turn");
     expect(block).toContain("</github-identity>");
     // Must not imply a checkout exists, nor inherit the workspace write rules.
     expect(block).not.toContain("Worktree (your sandbox)");

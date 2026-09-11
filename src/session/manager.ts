@@ -1889,6 +1889,9 @@ export class SessionManager {
       // agentType === "build" || "frontend", which let other agents cwd into the
       // real repo and modify it.)
       const reusedManagedWorktree = Boolean(session.worktreePath);
+      // A failed setup below clears targetRepo, which would otherwise make the
+      // identity block describe a checkout that was requested and did not happen.
+      let worktreeSetupFailed = false;
       if (
         this.worktreeManager &&
         targetRepo &&
@@ -1919,6 +1922,7 @@ export class SessionManager {
           // Don't silently cwd into the real repo — clear targetRepo for this run
           // so the spawner falls back to junior's project root instead.
           targetRepo = undefined;
+          worktreeSetupFailed = true;
         }
       }
 
@@ -1971,15 +1975,35 @@ export class SessionManager {
         identityRepo && !targetRepo &&
         session.identityRepo !== identityRepo.name
       ) {
-        session = await this.mutateSession(session.threadId, (fresh) => {
+        const durable = await this.mutateSession(session.threadId, (fresh) => {
           assertRunOwnership();
           fresh.identityRepo = identityRepo.name;
         });
+        // The reload returns the durable row, dropping invocation-only
+        // isolation. Reapply it, or a repo-less turn inherits a stale worktree
+        // and restores repository trust it was never granted.
+        session = this.projectInvocationSession(durable, pipelineRole);
       }
+      // A repo merely mentioned in passing must not fail the turn; a missing or
+      // lapsed token here leaves the agent unauthenticated rather than dead.
       const githubAuthEnv = identityRepo && this.worktreeManager &&
         typeof this.worktreeManager.getGitHubEnvironment === "function"
-        ? await this.worktreeManager.getGitHubEnvironment(identityRepo.name)
+        ? await this.worktreeManager
+            .getGitHubEnvironment(identityRepo.name)
+            .catch((error) => {
+              _log.warn(
+                "manager",
+                `github.identity.unavailable thread=${session.threadId} repo=${identityRepo.name} err=${error instanceof Error ? error.message : String(error)}`,
+              );
+              return undefined;
+            })
         : undefined;
+      // Withhold the block when a requested worktree failed to set up — the
+      // only remaining instruction would be to work directly against the
+      // shared origin repo, which no rule in that block forbids.
+      const preambleIdentityRepo = worktreeSetupFailed
+        ? undefined
+        : identityRepo?.name;
 
       // Build after worktree routing/creation so provider policy and cwd see
       // the newly registered isolated checkout on this same turn.
@@ -2290,7 +2314,7 @@ export class SessionManager {
               worktreePaths,
               this.config.repos,
               preambleProfile,
-              identityRepo?.name,
+              preambleIdentityRepo,
             );
             assertRunOwnership();
             prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
@@ -2306,6 +2330,7 @@ export class SessionManager {
               worktreePaths,
               this.config.repos,
               session.threadId,
+              preambleIdentityRepo,
             );
             prompt = workspaceBlock
               ? `${workspaceBlock}\n\n${readablePrompt}`

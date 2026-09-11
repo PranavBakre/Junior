@@ -192,10 +192,7 @@ export function buildWorkspaceBlock(
       return [
         `<github-identity>`,
         `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
-        `You hold GitHub credentials scoped to this repository for this turn, so \`gh\` works against it.`,
-        ...(repoConfig.githubUser
-          ? [`Authenticated as \`${repoConfig.githubUser}\`.`]
-          : []),
+        `\`gh\` is authenticated${repoConfig.githubUser ? ` as \`${repoConfig.githubUser}\`` : ""} for this turn; use it against this repository.`,
         `No worktree is checked out for this thread — act on the repository directly instead of expecting a local checkout, and do not create one unless the task needs to edit files.`,
         `</github-identity>`,
       ].join("\n");

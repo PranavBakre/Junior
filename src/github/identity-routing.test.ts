@@ -58,6 +58,14 @@ describe("resolveIdentityRepoName", () => {
     );
   });
 
+  it("binds the equals and shorthand forms gh also accepts", () => {
+    expect(resolve("gh pr merge 1 --repo=GrowthX-Club/gx-backend")).toBe(
+      "gx-backend",
+    );
+    expect(resolve("gh pr merge 1 -RGrowthX-Club/gx-backend")).toBe("gx-backend");
+    expect(resolve("gh pr merge 1 -R GrowthX-Club/gx-backend")).toBe("gx-backend");
+  });
+
   it("prefers the durable binding over the prompt", () => {
     expect(
       resolve(

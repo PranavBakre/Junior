@@ -11,7 +11,8 @@ function githubCoordinates(prompt: string): string[] {
   const seen = new Set<string>();
   const patterns = [
     /https?:\/\/github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)/gi,
-    /(?:^|\s)(?:--repo|-R)\s+([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)/gi,
+    /(?:^|\s)--repo[=\s]+([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)/gi,
+    /(?:^|\s)-R[=\s]?([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)/gi,
   ];
   for (const pattern of patterns) {
     for (const match of prompt.matchAll(pattern)) {
