@@ -49,8 +49,11 @@ export function resolveIdentityRepoName(input: {
     const named = input.repos.filter((repo) =>
       coordinates.some((ref) => repoMatchesRef(repo, ref)),
     );
-    // Two configured repos named at once is ambiguous: refuse rather than pick.
-    if (named.length > 1) return undefined;
+    // Two configured repos named at once is ambiguous about the task, not about
+    // the thread's identity. Keep the binding it already holds rather than
+    // stripping credentials for the turn: the token is account-wide, so
+    // refusing buys no containment and only blinds the agent.
+    if (named.length > 1) return input.durableIdentityRepo ?? undefined;
     if (named.length === 1) return named[0]!.name;
   }
   // No configured coordinate in this turn (a follow-up "go ahead", or only an

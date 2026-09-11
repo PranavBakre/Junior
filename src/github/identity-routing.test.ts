@@ -119,15 +119,15 @@ describe("durable identity", () => {
     ).toBe("gx-backend");
   });
 
-  it("still refuses an ambiguous directive with a durable identity", () => {
+  it("keeps the durable binding when the directive names two repos", () => {
     expect(
       resolveIdentityRepoName({
         repos,
         durableIdentityRepo: "gx-client-next",
         prompt:
-          "merge https://github.com/GrowthX-Club/gx-backend/pull/1 and https://github.com/GrowthX-Club/gx-client-next/pull/2",
+          "compare https://github.com/GrowthX-Club/gx-backend/pull/1 with https://github.com/GrowthX-Club/gx-client-next/pull/2",
       }),
-    ).toBeUndefined();
+    ).toBe("gx-client-next");
   });
 });
 
