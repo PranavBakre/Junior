@@ -4508,6 +4508,9 @@ describe("typed pipeline settlement", () => {
     manager.worktreeManager = {
       createWorktree,
       getBranchName: () => "slack/thread-1",
+      // Resolvable credentials, so the durable-write branch is actually
+      // reachable: without this the assertion below holds vacuously.
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
     } as unknown as WorktreeManager;
 
     await manager.handleAgentMessage(makeEvent({

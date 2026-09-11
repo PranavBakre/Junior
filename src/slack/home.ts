@@ -359,6 +359,9 @@ function buildSessionDetailText(session: ThreadSession): string {
     `*Pending messages:* ${session.pendingMessages.length}`,
   ];
 
+  if (session.identityRepo && session.identityRepo !== session.targetRepo) {
+    fields.push(`*GitHub identity:* ${session.identityRepo}`);
+  }
   if (session.worktreePath) fields.push(`*Worktree:*\n\`${session.worktreePath}\``);
   if (session.sessionId) fields.push(`*Resume:*\n\`${resumeCommand(provider, session.sessionId)}\``);
 
