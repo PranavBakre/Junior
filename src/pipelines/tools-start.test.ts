@@ -170,6 +170,66 @@ describe("pipeline_start_run", () => {
     expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
   });
 
+  it("refuses a promotion whose source scope is ambiguous", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const twoRepos: RepoConfig[] = [
+      {
+        name: "example-backend",
+        path: "/repos/example-backend",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-backend",
+      },
+      {
+        name: "example-client",
+        path: "/repos/example-client",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-client",
+      },
+    ];
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-backend", "example-client"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    // The caller declares nothing, so the promotion source is the only scope on
+    // offer — and a two-repo one is ambiguous about which repo this start
+    // concerns. Inheriting it would also feed workstream inference and fan a
+    // single-repo build into a full-stack one it never asked for. Ask instead.
+    const result = payload(await pipelineStartRun(
+      { ...runtime, repos: twoRepos },
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      { ...productArgs, repo_refs: [], idempotency_key: "ambiguous-promotion-v1" },
+    ));
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "pipeline_repo_context_required",
+      retryable: true,
+    });
+  });
+
   it("creates, audits, binds, and idempotently reuses a product run", async () => {
     const { pipelineStore, sessionStore, runtime } = await setup();
 

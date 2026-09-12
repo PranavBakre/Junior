@@ -241,12 +241,32 @@ export async function pipelineStartRun(
     }
   }
 
+  const declaredRepoRefs = [
+    ...(session.targetRepo ? [session.targetRepo] : []),
+    ...(args.repo_refs ?? []).map((repo) => repo.trim()).filter(Boolean),
+  ];
+  // Inherit the promotion source's scope only to fill a gap. `active` falls back
+  // to the newest run by thread and is not cleared on completion, so it is often
+  // a terminal run whose refs are stale: spreading those into a declared scope
+  // would leak another run's repositories into this one, and because they would
+  // also reach workstream inference they could turn a single-repo build start
+  // into a multi-repo fan-out.
+  // Only a single, still-live default run is an unambiguous promotion source.
+  // Inheriting a multi-repo scope would be guessing which of them this start
+  // concerns — and those refs reach workstream inference, so a two-repo inherit
+  // turns a `build` start into a fan-out it never asked for. Let the caller
+  // declare instead: the guard below then asks the precise question.
+  const inheritedRepoRefs = active?.kind === "default" &&
+      active.status !== "terminal"
+    ? active.repoRefs ?? []
+    : [];
+  const promotedRepoRefs = inheritedRepoRefs.length === 1
+    ? inheritedRepoRefs
+    : [];
   const repoRefs = [
-    ...new Set([
-      ...(active?.repoRefs ?? []),
-      ...(session.targetRepo ? [session.targetRepo] : []),
-      ...(args.repo_refs ?? []).map((repo) => repo.trim()).filter(Boolean),
-    ]),
+    ...new Set(
+      declaredRepoRefs.length > 0 ? declaredRepoRefs : promotedRepoRefs,
+    ),
   ];
   const initialAssignmentNeedsRepo =
     (args.kind === "product" && args.start_kind === "build") ||
@@ -265,8 +285,11 @@ export async function pipelineStartRun(
       true,
     );
   }
-  if (runtime.repos && repoRefs.length > 0) {
-    const resolution = resolvePipelineRepos(runtime.repos, repoRefs);
+  // Validate only what the caller named. A ref inherited from the session or the
+  // promotion source is not this caller's to fix, and blocking on it would turn a
+  // stale `targetRepo` into a hard failure on paths that need no repository at all.
+  if (runtime.repos && declaredRepoRefs.length > 0) {
+    const resolution = resolvePipelineRepos(runtime.repos, declaredRepoRefs);
     if (resolution.unresolvedRefs.length > 0) {
       return textResult(
         {
@@ -274,7 +297,7 @@ export async function pipelineStartRun(
           code: "pipeline_repo_context_invalid",
           reason:
             `repository refs are not uniquely configured: ${resolution.unresolvedRefs.join(", ")}`,
-          repoRefs,
+          repoRefs: declaredRepoRefs,
           configuredRepoNames: runtime.repos.map((repo) => repo.name),
           retryable: true,
         },
