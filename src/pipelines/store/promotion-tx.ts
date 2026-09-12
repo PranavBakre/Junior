@@ -107,7 +107,13 @@ export function decideDefaultPromotion(input: {
     threadId: run.threadId,
     createdAt: run.createdAt,
     stateVersion: newVersion,
-    repoRefs: unique([...run.repoRefs, ...request.targetRun.repoRefs]),
+    // The target run carries what this promotion intends. Unioning the source's
+    // refs in would let a promotion only ever widen its scope, so a caller's
+    // narrower list could not take effect and — because the source's entries
+    // came first — would not win the primary-cwd tiebreak either.
+    repoRefs: request.targetRun.repoRefs.length > 0
+      ? unique(request.targetRun.repoRefs)
+      : run.repoRefs,
     acceptanceCriteria: unique([
       ...run.acceptanceCriteria,
       ...request.targetRun.acceptanceCriteria,

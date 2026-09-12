@@ -170,6 +170,72 @@ describe("pipeline_start_run", () => {
     expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
   });
 
+  it("does not let the promotion source widen a declared scope", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const twoRepos: RepoConfig[] = [
+      {
+        name: "example-backend",
+        path: "/repos/example-backend",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-backend",
+      },
+      {
+        name: "example-client",
+        path: "/repos/example-client",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-client",
+      },
+    ];
+    // Live default run scoped to the client repo, and a directive that names
+    // only the backend one. The durable run must end up backend-only: the extra
+    // ref would be provisioned, and for a reproducer (no workstream affinity)
+    // would win the primary-cwd tiebreak and reproduce against the wrong repo.
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-client"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    const result = payload(await pipelineStartRun(
+      { ...runtime, repos: twoRepos },
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      {
+        kind: "bug",
+        start_kind: "reproducer",
+        objective: "reproduce the reported mismatch",
+        reason: "the report needs a live reproduction before a fix",
+        idempotency_key: "narrow-declared-v1",
+        repo_refs: ["example-backend"],
+      },
+    ));
+
+    expect(result.ok).toBe(true);
+    expect((result.run as { repoRefs: string[] }).repoRefs).toEqual([
+      "example-backend",
+    ]);
+  });
+
   it("refuses a promotion whose source scope is ambiguous", async () => {
     const { pipelineStore, sessionStore, runtime } = await setup();
     const twoRepos: RepoConfig[] = [
