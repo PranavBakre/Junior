@@ -201,7 +201,7 @@ export function buildWorkspaceBlock(
         `<github-identity>`,
         `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
         identityAuthenticated
-          ? `GitHub credentials${repoConfig.githubUser ? ` for \`${repoConfig.githubUser}\`` : ""} were resolved for this turn; use \`gh\` against this repository.`
+          ? `GitHub credentials${repoConfig.githubUser ? ` for \`${repoConfig.githubUser}\`` : ""} were resolved for this turn; use \`gh\` against this repository — your cwd is not this repository, so name it explicitly (\`--repo\`/\`-R\`) rather than letting \`gh\` infer it.`
           : `GitHub credentials could not be resolved for this turn. Report that rather than retrying or working around it — do not conclude you lack access, and do not fall back on whatever \`gh\` identity this environment carries.`,
         // Both branches state what Junior resolved, never what `gh` in the
         // runner will do: the tmux driver's pane env comes from the tmux server,

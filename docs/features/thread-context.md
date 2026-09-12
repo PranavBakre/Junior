@@ -13,7 +13,7 @@ When Junior spawns a `claude -p` process, that process has zero knowledge of the
 
 1. **`<identity>`** — Junior's persona (see [agent-definitions](agent-definitions.md)) + the bot's Slack user ID so Claude can recognize its own messages.
 2. **`<slack-context>`** — channel name + ID, thread_ts, instruction not to search Slack, how to tag users via `<@USERID>`, the instruction to read the current message's author attribution (never assume the speaker), the `NO_SLACK_MESSAGE` sentinel, and the no-double-post rule when `slack_send_message` was used.
-3. **`<workspace>`** — see Workspace Block below.
+3. **`<workspace>`** — see Workspace Block below. A turn with no checkout but a resolved repository instead gets `<github-identity>`, which names that repository and states what Junior resolved for the turn. It is an alternative to `<workspace>`, not nested in it.
 4. **`<thread-context>`** — prior messages from `conversations.replies` (limit 100, excluding the current message), labeled `User(Name <@U…>)` or `Junior (you)`, with `[shared file: name]` annotations.
 5. **`<persistent-agent-state>`** — injected by the manager (not preamble itself) when the agent has `context.agentState`; lists per-thread agent sessions and pending counts.
 6. **`<dispatch-allow>`** — appended to the system prompt by the manager (`buildDispatchAllowBlock`) so every agent sees the authoritative list of `!<agent>` directives it may emit. See [agent-routing](agent-routing.md).

@@ -4552,30 +4552,75 @@ describe("typed pipeline settlement", () => {
     expect(spawnedAuthEnv[0]).toBeUndefined();
   });
 
-  it("does not bind a worktree-bound identity that failed to authenticate", async () => {
+  it("does not persist a durable identity for a worktree-bound turn", async () => {
     const sessionStore = new InMemorySessionStore();
     const seeded = createSession("thread-1", "C123");
     seeded.targetRepo = "junior";
     await sessionStore.set(seeded.threadId, seeded);
 
+    const spawnedAuthEnv: Array<Record<string, string> | undefined> = [];
     const handle = createMockHandle();
-    const manager = new SessionManager(sessionStore, testConfig, () => handle);
+    const manager = new SessionManager(
+      sessionStore,
+      testConfig,
+      (_s, _p, _c, _cwd, _tok, _i, _img, githubAuthEnv) => {
+        spawnedAuthEnv.push(githubAuthEnv);
+        return handle;
+      },
+    );
     manager.worktreeManager = {
       createWorktree: mock(async () => "/tmp/wt"),
       getBranchName: () => "slack/thread-1",
-      getGitHubEnvironment: mock(async () => {
-        throw new Error("GitHub user gxt-admin is not available for repo junior");
-      }),
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "status?" }),
+      "default",
+    );
+    await waitFor(() => spawnedAuthEnv.length === 1);
+
+    // Credentials did arrive — otherwise this asserts nothing about the write.
+    expect(spawnedAuthEnv[0]).toMatchObject({ GH_TOKEN: "tok" });
+    // A thread's worktree binding already carries the repo, so re-persisting it
+    // as a durable identity would outlive the worktree and outrank the next
+    // directive. The write is keyed on there being no target repo at all.
+    expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
+  });
+
+  it("persists the identity a repo-less turn named, so the next turn keeps it", async () => {
+    const sessionStore = new InMemorySessionStore();
+    await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, () => handle);
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/should-not-be-created"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
     } as unknown as WorktreeManager;
 
-    // The turn completes (see "does not wedge the thread…"), but must not leave
-    // an unauthenticated binding behind — a later repo-less turn would treat it
-    // as durable and be refused credentials for a repo nobody mentioned.
-    await manager
-      .handleAgentMessage(makeEvent({ user: "U123", text: "status?" }), "default")
-      .catch(() => undefined);
+    // A follow-up ("yes, go ahead") carries no coordinate of its own. Without
+    // the durable write the identity vanishes one turn after it was resolved.
+    await manager.handleAgentMessage(makeEvent({
+      user: "U123",
+      text: "merge https://github.com/GrowthX-Club/junior/pull/229",
+    }), "default");
+    await waitFor(async () => (await sessionStore.get("thread-1"))?.identityRepo === "junior");
 
-    expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
+    expect((await sessionStore.get("thread-1"))?.identityRepo).toBe("junior");
   });
 
   it("withholds credentials when the bound repo's worktree fails", async () => {
@@ -4756,6 +4801,7 @@ describe("typed pipeline settlement", () => {
     expect(prompts[0]).not.toContain("<identity>");
     expect(prompts[0]).toContain("<workspace>");
     expect(prompts[0]).toContain("credentials could not be resolved");
+    expect(prompts[0]).not.toContain("will not authenticate");
   });
 
   it("does not fail a turn that never asked for GitHub", async () => {
@@ -4842,6 +4888,7 @@ describe("typed pipeline settlement", () => {
     // improvised "read-only access" diagnosis, on the commonest turn shape.
     expect(prompts[0]).toContain("<workspace>");
     expect(prompts[0]).toContain("credentials could not be resolved");
+    expect(prompts[0]).not.toContain("will not authenticate");
   });
 
   it("tells a multi-repo worktree turn when its credentials are missing", async () => {

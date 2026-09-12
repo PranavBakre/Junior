@@ -36,6 +36,9 @@ describe("buildWorkspaceBlock", () => {
     expect(block).toContain("<github-identity>");
     expect(block).toContain("app-backend (GrowthX-Club/gx-backend)");
     expect(block).toContain("credentials for `gxt-admin` were resolved for this turn");
+    // The shell starts in Junior's own checkout for a repo-less turn, so an
+    // unqualified `gh pr merge 5944` would resolve against the wrong repo.
+    expect(block).toContain("name it explicitly (`--repo`/`-R`)");
     expect(block).toContain("</github-identity>");
     // Must not imply a checkout exists, nor inherit the workspace write rules.
     expect(block).not.toContain("Worktree (your sandbox)");
