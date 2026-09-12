@@ -256,12 +256,9 @@ export async function pipelineStartRun(
     : [];
   // A start whose kind matches a live run replays it — and the run's refs appear
   // in no prompt block, so demanding them from the caller would refuse a call
-  // asking for what it cannot see. A run with no refs of its own is not a
-  // replay worth exempting: that is the debug-then-reproducer flow, where the
-  // scope is meant to have been established by then.
+  // asking for what it cannot see.
   const replayingActiveRun = Boolean(active) &&
-    active!.status !== "terminal" && active!.kind === args.kind &&
-    liveRepoRefs.length > 0;
+    active!.status !== "terminal" && active!.kind === args.kind;
   // Beyond a replay, inherit only from an unambiguous promotion source: a live
   // `default` run holding exactly one repository. A multi-repo source is
   // guessing, so the guard below asks instead.
@@ -270,7 +267,15 @@ export async function pipelineStartRun(
     : active?.kind === "default" && liveRepoRefs.length === 1
       ? liveRepoRefs
       : [];
-  const bindingRepoRefs = session.targetRepo ? [session.targetRepo] : [];
+  // The binding fills a gap only when the live run holds no scope of its own.
+  // When the run does, a binding is a narrowing — and an unrecoverable one: the
+  // dropped repo is never provisioned, never reaches downstream agents, and for
+  // a reproducer re-points the primary cwd. `session.targetRepo` is rewritten to
+  // the run's own primary repo on every worktree-backed dispatch, so a two-repo
+  // run plus any dispatch is enough to disagree with it.
+  const bindingRepoRefs = liveRepoRefs.length === 0 && session.targetRepo
+    ? [session.targetRepo]
+    : [];
   const repoRefs = [
     ...new Set(
       callerRepoRefs.length > 0
@@ -280,7 +285,7 @@ export async function pipelineStartRun(
           : bindingRepoRefs,
     ),
   ];
-  if (initialAssignmentNeedsRepo && !replayingActiveRun && repoRefs.length === 0) {
+  if (initialAssignmentNeedsRepo && repoRefs.length === 0) {
     return textResult(
       {
         ok: false,
@@ -295,9 +300,11 @@ export async function pipelineStartRun(
     );
   }
   // A repo-requiring start must resolve the scope it will actually run on, or the
-  // guard admits a run that can never dispatch. Everything else validates only
-  // what the caller named, so a stale session binding cannot block a start that
-  // needs no repository at all.
+  // guard admits a run that can never dispatch. Other starts validate only what
+  // the caller named. That is deliberately narrow, not a claim of safety: a stale
+  // binding is still fatal for `debug`/`pm`, whose assignments carry
+  // worktree-code and meet the dispatch-time unresolved-ref throw — pre-existing,
+  // and not fixed here.
   const refsToValidate = initialAssignmentNeedsRepo ? repoRefs : callerRepoRefs;
   if (runtime.repos && refsToValidate.length > 0) {
     const resolution = resolvePipelineRepos(runtime.repos, refsToValidate);
