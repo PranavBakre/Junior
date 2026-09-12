@@ -4647,7 +4647,7 @@ describe("typed pipeline settlement", () => {
     expect((await sessionStore.get("thread-1"))?.lastError ?? null).toBeNull();
   });
 
-  it("fails loud when the turn's own directive named the repo", async () => {
+  it("does not wedge the thread when the identity cannot authenticate", async () => {
     const sessionStore = new InMemorySessionStore();
     const seeded = createSession("thread-1", "C123");
     seeded.identityRepo = "junior";
@@ -4674,14 +4674,14 @@ describe("typed pipeline settlement", () => {
       }), "default")
       .catch(() => undefined);
 
-    // This turn named the repo, so the fault must stop it before the runner
-    // starts rather than letting it proceed unauthenticated and improvise a
-    // diagnosis. Paired with the plain-chatter test above — that one must spawn,
-    // this one must not — which is what pins the need-scoping.
-    expect(spawned).toHaveLength(0);
+    // Even on a turn that names the repo and needs credentials, the fault must
+    // not kill the turn: the binding is thread-lifetime, so throwing here wedges
+    // every later turn until an admin resets it. The agent is told instead — see
+    // the prompt assertion below.
+    await waitFor(() => spawned.length === 1);
   });
 
-  it("omits the identity block when credentials were not resolved", async () => {
+  it("tells the agent which repo it authenticated for, or that it could not", async () => {
     const runWith = async (
       getGitHubEnvironment: ReturnType<typeof mock>,
     ): Promise<string> => {
@@ -4734,15 +4734,21 @@ describe("typed pipeline settlement", () => {
       return prompts[0]!;
     };
 
-    // The block asserts authentication, so it must be driven by the same
-    // predicate that granted the token — the prompt half, not just the env.
+    // The block is driven by the same predicate that granted the token — the
+    // prompt half, not just the env.
     const withCreds = await runWith(
       mock(async () => ({ GH_TOKEN: "tok", GH_CONFIG_DIR: "/tmp/gh" })),
     );
     expect(withCreds).toContain("<github-identity>");
+    expect(withCreds).toContain("is authenticated for this turn");
 
+    // Without credentials the block still renders, saying so. Withholding it
+    // silently is how the agent ends up improvising a permissions story instead
+    // of reporting the real cause — the misdiagnosis this PR exists to remove.
     const withoutCreds = await runWith(mock(async () => undefined));
-    expect(withoutCreds).not.toContain("<github-identity>");
+    expect(withoutCreds).toContain("<github-identity>");
+    expect(withoutCreds).toContain("credentials could not be resolved");
+    expect(withoutCreds).not.toContain("is authenticated");
   });
 
   it("does not bind an identity that failed to authenticate", async () => {

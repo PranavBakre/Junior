@@ -314,7 +314,10 @@ export async function unregisterWorktree(options: {
       if (current.targetRepo === repoName) {
         current.worktreePath = null;
         current.targetRepo = null;
-        // Same as the cleanup button: detaching the repo detaches its identity.
+      }
+      // Same as the cleanup button, and for the same reason: the identity is
+      // keyed to its own repo, not to the bound one.
+      if (current.identityRepo === repoName) {
         current.identityRepo = null;
       }
     });

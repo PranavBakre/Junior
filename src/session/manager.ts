@@ -83,10 +83,7 @@ import {
   sanitizeFileName,
 } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
-import {
-  promptNamesRepoCoordinate,
-  resolveIdentityRepo,
-} from "../github/identity-routing.ts";
+import { resolveIdentityRepo } from "../github/identity-routing.ts";
 import {
   inferReviewRepo,
   reviewRepoRefs,
@@ -1976,7 +1973,6 @@ export class SessionManager {
         : targetRepo?.path;
       // Identity is resolved independently of the checkout: binding targetRepo
       // for a PR-URL-only directive would also force a worktree it does not need.
-      const priorIdentityRepo = session.identityRepo;
       const identityIsUtility = pipelineRole === "utility";
       // A utility invocation is repo-less by contract and gets no identity at
       // all — not from the thread, and not from its own directive. Main withheld
@@ -1990,16 +1986,6 @@ export class SessionManager {
             repos: this.config.repos,
             prompt,
           });
-      // Only a binding the thread already held is a config fault worth failing
-      // on; one this turn's own directive introduced must not kill the turn.
-      const identityIsDurable = Boolean(targetRepo) ||
-        (priorIdentityRepo != null && priorIdentityRepo === identityRepo?.name);
-      // Loudness is scoped to need as well as durability. The binding is
-      // thread-lifetime, so failing every later turn — plain chatter included —
-      // would let one transient auth fault wedge the thread until an admin
-      // resets it. A turn that named a repo is the one that must know.
-      const identityRequiredThisTurn = Boolean(targetRepo) ||
-        promptNamesRepoCoordinate(prompt);
       // Suppress only for the repo whose worktree setup actually failed; a
       // different repo named in this directive is unaffected.
       const identityBlockedByWorktreeFailure = failedWorktreeRepo !== null &&
@@ -2010,7 +1996,12 @@ export class SessionManager {
         ? await this.worktreeManager
             .getGitHubEnvironment(identityRepo.name)
             .catch((error) => {
-              if (identityIsDurable && identityRequiredThisTurn) throw error;
+              // Never fatal. Throwing wedged the whole thread on a
+              // thread-lifetime binding — recoverable only by `!reset all` — and
+              // deciding "does this turn need GitHub?" from its prose
+              // under-detects, since a follow-up like "yes go ahead" needs it
+              // and names nothing. The preamble carries the real reason instead,
+              // so the agent reports it rather than improvising one.
               _log.warn(
                 "manager",
                 `github.identity.unavailable thread=${session.threadId} repo=${identityRepo.name} err=${error instanceof Error ? error.message : String(error)}`,
@@ -2035,11 +2026,15 @@ export class SessionManager {
         // else — so the projection is already an identity on this path.
         session = durable;
       }
-      // The block asserts authentication, so render it only when the runner
-      // actually received credentials.
-      const preambleIdentityRepo = githubAuthEnv
-        ? identityRepo?.name
-        : undefined;
+      // Withheld only when a requested worktree failed, where any instruction
+      // about where to work would point at the shared origin repo. A resolved
+      // identity whose credentials did not arrive still renders, saying so —
+      // silently withholding it is how the agent ends up improvising a
+      // permissions story instead of reporting the real cause.
+      const preambleIdentityRepo = identityBlockedByWorktreeFailure
+        ? undefined
+        : identityRepo?.name;
+      const preambleIdentityAuthenticated = Boolean(githubAuthEnv);
 
       // Build after worktree routing/creation so provider policy and cwd see
       // the newly registered isolated checkout on this same turn.
@@ -2350,6 +2345,7 @@ export class SessionManager {
               this.config.repos,
               preambleProfile,
               preambleIdentityRepo,
+              preambleIdentityAuthenticated,
             );
             assertRunOwnership();
             prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
@@ -2366,6 +2362,7 @@ export class SessionManager {
               this.config.repos,
               session.threadId,
               preambleIdentityRepo,
+              preambleIdentityAuthenticated,
             );
             prompt = workspaceBlock
               ? `${workspaceBlock}\n\n${readablePrompt}`
@@ -2496,7 +2493,10 @@ export class SessionManager {
           botToken: this.config.slack.botToken,
           agentIdentity,
           githubAuthEnv,
-          githubUser: identityRepo?.githubUser,
+          // Must match the predicate that granted the credentials: the pane's
+          // reuse key compares this, so an ungated value would reuse a pane
+          // still holding the previous turn's token after suppression.
+          githubUser: githubAuthEnv ? identityRepo?.githubUser : undefined,
           threadId: session.threadId,
           agentName,
         });
@@ -2736,7 +2736,7 @@ export class SessionManager {
               botToken: this.config.slack.botToken,
               agentIdentity,
               githubAuthEnv,
-              githubUser: identityRepo?.githubUser,
+              githubUser: githubAuthEnv ? identityRepo?.githubUser : undefined,
               threadId: session.threadId,
               agentName,
             });

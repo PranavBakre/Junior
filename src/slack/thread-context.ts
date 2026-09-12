@@ -143,6 +143,7 @@ export function buildWorkspaceBlock(
   repos?: RepoConfig[],
   threadId?: string,
   identityRepoName?: string | null,
+  identityAuthenticated = true,
 ): string | null {
   // Multi-repo format for bug-pipeline threads.
   if (worktreePaths && Object.keys(worktreePaths).length > 0) {
@@ -192,8 +193,15 @@ export function buildWorkspaceBlock(
       return [
         `<github-identity>`,
         `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
-        `\`gh\` is authenticated${repoConfig.githubUser ? ` as \`${repoConfig.githubUser}\`` : ""} for this turn; use it against this repository.`,
-        `No worktree is checked out for this thread — act on the repository directly instead of expecting a local checkout, and do not create one unless the task needs to edit files.`,
+        identityAuthenticated
+          ? `\`gh\` is authenticated${repoConfig.githubUser ? ` as \`${repoConfig.githubUser}\`` : ""} for this turn; use it against this repository.`
+          : `GitHub credentials could not be resolved for this turn, so \`gh\` will not authenticate. Report that rather than retrying or working around it — do not conclude you lack access.`,
+        // Only invite direct work when there is something to work with. Told to
+        // "act on the repository directly" after a failure, an agent has every
+        // reason to start editing the shared origin repo.
+        ...(identityAuthenticated
+          ? [`No worktree is checked out for this thread — act on the repository directly instead of expecting a local checkout, and do not create one unless the task needs to edit files.`]
+          : []),
         `</github-identity>`,
       ].join("\n");
     }
@@ -237,6 +245,7 @@ export async function buildPromptPreamble(
   repos?: RepoConfig[],
   contextProfile: AgentContextProfile = DEFAULT_CONTEXT_PROFILE,
   identityRepoName?: string | null,
+  identityAuthenticated = true,
 ): Promise<string> {
   // Only fetch the data we'll actually emit — skipping thread history matters
   // for lightweight task agents, both for tokens and for latency.
@@ -296,6 +305,7 @@ export async function buildPromptPreamble(
       repos,
       threadTs,
       identityRepoName,
+      identityAuthenticated,
     );
     if (workspaceBlock) {
       parts.push(``, workspaceBlock);

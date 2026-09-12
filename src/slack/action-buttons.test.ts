@@ -171,6 +171,43 @@ describe("unsafeCleanupReason", () => {
     expect(removed).toBe(false);
   });
 
+  it("clears an identity whose repo is detached but is not the bound one", async () => {
+    const session = createSession("thread-identity-elsewhere", "C123");
+    // The identity is keyed to its own repo, and a repo-less turn binds one
+    // without ever setting `targetRepo` — so keying the clear on `targetRepo`
+    // leaves a detached repo's credentials on the thread.
+    session.targetRepo = "junior";
+    session.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-identity-elsewhere";
+    session.worktreePaths = {
+      junior: session.worktreePath,
+      frontend: "/tmp/frontend.junior-worktrees/slack-thread-identity-elsewhere",
+    };
+    session.identityRepo = "frontend";
+    const status: WorktreeStatus = {
+      tracked: [],
+      untracked: [],
+      ignoredDotenv: [],
+      unpushedCommits: 0,
+      unpushedBase: "origin/main",
+    };
+    const sessionManager = {
+      getSession: async () => session,
+      updateSession: async () => undefined,
+    } as unknown as SessionManager;
+    const worktreeManager = {
+      getWorktreeStatus: async () => status,
+      removeWorktree: async () => undefined,
+    } as unknown as WorktreeManager;
+
+    await cleanupThreadWorktrees(
+      session.threadId,
+      sessionManager,
+      worktreeManager,
+    );
+
+    expect(session.identityRepo).toBeNull();
+  });
+
   it("clears the identity binding with the repo it belonged to", async () => {
     const session = createSession("thread-identity", "C123");
     session.targetRepo = "backend";

@@ -233,9 +233,12 @@ export async function cleanupThreadWorktrees(
     if (session.targetRepo === worktree.repo) {
       session.worktreePath = null;
       session.targetRepo = null;
-      // Detaching the repo must detach its identity too, or the next unrelated
-      // turn authenticates as a repo the user just unregistered and is told to
-      // act on it.
+    }
+    // The identity is keyed to its own repo, not to the bound one — a repo-less
+    // turn binds one without ever setting `targetRepo`. Clearing it only inside
+    // the branch above leaves a detached repo's credentials on the thread, and
+    // the next unrelated turn is told to act on the repo the user just removed.
+    if (session.identityRepo === worktree.repo) {
       session.identityRepo = null;
     }
   }

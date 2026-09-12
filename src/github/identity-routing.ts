@@ -36,14 +36,6 @@ function githubCoordinates(prompt: string): string[] {
 }
 
 /**
- * True when the request itself names a GitHub coordinate — i.e. this turn
- * depends on the identity rather than merely inheriting one.
- */
-export function promptNamesRepoCoordinate(prompt: string): boolean {
-  return githubCoordinates(prompt).length > 0;
-}
-
-/**
  * Choose the repository an invocation authenticates with. A durable binding
  * wins; otherwise the request must name exactly one configured repository.
  *
