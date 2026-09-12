@@ -2026,14 +2026,13 @@ export class SessionManager {
         // else — so the projection is already an identity on this path.
         session = durable;
       }
-      // Withheld only when a requested worktree failed, where any instruction
-      // about where to work would point at the shared origin repo. A resolved
-      // identity whose credentials did not arrive still renders, saying so —
-      // silently withholding it is how the agent ends up improvising a
-      // permissions story instead of reporting the real cause.
-      const preambleIdentityRepo = identityBlockedByWorktreeFailure
-        ? undefined
-        : identityRepo?.name;
+      // A resolved identity still renders when its credentials did not arrive,
+      // saying so — silently withholding it is how the agent ends up improvising
+      // a permissions story instead of reporting the real cause. That includes
+      // the worktree-failure case: `identityAuthenticated` is false exactly
+      // there, and the "act on the repository directly" invitation is gated on
+      // it, so naming the repo no longer risks pointing at the shared origin.
+      const preambleIdentityRepo = identityRepo?.name;
       const preambleIdentityAuthenticated = Boolean(githubAuthEnv);
 
       // Build after worktree routing/creation so provider policy and cwd see
@@ -2493,9 +2492,11 @@ export class SessionManager {
           botToken: this.config.slack.botToken,
           agentIdentity,
           githubAuthEnv,
-          // Must match the predicate that granted the credentials: the pane's
-          // reuse key compares this, so an ungated value would reuse a pane
-          // still holding the previous turn's token after suppression.
+          // Must match the predicate that granted the credentials, or a pane
+          // opened for one identity gets reused for the next. This governs
+          // reuse only — a fresh pane inherits GH_TOKEN from the tmux server
+          // regardless (#235), which is why the prompt promises nothing about
+          // what `gh` will do.
           githubUser: githubAuthEnv ? identityRepo?.githubUser : undefined,
           threadId: session.threadId,
           agentName,

@@ -4615,6 +4615,149 @@ describe("typed pipeline settlement", () => {
     expect(spawnedAuthEnv[0]).toBeUndefined();
   });
 
+  it("names the repo without inviting work on its bare origin when a worktree fails", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => {
+        throw new Error("worktree setup failed");
+      }),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "merge PR #321 via gxt-admin" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // The repo name is what makes the failure reportable at all — but with no
+    // checkout to work in, the invitation to "act on the repository directly"
+    // would aim the agent at the shared bare repo.
+    expect(prompts[0]).toContain("Repository: junior");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+    expect(prompts[0]).not.toContain("act on the repository directly");
+  });
+
+  it("tells a multi-repo turn when the repo whose worktree failed held the identity", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    // Reachable: register_worktree fills worktreePaths without setting
+    // targetRepo; `!repo frontend` then sets it, and frontend's setup fails.
+    seeded.worktreePaths = { junior: "/tmp/junior.junior-worktrees/slack-thread-1" };
+    seeded.targetRepo = "frontend";
+    seeded.worktreePath = null;
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => {
+        throw new Error("worktree setup failed");
+      }),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "fix the toggle" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // junior's worktree still exists and this block hands out its write rules,
+    // so withholding the explanation is exactly the silent case.
+    expect(prompts[0]).toContain("Work ONLY inside the worktree paths listed below");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+  });
+
+  it("keeps the credentials signal on a resumed turn, which skips the preamble", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    seeded.sessionId = "sess-resume";
+    seeded.sessionCwd = seeded.worktreePath;
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "now open the PR" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // Resumed turns emit only the standalone workspace block, via a second
+    // call site whose arguments are load-bearing and otherwise unexercised.
+    expect(prompts[0]).not.toContain("<identity>");
+    expect(prompts[0]).toContain("<workspace>");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+  });
+
   it("does not fail a turn that never asked for GitHub", async () => {
     const sessionStore = new InMemorySessionStore();
     const seeded = createSession("thread-1", "C123");
@@ -4695,8 +4838,8 @@ describe("typed pipeline settlement", () => {
     await waitFor(() => prompts.length === 1);
 
     // The workspace rules send the agent off to commit and open a PR. Without
-    // this line it has no idea `gh` will not authenticate — the same improvised
-    // "read-only access" diagnosis, on the commonest turn shape.
+    // this line it has no idea its credentials are missing — the same
+    // improvised "read-only access" diagnosis, on the commonest turn shape.
     expect(prompts[0]).toContain("<workspace>");
     expect(prompts[0]).toContain("credentials could not be resolved");
   });

@@ -31,12 +31,15 @@ The delimiters are kept out-of-band: `escapeBlockDelimiters` rewrites `<buffered
 
 ## Workspace Block
 
-`buildWorkspaceBlock()` renders one of two shapes:
+`buildWorkspaceBlock()` renders one of three shapes:
 
 - **Multi-repo** (bug-pipeline threads with `session.worktreePaths`) — lists each repo's worktree path, bare-repo path (off-limits), branch (`slack/<threadId>`), and base (`origin/main` or `repo.defaultBase`). See [bug-pipeline-worktrees](bug-pipeline-worktrees.md).
 - **Single-repo** (`!repo` flow) — worktree path, repo path, branch, original bare-repo path.
+- **Identity-only** (no checkout, but a repository to authenticate against) — a `<github-identity>` block naming that repository, so a turn holding `GH_TOKEN` without a worktree knows what to use it against. It deliberately excludes the write rules, and its "act on the repository directly" invitation is gated on credentials actually arriving, so a failed worktree never aims the agent at the shared origin repo.
 
-Both formats interpolate concrete paths into the rules so Claude can't hallucinate substitutes. Rules forbid writing/editing/`cd`-ing outside the worktree and require PRs (single-repo) / `!devserver` instead of running dev servers (multi-repo).
+All formats interpolate concrete paths into the rules so Claude can't hallucinate substitutes. Rules forbid writing/editing/`cd`-ing outside the worktree and require PRs (single-repo) / `!devserver` instead of running dev servers (multi-repo).
+
+When an identity resolves but its credentials do not arrive, all three shapes state that and instruct the agent to report it rather than improvise. The sentence deliberately does not claim `gh` will fail to authenticate: on the tmux driver a pane can carry an identity inherited from the tmux server's environment, so the instruction is to report the cause and not fall back on whatever identity the environment carries.
 
 Worktree creation is unconditional for target-repo threads — the manager creates one before building the workspace block so Claude never edits the shared origin repo.
 

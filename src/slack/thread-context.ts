@@ -176,7 +176,7 @@ export function buildWorkspaceBlock(
       ...(identityRepoName && !identityAuthenticated
         ? [
             ``,
-            `GitHub credentials could not be resolved for this turn, so \`gh\` will not authenticate. Report that rather than retrying or working around it — do not conclude you lack access.`,
+            `GitHub credentials could not be resolved for this turn. Report that rather than retrying or working around it — do not conclude you lack access, and do not fall back on whatever \`gh\` identity this environment carries.`,
           ]
         : []),
       ``,
@@ -202,7 +202,7 @@ export function buildWorkspaceBlock(
         `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
         identityAuthenticated
           ? `\`gh\` is authenticated${repoConfig.githubUser ? ` as \`${repoConfig.githubUser}\`` : ""} for this turn; use it against this repository.`
-          : `GitHub credentials could not be resolved for this turn, so \`gh\` will not authenticate. Report that rather than retrying or working around it — do not conclude you lack access.`,
+          : `GitHub credentials could not be resolved for this turn. Report that rather than retrying or working around it — do not conclude you lack access, and do not fall back on whatever \`gh\` identity this environment carries.`,
         // Only invite direct work when there is something to work with. Told to
         // "act on the repository directly" after a failure, an agent has every
         // reason to start editing the shared origin repo.
@@ -224,10 +224,10 @@ export function buildWorkspaceBlock(
     `Original repo path (OFF-LIMITS for writes): ${workspace.repoPath}`,
     // Only when an identity was resolved for this turn but did not arrive.
     // Without it the rules below send the agent off to commit and open a PR
-    // with no idea that `gh` will not authenticate — the same improvised
+    // with no idea that its credentials are missing — the same improvised
     // "read-only access" diagnosis, on the most common turn shape.
     ...(identityRepoName && !identityAuthenticated
-      ? [`GitHub credentials could not be resolved for this turn, so \`gh\` will not authenticate. Report that rather than retrying or working around it — do not conclude you lack access.`]
+      ? [`GitHub credentials could not be resolved for this turn. Report that rather than retrying or working around it — do not conclude you lack access, and do not fall back on whatever \`gh\` identity this environment carries.`]
       : []),
     ``,
     `RULES — non-negotiable:`,
