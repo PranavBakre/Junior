@@ -83,7 +83,10 @@ import {
   sanitizeFileName,
 } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
-import { resolveIdentityRepo } from "../github/identity-routing.ts";
+import {
+  promptNamesRepoCoordinate,
+  resolveIdentityRepo,
+} from "../github/identity-routing.ts";
 import {
   inferReviewRepo,
   reviewRepoRefs,
@@ -1991,6 +1994,12 @@ export class SessionManager {
       // on; one this turn's own directive introduced must not kill the turn.
       const identityIsDurable = Boolean(targetRepo) ||
         (priorIdentityRepo != null && priorIdentityRepo === identityRepo?.name);
+      // Loudness is scoped to need as well as durability. The binding is
+      // thread-lifetime, so failing every later turn — plain chatter included —
+      // would let one transient auth fault wedge the thread until an admin
+      // resets it. A turn that named a repo is the one that must know.
+      const identityRequiredThisTurn = Boolean(targetRepo) ||
+        promptNamesRepoCoordinate(prompt);
       // Suppress only for the repo whose worktree setup actually failed; a
       // different repo named in this directive is unaffected.
       const identityBlockedByWorktreeFailure = failedWorktreeRepo !== null &&
@@ -2001,7 +2010,7 @@ export class SessionManager {
         ? await this.worktreeManager
             .getGitHubEnvironment(identityRepo.name)
             .catch((error) => {
-              if (identityIsDurable) throw error;
+              if (identityIsDurable && identityRequiredThisTurn) throw error;
               _log.warn(
                 "manager",
                 `github.identity.unavailable thread=${session.threadId} repo=${identityRepo.name} err=${error instanceof Error ? error.message : String(error)}`,
@@ -2021,9 +2030,10 @@ export class SessionManager {
           fresh.identityRepo = identityRepo.name;
         });
         // The reload returns the durable row, dropping invocation-only
-        // isolation. Reapply it, or a repo-less turn inherits a stale worktree
-        // and restores repository trust it was never granted.
-        session = this.projectInvocationSession(durable, pipelineRole);
+        // isolation. No reapply is needed here: this write only runs for a
+        // non-utility role, and `projectInvocationSession` transforms nothing
+        // else — so the projection is already an identity on this path.
+        session = durable;
       }
       // The block asserts authentication, so render it only when the runner
       // actually received credentials.

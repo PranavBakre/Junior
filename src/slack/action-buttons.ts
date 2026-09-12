@@ -233,6 +233,10 @@ export async function cleanupThreadWorktrees(
     if (session.targetRepo === worktree.repo) {
       session.worktreePath = null;
       session.targetRepo = null;
+      // Detaching the repo must detach its identity too, or the next unrelated
+      // turn authenticates as a repo the user just unregistered and is told to
+      // act on it.
+      session.identityRepo = null;
     }
   }
   await sessionManager.updateSession(session.threadId, session);

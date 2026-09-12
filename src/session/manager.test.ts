@@ -4615,6 +4615,136 @@ describe("typed pipeline settlement", () => {
     expect(spawnedAuthEnv[0]).toBeUndefined();
   });
 
+  it("does not fail a turn that never asked for GitHub", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.identityRepo = "junior";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawned: ThreadSession[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawned.push(structuredClone(runSession));
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "what do you think?" }),
+      "default",
+    );
+
+    // The binding is thread-lifetime. Failing ordinary chatter on it would let
+    // one transient auth fault wedge every later turn on the thread until an
+    // admin resets it — so loudness is scoped to turns that named a repo.
+    await waitFor(() => spawned.length === 1);
+    expect((await sessionStore.get("thread-1"))?.lastError ?? null).toBeNull();
+  });
+
+  it("fails loud when the turn's own directive named the repo", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.identityRepo = "junior";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawned: ThreadSession[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawned.push(structuredClone(runSession));
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+
+    await manager
+      .handleAgentMessage(makeEvent({
+        user: "U123",
+        text: "merge https://github.com/GrowthX-Club/junior/pull/229",
+      }), "default")
+      .catch(() => undefined);
+
+    // This turn named the repo, so the fault must stop it before the runner
+    // starts rather than letting it proceed unauthenticated and improvise a
+    // diagnosis. Paired with the plain-chatter test above — that one must spawn,
+    // this one must not — which is what pins the need-scoping.
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("omits the identity block when credentials were not resolved", async () => {
+    const runWith = async (
+      getGitHubEnvironment: ReturnType<typeof mock>,
+    ): Promise<string> => {
+      const sessionStore = new InMemorySessionStore();
+      await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+      const prompts: string[] = [];
+      const handle = createMockHandle();
+      const manager = new SessionManager(
+        sessionStore,
+        testConfig,
+        (_s, prompt) => {
+          prompts.push(prompt);
+          return handle;
+        },
+      );
+      manager.worktreeManager = {
+        createWorktree: mock(async () => "/tmp/wt"),
+        getBranchName: () => "slack/thread-1",
+        getGitHubEnvironment,
+      } as unknown as WorktreeManager;
+      // The preamble — and so the identity block — is only built when a Slack
+      // app is wired.
+      manager.slackApp = {
+        client: {
+          conversations: {
+            replies: async () => ({
+              messages: [
+                { ts: "1", user: "U1", text: "hi" },
+                { ts: "2", user: "U2", text: "there" },
+              ],
+            }),
+            info: async () => ({ channel: { name: "chan" } }),
+          },
+          users: {
+            info: async () => ({
+              user: { name: "u", profile: { display_name: "U" } },
+            }),
+          },
+        },
+      } as unknown as App;
+      manager.botUserId = "B1";
+      await manager.handleAgentMessage(
+        makeEvent({
+          user: "U123",
+          text: "merge https://github.com/GrowthX-Club/junior/pull/229",
+        }),
+        "default",
+      );
+      await waitFor(() => prompts.length === 1);
+      return prompts[0]!;
+    };
+
+    // The block asserts authentication, so it must be driven by the same
+    // predicate that granted the token — the prompt half, not just the env.
+    const withCreds = await runWith(
+      mock(async () => ({ GH_TOKEN: "tok", GH_CONFIG_DIR: "/tmp/gh" })),
+    );
+    expect(withCreds).toContain("<github-identity>");
+
+    const withoutCreds = await runWith(mock(async () => undefined));
+    expect(withoutCreds).not.toContain("<github-identity>");
+  });
+
   it("does not bind an identity that failed to authenticate", async () => {
     const sessionStore = new InMemorySessionStore();
     await sessionStore.set("thread-1", createSession("thread-1", "C123"));

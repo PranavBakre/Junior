@@ -314,6 +314,8 @@ export async function unregisterWorktree(options: {
       if (current.targetRepo === repoName) {
         current.worktreePath = null;
         current.targetRepo = null;
+        // Same as the cleanup button: detaching the repo detaches its identity.
+        current.identityRepo = null;
       }
     });
   } catch (err) {

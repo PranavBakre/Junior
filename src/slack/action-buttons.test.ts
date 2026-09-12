@@ -170,4 +170,39 @@ describe("unsafeCleanupReason", () => {
     expect(result).toContain("ignored dotenv files present (.env.local)");
     expect(removed).toBe(false);
   });
+
+  it("clears the identity binding with the repo it belonged to", async () => {
+    const session = createSession("thread-identity", "C123");
+    session.targetRepo = "backend";
+    session.worktreePath = "/tmp/backend.junior-worktrees/slack-thread-identity";
+    session.worktreePaths = { backend: session.worktreePath };
+    session.identityRepo = "backend";
+    const status: WorktreeStatus = {
+      tracked: [],
+      untracked: [],
+      ignoredDotenv: [],
+      unpushedCommits: 0,
+      unpushedBase: "origin/main",
+    };
+    const sessionManager = {
+      getSession: async () => session,
+      updateSession: async () => undefined,
+    } as unknown as SessionManager;
+    const worktreeManager = {
+      getWorktreeStatus: async () => status,
+      removeWorktree: async () => undefined,
+    } as unknown as WorktreeManager;
+
+    await cleanupThreadWorktrees(
+      session.threadId,
+      sessionManager,
+      worktreeManager,
+    );
+
+    // Detaching the repo must detach its identity too, or the next unrelated
+    // turn authenticates for a repo the user just unregistered — and is told to
+    // act on it.
+    expect(session.targetRepo).toBeNull();
+    expect(session.identityRepo).toBeNull();
+  });
 });
