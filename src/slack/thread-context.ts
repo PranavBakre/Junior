@@ -201,17 +201,20 @@ export function buildWorkspaceBlock(
         `<github-identity>`,
         `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
         identityAuthenticated
-          ? `GitHub credentials${repoConfig.githubUser ? ` for \`${repoConfig.githubUser}\`` : ""} were resolved for this turn; use \`gh\` against this repository — your cwd is not this repository, so name it explicitly (\`--repo\`/\`-R\`) rather than letting \`gh\` infer it.`
+          ? `GitHub credentials${repoConfig.githubUser ? ` for \`${repoConfig.githubUser}\`` : ""} were resolved for this turn; use \`gh\` against this repository.`
           : `GitHub credentials could not be resolved for this turn. Report that rather than retrying or working around it — do not conclude you lack access, and do not fall back on whatever \`gh\` identity this environment carries.`,
         // Both branches state what Junior resolved, never what `gh` in the
         // runner will do: the tmux driver's pane env comes from the tmux server,
         // not from this turn (#235), so a promise about the pane can be false in
-        // either direction.
-        // Only invite direct work when there is something to work with. Told to
-        // "act on the repository directly" after a failure, an agent has every
-        // reason to start editing the shared origin repo.
+        // either direction. For the same reason this says nothing about cwd —
+        // the repo Junior itself runs from is configurable, and when the
+        // directive resolves to it, cwd *is* the repository.
+        // Only invite direct work when there is something safe to work on. This
+        // repo's own checkout is discoverable, so "act on the repository
+        // directly" can point at a shared origin that the worktree shapes mark
+        // OFF-LIMITS for writes.
         ...(identityAuthenticated
-          ? [`No worktree is checked out for this thread — act on the repository directly instead of expecting a local checkout, and do not create one unless the task needs to edit files.`]
+          ? [`No worktree is checked out for this thread. Work against the repository remotely — pass an explicit \`--repo\`/\`-R\` or a full URL rather than letting \`gh\` infer it — and create a worktree only if the task needs to edit files.`]
           : []),
         `</github-identity>`,
       ].join("\n");

@@ -36,9 +36,13 @@ describe("buildWorkspaceBlock", () => {
     expect(block).toContain("<github-identity>");
     expect(block).toContain("app-backend (GrowthX-Club/gx-backend)");
     expect(block).toContain("credentials for `gxt-admin` were resolved for this turn");
-    // The shell starts in Junior's own checkout for a repo-less turn, so an
-    // unqualified `gh pr merge 5944` would resolve against the wrong repo.
-    expect(block).toContain("name it explicitly (`--repo`/`-R`)");
+    // Never claim where cwd is: the repo Junior itself runs from is configured,
+    // and a directive resolving to it puts cwd inside that repository.
+    expect(block).not.toContain("your cwd");
+    // Never invite direct work in a checkout the worktree shapes call
+    // OFF-LIMITS; remote work and a worktree are the safe instructions.
+    expect(block).not.toContain("act on the repository directly");
+    expect(block).toContain("Work against the repository remotely");
     expect(block).toContain("</github-identity>");
     // Must not imply a checkout exists, nor inherit the workspace write rules.
     expect(block).not.toContain("Worktree (your sandbox)");
