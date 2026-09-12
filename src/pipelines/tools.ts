@@ -243,10 +243,45 @@ export async function pipelineStartRun(
 
   const repoRefs = [
     ...new Set([
+      ...(active?.repoRefs ?? []),
       ...(session.targetRepo ? [session.targetRepo] : []),
       ...(args.repo_refs ?? []).map((repo) => repo.trim()).filter(Boolean),
     ]),
   ];
+  const initialAssignmentNeedsRepo =
+    (args.kind === "product" && args.start_kind === "build") ||
+    (args.kind === "bug" && args.start_kind === "reproducer");
+  if (initialAssignmentNeedsRepo && repoRefs.length === 0) {
+    return textResult(
+      {
+        ok: false,
+        code: "pipeline_repo_context_required",
+        reason:
+          `${args.start_kind} starts require at least one configured repository before the pipeline is promoted; ` +
+          "resolve the report URL or feature against the repo routing map, or ask one precise repository question, then retry with repo_refs",
+        configuredRepoNames: runtime.repos?.map((repo) => repo.name) ?? [],
+        retryable: true,
+      },
+      true,
+    );
+  }
+  if (runtime.repos && repoRefs.length > 0) {
+    const resolution = resolvePipelineRepos(runtime.repos, repoRefs);
+    if (resolution.unresolvedRefs.length > 0) {
+      return textResult(
+        {
+          ok: false,
+          code: "pipeline_repo_context_invalid",
+          reason:
+            `repository refs are not uniquely configured: ${resolution.unresolvedRefs.join(", ")}`,
+          repoRefs,
+          configuredRepoNames: runtime.repos.map((repo) => repo.name),
+          retryable: true,
+        },
+        true,
+      );
+    }
+  }
   const provenance = {
     actorType: "agent" as const,
     actorId: runContext.agent,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { RepoConfig } from "../config.ts";
 import { createSession } from "../session/types.ts";
 import { InMemorySessionStore } from "../session/store/memory.ts";
 import type { SessionStore } from "../session/store/interface.ts";
@@ -15,6 +16,14 @@ import {
 
 const THREAD = "1711111111.000001";
 const CHANNEL = "C-PIPELINE";
+const REPOS: RepoConfig[] = [
+  {
+    name: "example-backend",
+    path: "/repos/example-backend",
+    defaultBase: "origin/main",
+    githubRepo: "Example/example-backend",
+  },
+];
 
 function payload(result: ToolTextResult): Record<string, unknown> {
   return JSON.parse(result.content[0]?.text ?? "{}") as Record<string, unknown>;
@@ -46,6 +55,7 @@ async function setup(options: {
     productPipelineEnabled: true,
     bugPipelineEnabled: true,
     githubTrackingEnabled: true,
+    repos: REPOS,
   };
   return { pipelineStore, sessionStore, runtime };
 }
@@ -56,6 +66,7 @@ const productArgs: PipelineStartRunArgs = {
   objective: "Implement a scoped event API flag, open a PR, and send it through review",
   reason: "The work now spans implementation, PR tracking, and independent review",
   idempotency_key: "event-flag-product-v1",
+  repo_refs: ["example-backend"],
 };
 
 describe("pipeline_start_run", () => {
@@ -111,6 +122,51 @@ describe("pipeline_start_run", () => {
 
   it("does nothing until an authorized orchestrator deliberately calls it", async () => {
     const { pipelineStore } = await setup();
+    expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
+  });
+
+  it("rejects worktree-backed starts without repo context before creating a run", async () => {
+    const { pipelineStore, runtime } = await setup();
+
+    for (const args of [
+      {
+        ...productArgs,
+        repo_refs: undefined,
+      },
+      {
+        kind: "bug" as const,
+        start_kind: "reproducer" as const,
+        objective: "Reproduce the reported verification failure",
+        reason: "The report needs a browser reproduction",
+        idempotency_key: "missing-reproducer-repo",
+      },
+    ]) {
+      const result = payload(await pipelineStartRun(runtime, context(), args));
+      expect(result).toMatchObject({
+        ok: false,
+        code: "pipeline_repo_context_required",
+        retryable: true,
+      });
+      expect(result.reason).toContain("repo routing map");
+      expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
+    }
+  });
+
+  it("rejects unknown repo refs before creating a run", async () => {
+    const { pipelineStore, runtime } = await setup();
+    const result = payload(
+      await pipelineStartRun(runtime, context(), {
+        ...productArgs,
+        repo_refs: ["not-configured"],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "pipeline_repo_context_invalid",
+      repoRefs: ["not-configured"],
+      retryable: true,
+    });
     expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
   });
 

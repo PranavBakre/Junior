@@ -38,6 +38,14 @@ consumers and outcome writes must remain idempotent; version/CAS checks prevent
 stale workers from overwriting newer state. Retention is controlled by
 `PIPELINE_RETENTION_DAYS`.
 
+`pipeline_start_run` validates repository context before mutating durable state.
+Initial product `build` and bug `reproducer` assignments require at least one
+configured `repo_ref`; unknown or ambiguous refs are also rejected before
+promotion. The orchestrator can then resolve the report against the routing map
+or ask one precise question without creating a doomed assignment and recovery
+escalation. Repo-less bug intake uses `debug` and binds repos before dispatching
+a worktree-backed worker.
+
 Ordinary Slack messages routed through an active default run retain up to eight
 attachment references (bounded URL, filename, and MIME type fields) on the
 assignment and its dispatch outbox item. The pump validates those JSON refs and
