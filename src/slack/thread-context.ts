@@ -215,6 +215,13 @@ export function buildWorkspaceBlock(
     `Worktree (your sandbox): ${workspace.worktreePath}`,
     `Worktree branch: ${workspace.branchName}`,
     `Original repo path (OFF-LIMITS for writes): ${workspace.repoPath}`,
+    // Only when an identity was resolved for this turn but did not arrive.
+    // Without it the rules below send the agent off to commit and open a PR
+    // with no idea that `gh` will not authenticate — the same improvised
+    // "read-only access" diagnosis, on the most common turn shape.
+    ...(identityRepoName && !identityAuthenticated
+      ? [`GitHub credentials could not be resolved for this turn, so \`gh\` will not authenticate. Report that rather than retrying or working around it — do not conclude you lack access.`]
+      : []),
     ``,
     `RULES — non-negotiable:`,
     `1. ALL reads, writes, edits, and shell commands for this task MUST happen inside the worktree at ${workspace.worktreePath}. Your cwd is already set there.`,

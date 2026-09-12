@@ -4647,6 +4647,60 @@ describe("typed pipeline settlement", () => {
     expect((await sessionStore.get("thread-1"))?.lastError ?? null).toBeNull();
   });
 
+  it("tells the agent when a worktree turn's credentials are missing", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({
+            messages: [
+              { ts: "1", user: "U1", text: "hi" },
+              { ts: "2", user: "U2", text: "there" },
+            ],
+          }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({
+            user: { name: "u", profile: { display_name: "U" } },
+          }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "fix the toggle" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // The workspace rules send the agent off to commit and open a PR. Without
+    // this line it has no idea `gh` will not authenticate — the same improvised
+    // "read-only access" diagnosis, on the commonest turn shape.
+    expect(prompts[0]).toContain("<workspace>");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+  });
+
   it("does not wedge the thread when the identity cannot authenticate", async () => {
     const sessionStore = new InMemorySessionStore();
     const seeded = createSession("thread-1", "C123");
