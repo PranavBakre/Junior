@@ -244,39 +244,40 @@ export async function pipelineStartRun(
   const callerRepoRefs = (args.repo_refs ?? [])
     .map((repo) => repo.trim())
     .filter(Boolean);
-  // The caller's refs are authoritative when given. A thread-lifetime `!repo`
-  // binding is a default, not a declaration: folding it in would widen what was
-  // asked for, and those refs reach workstream inference and the primary-cwd
-  // tiebreak, so a backend-only build could fan out full-stack.
-  const declaredRepoRefs = callerRepoRefs.length > 0
-    ? callerRepoRefs
-    : session.targetRepo
-      ? [session.targetRepo]
-      : [];
   const initialAssignmentNeedsRepo =
     (args.kind === "product" && args.start_kind === "build") ||
     (args.kind === "bug" && args.start_kind === "reproducer");
-  // A start whose kind matches a live run replays that run, so its scope is
-  // already the answer — and the run's refs appear in no prompt block, so
-  // demanding them from the caller would refuse a call asking for what it
-  // cannot see.
-  const replayingActiveRun = Boolean(active) && active!.status !== "terminal" &&
-    active!.kind === args.kind;
+  // A live run carries the durable scope for this thread. It outranks `!repo`:
+  // that binding is re-derived per message and routinely disagrees with the run,
+  // so letting it sit above would re-point a promotion's repositories and its
+  // primary cwd at whatever the last message happened to mention.
   const liveRepoRefs = active && active.status !== "terminal"
     ? active.repoRefs ?? []
     : [];
-  // Otherwise inherit only to fill a gap, and only from an unambiguous source: a
-  // live `default` run holding exactly one repository. Inheriting a multi-repo
-  // scope would be guessing which of them this start concerns, so the guard
-  // below asks instead.
-  const promotedRepoRefs = replayingActiveRun
+  // A start whose kind matches a live run replays it — and the run's refs appear
+  // in no prompt block, so demanding them from the caller would refuse a call
+  // asking for what it cannot see. A run with no refs of its own is not a
+  // replay worth exempting: that is the debug-then-reproducer flow, where the
+  // scope is meant to have been established by then.
+  const replayingActiveRun = Boolean(active) &&
+    active!.status !== "terminal" && active!.kind === args.kind &&
+    liveRepoRefs.length > 0;
+  // Beyond a replay, inherit only from an unambiguous promotion source: a live
+  // `default` run holding exactly one repository. A multi-repo source is
+  // guessing, so the guard below asks instead.
+  const inheritedRepoRefs = replayingActiveRun
     ? liveRepoRefs
     : active?.kind === "default" && liveRepoRefs.length === 1
       ? liveRepoRefs
       : [];
+  const bindingRepoRefs = session.targetRepo ? [session.targetRepo] : [];
   const repoRefs = [
     ...new Set(
-      declaredRepoRefs.length > 0 ? declaredRepoRefs : promotedRepoRefs,
+      callerRepoRefs.length > 0
+        ? callerRepoRefs
+        : inheritedRepoRefs.length > 0
+          ? inheritedRepoRefs
+          : bindingRepoRefs,
     ),
   ];
   if (initialAssignmentNeedsRepo && !replayingActiveRun && repoRefs.length === 0) {

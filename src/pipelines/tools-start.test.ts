@@ -170,6 +170,25 @@ describe("pipeline_start_run", () => {
     expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
   });
 
+  it("replays a live same-kind run instead of re-asking for its scope", async () => {
+    const { runtime } = await setup();
+    const first = payload(await pipelineStartRun(runtime, context(), productArgs));
+    expect(first.ok).toBe(true);
+    expect(first.created).toBe(true);
+
+    // The run's refs are rendered in no prompt block, so a follow-up that
+    // declares nothing replays it rather than demanding scope the caller has no
+    // way to observe. Refusing here would reject a call origin/main accepted.
+    const replay = payload(await pipelineStartRun(runtime, context(), {
+      ...productArgs,
+      repo_refs: [],
+      idempotency_key: "same-kind-replay-v1",
+    }));
+
+    expect(replay.ok).toBe(true);
+    expect(replay.created).toBe(false);
+  });
+
   it("does not let the promotion source widen a declared scope", async () => {
     const { pipelineStore, sessionStore, runtime } = await setup();
     const twoRepos: RepoConfig[] = [
@@ -228,6 +247,135 @@ describe("pipeline_start_run", () => {
         idempotency_key: "narrow-declared-v1",
         repo_refs: ["example-backend"],
       },
+    ));
+
+    expect(result.ok).toBe(true);
+    expect((result.run as { repoRefs: string[] }).repoRefs).toEqual([
+      "example-backend",
+    ]);
+  });
+
+  it("rejects a start whose only scope is a stale thread binding", async () => {
+    const { sessionStore, runtime } = await setup();
+    // A `!repo` binding that no longer resolves. Nothing is declared, so this is
+    // the ref the start would actually run on — validating only caller-supplied
+    // refs would admit a scope that can never dispatch.
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.targetRepo = "not-configured";
+    });
+
+    const result = payload(await pipelineStartRun(runtime, context(), {
+      kind: "bug",
+      start_kind: "reproducer",
+      objective: "reproduce the reported mismatch",
+      reason: "the report needs a live reproduction before a fix",
+      idempotency_key: "stale-binding-v1",
+    }));
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "pipeline_repo_context_invalid",
+      retryable: true,
+    });
+  });
+
+  it("prefers the run's own scope over a thread binding", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const twoRepos: RepoConfig[] = [
+      {
+        name: "example-backend",
+        path: "/repos/example-backend",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-backend",
+      },
+      {
+        name: "example-client",
+        path: "/repos/example-client",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-client",
+      },
+    ];
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-backend"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      // The binding disagrees with the run. `!repo` is re-derived per message,
+      // so it must not replace the scope the run already holds.
+      session.targetRepo = "example-client";
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    const result = payload(await pipelineStartRun(
+      { ...runtime, repos: twoRepos },
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      {
+        kind: "bug",
+        start_kind: "reproducer",
+        objective: "reproduce the reported mismatch",
+        reason: "the report needs a live reproduction before a fix",
+        idempotency_key: "binding-not-authoritative-v1",
+      },
+    ));
+
+    expect(result.ok).toBe(true);
+    expect((result.run as { repoRefs: string[] }).repoRefs).toEqual([
+      "example-backend",
+    ]);
+  });
+
+  it("inherits an unambiguous single-repo source when nothing is declared", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-backend"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    const result = payload(await pipelineStartRun(
+      runtime,
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      { ...productArgs, repo_refs: [], idempotency_key: "single-repo-inherit-v1" },
     ));
 
     expect(result.ok).toBe(true);
