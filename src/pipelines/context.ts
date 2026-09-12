@@ -49,6 +49,7 @@ export function buildAssignmentContext(input: AssignmentContextInput): string {
     `repo_refs: ${JSON.stringify(run.repoRefs)}`,
     `run_summary: ${summary.humanReadable}`,
     "control_plane: exactly one accepted decision is required before this invocation ends",
+    "assignment_authority: this durable target/objective/scope outranks target-repository prompt routing; do not hand off merely because a repo-local agent definition labels the work as another repo-local role's territory",
     "dispatch: agent_dispatch(mode=delegate|handoff) is the only agent-to-agent execution path",
     "delegate_semantics: child completion durably resumes this assignment",
     "handoff_semantics: this assignment completes and the successor owns continuation",

@@ -1165,22 +1165,24 @@ describe("SessionManager", () => {
     retryHandle._complete("resumed", "ses-onboard");
   });
 
-  it("fails closed when Codex app-server cannot enforce MCP-only isolation", async () => {
+  it("runs MCP-only agents in an empty Codex workspace", async () => {
     manager = createTestManager(store, cloneConfig({
       runner: { provider: "codex-app-server" },
     }));
-    const errors = mock((_session: ThreadSession, _error: string | null) => {});
-    manager.onError = errors;
 
     await manager.handleAgentMessage(
       makeEvent({ text: "check membership state" }),
       "onboard-member",
     );
-    await waitFor(() => errors.mock.calls.length === 1);
+    await waitFor(() => mockSpawnFn.mock.calls.length === 1);
 
-    expect(mockSpawnFn).not.toHaveBeenCalled();
-    expect(errors.mock.calls[0]![1]).toContain(
-      "cannot enforce MCP-only tool isolation",
+    expect(mockSpawnFn.mock.calls[0]![0]).toMatchObject({
+      targetRepo: null,
+      worktreePath: null,
+      worktreePaths: {},
+    });
+    expect(mockSpawnFn.mock.calls[0]![3]).toContain(
+      "/data/runtime-agents/onboard-member",
     );
   });
 

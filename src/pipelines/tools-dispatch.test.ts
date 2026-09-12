@@ -99,7 +99,18 @@ describe("durable agent_dispatch", () => {
         evidenceRefs: ["github-review:123"],
         artifactRefs: [],
         blockers: [],
-        checks: [],
+        checks: [
+          {
+            name: "review",
+            status: "passed",
+            evidenceRef: "github-review:123@dispatch-lifecycle-fixture",
+          },
+          {
+            name: "runtime-evidence",
+            status: "skipped",
+            evidenceRef: "not-applicable:delegation lifecycle fixture",
+          },
+        ],
         progressFingerprint: "review-approved-123",
       },
       actorType: "agent",
@@ -644,7 +655,18 @@ describe("durable agent_dispatch", () => {
         evidenceRefs: ["review:approved"],
         artifactRefs: [],
         blockers: [],
-        checks: [],
+        checks: [
+          {
+            name: "review",
+            status: "passed",
+            evidenceRef: "review:approved@product-review-fixture",
+          },
+          {
+            name: "runtime-evidence",
+            status: "skipped",
+            evidenceRef: "not-applicable:phase-neutral delegation fixture",
+          },
+        ],
         progressFingerprint: "product-review-complete",
       },
       idempotency_key: "product-review-complete",

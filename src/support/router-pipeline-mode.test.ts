@@ -628,7 +628,18 @@ describe("AgentDispatcher pipeline mode soft integration", () => {
           evidenceRefs: ["review:changes-requested"],
           artifactRefs: [],
           blockers: [],
-          checks: [{ name: "review", status: "failed" }],
+          checks: [
+            {
+              name: "review",
+              status: "failed",
+              evidenceRef: "github-review:changes-requested@re-review-fixture",
+            },
+            {
+              name: "runtime-evidence",
+              status: "skipped",
+              evidenceRef: "not-applicable:re-review routing fixture",
+            },
+          ],
           progressFingerprint: "review-findings-v2",
         },
         idempotency_key: "review-outcome-v2",

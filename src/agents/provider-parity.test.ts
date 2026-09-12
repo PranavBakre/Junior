@@ -26,6 +26,7 @@ import {
 } from "./registry.ts";
 
 const agentsDir = path.resolve(import.meta.dir, "../../.claude/agents");
+const orgAgentsDir = path.resolve(import.meta.dir, "../../agents-org");
 
 /** Public prompt bodies for operational roles that ship an agent .md. */
 const PUBLIC_PROMPT_AGENTS = [
@@ -62,7 +63,7 @@ const FORBIDDEN_HANDOFFS: Array<[string, string]> = [
 
 function frontmatterIntent(content: string): CatalogPermissionIntent | null {
   const match = content.match(
-    /^permissions\.intent:\s*(read-only|normal|human-gated|utility|no-tools)\s*$/m,
+    /^permissions\.intent:\s*(mcp-only|read-only|normal|human-gated|utility|no-tools)\s*$/m,
   );
   return (match?.[1] as CatalogPermissionIntent | undefined) ?? null;
 }
@@ -144,6 +145,32 @@ describe("provider parity — catalog permissions", () => {
       expect(declared).toBe(manifest!.permissionIntent);
     },
   );
+
+  it("keeps every published private agent's declared intent aligned with its catalog ceiling", async () => {
+    const privateAgents = listCatalogAgents().filter(
+      (manifest) => manifest.trustSource === "agents-org",
+    );
+    expect(privateAgents.length).toBeGreaterThan(0);
+
+    for (const manifest of privateAgents) {
+      const content = await fs.readFile(
+        path.join(orgAgentsDir, `${manifest.name}.md`),
+        "utf-8",
+      );
+      expect(
+        frontmatterIntent(content),
+        `${manifest.name} permissions.intent`,
+      ).toBe(manifest.permissionIntent);
+    }
+  });
+
+  it("grants feature-metrics bounded artifact delivery without product mutation", () => {
+    const manifest = resolveAgentManifest("feature-metrics");
+
+    expect(manifest).not.toBeNull();
+    expect(manifest!.capabilities).toContain("pipeline-artifact-write");
+    expect(manifest!.mutationPolicy).toBe("none");
+  });
 });
 
 describe("provider parity — handoff graph vs canDispatch", () => {
