@@ -172,6 +172,13 @@ export function buildWorkspaceBlock(
       `Work ONLY inside the worktree paths listed below.`,
       ``,
       ...repoBlocks.flatMap((block, i) => (i < repoBlocks.length - 1 ? [block, ""] : [block])),
+      // `gh` is account-wide, so a failed identity silences it for every repo here.
+      ...(identityRepoName && !identityAuthenticated
+        ? [
+            ``,
+            `GitHub credentials could not be resolved for this turn, so \`gh\` will not authenticate. Report that rather than retrying or working around it — do not conclude you lack access.`,
+          ]
+        : []),
       ``,
       `RULES — non-negotiable:`,
       `1. ALL reads, writes, edits, and git commands MUST happen inside the worktree paths listed above.`,

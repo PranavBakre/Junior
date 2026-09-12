@@ -117,6 +117,26 @@ describe("buildWorkspaceBlock", () => {
     expect(block).toContain("</workspace>");
   });
 
+  it("tells a multi-repo turn when its credentials are missing", () => {
+    const paths = {
+      "app-backend": "/repos/app-backend.junior-worktrees/slack-t1",
+      "app-frontend": "/repos/app-frontend.junior-worktrees/slack-t1",
+    };
+    const block = buildWorkspaceBlock(undefined, paths, repos, "t1", "app-backend", false);
+
+    expect(block).toContain("GitHub credentials could not be resolved for this turn");
+  });
+
+  it("does not claim missing credentials on a multi-repo turn that authenticated", () => {
+    const paths = {
+      "app-backend": "/repos/app-backend.junior-worktrees/slack-t1",
+      "app-frontend": "/repos/app-frontend.junior-worktrees/slack-t1",
+    };
+    const block = buildWorkspaceBlock(undefined, paths, repos, "t1", "app-backend", true);
+
+    expect(block).not.toContain("credentials could not be resolved");
+  });
+
   it("multi-repo format ignores `workspace` when worktreePaths is non-empty", () => {
     const ws: WorkspaceContext = {
       worktreePath: "/should/not/appear",
