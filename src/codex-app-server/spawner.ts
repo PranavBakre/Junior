@@ -12,6 +12,7 @@ import {
   WORKFLOW_UTILITY_CWD,
 } from "../runners/runtime.ts";
 import {
+  buildCodexConfigOverrides,
   buildCodexMcpConfig,
   prepareCodexHome,
 } from "./config.ts";
@@ -71,6 +72,8 @@ export function spawnCodexAppServer(
   }
   const codexHome = prepareCodexHome({
     isolatedHomePath: config.codex.isolatedHomePath ?? resolve(process.cwd(), "data/codex-home"),
+  });
+  const codexConfigOverrides = buildCodexConfigOverrides({
     model,
     reasoningEffort: config.codex.reasoningEffort ?? "medium",
     approvalPolicy: config.codex.askForApproval,
@@ -84,7 +87,13 @@ export function spawnCodexAppServer(
     ...(codexHome ? { CODEX_HOME: codexHome } : {}),
   };
 
-  const proc = Bun.spawn([process.env.CODEX_BIN ?? "codex", "app-server", "--listen", "stdio://"], {
+  const proc = Bun.spawn([
+    process.env.CODEX_BIN ?? "codex",
+    "app-server",
+    ...codexConfigOverrides.flatMap((override) => ["--config", override]),
+    "--listen",
+    "stdio://",
+  ], {
     cwd: runtime.cwd,
     stdout: "pipe",
     stderr: "pipe",
@@ -92,7 +101,6 @@ export function spawnCodexAppServer(
     env,
     detached: true,
   });
-
   const listeners: Array<(event: RunnerEvent) => void> = [];
   const events: RunnerEvent[] = [];
   const mapper = createCodexAppServerEventMapper();
@@ -324,7 +332,7 @@ export function spawnCodexAppServer(
         response: mapper.response,
         events,
         exitCode: await proc.exited.catch(() => null),
-        error: err instanceof Error ? err.message : String(err || stderr),
+        error: processFailureMessage(err, stderr),
         completion: {
           status: "failure",
           reason: "process_error",
@@ -364,6 +372,13 @@ export function spawnCodexAppServer(
     },
     pid: proc.pid,
   };
+}
+
+function processFailureMessage(err: unknown, stderr: string): string {
+  const primary = err instanceof Error ? err.message : String(err);
+  const diagnostic = stderr.trim();
+  if (!diagnostic || primary.includes(diagnostic)) return primary;
+  return `${primary}\n${diagnostic.slice(0, 2_000)}`;
 }
 
 function classifyCodexProcessCompletion(

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createSession } from "../session/types.ts";
-import { buildCodexConfigToml, buildCodexMcpConfig } from "./config.ts";
+import {
+  buildCodexConfigOverrides,
+  buildCodexConfigToml,
+  buildCodexMcpConfig,
+  prepareCodexHome,
+} from "./config.ts";
 import type { Config } from "../config.ts";
 
 describe("buildCodexMcpConfig", () => {
@@ -121,6 +129,27 @@ describe("buildCodexMcpConfig", () => {
     });
   });
 
+  it("gives feature-metrics its declared Mixpanel tools", () => {
+    const session = createSession("t", "c");
+    session.agentType = "feature-metrics";
+    session.activeAgentName = "feature-metrics";
+    session.agentPermissions = {
+      intent: "read-only",
+      mcp: ["mixpanel"],
+      tools: ["mcp__mixpanel__*"],
+    };
+
+    expect(buildCodexMcpConfig(makeConfig(), session, true)).toMatchObject({
+      mixpanel: {
+        transport: "http",
+        url: expect.stringContaining(
+          "http://localhost:3456/mcp/mixpanel?agent=feature-metrics&channel=c&thread=t",
+        ),
+        tools: { "*": { approval_mode: "approve" } },
+      },
+    });
+  });
+
   it("injects the read-only MongoDB proxy from a trusted agent capability", () => {
     const session = createSession("t", "c");
     session.activeAgentName = "onboard-member";
@@ -196,6 +225,55 @@ describe("buildCodexConfigToml", () => {
     expect(config).toContain('sandbox_mode = "danger-full-access"');
     expect(config).toContain("[features]\nmulti_agent = false");
     expect(config).toContain("multi_agent = false\napps = false");
+  });
+
+  it("keeps overlapping invocation MCP catalogs in process-local overrides", () => {
+    const isolatedHomePath = mkdtempSync(join(tmpdir(), "junior-codex-home-"));
+    const common = {
+      model: "gpt-5.6-sol",
+      reasoningEffort: "medium",
+      approvalPolicy: "never" as const,
+      sandbox: "read-only" as const,
+    };
+
+    try {
+      const featureMetrics = buildCodexConfigOverrides({
+        ...common,
+        mcp: {
+          mixpanel: {
+            transport: "http",
+            url: "http://localhost:3456/mcp/mixpanel?agent=feature-metrics",
+            tools: { "*": { approval_mode: "approve" } },
+          },
+        },
+      });
+      const defaultAgent = buildCodexConfigOverrides({
+        ...common,
+        mcp: {
+          mongodb: {
+            transport: "http",
+            url: "http://localhost:3456/mcp/mongodb?agent=default",
+          },
+        },
+      });
+
+      expect(featureMetrics.join("\n")).toContain(
+        "mcp_servers.mixpanel.url=",
+      );
+      expect(featureMetrics.join("\n")).toContain(
+        'mcp_servers.mixpanel.tools."*".approval_mode="approve"',
+      );
+      expect(featureMetrics.join("\n")).not.toContain(
+        "mcp_servers.mongodb.",
+      );
+      expect(defaultAgent.join("\n")).toContain("mcp_servers.mongodb.url=");
+      expect(defaultAgent.join("\n")).not.toContain("mcp_servers.mixpanel.");
+      expect(prepareCodexHome({ isolatedHomePath })).toBe(isolatedHomePath);
+      expect(readFileSync(join(isolatedHomePath, "config.toml"), "utf8"))
+        .not.toContain("[mcp_servers.");
+    } finally {
+      rmSync(isolatedHomePath, { recursive: true, force: true });
+    }
   });
 });
 

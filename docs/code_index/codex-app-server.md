@@ -37,6 +37,14 @@ Generated Codex config sets `[features].multi_agent = false`; provider-native
 subagents would bypass Junior's durable assignment, context, and settlement
 contracts.
 
+The isolated Codex home has a static shared `config.toml`. Each app-server
+process receives its signed MCP URLs, exact tool approvals, model, sandbox, and
+project trust through app-server-supported process-local `--config` overrides.
+This preserves shared authentication and native thread state for resume without
+letting concurrent agent starts overwrite each other's MCP catalogs. Do not use
+`--profile` here: Codex accepts profiles for runtime commands and `codex mcp`,
+but rejects them for `codex app-server`.
+
 For read-only and MCP-only roles, `config.ts` also emits Codex's per-tool MCP
 `approval_mode = "approve"` entries for the exact tools declared by the
 trusted agent definition and its catalog capabilities. This is required even

@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -184,6 +191,7 @@ describe("spawnCodexAppServer", () => {
 
       expect(result.exitCode).toBe(42);
       expect(result.error).toContain("Codex app-server exited before replying to pending requests");
+      expect(result.error).toContain("startup failed");
       expect(result.completion).toEqual({
         status: "failure",
         reason: "process_error",
@@ -232,6 +240,14 @@ describe("spawnCodexAppServer", () => {
       expect(threadStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
       expect(threadStart.params.environments).toEqual([]);
       expect(turnStart.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
+      const argv = JSON.parse(
+        readFileSync(join(fakeCodex.root, "argv.json"), "utf8"),
+      );
+      expect(argv[0]).toBe("app-server");
+      expect(argv).not.toContain("--profile");
+      expect(argv).toContain("--config");
+      expect(argv).toContain('sandbox_mode="danger-full-access"');
+      expect(argv.slice(-2)).toEqual(["--listen", "stdio://"]);
     } finally {
       fakeCodex.cleanup();
     }
@@ -560,6 +576,7 @@ const fs = require("node:fs");
 const readline = require("node:readline");
 const root = __ROOT__;
 const requestsPath = root + "/requests.jsonl";
+fs.writeFileSync(root + "/argv.json", JSON.stringify(process.argv.slice(2)));
 const rl = readline.createInterface({ input: process.stdin });
 
 function send(message) {
