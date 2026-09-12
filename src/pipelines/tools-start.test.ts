@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { RepoConfig } from "../config.ts";
 import { createSession } from "../session/types.ts";
 import { InMemorySessionStore } from "../session/store/memory.ts";
 import type { SessionStore } from "../session/store/interface.ts";
@@ -15,6 +16,14 @@ import {
 
 const THREAD = "1711111111.000001";
 const CHANNEL = "C-PIPELINE";
+const REPOS: RepoConfig[] = [
+  {
+    name: "example-backend",
+    path: "/repos/example-backend",
+    defaultBase: "origin/main",
+    githubRepo: "Example/example-backend",
+  },
+];
 
 function payload(result: ToolTextResult): Record<string, unknown> {
   return JSON.parse(result.content[0]?.text ?? "{}") as Record<string, unknown>;
@@ -46,6 +55,7 @@ async function setup(options: {
     productPipelineEnabled: true,
     bugPipelineEnabled: true,
     githubTrackingEnabled: true,
+    repos: REPOS,
   };
   return { pipelineStore, sessionStore, runtime };
 }
@@ -56,6 +66,7 @@ const productArgs: PipelineStartRunArgs = {
   objective: "Implement a scoped event API flag, open a PR, and send it through review",
   reason: "The work now spans implementation, PR tracking, and independent review",
   idempotency_key: "event-flag-product-v1",
+  repo_refs: ["example-backend"],
 };
 
 describe("pipeline_start_run", () => {
@@ -112,6 +123,486 @@ describe("pipeline_start_run", () => {
   it("does nothing until an authorized orchestrator deliberately calls it", async () => {
     const { pipelineStore } = await setup();
     expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
+  });
+
+  it("rejects worktree-backed starts without repo context before creating a run", async () => {
+    const { pipelineStore, runtime } = await setup();
+
+    for (const args of [
+      {
+        ...productArgs,
+        repo_refs: undefined,
+      },
+      {
+        kind: "bug" as const,
+        start_kind: "reproducer" as const,
+        objective: "Reproduce the reported verification failure",
+        reason: "The report needs a browser reproduction",
+        idempotency_key: "missing-reproducer-repo",
+      },
+    ]) {
+      const result = payload(await pipelineStartRun(runtime, context(), args));
+      expect(result).toMatchObject({
+        ok: false,
+        code: "pipeline_repo_context_required",
+        retryable: true,
+      });
+      expect(result.reason).toContain("repo routing map");
+      expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
+    }
+  });
+
+  it("rejects unknown repo refs before creating a run", async () => {
+    const { pipelineStore, runtime } = await setup();
+    const result = payload(
+      await pipelineStartRun(runtime, context(), {
+        ...productArgs,
+        repo_refs: ["not-configured"],
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "pipeline_repo_context_invalid",
+      repoRefs: ["not-configured"],
+      retryable: true,
+    });
+    expect(await pipelineStore.getRunByThread(THREAD)).toBeUndefined();
+  });
+
+  it("refuses a reproducer when the debug intake established no scope", async () => {
+    const { runtime } = await setup();
+    // The skill steers raw reports through `debug` first so the scope is settled
+    // before a worker is dispatched. A live run carrying no refs is not a replay
+    // worth exempting — that is the flow where the scope was meant to be set.
+    const debug = payload(await pipelineStartRun(runtime, context(), {
+      kind: "bug",
+      start_kind: "debug",
+      objective: "triage the reported mismatch",
+      reason: "raw bug reports start with debug",
+      idempotency_key: "debug-intake-v1",
+    }));
+    expect(debug.ok).toBe(true);
+    expect((debug.run as { repoRefs: string[] }).repoRefs).toEqual([]);
+
+    const reproducer = payload(await pipelineStartRun(runtime, context(), {
+      kind: "bug",
+      start_kind: "reproducer",
+      objective: "reproduce the reported mismatch",
+      reason: "triage is done, now reproduce",
+      idempotency_key: "debug-then-reproducer-v1",
+    }));
+
+    expect(reproducer).toMatchObject({
+      ok: false,
+      code: "pipeline_repo_context_required",
+      retryable: true,
+    });
+  });
+
+  it("keeps a two-repo source's scope for a debug start", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const twoRepos: RepoConfig[] = [
+      {
+        name: "example-backend",
+        path: "/repos/example-backend",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-backend",
+      },
+      {
+        name: "example-client",
+        path: "/repos/example-client",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-client",
+      },
+    ];
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-backend", "example-client"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    // `debug` needs no repository to pass the guard, so nothing resolves a scope
+    // here — the promotion must keep the source run's own, or the pending
+    // worktree-code assignment hits the dispatch-time unresolved-ref throw.
+    const result = payload(await pipelineStartRun(
+      { ...runtime, repos: twoRepos },
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      {
+        kind: "bug",
+        start_kind: "debug",
+        objective: "triage the reported mismatch",
+        reason: "raw bug reports start with debug",
+        idempotency_key: "two-repo-debug-v1",
+      },
+    ));
+
+    expect(result.ok).toBe(true);
+    expect((result.run as { repoRefs: string[] }).repoRefs).toEqual([
+      "example-backend",
+      "example-client",
+    ]);
+  });
+
+  it("does not narrow a two-repo run to the thread binding", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const twoRepos: RepoConfig[] = [
+      {
+        name: "example-backend",
+        path: "/repos/example-backend",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-backend",
+      },
+      {
+        name: "example-client",
+        path: "/repos/example-client",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-client",
+      },
+    ];
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-backend", "example-client"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      // A binding that names one of the two. It must not replace the run's
+      // scope: the dropped repo is never provisioned and never reaches
+      // downstream agents, and there is no repair path back.
+      session.targetRepo = "example-client";
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    const result = payload(await pipelineStartRun(
+      { ...runtime, repos: twoRepos },
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      {
+        kind: "bug",
+        start_kind: "debug",
+        objective: "triage the reported mismatch",
+        reason: "raw bug reports start with debug",
+        idempotency_key: "two-repo-binding-v1",
+      },
+    ));
+
+    expect(result.ok).toBe(true);
+    expect((result.run as { repoRefs: string[] }).repoRefs).toEqual([
+      "example-backend",
+      "example-client",
+    ]);
+  });
+
+  it("replays a live same-kind run instead of re-asking for its scope", async () => {
+    const { runtime } = await setup();
+    const first = payload(await pipelineStartRun(runtime, context(), productArgs));
+    expect(first.ok).toBe(true);
+    expect(first.created).toBe(true);
+
+    // The run's refs are rendered in no prompt block, so a follow-up that
+    // declares nothing replays it rather than demanding scope the caller has no
+    // way to observe. Refusing here would reject a call origin/main accepted.
+    const replay = payload(await pipelineStartRun(runtime, context(), {
+      ...productArgs,
+      repo_refs: [],
+      idempotency_key: "same-kind-replay-v1",
+    }));
+
+    expect(replay.ok).toBe(true);
+    expect(replay.created).toBe(false);
+  });
+
+  it("does not let the promotion source widen a declared scope", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const twoRepos: RepoConfig[] = [
+      {
+        name: "example-backend",
+        path: "/repos/example-backend",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-backend",
+      },
+      {
+        name: "example-client",
+        path: "/repos/example-client",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-client",
+      },
+    ];
+    // Live default run scoped to the client repo, and a directive that names
+    // only the backend one. The durable run must end up backend-only: the extra
+    // ref would be provisioned, and for a reproducer (no workstream affinity)
+    // would win the primary-cwd tiebreak and reproduce against the wrong repo.
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-client"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    const result = payload(await pipelineStartRun(
+      { ...runtime, repos: twoRepos },
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      {
+        kind: "bug",
+        start_kind: "reproducer",
+        objective: "reproduce the reported mismatch",
+        reason: "the report needs a live reproduction before a fix",
+        idempotency_key: "narrow-declared-v1",
+        repo_refs: ["example-backend"],
+      },
+    ));
+
+    expect(result.ok).toBe(true);
+    expect((result.run as { repoRefs: string[] }).repoRefs).toEqual([
+      "example-backend",
+    ]);
+  });
+
+  it("rejects a start whose only scope is a stale thread binding", async () => {
+    const { sessionStore, runtime } = await setup();
+    // A `!repo` binding that no longer resolves. Nothing is declared, so this is
+    // the ref the start would actually run on — validating only caller-supplied
+    // refs would admit a scope that can never dispatch.
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.targetRepo = "not-configured";
+    });
+
+    const result = payload(await pipelineStartRun(runtime, context(), {
+      kind: "bug",
+      start_kind: "reproducer",
+      objective: "reproduce the reported mismatch",
+      reason: "the report needs a live reproduction before a fix",
+      idempotency_key: "stale-binding-v1",
+    }));
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "pipeline_repo_context_invalid",
+      retryable: true,
+    });
+  });
+
+  it("prefers the run's own scope over a thread binding", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const twoRepos: RepoConfig[] = [
+      {
+        name: "example-backend",
+        path: "/repos/example-backend",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-backend",
+      },
+      {
+        name: "example-client",
+        path: "/repos/example-client",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-client",
+      },
+    ];
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-backend"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      // The binding disagrees with the run. `!repo` is re-derived per message,
+      // so it must not replace the scope the run already holds.
+      session.targetRepo = "example-client";
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    const result = payload(await pipelineStartRun(
+      { ...runtime, repos: twoRepos },
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      {
+        kind: "bug",
+        start_kind: "reproducer",
+        objective: "reproduce the reported mismatch",
+        reason: "the report needs a live reproduction before a fix",
+        idempotency_key: "binding-not-authoritative-v1",
+      },
+    ));
+
+    expect(result.ok).toBe(true);
+    expect((result.run as { repoRefs: string[] }).repoRefs).toEqual([
+      "example-backend",
+    ]);
+  });
+
+  it("inherits an unambiguous single-repo source when nothing is declared", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-backend"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    const result = payload(await pipelineStartRun(
+      runtime,
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      { ...productArgs, repo_refs: [], idempotency_key: "single-repo-inherit-v1" },
+    ));
+
+    expect(result.ok).toBe(true);
+    expect((result.run as { repoRefs: string[] }).repoRefs).toEqual([
+      "example-backend",
+    ]);
+  });
+
+  it("refuses a promotion whose source scope is ambiguous", async () => {
+    const { pipelineStore, sessionStore, runtime } = await setup();
+    const twoRepos: RepoConfig[] = [
+      {
+        name: "example-backend",
+        path: "/repos/example-backend",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-backend",
+      },
+      {
+        name: "example-client",
+        path: "/repos/example-client",
+        defaultBase: "origin/main",
+        githubRepo: "Example/example-client",
+      },
+    ];
+    const started = await createDefaultRun({ store: pipelineStore }, {
+      channelId: CHANNEL,
+      threadId: THREAD,
+      objective: "triage the reported issue",
+      messageTs: context().messageTs,
+      targetAgent: "default",
+      repoRefs: ["example-backend", "example-client"],
+    });
+    for (const outbox of await pipelineStore.listOutbox(started.run.id)) {
+      await pipelineStore.markOutboxDelivered(outbox.id);
+    }
+    await sessionStore.mutateThread(THREAD, (session) => {
+      session.activeRunId = started.run.id;
+      session.activePipelineInvocation = {
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      };
+    });
+
+    // The caller declares nothing, so the promotion source is the only scope on
+    // offer — and a two-repo one is ambiguous about which repo this start
+    // concerns. Inheriting it would also feed workstream inference and fan a
+    // single-repo build into a full-stack one it never asked for. Ask instead.
+    const result = payload(await pipelineStartRun(
+      { ...runtime, repos: twoRepos },
+      {
+        ...context(),
+        runId: started.run.id,
+        assignmentId: started.assignment.id,
+        dispatchKey: "default-dispatch",
+      },
+      { ...productArgs, repo_refs: [], idempotency_key: "ambiguous-promotion-v1" },
+    ));
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "pipeline_repo_context_required",
+      retryable: true,
+    });
   });
 
   it("creates, audits, binds, and idempotently reuses a product run", async () => {

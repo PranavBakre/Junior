@@ -1939,7 +1939,13 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
         objective: z.string().min(1).max(20_000),
         reason: z.string().min(1).max(2_000),
         idempotency_key: z.string().min(1).max(200),
-        repo_refs: z.array(z.string().min(1).max(200)).max(20).optional(),
+        repo_refs: z
+          .array(z.string().min(1).max(200))
+          .max(20)
+          .optional()
+          .describe(
+            "Configured repository names or owner/repo refs. Required before an initial product build or bug reproducer assignment; resolve support URLs through the repo routing map or ask one precise question when ambiguous.",
+          ),
         acceptance_criteria: z
           .array(z.string().min(1).max(2_000))
           .max(50)

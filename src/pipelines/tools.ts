@@ -241,12 +241,88 @@ export async function pipelineStartRun(
     }
   }
 
+  const callerRepoRefs = (args.repo_refs ?? [])
+    .map((repo) => repo.trim())
+    .filter(Boolean);
+  const initialAssignmentNeedsRepo =
+    (args.kind === "product" && args.start_kind === "build") ||
+    (args.kind === "bug" && args.start_kind === "reproducer");
+  // A live run carries the durable scope for this thread. It outranks `!repo`:
+  // that binding is re-derived per message and routinely disagrees with the run,
+  // so letting it sit above would re-point a promotion's repositories and its
+  // primary cwd at whatever the last message happened to mention.
+  const liveRepoRefs = active && active.status !== "terminal"
+    ? active.repoRefs ?? []
+    : [];
+  // A start whose kind matches a live run replays it — and the run's refs appear
+  // in no prompt block, so demanding them from the caller would refuse a call
+  // asking for what it cannot see.
+  const replayingActiveRun = Boolean(active) &&
+    active!.status !== "terminal" && active!.kind === args.kind;
+  // Beyond a replay, inherit only from an unambiguous promotion source: a live
+  // `default` run holding exactly one repository. A multi-repo source is
+  // guessing, so the guard below asks instead.
+  const inheritedRepoRefs = replayingActiveRun
+    ? liveRepoRefs
+    : active?.kind === "default" && liveRepoRefs.length === 1
+      ? liveRepoRefs
+      : [];
+  // The binding fills a gap only when the live run holds no scope of its own.
+  // When the run does, a binding is a narrowing — and an unrecoverable one: the
+  // dropped repo is never provisioned, never reaches downstream agents, and for
+  // a reproducer re-points the primary cwd. `session.targetRepo` is rewritten to
+  // the run's own primary repo on every worktree-backed dispatch, so a two-repo
+  // run plus any dispatch is enough to disagree with it.
+  const bindingRepoRefs = liveRepoRefs.length === 0 && session.targetRepo
+    ? [session.targetRepo]
+    : [];
   const repoRefs = [
-    ...new Set([
-      ...(session.targetRepo ? [session.targetRepo] : []),
-      ...(args.repo_refs ?? []).map((repo) => repo.trim()).filter(Boolean),
-    ]),
+    ...new Set(
+      callerRepoRefs.length > 0
+        ? callerRepoRefs
+        : inheritedRepoRefs.length > 0
+          ? inheritedRepoRefs
+          : bindingRepoRefs,
+    ),
   ];
+  if (initialAssignmentNeedsRepo && repoRefs.length === 0) {
+    return textResult(
+      {
+        ok: false,
+        code: "pipeline_repo_context_required",
+        reason:
+          `${args.start_kind} starts require at least one configured repository before the pipeline is promoted; ` +
+          "resolve the report URL or feature against the repo routing map, or ask one precise repository question, then retry with repo_refs",
+        configuredRepoNames: runtime.repos?.map((repo) => repo.name) ?? [],
+        retryable: true,
+      },
+      true,
+    );
+  }
+  // A repo-requiring start must resolve the scope it will actually run on, or the
+  // guard admits a run that can never dispatch. Other starts validate only what
+  // the caller named. That is deliberately narrow, not a claim of safety: a stale
+  // binding is still fatal for `debug`/`pm`, whose assignments carry
+  // worktree-code and meet the dispatch-time unresolved-ref throw — pre-existing,
+  // and not fixed here.
+  const refsToValidate = initialAssignmentNeedsRepo ? repoRefs : callerRepoRefs;
+  if (runtime.repos && refsToValidate.length > 0) {
+    const resolution = resolvePipelineRepos(runtime.repos, refsToValidate);
+    if (resolution.unresolvedRefs.length > 0) {
+      return textResult(
+        {
+          ok: false,
+          code: "pipeline_repo_context_invalid",
+          reason:
+            `repository refs are not uniquely configured: ${resolution.unresolvedRefs.join(", ")}`,
+          repoRefs: refsToValidate,
+          configuredRepoNames: runtime.repos.map((repo) => repo.name),
+          retryable: true,
+        },
+        true,
+      );
+    }
+  }
   const provenance = {
     actorType: "agent" as const,
     actorId: runContext.agent,
