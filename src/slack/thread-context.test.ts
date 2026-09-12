@@ -35,7 +35,7 @@ describe("buildWorkspaceBlock", () => {
 
     expect(block).toContain("<github-identity>");
     expect(block).toContain("app-backend (GrowthX-Club/gx-backend)");
-    expect(block).toContain("`gh` is authenticated as `gxt-admin` for this turn");
+    expect(block).toContain("credentials for `gxt-admin` were resolved for this turn");
     expect(block).toContain("</github-identity>");
     // Must not imply a checkout exists, nor inherit the workspace write rules.
     expect(block).not.toContain("Worktree (your sandbox)");
@@ -125,6 +125,9 @@ describe("buildWorkspaceBlock", () => {
     const block = buildWorkspaceBlock(undefined, paths, repos, "t1", "app-backend", false);
 
     expect(block).toContain("GitHub credentials could not be resolved for this turn");
+    // State the cause, never the runner's behaviour: on the tmux driver the
+    // pane's identity comes from the tmux server, not this turn (#235).
+    expect(block).not.toContain("will not authenticate");
   });
 
   it("does not claim missing credentials on a multi-repo turn that authenticated", () => {

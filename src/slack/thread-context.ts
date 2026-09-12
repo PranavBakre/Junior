@@ -201,8 +201,12 @@ export function buildWorkspaceBlock(
         `<github-identity>`,
         `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
         identityAuthenticated
-          ? `\`gh\` is authenticated${repoConfig.githubUser ? ` as \`${repoConfig.githubUser}\`` : ""} for this turn; use it against this repository.`
+          ? `GitHub credentials${repoConfig.githubUser ? ` for \`${repoConfig.githubUser}\`` : ""} were resolved for this turn; use \`gh\` against this repository.`
           : `GitHub credentials could not be resolved for this turn. Report that rather than retrying or working around it — do not conclude you lack access, and do not fall back on whatever \`gh\` identity this environment carries.`,
+        // Both branches state what Junior resolved, never what `gh` in the
+        // runner will do: the tmux driver's pane env comes from the tmux server,
+        // not from this turn (#235), so a promise about the pane can be false in
+        // either direction.
         // Only invite direct work when there is something to work with. Told to
         // "act on the repository directly" after a failure, an agent has every
         // reason to start editing the shared origin repo.

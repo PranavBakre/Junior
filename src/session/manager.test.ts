@@ -4994,7 +4994,7 @@ describe("typed pipeline settlement", () => {
       mock(async () => ({ GH_TOKEN: "tok", GH_CONFIG_DIR: "/tmp/gh" })),
     );
     expect(withCreds).toContain("<github-identity>");
-    expect(withCreds).toContain("is authenticated for this turn");
+    expect(withCreds).toContain("GitHub credentials were resolved for this turn");
 
     // Without credentials the block still renders, saying so. Withholding it
     // silently is how the agent ends up improvising a permissions story instead
@@ -5002,7 +5002,13 @@ describe("typed pipeline settlement", () => {
     const withoutCreds = await runWith(mock(async () => undefined));
     expect(withoutCreds).toContain("<github-identity>");
     expect(withoutCreds).toContain("credentials could not be resolved");
+    // Neither branch may promise what `gh` will do in the runner: on the tmux
+    // driver the pane's identity comes from the tmux server, not this turn
+    // (#235), so either claim can be false.
+    expect(withCreds).not.toContain("will not authenticate");
+    expect(withCreds).toContain("were resolved for this turn");
     expect(withoutCreds).not.toContain("is authenticated");
+    expect(withoutCreds).not.toContain("will not authenticate");
   });
 
   it("does not bind an identity that failed to authenticate", async () => {

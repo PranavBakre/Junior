@@ -2028,10 +2028,10 @@ export class SessionManager {
       }
       // A resolved identity still renders when its credentials did not arrive,
       // saying so — silently withholding it is how the agent ends up improvising
-      // a permissions story instead of reporting the real cause. That includes
-      // the worktree-failure case: `identityAuthenticated` is false exactly
-      // there, and the "act on the repository directly" invitation is gated on
-      // it, so naming the repo no longer risks pointing at the shared origin.
+      // a permissions story instead of reporting the real cause. Naming it costs
+      // nothing even when a worktree failed: if the failed repo is the one the
+      // identity resolved to, no credentials were resolved either, and the "act
+      // on the repository directly" invitation is gated on having them.
       const preambleIdentityRepo = identityRepo?.name;
       const preambleIdentityAuthenticated = Boolean(githubAuthEnv);
 
