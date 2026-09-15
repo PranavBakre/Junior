@@ -76,12 +76,34 @@ describe("resolveIdentityRepoName", () => {
     expect(resolve("gh pr merge 1 -R GrowthX-Club/gx-backend")).toBe("gx-backend");
   });
 
-  it("prefers the durable binding over the prompt", () => {
+  it("prefers the target repo over a repo named in the prompt", () => {
     expect(
       resolve(
         "merge https://github.com/GrowthX-Club/gx-client-next/pull/5944",
         "gx-backend",
       ),
+    ).toBe("gx-backend");
+  });
+
+  it("lets a repo named in the prompt override the durable binding", () => {
+    // The binding is a fallback, not a preference: a directive that names a
+    // configured repo is more specific than the thread's last binding.
+    expect(
+      resolveIdentityRepoName({
+        repos,
+        durableIdentityRepo: "gx-backend",
+        prompt: "merge https://github.com/GrowthX-Club/gx-client-next/pull/5944",
+      }),
+    ).toBe("gx-client-next");
+  });
+
+  it("keeps the durable binding when the prompt names nothing configured", () => {
+    expect(
+      resolveIdentityRepoName({
+        repos,
+        durableIdentityRepo: "gx-backend",
+        prompt: "go ahead",
+      }),
     ).toBe("gx-backend");
   });
 

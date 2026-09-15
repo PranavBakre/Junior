@@ -151,6 +151,70 @@ function identityUnavailableLines(
 }
 
 /**
+ * The identity statement: which repository this turn authenticates against, or
+ * why it resolved none.
+ *
+ * Deliberately separate from the workspace-rules block. The two have different
+ * gates — rules follow the agent's `context.workspace` profile, while a token is
+ * handed to the runner regardless of it — so a single function deciding both is
+ * what allowed an agent to hold credentials the prompt never mentioned, and what
+ * let a `context.workspace: false` agent receive worktree rules it had opted out
+ * of. Returns null when there is nothing to state.
+ */
+export function buildIdentityBlock(input: {
+  repos?: RepoConfig[];
+  identityRepoName?: string | null;
+  identityAuthenticated?: boolean;
+  ambiguousRepos?: string[];
+  hasCheckout?: boolean;
+}): string | null {
+  const {
+    repos,
+    identityRepoName,
+    identityAuthenticated = true,
+    ambiguousRepos = [],
+    hasCheckout = false,
+  } = input;
+  const repoConfig = identityRepoName
+    ? repos?.find((repo) => repo.name === identityRepoName)
+    : undefined;
+  // A persisted binding outlives an edit to REPOS, so a name with no config is
+  // a real state — and the one where silence costs most, since the thread keeps
+  // the binding.
+  const unknownRepo = Boolean(identityRepoName) && !repoConfig && ambiguousRepos.length === 0;
+  if (!repoConfig && ambiguousRepos.length === 0 && !unknownRepo) return null;
+  return [
+    `<github-identity>`,
+    ...(repoConfig
+      ? [
+          `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
+          identityAuthenticated
+            ? `GitHub credentials${repoConfig.githubUser ? ` for \`${repoConfig.githubUser}\`` : ""} were resolved for this turn; use \`gh\` against this repository.`
+            : CREDENTIALS_UNRESOLVED,
+        ]
+      : unknownRepo
+        ? [
+            `\`${identityRepoName}\` is this thread's bound repository, but it is not in the configured repository list — it may have been renamed or removed. No GitHub credentials were resolved for this turn. Report that rather than working around it.`,
+          ]
+        : identityUnavailableLines(undefined, false, ambiguousRepos)),
+    // Both branches state what Junior resolved, never what `gh` in the runner
+    // will do: the tmux driver's pane env comes from the tmux server, not from
+    // this turn (#235), so a promise about the pane can be false in either
+    // direction. For the same reason this says nothing about cwd — the repo
+    // Junior itself runs from is configurable, and when the directive resolves
+    // to it, cwd *is* the repository.
+    // Only invite direct work when there is something safe to work on: with a
+    // checkout present the workspace block already governs it, and without one
+    // "act directly" can point at a shared origin the workspace shapes mark
+    // OFF-LIMITS for writes.
+    ...(repoConfig && identityAuthenticated && !hasCheckout
+      ? [`No worktree is checked out for this thread. Work against the repository remotely — pass an explicit \`--repo\`/\`-R\` or a full URL rather than letting \`gh\` infer it — and create a worktree only if the task needs to edit files.`]
+      : []),
+    `</github-identity>`,
+  ].join("\n");
+}
+
+/**
  * Build the standalone workspace-rules block. Used in the full preamble on the
  * first turn AND on resumed turns (cheap insurance — keeps the safety rule
  * present even when --resume carries the rest of the context).
@@ -164,9 +228,6 @@ export function buildWorkspaceBlock(
   worktreePaths?: Record<string, string>,
   repos?: RepoConfig[],
   threadId?: string,
-  identityRepoName?: string | null,
-  identityAuthenticated = true,
-  ambiguousRepos: string[] = [],
 ): string | null {
   // Multi-repo format for bug-pipeline threads.
   if (worktreePaths && Object.keys(worktreePaths).length > 0) {
@@ -195,9 +256,6 @@ export function buildWorkspaceBlock(
       `Work ONLY inside the worktree paths listed below.`,
       ``,
       ...repoBlocks.flatMap((block, i) => (i < repoBlocks.length - 1 ? [block, ""] : [block])),
-      // `gh` is account-wide, so a failed identity silences it for every repo here.
-      ...identityUnavailableLines(identityRepoName, identityAuthenticated, ambiguousRepos)
-        .flatMap((line) => ["", line]),
       ``,
       `RULES — non-negotiable:`,
       `1. ALL reads, writes, edits, and git commands MUST happen inside the worktree paths listed above.`,
@@ -209,42 +267,9 @@ export function buildWorkspaceBlock(
     ].join("\n");
   }
 
-  // Identity-only: a repo-less turn still authenticates against a repository
-  // (a merge needs credentials, not a checkout), and the agent has to be told
-  // which one to use them against — otherwise it holds a valid token and still
-  // reports itself unable to act.
-  if (!workspace && (identityRepoName || ambiguousRepos.length > 0)) {
-    const repoConfig = identityRepoName
-      ? repos?.find((repo) => repo.name === identityRepoName)
-      : undefined;
-    if (repoConfig || ambiguousRepos.length > 0) {
-      return [
-        `<github-identity>`,
-        ...(repoConfig
-          ? [
-              `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
-              identityAuthenticated
-                ? `GitHub credentials${repoConfig.githubUser ? ` for \`${repoConfig.githubUser}\`` : ""} were resolved for this turn; use \`gh\` against this repository.`
-                : CREDENTIALS_UNRESOLVED,
-            ]
-          : identityUnavailableLines(undefined, false, ambiguousRepos)),
-        // Both branches state what Junior resolved, never what `gh` in the
-        // runner will do: the tmux driver's pane env comes from the tmux server,
-        // not from this turn (#235), so a promise about the pane can be false in
-        // either direction. For the same reason this says nothing about cwd —
-        // the repo Junior itself runs from is configurable, and when the
-        // directive resolves to it, cwd *is* the repository.
-        // Only invite direct work when there is something safe to work on. This
-        // repo's own checkout is discoverable, so "act on the repository
-        // directly" can point at a shared origin that the worktree shapes mark
-        // OFF-LIMITS for writes.
-        ...(repoConfig && identityAuthenticated
-          ? [`No worktree is checked out for this thread. Work against the repository remotely — pass an explicit \`--repo\`/\`-R\` or a full URL rather than letting \`gh\` infer it — and create a worktree only if the task needs to edit files.`]
-          : []),
-        `</github-identity>`,
-      ].join("\n");
-    }
-  }
+  // Identity-only block lives in `buildIdentityBlock` — it is gated on whether
+  // the turn holds credentials, not on the agent's workspace profile, and
+  // keeping both decisions here is what let the two disagree.
 
   // Single-repo format (existing !repo flow).
   if (!workspace) return null;
@@ -254,11 +279,6 @@ export function buildWorkspaceBlock(
     `Worktree (your sandbox): ${workspace.worktreePath}`,
     `Worktree branch: ${workspace.branchName}`,
     `Original repo path (OFF-LIMITS for writes): ${workspace.repoPath}`,
-    // Only when an identity was resolved for this turn but did not arrive.
-    // Without it the rules below send the agent off to commit and open a PR
-    // with no idea that its credentials are missing — the same improvised
-    // "read-only access" diagnosis, on the most common turn shape.
-    ...identityUnavailableLines(identityRepoName, identityAuthenticated, ambiguousRepos),
     ``,
     `RULES — non-negotiable:`,
     `1. ALL reads, writes, edits, and shell commands for this task MUST happen inside the worktree at ${workspace.worktreePath}. Your cwd is already set there.`,
@@ -343,19 +363,24 @@ export async function buildPromptPreamble(
     );
   }
 
-  if (contextProfile.workspace || (identityRepoName && !workspace)) {
-    const workspaceBlock = buildWorkspaceBlock(
-      workspace,
-      worktreePaths,
-      repos,
-      threadTs,
-      identityRepoName,
-      identityAuthenticated,
-      ambiguousRepos,
-    );
+  if (contextProfile.workspace) {
+    const workspaceBlock = buildWorkspaceBlock(workspace, worktreePaths, repos, threadTs);
     if (workspaceBlock) {
       parts.push(``, workspaceBlock);
     }
+  }
+
+  // Independent of the profile: a token reaches the runner whatever the agent
+  // declared, so the statement of what it is for has to reach the agent too.
+  const identityBlock = buildIdentityBlock({
+    repos,
+    identityRepoName,
+    identityAuthenticated,
+    ambiguousRepos,
+    hasCheckout: Boolean(workspace) || Boolean(worktreePaths && Object.keys(worktreePaths).length > 0),
+  });
+  if (identityBlock) {
+    parts.push(``, identityBlock);
   }
 
   if (contextProfile.threadHistory && threadContext) {

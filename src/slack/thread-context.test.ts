@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   buildPromptPreamble,
+  buildIdentityBlock,
   buildWorkspaceBlock,
   escapeBlockDelimiters,
   resolveSlackMentions,
@@ -32,7 +33,7 @@ describe("buildWorkspaceBlock", () => {
         githubUser: "gxt-admin",
       },
     ];
-    const block = buildWorkspaceBlock(null, undefined, ghRepos, "t1", "app-backend");
+    const block = buildIdentityBlock({ repos: ghRepos, identityRepoName: "app-backend" });
 
     expect(block).toContain("<github-identity>");
     expect(block).toContain("app-backend (GrowthX-Club/gx-backend)");
@@ -69,7 +70,6 @@ describe("buildWorkspaceBlock", () => {
       undefined,
       ghRepos,
       "t1",
-      "app-backend",
     );
 
     expect(block).toContain("<workspace>");
@@ -78,7 +78,7 @@ describe("buildWorkspaceBlock", () => {
 
   it("returns null for an unbound or unknown identity repo", () => {
     expect(buildWorkspaceBlock(null, undefined, repos, "t1")).toBeNull();
-    expect(buildWorkspaceBlock(null, undefined, repos, "t1", "not-configured")).toBeNull();
+    expect(buildIdentityBlock({ repos, identityRepoName: "not-configured" })).toContain("not in the configured repository list");
   });
 
   it("renders the single-repo format from a WorkspaceContext", () => {
@@ -126,11 +126,11 @@ describe("buildWorkspaceBlock", () => {
   });
 
   it("tells a multi-repo turn when its credentials are missing", () => {
-    const paths = {
-      "app-backend": "/repos/app-backend.junior-worktrees/slack-t1",
-      "app-frontend": "/repos/app-frontend.junior-worktrees/slack-t1",
-    };
-    const block = buildWorkspaceBlock(undefined, paths, repos, "t1", "app-backend", false);
+    const block = buildIdentityBlock({
+      repos,
+      identityRepoName: "app-backend",
+      identityAuthenticated: false,
+    });
 
     expect(block).toContain("GitHub credentials could not be resolved for this turn");
     // State the cause, never the runner's behaviour: on the tmux driver the
@@ -139,11 +139,7 @@ describe("buildWorkspaceBlock", () => {
   });
 
   it("does not claim missing credentials on a multi-repo turn that authenticated", () => {
-    const paths = {
-      "app-backend": "/repos/app-backend.junior-worktrees/slack-t1",
-      "app-frontend": "/repos/app-frontend.junior-worktrees/slack-t1",
-    };
-    const block = buildWorkspaceBlock(undefined, paths, repos, "t1", "app-backend", true);
+    const block = buildIdentityBlock({ repos, identityRepoName: "app-backend", identityAuthenticated: true });
 
     expect(block).not.toContain("credentials could not be resolved");
   });

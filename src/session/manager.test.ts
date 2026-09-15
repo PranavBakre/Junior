@@ -4600,6 +4600,139 @@ describe("typed pipeline settlement", () => {
     expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
   });
 
+  it("states the identity to an agent that opted out of workspace context", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    seeded.worktreePaths = { junior: seeded.worktreePath };
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.agentRouter = {
+      resolveAgent: mock(async () => ({
+        permissions: {
+          intent: "normal",
+          mcp: ["slack-bot", "mixpanel", "mongodb"],
+          tools: ["Bash", "mcp__slack-bot__slack_send_message"],
+        },
+        context: {
+          identity: true,
+          slack: true,
+          workspace: false,
+          threadHistory: true,
+          threadHistoryLimit: 30,
+          agentState: false,
+        },
+      })),
+      composeSystemPrompt: mock(async () => null),
+    } as unknown as NonNullable<typeof manager.agentRouter>;
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "check the board" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // Two different gates. The profile keeps the worktree rules out — it must
+    // not be handed rules it declined, on a thread whose worktrees it never
+    // asked about. But GH_TOKEN reaches the runner regardless of the profile,
+    // so the statement of what that token is for has to reach the agent too.
+    expect(prompts[0]).not.toContain("Work ONLY inside the worktree paths listed below");
+    expect(prompts[0]).not.toContain("RULES — non-negotiable:");
+    expect(prompts[0]).toContain("<github-identity>");
+    expect(prompts[0]).toContain("GitHub credentials were resolved for this turn");
+  });
+
+  it("holds the same two gates on a resumed turn, which skips the preamble", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    seeded.sessionId = "sess-resume";
+    seeded.sessionCwd = seeded.worktreePath;
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.agentRouter = {
+      resolveAgent: mock(async () => ({
+        permissions: {
+          intent: "normal",
+          mcp: ["slack-bot"],
+          tools: ["Bash", "mcp__slack-bot__slack_send_message"],
+        },
+        context: {
+          identity: true,
+          slack: true,
+          workspace: false,
+          threadHistory: true,
+          threadHistoryLimit: 30,
+          agentState: false,
+        },
+      })),
+      composeSystemPrompt: mock(async () => null),
+    } as unknown as NonNullable<typeof manager.agentRouter>;
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "now open the PR" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // A second call site with its own copy of both decisions — the pair that
+    // has drifted before. Nothing else exercises it with a profile that
+    // disagrees about the two.
+    expect(prompts[0]).not.toContain("<identity>");
+    expect(prompts[0]).not.toContain("<workspace>");
+    expect(prompts[0]).toContain("<github-identity>");
+  });
+
   it("says why a directive naming two configured repos got no identity", async () => {
     const sessionStore = new InMemorySessionStore();
     await sessionStore.set("thread-1", createSession("thread-1", "C123"));

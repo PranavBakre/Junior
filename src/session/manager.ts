@@ -61,6 +61,7 @@ import { validateLeadPipelineResponse } from "../support/pipeline-guard.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
+  buildIdentityBlock,
   buildWorkspaceBlock,
   escapeBlockDelimiters,
   resolveSlackMentions,
@@ -2369,21 +2370,24 @@ export class SessionManager {
                 fresh.needsThreadCatchup = false;
               });
             }
-          } else if (contextProfile.workspace || (preambleIdentityRepo && !workspace)) {
-            const workspaceBlock = buildWorkspaceBlock(
-              workspace,
-              worktreePaths,
-              this.config.repos,
-              session.threadId,
-              preambleIdentityRepo,
-              preambleIdentityAuthenticated,
-              ambiguousIdentityRepos,
-            );
-            prompt = workspaceBlock
-              ? `${workspaceBlock}\n\n${readablePrompt}`
-              : readablePrompt;
           } else {
-            prompt = readablePrompt;
+            // Rules follow the profile; the identity statement does not, because
+            // credentials reach the runner either way.
+            const workspaceBlock = contextProfile.workspace
+              ? buildWorkspaceBlock(workspace, worktreePaths, this.config.repos, session.threadId)
+              : null;
+            const identityBlock = buildIdentityBlock({
+              repos: this.config.repos,
+              identityRepoName: preambleIdentityRepo,
+              identityAuthenticated: preambleIdentityAuthenticated,
+              ambiguousRepos: ambiguousIdentityRepos,
+              hasCheckout: Boolean(workspace) ||
+                Boolean(worktreePaths && Object.keys(worktreePaths).length > 0),
+            });
+            const blocks = [workspaceBlock, identityBlock].filter(Boolean);
+            prompt = blocks.length > 0
+              ? `${blocks.join("\n\n")}\n\n${readablePrompt}`
+              : readablePrompt;
           }
         }
       }
