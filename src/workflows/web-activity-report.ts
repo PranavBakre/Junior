@@ -242,8 +242,21 @@ async function fetchConvex(yesterday: string): Promise<ConvexData> {
     }),
   ]);
 
-  const daily = dailyRows?.[0] ?? null;
-  const platform = platformRows?.[0] ?? null;
+  let daily: ConvexDailyMetrics | null = dailyRows?.[0] ?? null;
+  let platform: ConvexPlatformMetrics | null = platformRows?.[0] ?? null;
+
+  if (!daily) {
+    daily = await convexQuery<ConvexDailyMetrics | null>(
+      url, "dailyMetrics:getLatest", {},
+    );
+    if (daily) {
+      log.info(TAG, `no convex daily row for ${yesterday}, using latest (${daily.date})`);
+      const latestPlatform = await convexQuery<ConvexPlatformMetrics[]>(
+        url, "platformMetrics:getRange", { from: daily.date, to: daily.date },
+      );
+      platform = latestPlatform?.[0] ?? platform;
+    }
+  }
 
   return { daily, platform };
 }
@@ -290,7 +303,8 @@ function formatReport(
   // -- Community (Convex daily) --
   if (convex?.daily) {
     const d = convex.daily;
-    lines.push("*Community*");
+    const dateNote = d.date !== yesterday ? ` _(${prettyDate(d.date)})_` : "";
+    lines.push(`*Community*${dateNote}`);
     lines.push(
       `DAU *${n(d.dau)}*  ·  new members *${n(d.newMembers)}*  ·  total *${n(d.totalMembers)}*`,
     );
