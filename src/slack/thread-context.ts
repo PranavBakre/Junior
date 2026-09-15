@@ -128,6 +128,92 @@ export interface WorkspaceContext {
   branchName: string;
 }
 
+const CREDENTIALS_UNRESOLVED =
+  `GitHub credentials could not be resolved for this turn. Report that rather than retrying or working around it — do not conclude you lack access, and do not fall back on whatever \`gh\` identity this environment carries.`;
+
+/**
+ * Why this turn has no GitHub identity, when it resolved none. Silence here is
+ * the failure mode: an agent holding no credentials and no reason invents a
+ * permissions story instead of reporting the real one.
+ */
+function identityUnavailableLines(
+  identityRepoName: string | null | undefined,
+  identityAuthenticated: boolean,
+  ambiguousRepos: string[],
+): string[] {
+  if (identityRepoName) return identityAuthenticated ? [] : [CREDENTIALS_UNRESOLVED];
+  if (ambiguousRepos.length > 0) {
+    return [
+      `This turn names more than one configured repository (${ambiguousRepos.join(", ")}), so no GitHub identity was resolved. Say which repository it is about rather than assuming one — then it can be resolved for the turns that follow.`,
+    ];
+  }
+  return [];
+}
+
+/**
+ * The identity statement: which repository this turn authenticates against, or
+ * why it resolved none.
+ *
+ * Deliberately separate from the workspace-rules block. The two have different
+ * gates — rules follow the agent's `context.workspace` profile, while a token is
+ * handed to the runner regardless of it — so a single function deciding both is
+ * what allowed an agent to hold credentials the prompt never mentioned, and what
+ * let a `context.workspace: false` agent receive worktree rules it had opted out
+ * of. Returns null when there is nothing to state.
+ */
+export function buildIdentityBlock(input: {
+  repos?: RepoConfig[];
+  identityRepoName?: string | null;
+  identityAuthenticated?: boolean;
+  ambiguousRepos?: string[];
+  hasCheckout?: boolean;
+}): string | null {
+  const {
+    repos,
+    identityRepoName,
+    identityAuthenticated = true,
+    ambiguousRepos = [],
+    hasCheckout = false,
+  } = input;
+  const repoConfig = identityRepoName
+    ? repos?.find((repo) => repo.name === identityRepoName)
+    : undefined;
+  // A persisted binding outlives an edit to REPOS, so a name with no config is
+  // a real state — and the one where silence costs most, since the thread keeps
+  // the binding.
+  const unknownRepo = Boolean(identityRepoName) && !repoConfig && ambiguousRepos.length === 0;
+  if (!repoConfig && ambiguousRepos.length === 0 && !unknownRepo) return null;
+  return [
+    `<github-identity>`,
+    ...(repoConfig
+      ? [
+          `Repository: ${repoConfig.name}${repoConfig.githubRepo ? ` (${repoConfig.githubRepo})` : ""}`,
+          identityAuthenticated
+            ? `GitHub credentials${repoConfig.githubUser ? ` for \`${repoConfig.githubUser}\`` : ""} were resolved for this turn; use \`gh\` against this repository.`
+            : CREDENTIALS_UNRESOLVED,
+        ]
+      : unknownRepo
+        ? [
+            `\`${identityRepoName}\` is this thread's bound repository, but it is not in the configured repository list — it may have been renamed or removed. No GitHub credentials were resolved for this turn. Report that rather than working around it.`,
+          ]
+        : identityUnavailableLines(undefined, false, ambiguousRepos)),
+    // Both branches state what Junior resolved, never what `gh` in the runner
+    // will do: the tmux driver's pane env comes from the tmux server, not from
+    // this turn (#235), so a promise about the pane can be false in either
+    // direction. For the same reason this says nothing about cwd — the repo
+    // Junior itself runs from is configurable, and when the directive resolves
+    // to it, cwd *is* the repository.
+    // Only invite direct work when there is something safe to work on: with a
+    // checkout present the workspace block already governs it, and without one
+    // "act directly" can point at a shared origin the workspace shapes mark
+    // OFF-LIMITS for writes.
+    ...(repoConfig && identityAuthenticated && !hasCheckout
+      ? [`No worktree is checked out for this thread. Work against the repository remotely — pass an explicit \`--repo\`/\`-R\` or a full URL rather than letting \`gh\` infer it — and create a worktree only if the task needs to edit files.`]
+      : []),
+    `</github-identity>`,
+  ].join("\n");
+}
+
 /**
  * Build the standalone workspace-rules block. Used in the full preamble on the
  * first turn AND on resumed turns (cheap insurance — keeps the safety rule
@@ -181,6 +267,10 @@ export function buildWorkspaceBlock(
     ].join("\n");
   }
 
+  // Identity-only block lives in `buildIdentityBlock` — it is gated on whether
+  // the turn holds credentials, not on the agent's workspace profile, and
+  // keeping both decisions here is what let the two disagree.
+
   // Single-repo format (existing !repo flow).
   if (!workspace) return null;
   return [
@@ -218,6 +308,9 @@ export async function buildPromptPreamble(
   worktreePaths?: Record<string, string>,
   repos?: RepoConfig[],
   contextProfile: AgentContextProfile = DEFAULT_CONTEXT_PROFILE,
+  identityRepoName?: string | null,
+  identityAuthenticated = true,
+  ambiguousRepos: string[] = [],
 ): Promise<string> {
   // Only fetch the data we'll actually emit — skipping thread history matters
   // for lightweight task agents, both for tokens and for latency.
@@ -275,6 +368,19 @@ export async function buildPromptPreamble(
     if (workspaceBlock) {
       parts.push(``, workspaceBlock);
     }
+  }
+
+  // Independent of the profile: a token reaches the runner whatever the agent
+  // declared, so the statement of what it is for has to reach the agent too.
+  const identityBlock = buildIdentityBlock({
+    repos,
+    identityRepoName,
+    identityAuthenticated,
+    ambiguousRepos,
+    hasCheckout: Boolean(workspace) || Boolean(worktreePaths && Object.keys(worktreePaths).length > 0),
+  });
+  if (identityBlock) {
+    parts.push(``, identityBlock);
   }
 
   if (contextProfile.threadHistory && threadContext) {

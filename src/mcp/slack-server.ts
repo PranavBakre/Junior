@@ -315,6 +315,11 @@ export async function unregisterWorktree(options: {
         current.worktreePath = null;
         current.targetRepo = null;
       }
+      // Same as the cleanup button, and for the same reason: the identity is
+      // keyed to its own repo, not to the bound one.
+      if (current.identityRepo === repoName) {
+        current.identityRepo = null;
+      }
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

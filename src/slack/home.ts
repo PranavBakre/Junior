@@ -359,6 +359,12 @@ function buildSessionDetailText(session: ThreadSession): string {
     `*Pending messages:* ${session.pendingMessages.length}`,
   ];
 
+  // Only meaningful without a worktree binding: `targetRepo` wins resolution
+  // and does not refresh this, so rendering it alongside would name an identity
+  // the turn is not using.
+  if (!session.targetRepo && session.identityRepo) {
+    fields.push(`*GitHub identity:* ${session.identityRepo}`);
+  }
   if (session.worktreePath) fields.push(`*Worktree:*\n\`${session.worktreePath}\``);
   if (session.sessionId) fields.push(`*Resume:*\n\`${resumeCommand(provider, session.sessionId)}\``);
 

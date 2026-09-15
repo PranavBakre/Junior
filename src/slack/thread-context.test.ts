@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   buildPromptPreamble,
+  buildIdentityBlock,
   buildWorkspaceBlock,
   escapeBlockDelimiters,
   resolveSlackMentions,
@@ -8,6 +9,7 @@ import {
 } from "./thread-context.ts";
 import type { App } from "@slack/bolt";
 import type { RepoConfig } from "../config.ts";
+import { DEFAULT_CONTEXT_PROFILE } from "../agents/loader.ts";
 
 const repos: RepoConfig[] = [
   { name: "app-backend", path: "/repos/app-backend", defaultBase: "origin/main" },
@@ -19,6 +21,64 @@ describe("buildWorkspaceBlock", () => {
     expect(buildWorkspaceBlock(null)).toBeNull();
     expect(buildWorkspaceBlock(undefined)).toBeNull();
     expect(buildWorkspaceBlock(undefined, {})).toBeNull();
+  });
+
+  it("names the authenticated repo when there is no worktree", () => {
+    const ghRepos: RepoConfig[] = [
+      {
+        name: "app-backend",
+        path: "/repos/app-backend",
+        defaultBase: "origin/main",
+        githubRepo: "GrowthX-Club/gx-backend",
+        githubUser: "gxt-admin",
+      },
+    ];
+    const block = buildIdentityBlock({ repos: ghRepos, identityRepoName: "app-backend" });
+
+    expect(block).toContain("<github-identity>");
+    expect(block).toContain("app-backend (GrowthX-Club/gx-backend)");
+    expect(block).toContain("credentials for `gxt-admin` were resolved for this turn");
+    // Never claim where cwd is: the repo Junior itself runs from is configured,
+    // and a directive resolving to it puts cwd inside that repository.
+    expect(block).not.toContain("your cwd");
+    // Never invite direct work in a checkout the worktree shapes call
+    // OFF-LIMITS; remote work and a worktree are the safe instructions.
+    expect(block).not.toContain("act on the repository directly");
+    expect(block).toContain("Work against the repository remotely");
+    expect(block).toContain("</github-identity>");
+    // Must not imply a checkout exists, nor inherit the workspace write rules.
+    expect(block).not.toContain("Worktree (your sandbox)");
+    expect(block).not.toContain("ALL reads, writes, edits");
+  });
+
+  it("prefers the worktree block when a workspace exists", () => {
+    const ghRepos: RepoConfig[] = [
+      {
+        name: "app-backend",
+        path: "/repos/app-backend",
+        defaultBase: "origin/main",
+        githubRepo: "GrowthX-Club/gx-backend",
+      },
+    ];
+    const block = buildWorkspaceBlock(
+      {
+        worktreePath: "/repos/app-backend.junior-worktrees/slack-t1",
+        repoName: "app-backend",
+        repoPath: "/repos/app-backend",
+        branchName: "slack/t1",
+      },
+      undefined,
+      ghRepos,
+      "t1",
+    );
+
+    expect(block).toContain("<workspace>");
+    expect(block).not.toContain("<github-identity>");
+  });
+
+  it("returns null for an unbound or unknown identity repo", () => {
+    expect(buildWorkspaceBlock(null, undefined, repos, "t1")).toBeNull();
+    expect(buildIdentityBlock({ repos, identityRepoName: "not-configured" })).toContain("not in the configured repository list");
   });
 
   it("renders the single-repo format from a WorkspaceContext", () => {
@@ -65,6 +125,25 @@ describe("buildWorkspaceBlock", () => {
     expect(block).toContain("</workspace>");
   });
 
+  it("tells a multi-repo turn when its credentials are missing", () => {
+    const block = buildIdentityBlock({
+      repos,
+      identityRepoName: "app-backend",
+      identityAuthenticated: false,
+    });
+
+    expect(block).toContain("GitHub credentials could not be resolved for this turn");
+    // State the cause, never the runner's behaviour: on the tmux driver the
+    // pane's identity comes from the tmux server, not this turn (#235).
+    expect(block).not.toContain("will not authenticate");
+  });
+
+  it("does not claim missing credentials on a multi-repo turn that authenticated", () => {
+    const block = buildIdentityBlock({ repos, identityRepoName: "app-backend", identityAuthenticated: true });
+
+    expect(block).not.toContain("credentials could not be resolved");
+  });
+
   it("multi-repo format ignores `workspace` when worktreePaths is non-empty", () => {
     const ws: WorkspaceContext = {
       worktreePath: "/should/not/appear",
@@ -97,6 +176,54 @@ describe("buildWorkspaceBlock", () => {
 });
 
 describe("buildPromptPreamble", () => {
+  it("tells a workspace-less agent which repo its credentials are for", async () => {
+    const app = { client: {} } as unknown as App;
+
+    const preamble = await buildPromptPreamble(
+      app,
+      "C123",
+      "thread-1",
+      "2",
+      "UBOT",
+      null,
+      undefined,
+      repos,
+      { ...DEFAULT_CONTEXT_PROFILE, workspace: false },
+      "app-backend",
+      true,
+    );
+
+    // The profile disables workspace context, but credentials are handed out
+    // regardless — a token with no statement of what it is for is the shape
+    // this whole path exists to remove.
+    expect(preamble).toContain("<github-identity>");
+    expect(preamble).toContain("Repository: app-backend");
+    expect(preamble).not.toContain("<workspace>");
+  });
+
+  it("says why a turn naming two configured repos got no identity", async () => {
+    const app = { client: {} } as unknown as App;
+
+    const preamble = await buildPromptPreamble(
+      app,
+      "C123",
+      "thread-1",
+      "2",
+      "UBOT",
+      null,
+      undefined,
+      repos,
+      DEFAULT_CONTEXT_PROFILE,
+      undefined,
+      false,
+      ["app-backend", "app-frontend"],
+    );
+
+    expect(preamble).toContain("<github-identity>");
+    expect(preamble).toContain("names more than one configured repository (app-backend, app-frontend)");
+    expect(preamble).not.toContain("Repository:");
+  });
+
   it("labels self mentions distinctly when other users are tagged too", async () => {
     const app = {
       client: {

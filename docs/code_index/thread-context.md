@@ -8,8 +8,10 @@ Builds the prompt preamble that gives spawned Claude processes identity, channel
 
 | Symbol | Purpose |
 |---|---|
-| `buildPromptPreamble(app, channel, threadTs, latestTs, botUserId?, workspace?, worktreePaths?, repos?, contextProfile?)` | Composes the full preamble. Each block (`identity`, `slack-context`, `workspace`, `thread-context`) emitted only if its flag in `contextProfile` is true. Defaults to all-true via `DEFAULT_CONTEXT_PROFILE`. |
-| `buildWorkspaceBlock(workspace, worktreePaths?, repos?, threadId?)` | Standalone workspace-rules block. Used in the full preamble AND on resumed turns (cheap safety reminder). Multi-repo format when `worktreePaths` non-empty, single-repo format otherwise. |
+| `buildPromptPreamble(app, channel, threadTs, latestTs, botUserId?, workspace?, worktreePaths?, repos?, contextProfile?, identityRepoName?, identityAuthenticated?)` | Composes the full preamble. Each block (`identity`, `slack-context`, `thread-context`) emitted only if its flag in `contextProfile` is true; the workspace *rules* follow `contextProfile.workspace`, but the `<github-identity>` block does not — credentials reach the runner whatever the profile says. Defaults to all-true via `DEFAULT_CONTEXT_PROFILE`. |
+| `buildWorkspaceBlock(workspace, worktreePaths?, repos?, threadId?)` | Standalone workspace-**rules** block only. Used in the full preamble AND on resumed turns (cheap safety reminder). Multi-repo format when `worktreePaths` non-empty; single-repo when a workspace exists; `null` otherwise. Emitted under `contextProfile.workspace`. |
+| `buildIdentityBlock({ repos?, identityRepoName?, identityAuthenticated?, ambiguousRepos?, hasCheckout? })` | The identity statement, separate from the rules because the two have different gates. Renders a `<github-identity>` block naming the repo this turn authenticates against, or — when none resolved — why (credentials missing, an ambiguous directive, or a bound repo that left `REPOS`). Its remote-work invitation is suppressed when a checkout is present (`hasCheckout`) and when there are no credentials. `null` when there is nothing to state. |
+| `<github-identity>` block | Names the repo a turn authenticates against, so a turn holding `GH_TOKEN` without a checkout knows what to use it against. Emitted for any turn an identity resolved on or failed to resolve, whatever the agent's `context.workspace` profile says — a token reaches the runner either way. The caller passes `identityRepoName` whenever an identity resolved — including when credentials did *not* arrive, because the block then says so (`identityAuthenticated: false`) instead of silently withholding. A resolved-but-unauthenticated identity is rendered rather than hidden: an agent that is told the cause reports it, while one that is told nothing invents a permissions story. That holds in the worktree-failure case too: withholding the token does not withhold the repo name, because the identity block's "work against the repository remotely" line is gated on `identityAuthenticated`, which is false whenever credentials did not arrive — including, but not only, when the failed repo is the identity repo. When an identity resolved but credentials did not arrive, the same "credentials could not be resolved" sentence is added to the `<workspace>` block in **both** its shapes — single-repo and multi-repo — so no turn is left to invent a permissions story. A turn naming two or more configured repositories (`identityAmbiguousRepos`) resolves no identity and renders the block *without* a `Repository:` line, saying which repos it named. |
 | `resolveSlackMentions(app, text)` | Rewrites `<@U…>` → `@DisplayName (<@U…>)` so agents can address users by name. Pre-resolves unique IDs in parallel, then single-pass regex replace. |
 | `WorkspaceContext` | Type: `{ worktreePath, repoName, repoPath, branchName }` |
 
@@ -40,6 +42,11 @@ Thread: {ts}
 (single-repo: Target repo / Worktree / branch / RULES)
 (multi-repo:  per-repo blocks of worktree + bare-repo + branch + base)
 </workspace>
+
+<github-identity>
+(alternative to <workspace>, not nested in it: named repo + what Junior
+resolved for this turn, no write rules)
+</github-identity>
 
 <thread-context>
 Junior (you): previous response

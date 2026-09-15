@@ -562,6 +562,9 @@ function normalizeSession(session: ThreadSession): ThreadSession {
   }
   // Migration: existing sessions before worktreePaths was added default to {}
   session.worktreePaths ??= {};
+  // Migration: identityRepo added after targetRepo; pre-existing rows re-derive
+  // it from the prompt of the next directive that names a repository.
+  session.identityRepo ??= null;
   session.muted ??= false;
   // Driver-mode migration — rows written before the driver abstraction
   // landed default to "headless" (the historical behavior).

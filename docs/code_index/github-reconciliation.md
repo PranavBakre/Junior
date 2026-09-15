@@ -16,6 +16,7 @@ webhook to keep pipeline state correct.
 | Review comments | `src/github/review-comments.ts` | Scopes comments to an exact head SHA and avoids duplicate writes. |
 | Types | `src/github/types.ts` | GitHub resource, review, and reconciliation contracts. |
 | Repo-scoped auth | `src/github/auth.ts`, `src/config.ts` | Resolves each configured `RepoConfig.githubUser` with `gh auth token --user`, verifies the account with `gh api user`, and injects only that token plus an isolated `GH_CONFIG_DIR` into repo-scoped `gh` children. Unknown repo mappings and repos without `githubUser` are rejected before `gh` runs. |
+| Identity routing | `src/github/identity-routing.ts` | Chooses which repo an invocation authenticates as. A durable binding wins; otherwise only an explicit GitHub coordinate in the request (PR/repo URL, `--repo`/`-R`) resolves one, and only when it names exactly one configured repo. Coordinates matching no configured repo are ignored rather than failing resolution, so an incidental upstream link cannot strip credentials. Identity is resolved independently of the checkout — binding `targetRepo` instead would provision a worktree the task does not need. |
 | Bounded CLI transport | `src/github/cli.ts` | Concurrently drains `gh` stdout/stderr with 512 KiB response and 64 KiB diagnostic caps, hard timeout, and process-group cleanup. |
 
 ## Configuration

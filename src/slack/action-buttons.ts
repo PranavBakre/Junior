@@ -234,6 +234,13 @@ export async function cleanupThreadWorktrees(
       session.worktreePath = null;
       session.targetRepo = null;
     }
+    // The identity is keyed to its own repo, not to the bound one — a repo-less
+    // turn binds one without ever setting `targetRepo`. Clearing it only inside
+    // the branch above leaves a detached repo's credentials on the thread, and
+    // the next unrelated turn is told to act on the repo the user just removed.
+    if (session.identityRepo === worktree.repo) {
+      session.identityRepo = null;
+    }
   }
   await sessionManager.updateSession(session.threadId, session);
   return `Cleaned up worktree${removed.length === 1 ? "" : "s"}: ${removed.join(", ")}.`;

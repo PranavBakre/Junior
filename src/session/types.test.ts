@@ -128,6 +128,7 @@ describe("createSession", () => {
       "driverMode",
       "engagedHumans",
       "humanParticipants",
+      "identityRepo",
       "idleInterruptCount",
       "lastActivity",
       "lastError",

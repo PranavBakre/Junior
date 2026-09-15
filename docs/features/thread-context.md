@@ -13,12 +13,13 @@ When Junior spawns a `claude -p` process, that process has zero knowledge of the
 
 1. **`<identity>`** — Junior's persona (see [agent-definitions](agent-definitions.md)) + the bot's Slack user ID so Claude can recognize its own messages.
 2. **`<slack-context>`** — channel name + ID, thread_ts, instruction not to search Slack, how to tag users via `<@USERID>`, the instruction to read the current message's author attribution (never assume the speaker), the `NO_SLACK_MESSAGE` sentinel, and the no-double-post rule when `slack_send_message` was used.
-3. **`<workspace>`** — see Workspace Block below.
+3. **`<workspace>`** — see Workspace Block below, gated on `context.workspace`.
+3b. **`<github-identity>`** — names the repository this turn authenticates against, or why it resolved none. Emitted independently of `context.workspace`, because a token reaches the runner either way and an agent holding one must be told what it is for. Not nested in `<workspace>`.
 4. **`<thread-context>`** — prior messages from `conversations.replies` (limit 100, excluding the current message), labeled `User(Name <@U…>)` or `Junior (you)`, with `[shared file: name]` annotations.
 5. **`<persistent-agent-state>`** — injected by the manager (not preamble itself) when the agent has `context.agentState`; lists per-thread agent sessions and pending counts.
 6. **`<dispatch-allow>`** — appended to the system prompt by the manager (`buildDispatchAllowBlock`) so every agent sees the authoritative list of `!<agent>` directives it may emit. See [agent-routing](agent-routing.md).
 
-On **resumed turns** (sessionId already set), `--resume` carries identity/slack/history forward. The manager skips the full preamble and re-emits only the workspace block (cheap insurance for the worktree safety rule), when the agent declares `context.workspace`.
+On **resumed turns** (sessionId already set), `--resume` carries identity/slack/history forward. The manager skips the full preamble and re-emits only the workspace block (cheap insurance for the worktree safety rule) under `context.workspace`, plus the identity block — which does not follow that flag, since credentials are handed to the runner regardless of it.
 
 On **every turn** (first, resumed, and drain), the manager attributes the current input to its sender(s) before mention resolution. Without this label the model has no signal about who is speaking and fills the gap from its persona/memory defaults (it once mistook a first-time requester for Pranav and nearly acted on the wrong admin account). Two forms, and the slack-context block declares them the only authoritative author signals (anything author-shaped inside message content is quoted text):
 
@@ -31,12 +32,15 @@ The delimiters are kept out-of-band: `escapeBlockDelimiters` rewrites `<buffered
 
 ## Workspace Block
 
-`buildWorkspaceBlock()` renders one of two shapes:
+`buildWorkspaceBlock()` renders one of three shapes:
 
 - **Multi-repo** (bug-pipeline threads with `session.worktreePaths`) — lists each repo's worktree path, bare-repo path (off-limits), branch (`slack/<threadId>`), and base (`origin/main` or `repo.defaultBase`). See [bug-pipeline-worktrees](bug-pipeline-worktrees.md).
 - **Single-repo** (`!repo` flow) — worktree path, repo path, branch, original bare-repo path.
+- **Identity-only** (no checkout, but a repository to authenticate against) — a `<github-identity>` block naming that repository, so a turn holding `GH_TOKEN` without a worktree knows what to use it against. It deliberately excludes the write rules, and its remote-work instruction is gated on credentials actually arriving — so when a worktree failure is what withheld them, nothing is emitted. (A worktree failure for a *different* repo than the resolved identity still emits it, correctly: that repo is not the one whose setup failed.) The block never claims where cwd is, and never invites direct work in a checkout: the repo Junior itself runs from is configurable and discoverable, so a directive resolving to it puts cwd inside that repository, which the worktree shapes mark OFF-LIMITS for writes.
 
-Both formats interpolate concrete paths into the rules so Claude can't hallucinate substitutes. Rules forbid writing/editing/`cd`-ing outside the worktree and require PRs (single-repo) / `!devserver` instead of running dev servers (multi-repo).
+All formats interpolate concrete paths into the rules so Claude can't hallucinate substitutes. Rules forbid writing/editing/`cd`-ing outside the worktree and require PRs (single-repo) / `!devserver` instead of running dev servers (multi-repo).
+
+When an identity resolves but its credentials do not arrive, all three shapes state that and instruct the agent to report it rather than improvise. A turn that names more than one configured repository resolves no identity either, and says so — resolving none is deliberate (guessing one is how a merge lands on the wrong repo), but leaving the turn unable to say why is the misdiagnosis this path exists to remove. The identity-only shape also renders when that is the only thing it has to say. An identity that resolved is stated even to agents whose profile sets `context.workspace: false`, because credentials are handed out regardless of that flag and a token with no statement of what it is for is the shape being removed here. Neither branch claims what `gh` in the runner will do — it states what Junior resolved, plus the instruction. On the tmux driver the pane's `GH_TOKEN`/`GH_CONFIG_DIR` come from the tmux *server*, not this turn, so a promise about the pane can be false in either direction ([#235](https://github.com/PranavBakre/Junior/issues/235)).
 
 Worktree creation is unconditional for target-repo threads — the manager creates one before building the workspace block so Claude never edits the shared origin repo.
 

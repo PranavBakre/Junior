@@ -4481,6 +4481,806 @@ describe("typed pipeline settlement", () => {
     );
   });
 
+  it("keeps repo-less isolation when the prompt names a repository for identity", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));
+    await pipelineStore.createRun(makeProductRun({ repoRefs: ["junior"] }));
+    await pipelineStore.createAssignment(makeAssignmentCreate({
+      id: "asg-mongo-read-identity",
+      targetAgent: "db-executioner",
+      capabilityRefs: ["mongodb-read"],
+      contextRefs: ["workspace-mode:repo-less"],
+      mutationScope: [],
+      objective: "read a member roadmap",
+      idempotencyKey: "asg-mongo-read-identity-key",
+    }));
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/stale-worktree";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawnedSessions: ThreadSession[] = [];
+    const spawnedAuthEnv: Array<Record<string, string> | undefined> = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(
+      sessionStore,
+      testConfig,
+      (runSession, _prompt, _c, _cwd, _tok, _ident, _img, githubAuthEnv) => {
+        spawnedSessions.push(structuredClone(runSession));
+        spawnedAuthEnv.push(githubAuthEnv);
+        return handle;
+      },
+    );
+    manager.pipelineStore = pipelineStore;
+    const createWorktree = mock(async () => "/tmp/should-not-be-created");
+    manager.worktreeManager = {
+      createWorktree,
+      getBranchName: () => "slack/thread-1",
+      // Resolvable credentials, so the durable-write branch is actually
+      // reachable: without this the assertion below holds vacuously.
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "pipeline-internal",
+      text:
+        "<pipeline-assignment>read a member roadmap https://github.com/GrowthX-Club/junior/pull/229</pipeline-assignment>",
+      dedupeKey: "pipeline-outbox:mongo-read-identity",
+      pipelineInvocation: {
+        runId: "run-1",
+        assignmentId: "asg-mongo-read-identity",
+        dispatchKey: "mongo-read-identity",
+        outcomeCountAtDispatch: 0,
+        retryCount: 0,
+      },
+    }), "db-executioner");
+    await waitFor(() => spawnedSessions.length === 1);
+
+    // Resolving an identity must not leak the durable repo binding back into a
+    // repo-less invocation: resolveRunnerCwd prefers worktreePath, so a stale
+    // value here moves the runner out of its isolated agent directory.
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(spawnedSessions[0]).toMatchObject({
+      worktreePath: null,
+      targetRepo: null,
+    });
+    // A utility invocation is repo-less by contract and must not seed durable
+    // repo affinity that a later, unrelated repo-less turn would inherit...
+    expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
+    // ...nor receive credentials resolved from the repo its directive names,
+    // which main also withheld.
+    expect(spawnedAuthEnv[0]).toBeUndefined();
+  });
+
+  it("does not persist a durable identity for a worktree-bound turn", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawnedAuthEnv: Array<Record<string, string> | undefined> = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(
+      sessionStore,
+      testConfig,
+      (_s, _p, _c, _cwd, _tok, _i, _img, githubAuthEnv) => {
+        spawnedAuthEnv.push(githubAuthEnv);
+        return handle;
+      },
+    );
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "status?" }),
+      "default",
+    );
+    await waitFor(() => spawnedAuthEnv.length === 1);
+
+    // Credentials did arrive — otherwise this asserts nothing about the write.
+    expect(spawnedAuthEnv[0]).toMatchObject({ GH_TOKEN: "tok" });
+    // A thread's worktree binding already carries the repo, so re-persisting it
+    // as a durable identity would outlive the worktree and outrank the next
+    // directive. The write is keyed on there being no target repo at all.
+    expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
+  });
+
+  it("states the identity to an agent that opted out of workspace context", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    seeded.worktreePaths = { junior: seeded.worktreePath };
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.agentRouter = {
+      resolveAgent: mock(async () => ({
+        permissions: {
+          intent: "normal",
+          mcp: ["slack-bot", "mixpanel", "mongodb"],
+          tools: ["Bash", "mcp__slack-bot__slack_send_message"],
+        },
+        context: {
+          identity: true,
+          slack: true,
+          workspace: false,
+          threadHistory: true,
+          threadHistoryLimit: 30,
+          agentState: false,
+        },
+      })),
+      composeSystemPrompt: mock(async () => null),
+    } as unknown as NonNullable<typeof manager.agentRouter>;
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "check the board" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // Two different gates. The profile keeps the worktree rules out — it must
+    // not be handed rules it declined, on a thread whose worktrees it never
+    // asked about. But GH_TOKEN reaches the runner regardless of the profile,
+    // so the statement of what that token is for has to reach the agent too.
+    expect(prompts[0]).not.toContain("Work ONLY inside the worktree paths listed below");
+    expect(prompts[0]).not.toContain("RULES — non-negotiable:");
+    expect(prompts[0]).toContain("<github-identity>");
+    expect(prompts[0]).toContain("GitHub credentials were resolved for this turn");
+  });
+
+  it("holds the same two gates on a resumed turn, which skips the preamble", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    seeded.sessionId = "sess-resume";
+    seeded.sessionCwd = seeded.worktreePath;
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.agentRouter = {
+      resolveAgent: mock(async () => ({
+        permissions: {
+          intent: "normal",
+          mcp: ["slack-bot"],
+          tools: ["Bash", "mcp__slack-bot__slack_send_message"],
+        },
+        context: {
+          identity: true,
+          slack: true,
+          workspace: false,
+          threadHistory: true,
+          threadHistoryLimit: 30,
+          agentState: false,
+        },
+      })),
+      composeSystemPrompt: mock(async () => null),
+    } as unknown as NonNullable<typeof manager.agentRouter>;
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "now open the PR" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // A second call site with its own copy of both decisions — the pair that
+    // has drifted before. Nothing else exercises it with a profile that
+    // disagrees about the two.
+    expect(prompts[0]).not.toContain("<identity>");
+    expect(prompts[0]).not.toContain("<workspace>");
+    expect(prompts[0]).toContain("<github-identity>");
+  });
+
+  it("says why a directive naming two configured repos got no identity", async () => {
+    const sessionStore = new InMemorySessionStore();
+    await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+
+    const prompts: string[] = [];
+    const getGitHubEnvironment = mock(async () => ({ GH_TOKEN: "tok" }));
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/should-not-be-created"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment,
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager
+      .handleAgentMessage(
+        makeEvent({
+          user: "U123",
+          text: "merge https://github.com/GrowthX-Club/junior/pull/229 (upstream fix is https://github.com/GrowthX-Club/frontend/pull/12)",
+        }),
+        "default",
+      )
+      .catch(() => undefined);
+    await waitFor(() => prompts.length === 1);
+
+    // Resolving nothing is deliberate — guessing one of two named repos is how
+    // a merge lands on the wrong repository. Saying nothing is not: that is the
+    // misdiagnosis this path exists to remove.
+    expect(getGitHubEnvironment).not.toHaveBeenCalled();
+    expect(prompts[0]).toContain("names more than one configured repository");
+    expect(prompts[0]).toContain("junior, frontend");
+  });
+
+  it("persists the identity a repo-less turn named, so the next turn keeps it", async () => {
+    const sessionStore = new InMemorySessionStore();
+    await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, () => handle);
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/should-not-be-created"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+
+    // A follow-up ("yes, go ahead") carries no coordinate of its own. Without
+    // the durable write the identity vanishes one turn after it was resolved.
+    await manager.handleAgentMessage(makeEvent({
+      user: "U123",
+      text: "merge https://github.com/GrowthX-Club/junior/pull/229",
+    }), "default");
+    await waitFor(async () => (await sessionStore.get("thread-1"))?.identityRepo === "junior");
+
+    expect((await sessionStore.get("thread-1"))?.identityRepo).toBe("junior");
+  });
+
+  it("withholds credentials when the bound repo's worktree fails", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    // Stale binding from an earlier turn. Suppression matches on repo name, so
+    // without the refresh this survives and hands the turn a token for a repo
+    // the directive never mentioned.
+    seeded.identityRepo = "frontend";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawnedAuthEnv: Array<Record<string, string> | undefined> = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(
+      sessionStore,
+      testConfig,
+      (_s, _p, _c, _cwd, _tok, _i, _img, githubAuthEnv) => {
+        spawnedAuthEnv.push(githubAuthEnv);
+        return handle;
+      },
+    );
+    manager.worktreeManager = {
+      createWorktree: mock(async () => {
+        throw new Error("worktree setup failed");
+      }),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "U123",
+      text: "merge PR #321 via gxt-admin",
+    }), "default");
+    await waitFor(() => spawnedAuthEnv.length === 1);
+
+    expect(spawnedAuthEnv[0]).toBeUndefined();
+  });
+
+  it("names the repo without inviting work on its bare origin when a worktree fails", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => {
+        throw new Error("worktree setup failed");
+      }),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "merge PR #321 via gxt-admin" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // The repo name is what makes the failure reportable at all — but with no
+    // checkout to work in, the invitation to "act on the repository directly"
+    // would aim the agent at the shared bare repo.
+    expect(prompts[0]).toContain("Repository: junior");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+    expect(prompts[0]).not.toContain("act on the repository directly");
+  });
+
+  it("tells a multi-repo turn when the repo whose worktree failed held the identity", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    // Reachable: register_worktree fills worktreePaths without setting
+    // targetRepo; `!repo frontend` then sets it, and frontend's setup fails.
+    seeded.worktreePaths = { junior: "/tmp/junior.junior-worktrees/slack-thread-1" };
+    seeded.targetRepo = "frontend";
+    seeded.worktreePath = null;
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => {
+        throw new Error("worktree setup failed");
+      }),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => ({ GH_TOKEN: "tok" })),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "fix the toggle" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // junior's worktree still exists and this block hands out its write rules,
+    // so withholding the explanation is exactly the silent case.
+    expect(prompts[0]).toContain("Work ONLY inside the worktree paths listed below");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+  });
+
+  it("keeps the credentials signal on a resumed turn, which skips the preamble", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    seeded.sessionId = "sess-resume";
+    seeded.sessionCwd = seeded.worktreePath;
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "now open the PR" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // Resumed turns emit only the standalone workspace block, via a second
+    // call site whose arguments are load-bearing and otherwise unexercised.
+    expect(prompts[0]).not.toContain("<identity>");
+    expect(prompts[0]).toContain("<workspace>");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+    expect(prompts[0]).not.toContain("will not authenticate");
+  });
+
+  it("does not fail a turn that never asked for GitHub", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.identityRepo = "junior";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawned: ThreadSession[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawned.push(structuredClone(runSession));
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "what do you think?" }),
+      "default",
+    );
+
+    // The binding is thread-lifetime. Failing ordinary chatter on it would let
+    // one transient auth fault wedge every later turn on the thread until an
+    // admin resets it — so loudness is scoped to turns that named a repo.
+    await waitFor(() => spawned.length === 1);
+    expect((await sessionStore.get("thread-1"))?.lastError ?? null).toBeNull();
+  });
+
+  it("tells the agent when a worktree turn's credentials are missing", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({
+            messages: [
+              { ts: "1", user: "U1", text: "hi" },
+              { ts: "2", user: "U2", text: "there" },
+            ],
+          }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({
+            user: { name: "u", profile: { display_name: "U" } },
+          }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "fix the toggle" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // The workspace rules send the agent off to commit and open a PR. Without
+    // this line it has no idea its credentials are missing — the same
+    // improvised "read-only access" diagnosis, on the commonest turn shape.
+    expect(prompts[0]).toContain("<workspace>");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+    expect(prompts[0]).not.toContain("will not authenticate");
+  });
+
+  it("tells a multi-repo worktree turn when its credentials are missing", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.targetRepo = "junior";
+    seeded.worktreePath = "/tmp/junior.junior-worktrees/slack-thread-1";
+    seeded.worktreePaths = {
+      junior: seeded.worktreePath,
+      frontend: "/tmp/frontend.junior-worktrees/slack-thread-1",
+    };
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const prompts: string[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      syncRepo: mock(async () => undefined),
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({
+            messages: [
+              { ts: "1", user: "U1", text: "hi" },
+              { ts: "2", user: "U2", text: "there" },
+            ],
+          }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({
+            user: { name: "u", profile: { display_name: "U" } },
+          }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager.handleAgentMessage(
+      makeEvent({ user: "U123", text: "fix the toggle" }),
+      "default",
+    );
+    await waitFor(() => prompts.length === 1);
+
+    // The multi-repo block is a separate render path and does not inherit the
+    // single-repo line; nothing else in it mentions authentication at all.
+    expect(prompts[0]).toContain("Work ONLY inside the worktree paths listed below");
+    expect(prompts[0]).toContain("credentials could not be resolved");
+  });
+
+  it("does not wedge the thread when the identity cannot authenticate", async () => {
+    const sessionStore = new InMemorySessionStore();
+    const seeded = createSession("thread-1", "C123");
+    seeded.identityRepo = "junior";
+    await sessionStore.set(seeded.threadId, seeded);
+
+    const spawned: ThreadSession[] = [];
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawned.push(structuredClone(runSession));
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/wt"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment: mock(async () => {
+        throw new Error("GitHub user gxt-admin is not available for repo junior");
+      }),
+    } as unknown as WorktreeManager;
+
+    await manager
+      .handleAgentMessage(makeEvent({
+        user: "U123",
+        text: "merge https://github.com/GrowthX-Club/junior/pull/229",
+      }), "default")
+      .catch(() => undefined);
+
+    // Even on a turn that names the repo and needs credentials, the fault must
+    // not kill the turn: the binding is thread-lifetime, so throwing here wedges
+    // every later turn until an admin resets it. The agent is told instead — see
+    // the prompt assertion below.
+    await waitFor(() => spawned.length === 1);
+  });
+
+  it("tells the agent which repo it authenticated for, or that it could not", async () => {
+    const runWith = async (
+      getGitHubEnvironment: ReturnType<typeof mock>,
+    ): Promise<string> => {
+      const sessionStore = new InMemorySessionStore();
+      await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+      const prompts: string[] = [];
+      const handle = createMockHandle();
+      const manager = new SessionManager(
+        sessionStore,
+        testConfig,
+        (_s, prompt) => {
+          prompts.push(prompt);
+          return handle;
+        },
+      );
+      manager.worktreeManager = {
+        createWorktree: mock(async () => "/tmp/wt"),
+        getBranchName: () => "slack/thread-1",
+        getGitHubEnvironment,
+      } as unknown as WorktreeManager;
+      // The preamble — and so the identity block — is only built when a Slack
+      // app is wired.
+      manager.slackApp = {
+        client: {
+          conversations: {
+            replies: async () => ({
+              messages: [
+                { ts: "1", user: "U1", text: "hi" },
+                { ts: "2", user: "U2", text: "there" },
+              ],
+            }),
+            info: async () => ({ channel: { name: "chan" } }),
+          },
+          users: {
+            info: async () => ({
+              user: { name: "u", profile: { display_name: "U" } },
+            }),
+          },
+        },
+      } as unknown as App;
+      manager.botUserId = "B1";
+      await manager.handleAgentMessage(
+        makeEvent({
+          user: "U123",
+          text: "merge https://github.com/GrowthX-Club/junior/pull/229",
+        }),
+        "default",
+      );
+      await waitFor(() => prompts.length === 1);
+      return prompts[0]!;
+    };
+
+    // The block is driven by the same predicate that granted the token — the
+    // prompt half, not just the env.
+    const withCreds = await runWith(
+      mock(async () => ({ GH_TOKEN: "tok", GH_CONFIG_DIR: "/tmp/gh" })),
+    );
+    expect(withCreds).toContain("<github-identity>");
+    expect(withCreds).toContain("GitHub credentials were resolved for this turn");
+
+    // Without credentials the block still renders, saying so. Withholding it
+    // silently is how the agent ends up improvising a permissions story instead
+    // of reporting the real cause — the misdiagnosis this PR exists to remove.
+    const withoutCreds = await runWith(mock(async () => undefined));
+    expect(withoutCreds).toContain("<github-identity>");
+    expect(withoutCreds).toContain("credentials could not be resolved");
+    // Neither branch may promise what `gh` will do in the runner: on the tmux
+    // driver the pane's identity comes from the tmux server, not this turn
+    // (#235), so either claim can be false.
+    expect(withCreds).not.toContain("will not authenticate");
+    expect(withCreds).toContain("were resolved for this turn");
+    expect(withoutCreds).not.toContain("is authenticated");
+    expect(withoutCreds).not.toContain("will not authenticate");
+  });
+
+  it("does not bind an identity that failed to authenticate", async () => {
+    const sessionStore = new InMemorySessionStore();
+    await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+
+    const spawned: ThreadSession[] = [];
+    const handles = [createMockHandle(), createMockHandle()];
+    const manager = new SessionManager(sessionStore, testConfig, (runSession) => {
+      spawned.push(structuredClone(runSession));
+      return handles[spawned.length - 1]!;
+    });
+    const getGitHubEnvironment = mock(async () => {
+      throw new Error("GitHub user gxt-admin is not available for repo junior");
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/should-not-be-created"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment,
+    } as unknown as WorktreeManager;
+
+    await manager.handleAgentMessage(makeEvent({
+      user: "U123",
+      text: "see https://github.com/GrowthX-Club/junior/pull/229",
+    }), "default");
+    await waitFor(() => spawned.length === 1);
+    expect(getGitHubEnvironment).toHaveBeenCalled();
+    handles[0]!._complete("ok");
+    await waitFor(async () =>
+      (await sessionStore.get("thread-1"))?.status === "idle"
+    );
+
+    // A transient token failure must not become a durable binding: if it did,
+    // this unrelated follow-up would die in setup instead of running.
+    await manager.handleAgentMessage(makeEvent({
+      user: "U123",
+      text: "what do you think?",
+      ts: "1234567891.000001",
+    }), "default");
+    await waitFor(() => spawned.length === 2);
+
+    expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
+  });
+
   it("preserves trusted Mixpanel and pipeline MCP access for repo-less feature-metrics assignments", async () => {
     const sessionStore = new InMemorySessionStore();
     const pipelineStore = new InMemoryPipelineStore(fakeClock(1_000));

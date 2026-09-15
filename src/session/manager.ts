@@ -61,6 +61,7 @@ import { validateLeadPipelineResponse } from "../support/pipeline-guard.ts";
 import { withTimeout } from "../lifecycle/timeout.ts";
 import {
   buildPromptPreamble,
+  buildIdentityBlock,
   buildWorkspaceBlock,
   escapeBlockDelimiters,
   resolveSlackMentions,
@@ -83,6 +84,10 @@ import {
   sanitizeFileName,
 } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
+import {
+  identityAmbiguousRepos,
+  resolveIdentityRepo,
+} from "../github/identity-routing.ts";
 import {
   inferReviewRepo,
   reviewRepoRefs,
@@ -1883,11 +1888,22 @@ export class SessionManager {
         }
       }
 
+      // A durable worktree binding is this thread's repo. Prefer it over a stale
+      // durable identity for this turn, or the worktree-failure suppression
+      // below — which matches on repo name — would hand the turn a live token
+      // for a repo its directive never mentioned. Deliberately not persisted
+      // here: binding before the credential lookup would let an unauthenticated
+      // identity become durable.
+      const boundRepoName = targetRepo?.name;
+
       // Always create a worktree when a target repo is set — Junior must never
       // edit the shared origin repo path directly. (Previously this was gated on
       // agentType === "build" || "frontend", which let other agents cwd into the
       // real repo and modify it.)
       const reusedManagedWorktree = Boolean(session.worktreePath);
+      // A failed setup below clears targetRepo, which would otherwise make the
+      // identity block describe a checkout that was requested and did not happen.
+      let failedWorktreeRepo: string | null = null;
       if (
         this.worktreeManager &&
         targetRepo &&
@@ -1917,6 +1933,7 @@ export class SessionManager {
           );
           // Don't silently cwd into the real repo — clear targetRepo for this run
           // so the spawner falls back to junior's project root instead.
+          failedWorktreeRepo = targetRepo.name;
           targetRepo = undefined;
         }
       }
@@ -1958,10 +1975,80 @@ export class SessionManager {
       let targetRepoCwd: string | undefined = session.worktreePath
         ? undefined
         : targetRepo?.path;
-      const githubAuthEnv = targetRepo && this.worktreeManager &&
+      // Identity is resolved independently of the checkout: binding targetRepo
+      // for a PR-URL-only directive would also force a worktree it does not need.
+      const identityIsUtility = pipelineRole === "utility";
+      // A utility invocation is repo-less by contract and gets no identity at
+      // all — not from the thread, and not from its own directive. Main withheld
+      // credentials here, and this agent class is not a containment boundary:
+      // `intent: normal` reaches bypassPermissions with Bash.
+      const identityRepo = identityIsUtility
+        ? undefined
+        : resolveIdentityRepo({
+            targetRepoName: targetRepo?.name,
+            durableIdentityRepo: boundRepoName ?? session.identityRepo,
+            repos: this.config.repos,
+            prompt,
+          });
+      // Why this turn has no identity, when it named several at once. Resolving
+      // none there is deliberate; leaving the turn unable to say so is the
+      // misdiagnosis this whole path exists to remove.
+      const ambiguousIdentityRepos = identityIsUtility || identityRepo
+        ? []
+        : identityAmbiguousRepos({
+            targetRepoName: targetRepo?.name,
+            durableIdentityRepo: boundRepoName ?? session.identityRepo,
+            repos: this.config.repos,
+            prompt,
+          });
+      // Suppress only for the repo whose worktree setup actually failed; a
+      // different repo named in this directive is unaffected.
+      const identityBlockedByWorktreeFailure = failedWorktreeRepo !== null &&
+        failedWorktreeRepo === identityRepo?.name;
+      const githubAuthEnv = !identityBlockedByWorktreeFailure && identityRepo &&
+        this.worktreeManager &&
         typeof this.worktreeManager.getGitHubEnvironment === "function"
-        ? await this.worktreeManager.getGitHubEnvironment(targetRepo.name)
+        ? await this.worktreeManager
+            .getGitHubEnvironment(identityRepo.name)
+            .catch((error) => {
+              // Never fatal. Throwing wedged the whole thread on a
+              // thread-lifetime binding — recoverable only by `!reset all` — and
+              // deciding "does this turn need GitHub?" from its prose
+              // under-detects, since a follow-up like "yes go ahead" needs it
+              // and names nothing. The preamble carries the real reason instead,
+              // so the agent reports it rather than improvising one.
+              _log.warn(
+                "manager",
+                `github.identity.unavailable thread=${session.threadId} repo=${identityRepo.name} err=${error instanceof Error ? error.message : String(error)}`,
+              );
+              return undefined;
+            })
         : undefined;
+      // Bind durably only once the identity has actually authenticated. Binding
+      // before the lookup would let one transient token failure become durable,
+      // turning every later turn on the thread into a hard setup error.
+      if (
+        githubAuthEnv && identityRepo && !targetRepo &&
+        session.identityRepo !== identityRepo.name
+      ) {
+        const durable = await this.mutateSession(session.threadId, (fresh) => {
+          assertRunOwnership();
+          fresh.identityRepo = identityRepo.name;
+        });
+        // The reload returns the durable row, dropping invocation-only
+        // isolation. No reapply is needed here: this write only runs for a
+        // non-utility role, and `projectInvocationSession` transforms nothing
+        // else — so the projection is already an identity on this path.
+        session = durable;
+      }
+      // A resolved identity still renders when its credentials did not arrive,
+      // saying so — silently withholding it is how the agent ends up improvising
+      // a permissions story instead of reporting the real cause. Naming it costs
+      // nothing even when a worktree failed: if the failed repo is the one the
+      // identity resolved to, no credentials were resolved either, and the "act
+      // on the repository directly" invitation is gated on having them.
+      const preambleIdentityRepo = identityRepo?.name;
+      const preambleIdentityAuthenticated = Boolean(githubAuthEnv);
 
       // Build after worktree routing/creation so provider policy and cwd see
       // the newly registered isolated checkout on this same turn.
@@ -2271,6 +2358,9 @@ export class SessionManager {
               worktreePaths,
               this.config.repos,
               preambleProfile,
+              preambleIdentityRepo,
+              preambleIdentityAuthenticated,
+              ambiguousIdentityRepos,
             );
             assertRunOwnership();
             prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
@@ -2280,18 +2370,24 @@ export class SessionManager {
                 fresh.needsThreadCatchup = false;
               });
             }
-          } else if (contextProfile.workspace) {
-            const workspaceBlock = buildWorkspaceBlock(
-              workspace,
-              worktreePaths,
-              this.config.repos,
-              session.threadId,
-            );
-            prompt = workspaceBlock
-              ? `${workspaceBlock}\n\n${readablePrompt}`
-              : readablePrompt;
           } else {
-            prompt = readablePrompt;
+            // Rules follow the profile; the identity statement does not, because
+            // credentials reach the runner either way.
+            const workspaceBlock = contextProfile.workspace
+              ? buildWorkspaceBlock(workspace, worktreePaths, this.config.repos, session.threadId)
+              : null;
+            const identityBlock = buildIdentityBlock({
+              repos: this.config.repos,
+              identityRepoName: preambleIdentityRepo,
+              identityAuthenticated: preambleIdentityAuthenticated,
+              ambiguousRepos: ambiguousIdentityRepos,
+              hasCheckout: Boolean(workspace) ||
+                Boolean(worktreePaths && Object.keys(worktreePaths).length > 0),
+            });
+            const blocks = [workspaceBlock, identityBlock].filter(Boolean);
+            prompt = blocks.length > 0
+              ? `${blocks.join("\n\n")}\n\n${readablePrompt}`
+              : readablePrompt;
           }
         }
       }
@@ -2416,7 +2512,12 @@ export class SessionManager {
           botToken: this.config.slack.botToken,
           agentIdentity,
           githubAuthEnv,
-          githubUser: targetRepo?.githubUser,
+          // Must match the predicate that granted the credentials, or a pane
+          // opened for one identity gets reused for the next. This governs
+          // reuse only — a fresh pane inherits GH_TOKEN from the tmux server
+          // regardless (#235), which is why the prompt promises nothing about
+          // what `gh` will do.
+          githubUser: githubAuthEnv ? identityRepo?.githubUser : undefined,
           threadId: session.threadId,
           agentName,
         });
@@ -2655,6 +2756,8 @@ export class SessionManager {
               targetRepoCwd,
               botToken: this.config.slack.botToken,
               agentIdentity,
+              githubAuthEnv,
+              githubUser: githubAuthEnv ? identityRepo?.githubUser : undefined,
               threadId: session.threadId,
               agentName,
             });
@@ -2667,6 +2770,7 @@ export class SessionManager {
               this.config.slack.botToken,
               agentIdentity,
               [],
+              githubAuthEnv,
             );
           }
           const retryHandle = withTimeout(
@@ -4130,6 +4234,7 @@ export class SessionManager {
       targetRepo: null,
       worktreePath: null,
       worktreePaths: {},
+      identityRepo: null,
     };
   }
 
