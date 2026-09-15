@@ -4600,6 +4600,54 @@ describe("typed pipeline settlement", () => {
     expect((await sessionStore.get("thread-1"))?.identityRepo ?? null).toBeNull();
   });
 
+  it("says why a directive naming two configured repos got no identity", async () => {
+    const sessionStore = new InMemorySessionStore();
+    await sessionStore.set("thread-1", createSession("thread-1", "C123"));
+
+    const prompts: string[] = [];
+    const getGitHubEnvironment = mock(async () => ({ GH_TOKEN: "tok" }));
+    const handle = createMockHandle();
+    const manager = new SessionManager(sessionStore, testConfig, (_s, prompt) => {
+      prompts.push(prompt);
+      return handle;
+    });
+    manager.worktreeManager = {
+      createWorktree: mock(async () => "/tmp/should-not-be-created"),
+      getBranchName: () => "slack/thread-1",
+      getGitHubEnvironment,
+    } as unknown as WorktreeManager;
+    manager.slackApp = {
+      client: {
+        conversations: {
+          replies: async () => ({ messages: [{ ts: "1", user: "U1", text: "hi" }] }),
+          info: async () => ({ channel: { name: "chan" } }),
+        },
+        users: {
+          info: async () => ({ user: { name: "u", profile: { display_name: "U" } } }),
+        },
+      },
+    } as unknown as App;
+    manager.botUserId = "B1";
+
+    await manager
+      .handleAgentMessage(
+        makeEvent({
+          user: "U123",
+          text: "merge https://github.com/GrowthX-Club/junior/pull/229 (upstream fix is https://github.com/GrowthX-Club/frontend/pull/12)",
+        }),
+        "default",
+      )
+      .catch(() => undefined);
+    await waitFor(() => prompts.length === 1);
+
+    // Resolving nothing is deliberate — guessing one of two named repos is how
+    // a merge lands on the wrong repository. Saying nothing is not: that is the
+    // misdiagnosis this path exists to remove.
+    expect(getGitHubEnvironment).not.toHaveBeenCalled();
+    expect(prompts[0]).toContain("names more than one configured repository");
+    expect(prompts[0]).toContain("junior, frontend");
+  });
+
   it("persists the identity a repo-less turn named, so the next turn keeps it", async () => {
     const sessionStore = new InMemorySessionStore();
     await sessionStore.set("thread-1", createSession("thread-1", "C123"));

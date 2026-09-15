@@ -83,7 +83,10 @@ import {
   sanitizeFileName,
 } from "../slack/files.ts";
 import { log as _log } from "../logger.ts";
-import { resolveIdentityRepo } from "../github/identity-routing.ts";
+import {
+  identityAmbiguousRepos,
+  resolveIdentityRepo,
+} from "../github/identity-routing.ts";
 import {
   inferReviewRepo,
   reviewRepoRefs,
@@ -1986,6 +1989,17 @@ export class SessionManager {
             repos: this.config.repos,
             prompt,
           });
+      // Why this turn has no identity, when it named several at once. Resolving
+      // none there is deliberate; leaving the turn unable to say so is the
+      // misdiagnosis this whole path exists to remove.
+      const ambiguousIdentityRepos = identityIsUtility || identityRepo
+        ? []
+        : identityAmbiguousRepos({
+            targetRepoName: targetRepo?.name,
+            durableIdentityRepo: boundRepoName ?? session.identityRepo,
+            repos: this.config.repos,
+            prompt,
+          });
       // Suppress only for the repo whose worktree setup actually failed; a
       // different repo named in this directive is unaffected.
       const identityBlockedByWorktreeFailure = failedWorktreeRepo !== null &&
@@ -2345,6 +2359,7 @@ export class SessionManager {
               preambleProfile,
               preambleIdentityRepo,
               preambleIdentityAuthenticated,
+              ambiguousIdentityRepos,
             );
             assertRunOwnership();
             prompt = preamble ? `${preamble}\n\n${readablePrompt}` : readablePrompt;
@@ -2354,7 +2369,7 @@ export class SessionManager {
                 fresh.needsThreadCatchup = false;
               });
             }
-          } else if (contextProfile.workspace) {
+          } else if (contextProfile.workspace || (preambleIdentityRepo && !workspace)) {
             const workspaceBlock = buildWorkspaceBlock(
               workspace,
               worktreePaths,
@@ -2362,6 +2377,7 @@ export class SessionManager {
               session.threadId,
               preambleIdentityRepo,
               preambleIdentityAuthenticated,
+              ambiguousIdentityRepos,
             );
             prompt = workspaceBlock
               ? `${workspaceBlock}\n\n${readablePrompt}`

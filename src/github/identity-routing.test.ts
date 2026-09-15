@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import type { RepoConfig } from "../config.ts";
-import { resolveIdentityRepo, resolveIdentityRepoName } from "./identity-routing.ts";
+import {
+  identityAmbiguousRepos,
+  resolveIdentityRepo,
+  resolveIdentityRepoName,
+} from "./identity-routing.ts";
 
 const repos: RepoConfig[] = [
   {
@@ -145,5 +149,49 @@ describe("resolveIdentityRepo", () => {
         prompt: "merge https://github.com/PranavBakre/Junior/pull/228",
       })?.githubUser,
     ).toBe("PranavBakre");
+  });
+});
+
+describe("identityAmbiguousRepos", () => {
+  it("names both repos when one directive names two configured ones", () => {
+    expect(
+      identityAmbiguousRepos({
+        repos,
+        prompt:
+          "merge https://github.com/GrowthX-Club/gx-backend/pull/1 (upstream fix is https://github.com/GrowthX-Club/gx-client-next/pull/2)",
+      }),
+    ).toEqual(["gx-backend", "gx-client-next"]);
+  });
+
+  it("stays empty when a durable binding resolves the ambiguity", () => {
+    // The thread already committed to a repository, so the turn keeps its
+    // credentials and there is nothing to explain.
+    expect(
+      identityAmbiguousRepos({
+        repos,
+        durableIdentityRepo: "gx-backend",
+        prompt:
+          "merge https://github.com/GrowthX-Club/gx-backend/pull/1 (upstream fix is https://github.com/GrowthX-Club/gx-client-next/pull/2)",
+      }),
+    ).toEqual([]);
+  });
+
+  it("stays empty when an identity resolved", () => {
+    expect(
+      identityAmbiguousRepos({
+        repos,
+        prompt: "merge https://github.com/GrowthX-Club/gx-backend/pull/1",
+      }),
+    ).toEqual([]);
+  });
+
+  it("ignores coordinates that match nothing configured", () => {
+    expect(
+      identityAmbiguousRepos({
+        repos,
+        prompt:
+          "merge https://github.com/GrowthX-Club/gx-backend/pull/1 (upstream fix is https://github.com/Other-Org/lib/pull/7)",
+      }),
+    ).toEqual([]);
   });
 });

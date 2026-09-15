@@ -8,6 +8,7 @@ import {
 } from "./thread-context.ts";
 import type { App } from "@slack/bolt";
 import type { RepoConfig } from "../config.ts";
+import { DEFAULT_CONTEXT_PROFILE } from "../agents/loader.ts";
 
 const repos: RepoConfig[] = [
   { name: "app-backend", path: "/repos/app-backend", defaultBase: "origin/main" },
@@ -179,6 +180,54 @@ describe("buildWorkspaceBlock", () => {
 });
 
 describe("buildPromptPreamble", () => {
+  it("tells a workspace-less agent which repo its credentials are for", async () => {
+    const app = { client: {} } as unknown as App;
+
+    const preamble = await buildPromptPreamble(
+      app,
+      "C123",
+      "thread-1",
+      "2",
+      "UBOT",
+      null,
+      undefined,
+      repos,
+      { ...DEFAULT_CONTEXT_PROFILE, workspace: false },
+      "app-backend",
+      true,
+    );
+
+    // The profile disables workspace context, but credentials are handed out
+    // regardless — a token with no statement of what it is for is the shape
+    // this whole path exists to remove.
+    expect(preamble).toContain("<github-identity>");
+    expect(preamble).toContain("Repository: app-backend");
+    expect(preamble).not.toContain("<workspace>");
+  });
+
+  it("says why a turn naming two configured repos got no identity", async () => {
+    const app = { client: {} } as unknown as App;
+
+    const preamble = await buildPromptPreamble(
+      app,
+      "C123",
+      "thread-1",
+      "2",
+      "UBOT",
+      null,
+      undefined,
+      repos,
+      DEFAULT_CONTEXT_PROFILE,
+      undefined,
+      false,
+      ["app-backend", "app-frontend"],
+    );
+
+    expect(preamble).toContain("<github-identity>");
+    expect(preamble).toContain("names more than one configured repository (app-backend, app-frontend)");
+    expect(preamble).not.toContain("Repository:");
+  });
+
   it("labels self mentions distinctly when other users are tagged too", async () => {
     const app = {
       client: {

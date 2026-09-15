@@ -77,3 +77,29 @@ export function resolveIdentityRepo(input: {
   const name = resolveIdentityRepoName(input);
   return name ? input.repos.find((repo) => repo.name === name) : undefined;
 }
+
+/**
+ * Configured repositories a single invocation named at once, when that made the
+ * identity ambiguous. Empty whenever an identity resolved.
+ *
+ * The caller renders this: resolving nothing here is deliberate, but leaving the
+ * turn with neither credentials nor a reason is the misdiagnosis this module
+ * exists to prevent, so the ambiguity has to be sayable.
+ */
+export function identityAmbiguousRepos(input: {
+  targetRepoName?: string | null;
+  durableIdentityRepo?: string | null;
+  repos: RepoConfig[];
+  prompt: string;
+}): string[] {
+  if (input.targetRepoName) return [];
+  // A durable binding resolves the ambiguity — the thread already committed to
+  // a repository, so the turn keeps its credentials (see resolveIdentityRepoName).
+  if (input.durableIdentityRepo) return [];
+  const coordinates = githubCoordinates(input.prompt);
+  if (coordinates.length === 0) return [];
+  const named = input.repos.filter((repo) =>
+    coordinates.some((ref) => repoMatchesRef(repo, ref)),
+  );
+  return named.length > 1 ? named.map((repo) => repo.name) : [];
+}
