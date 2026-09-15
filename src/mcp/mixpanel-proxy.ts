@@ -184,7 +184,7 @@ function addRegionToSchema<T extends { inputSchema: Record<string, unknown> }>(
   return { ...tool, inputSchema: { ...schema, type: "object", properties, required } };
 }
 
-export function getMixpanelBackend(region: MixpanelRegion): Promise<MixpanelBackend> {
+function getMixpanelBackend(region: MixpanelRegion): Promise<MixpanelBackend> {
   let current = backends.get(region);
   if (!current) {
     current = startMixpanelBackend(region).catch((err) => {
@@ -220,7 +220,7 @@ async function startMixpanelBackend(region: MixpanelRegion): Promise<MixpanelBac
   return { client, transport };
 }
 
-function tokenForRegion(region: MixpanelRegion): string {
+export function tokenForRegion(region: MixpanelRegion): string {
   const regional = process.env[`MIXPANEL_MCP_${region.toUpperCase()}_TOKEN`]?.trim();
   if (regional) return regional;
   return region === "us" ? process.env.MIXPANEL_MCP_TOKEN?.trim() ?? "" : "";

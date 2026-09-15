@@ -1,7 +1,9 @@
 import { log } from "../logger.ts";
 import {
   configuredMixpanelRegions,
-  getMixpanelBackend,
+  tokenForRegion,
+  mixpanelAuthorizationHeader,
+  mixpanelRegionUrl,
   type MixpanelRegion,
 } from "../mcp/mixpanel-proxy.ts";
 import {
@@ -70,34 +72,38 @@ async function fetchMixpanel(yesterday: string): Promise<MixpanelData> {
   if (regions.length === 0) throw new Error("no Mixpanel MCP regions configured");
 
   const region: MixpanelRegion = regions.includes("us") ? "us" : regions[0];
-  const { client } = await getMixpanelBackend(region);
+  const token = tokenForRegion(region);
+  if (!token) throw new Error(`no Mixpanel token for region ${region}`);
 
-  const eventsQuery = MIXPANEL_EVENTS.map((e) => `"${e}"`).join(", ");
-  const result = await client.callTool({
-    name: "Run-Query",
-    arguments: {
-      query: `How many times did each of these events fire on ${yesterday}: ${eventsQuery}? Show exact counts per event.`,
+  const apiHost = new URL(mixpanelRegionUrl(region)).origin;
+  const params = new URLSearchParams({
+    from_date: yesterday,
+    to_date: yesterday,
+    event: JSON.stringify([...MIXPANEL_EVENTS]),
+  });
+
+  const resp = await fetch(`${apiHost}/api/2.0/events?${params.toString()}`, {
+    headers: {
+      Authorization: mixpanelAuthorizationHeader(token),
+      Accept: "application/json",
     },
   });
 
-  const text = (result.content as Array<{ type: string; text?: string }>)
-    .filter((c) => c.type === "text" && c.text)
-    .map((c) => c.text!)
-    .join("\n");
+  if (!resp.ok) {
+    throw new Error(`Mixpanel API ${resp.status}: ${await resp.text()}`);
+  }
+
+  const body = (await resp.json()) as {
+    data: { values: Record<string, Record<string, number>> };
+  };
 
   const counts: Record<string, number> = {};
   let totalEvents = 0;
 
-  for (const event of MIXPANEL_EVENTS) {
-    const escaped = event.replace(/\./g, "\\.");
-    const match = text.match(new RegExp(`${escaped}[^\\d]*(\\d[\\d,]*)`, "i"));
-    if (match) {
-      const count = parseInt(match[1].replace(/,/g, ""), 10);
-      if (!isNaN(count)) {
-        counts[event] = count;
-        totalEvents += count;
-      }
-    }
+  for (const [event, dateValues] of Object.entries(body.data.values)) {
+    const count = Object.values(dateValues).reduce((s, v) => s + v, 0);
+    counts[event] = count;
+    totalEvents += count;
   }
 
   return { totalEvents, counts };
