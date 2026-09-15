@@ -12,7 +12,8 @@ export type WorkflowNativeHandler =
   | "memory-consolidation"
   | "memory-dedup-sweep"
   | "memory-decay-report"
-  | "slack-archive-maintenance";
+  | "slack-archive-maintenance"
+  | "web-activity-report";
 export type WorkflowRunnerProvider =
   | "default"
   | "opencode"

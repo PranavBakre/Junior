@@ -46,6 +46,7 @@ import {
   runSlackArchiveMaintenance,
   type SlackArchiveMaintenanceReport,
 } from "../slack/archive-maintenance.ts";
+import { runWebActivityReport } from "./web-activity-report.ts";
 
 const DEFAULT_MAX_IDLE_INTERRUPTS = 3;
 
@@ -600,6 +601,7 @@ export class WorkflowExecutor {
       "memory-dedup-sweep": () => this.runMemoryDedupSweep(),
       "memory-decay-report": () => this.runMemoryDecayReport(),
       "slack-archive-maintenance": () => this.runSlackArchiveMaintenance(),
+      "web-activity-report": () => runWebActivityReport(),
     };
     if (handler === "slack-archive-maintenance" && !this.config.slackArchive?.enabled) {
       return {

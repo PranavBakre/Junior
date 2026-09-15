@@ -43,12 +43,14 @@ const SUPPORTED_NATIVE_HANDLERS = new Set<WorkflowNativeHandler>([
   "memory-dedup-sweep",
   "memory-decay-report",
   "slack-archive-maintenance",
+  "web-activity-report",
 ]);
 const NATIVE_HANDLER_TOOLS: Record<WorkflowNativeHandler, readonly WorkflowTool[]> = {
   "memory-consolidation": ["docs.write", "memory.read", "memory.write", "memory.evaluate"],
   "memory-dedup-sweep": ["docs.write", "memory.read", "memory.evaluate"],
   "memory-decay-report": ["docs.write", "memory.read", "memory.write", "memory.evaluate"],
   "slack-archive-maintenance": ["docs.write", "slack.read", "archive.write"],
+  "web-activity-report": [],
 };
 
 export async function loadWorkflowDefinition(
