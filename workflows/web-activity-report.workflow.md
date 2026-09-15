@@ -2,10 +2,11 @@
 name: web-activity-report
 enabled: true
 description: Daily web activity digest covering engagement, community, members, and health metrics from Mixpanel, Convex, and New Relic.
+ownerSlackUserIds: []
 nativeHandler: web-activity-report
 triggers:
   - type: schedule
-    cron: "30 3 * * *"
+    cron: "0 9 * * *"
     timezone: Asia/Kolkata
   - type: command
     command: web-report
@@ -15,7 +16,9 @@ outputs:
   - type: slack
     channel: C0338BCK1UL
 permissions:
-  tools: []
+  tools:
+    - docs.write
+    - slack.post
 concurrency: skip
 ---
 
