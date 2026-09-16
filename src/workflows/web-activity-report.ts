@@ -64,6 +64,7 @@ async function fetchMixpanel(yesterday: string): Promise<MixpanelData> {
   const secret = process.env.MIXPANEL_WEB_API_SECRET;
   if (!secret) throw new Error("MIXPANEL_WEB_API_SECRET not set");
 
+  const apiHost = process.env.MIXPANEL_WEB_API_HOST ?? "https://eu.mixpanel.com";
   const params = new URLSearchParams({
     type: "general",
     unit: "day",
@@ -73,7 +74,7 @@ async function fetchMixpanel(yesterday: string): Promise<MixpanelData> {
   });
 
   const resp = await fetch(
-    `https://mixpanel.com/api/2.0/events?${params.toString()}`,
+    `${apiHost}/api/2.0/events?${params.toString()}`,
     {
       headers: {
         Authorization: `Basic ${btoa(`${secret}:`)}`,
