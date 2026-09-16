@@ -65,6 +65,8 @@ async function fetchMixpanel(yesterday: string): Promise<MixpanelData> {
   if (!secret) throw new Error("MIXPANEL_WEB_API_SECRET not set");
 
   const params = new URLSearchParams({
+    type: "general",
+    unit: "day",
     from_date: yesterday,
     to_date: yesterday,
     event: JSON.stringify([...MIXPANEL_EVENTS]),
