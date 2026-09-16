@@ -220,7 +220,7 @@ async function startMixpanelBackend(region: MixpanelRegion): Promise<MixpanelBac
   return { client, transport };
 }
 
-export function tokenForRegion(region: MixpanelRegion): string {
+function tokenForRegion(region: MixpanelRegion): string {
   const regional = process.env[`MIXPANEL_MCP_${region.toUpperCase()}_TOKEN`]?.trim();
   if (regional) return regional;
   return region === "us" ? process.env.MIXPANEL_MCP_TOKEN?.trim() ?? "" : "";

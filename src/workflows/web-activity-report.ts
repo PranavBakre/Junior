@@ -1,12 +1,5 @@
 import { log } from "../logger.ts";
 import {
-  configuredMixpanelRegions,
-  tokenForRegion,
-  mixpanelAuthorizationHeader,
-  mixpanelRegionUrl,
-  type MixpanelRegion,
-} from "../mcp/mixpanel-proxy.ts";
-import {
   newRelicNrqlCommand,
   runReadOnlyCommand,
 } from "../observability/read-only-cli.ts";
@@ -68,26 +61,24 @@ interface MixpanelData {
 }
 
 async function fetchMixpanel(yesterday: string): Promise<MixpanelData> {
-  const regions = configuredMixpanelRegions();
-  if (regions.length === 0) throw new Error("no Mixpanel MCP regions configured");
+  const secret = process.env.MIXPANEL_WEB_API_SECRET;
+  if (!secret) throw new Error("MIXPANEL_WEB_API_SECRET not set");
 
-  const region: MixpanelRegion = regions.includes("us") ? "us" : regions[0];
-  const token = tokenForRegion(region);
-  if (!token) throw new Error(`no Mixpanel token for region ${region}`);
-
-  const apiHost = new URL(mixpanelRegionUrl(region)).origin;
   const params = new URLSearchParams({
     from_date: yesterday,
     to_date: yesterday,
     event: JSON.stringify([...MIXPANEL_EVENTS]),
   });
 
-  const resp = await fetch(`${apiHost}/api/2.0/events?${params.toString()}`, {
-    headers: {
-      Authorization: mixpanelAuthorizationHeader(token),
-      Accept: "application/json",
+  const resp = await fetch(
+    `https://mixpanel.com/api/2.0/events?${params.toString()}`,
+    {
+      headers: {
+        Authorization: `Basic ${btoa(`${secret}:`)}`,
+        Accept: "application/json",
+      },
     },
-  });
+  );
 
   if (!resp.ok) {
     throw new Error(`Mixpanel API ${resp.status}: ${await resp.text()}`);
