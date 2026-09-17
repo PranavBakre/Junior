@@ -43,16 +43,24 @@ function pct(part: number, total: number): string {
 // ---------------------------------------------------------------------------
 
 const MIXPANEL_EVENTS = [
-  "community.post.created",
-  "community.comment.created",
-  "community.reaction.toggled",
-  "community.post.bookmark_toggled",
-  "community.post.opened",
-  "community.search.query_submitted",
-  "community.search.result_clicked",
-  "community.notification_pref.changed",
-  "community.member_connect.mark_solved.submitted",
-  "community.notification.clicked",
+  "$mp_web_page_view",
+  "homepage.viewed",
+  "page.viewed",
+  "learning_modules.module_detail_page.loaded",
+  "learning_modules.video.playback_started",
+  "learning_resources.landing.page_loaded",
+  "community_events.discovery_page_load.success",
+  "community_events.event_card.clicked",
+  "community_events.registration.success",
+  "member_application.form_submitted.success",
+  "member_application.application_form_visited.success",
+  "member_authentication.click_login.success",
+  "member_registration.signup_cta.success",
+  "member_renewal.modal.viewed",
+  "member_privileges.display_screen.success",
+  "elevate.dashboard_page.loaded",
+  "checkout.viewed",
+  "member_projects.public_projects.loaded",
 ] as const;
 
 interface MixpanelData {
@@ -62,8 +70,8 @@ interface MixpanelData {
 
 async function fetchMixpanel(yesterday: string): Promise<MixpanelData> {
   const webSecret = process.env.MIXPANEL_WEB_API_SECRET;
-  const mobileSecret = process.env.MIXPANEL_MOBILE_API_SECRET;
-  if (!webSecret && !mobileSecret) throw new Error("MIXPANEL_WEB_API_SECRET or MIXPANEL_MOBILE_API_SECRET not set");
+  const communitySecret = process.env.MIXPANEL_COMMUNITY_API_SECRET;
+  if (!webSecret && !communitySecret) throw new Error("MIXPANEL_WEB_API_SECRET or MIXPANEL_COMMUNITY_API_SECRET not set");
   async function fetchProject(
     apiHost: string,
     secret: string,
@@ -98,24 +106,24 @@ async function fetchMixpanel(yesterday: string): Promise<MixpanelData> {
     return result;
   }
 
-  const [webResult, mobileResult] = await Promise.allSettled([
+  const [webResult, communityResult] = await Promise.allSettled([
     webSecret
-      ? fetchProject("https://mixpanel.com", webSecret)
+      ? fetchProject("https://eu.mixpanel.com", webSecret)
       : Promise.resolve({} as Record<string, number>),
-    mobileSecret
-      ? fetchProject("https://eu.mixpanel.com", mobileSecret)
+    communitySecret
+      ? fetchProject("https://mixpanel.com", communitySecret)
       : Promise.resolve({} as Record<string, number>),
   ]);
   const webCounts = webResult.status === "fulfilled" ? webResult.value : {};
-  const mobileCounts = mobileResult.status === "fulfilled" ? mobileResult.value : {};
+  const communityCounts = communityResult.status === "fulfilled" ? communityResult.value : {};
   if (webResult.status === "rejected") log.warn(TAG, `mixpanel web project failed: ${webResult.reason?.message}`);
-  if (mobileResult.status === "rejected") log.warn(TAG, `mixpanel mobile project failed: ${mobileResult.reason?.message}`);
+  if (communityResult.status === "rejected") log.warn(TAG, `mixpanel community project failed: ${communityResult.reason?.message}`);
 
   const counts: Record<string, number> = {};
   let totalEvents = 0;
-  const allEvents = new Set([...Object.keys(webCounts), ...Object.keys(mobileCounts)]);
+  const allEvents = new Set([...Object.keys(webCounts), ...Object.keys(communityCounts)]);
   for (const event of allEvents) {
-    const combined = (webCounts[event] ?? 0) + (mobileCounts[event] ?? 0);
+    const combined = (webCounts[event] ?? 0) + (communityCounts[event] ?? 0);
     counts[event] = combined;
     totalEvents += combined;
   }
@@ -300,13 +308,16 @@ function formatReport(
     const ev = (name: string) => n(c[name] ?? 0);
     lines.push("*Engagement* (web)");
     lines.push(
-      `events *${n(mixpanel.totalEvents)}*  ·  posts opened *${ev("community.post.opened")}*  ·  searches *${ev("community.search.query_submitted")}*`,
+      `page views *${ev("$mp_web_page_view")}*  ·  homepage *${ev("homepage.viewed")}*  ·  logins *${ev("member_authentication.click_login.success")}*`,
     );
     lines.push(
-      `posts created *${ev("community.post.created")}*  ·  comments *${ev("community.comment.created")}*  ·  reactions *${ev("community.reaction.toggled")}*`,
+      `learn modules *${ev("learning_modules.module_detail_page.loaded")}*  ·  videos started *${ev("learning_modules.video.playback_started")}*  ·  resources *${ev("learning_resources.landing.page_loaded")}*`,
     );
     lines.push(
-      `bookmarks *${ev("community.post.bookmark_toggled")}*  ·  notifications clicked *${ev("community.notification.clicked")}*`,
+      `events discovery *${ev("community_events.discovery_page_load.success")}*  ·  event clicks *${ev("community_events.event_card.clicked")}*  ·  registrations *${ev("community_events.registration.success")}*`,
+    );
+    lines.push(
+      `applications *${ev("member_application.form_submitted.success")}*  ·  signups *${ev("member_registration.signup_cta.success")}*  ·  renewals viewed *${ev("member_renewal.modal.viewed")}*`,
     );
   } else {
     lines.push(`_⚠️ Mixpanel data unavailable: ${mixpanelErr}_`);
