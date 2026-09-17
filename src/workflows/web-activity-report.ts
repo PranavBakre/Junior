@@ -61,43 +61,63 @@ interface MixpanelData {
 }
 
 async function fetchMixpanel(yesterday: string): Promise<MixpanelData> {
-  const secret = process.env.MIXPANEL_WEB_API_SECRET;
-  if (!secret) throw new Error("MIXPANEL_WEB_API_SECRET not set");
+  const webSecret = process.env.MIXPANEL_WEB_API_SECRET;
+  const mobileSecret = process.env.MIXPANEL_MOBILE_API_SECRET;
+  if (!webSecret && !mobileSecret) throw new Error("MIXPANEL_WEB_API_SECRET or MIXPANEL_MOBILE_API_SECRET not set");
+  async function fetchProject(
+    apiHost: string,
+    secret: string,
+  ): Promise<Record<string, number>> {
+    const params = new URLSearchParams({
+      type: "general",
+      unit: "day",
+      from_date: yesterday,
+      to_date: yesterday,
+      event: JSON.stringify([...MIXPANEL_EVENTS]),
+    });
 
-  const apiHost = process.env.MIXPANEL_WEB_API_HOST ?? "https://eu.mixpanel.com";
-  const params = new URLSearchParams({
-    type: "general",
-    unit: "day",
-    from_date: yesterday,
-    to_date: yesterday,
-    event: JSON.stringify([...MIXPANEL_EVENTS]),
-  });
-
-  const resp = await fetch(
-    `${apiHost}/api/2.0/events?${params.toString()}`,
-    {
+    const resp = await fetch(`${apiHost}/api/2.0/events?${params.toString()}`, {
       headers: {
         Authorization: `Basic ${btoa(`${secret}:`)}`,
         Accept: "application/json",
       },
-    },
-  );
+    });
 
-  if (!resp.ok) {
-    throw new Error(`Mixpanel API ${resp.status}: ${await resp.text()}`);
+    if (!resp.ok) {
+      throw new Error(`Mixpanel API (${apiHost}) ${resp.status}: ${await resp.text()}`);
+    }
+
+    const body = (await resp.json()) as {
+      data: { values: Record<string, Record<string, number>> };
+    };
+
+    const result: Record<string, number> = {};
+    for (const [event, dateValues] of Object.entries(body.data.values)) {
+      result[event] = Object.values(dateValues).reduce((s, v) => s + v, 0);
+    }
+    return result;
   }
 
-  const body = (await resp.json()) as {
-    data: { values: Record<string, Record<string, number>> };
-  };
+  const [webResult, mobileResult] = await Promise.allSettled([
+    webSecret
+      ? fetchProject("https://mixpanel.com", webSecret)
+      : Promise.resolve({} as Record<string, number>),
+    mobileSecret
+      ? fetchProject("https://eu.mixpanel.com", mobileSecret)
+      : Promise.resolve({} as Record<string, number>),
+  ]);
+  const webCounts = webResult.status === "fulfilled" ? webResult.value : {};
+  const mobileCounts = mobileResult.status === "fulfilled" ? mobileResult.value : {};
+  if (webResult.status === "rejected") log.warn(TAG, `mixpanel web project failed: ${webResult.reason?.message}`);
+  if (mobileResult.status === "rejected") log.warn(TAG, `mixpanel mobile project failed: ${mobileResult.reason?.message}`);
 
   const counts: Record<string, number> = {};
   let totalEvents = 0;
-
-  for (const [event, dateValues] of Object.entries(body.data.values)) {
-    const count = Object.values(dateValues).reduce((s, v) => s + v, 0);
-    counts[event] = count;
-    totalEvents += count;
+  const allEvents = new Set([...Object.keys(webCounts), ...Object.keys(mobileCounts)]);
+  for (const event of allEvents) {
+    const combined = (webCounts[event] ?? 0) + (mobileCounts[event] ?? 0);
+    counts[event] = combined;
+    totalEvents += combined;
   }
 
   return { totalEvents, counts };
