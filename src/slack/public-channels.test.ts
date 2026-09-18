@@ -52,4 +52,25 @@ describe("createPublicChannelDirectory", () => {
     expect(await directory.isPublic("C1")).toBe(true);
     expect(calls.length).toBe(2);
   });
+
+  test("discards a partial set when a later page throws", async () => {
+    let attempt = 0;
+    const client: PublicChannelLister = {
+      conversations: {
+        async list(args) {
+          attempt++;
+          if (!args.cursor) {
+            return { ok: true, channels: [{ id: "C1", is_channel: true }], response_metadata: { next_cursor: "next" } };
+          }
+          if (attempt === 2) throw new Error("ratelimited");
+          return { ok: true, channels: [{ id: "C2", is_channel: true }] };
+        },
+      },
+    };
+    const directory = createPublicChannelDirectory(() => client);
+    expect(await directory.isPublic("C1")).toBe(false);
+    expect(await directory.isPublic("C1")).toBe(true);
+    expect(await directory.isPublic("C2")).toBe(true);
+    expect(attempt).toBe(4);
+  });
 });
