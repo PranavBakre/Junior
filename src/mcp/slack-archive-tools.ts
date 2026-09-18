@@ -48,8 +48,8 @@ async function isAuthorized(auth: SlackArchiveToolAuth): Promise<boolean> {
   if (!auth.runContext?.signed) return false;
   const session = await auth.getSession(auth.runContext.threadId);
   if (!session) return false;
-  if (session.channel.startsWith("D")) return isAdminOnlyDm(auth, session.humanParticipants ?? []);
-  return auth.isAllowedChannel(session.channel);
+  if (await auth.isAllowedChannel(session.channel)) return true;
+  return session.channel.startsWith("D") && isAdminOnlyDm(auth, session.humanParticipants ?? []);
 }
 
 async function isAdminOnlyDm(auth: SlackArchiveToolAuth, users: string[]): Promise<boolean> {

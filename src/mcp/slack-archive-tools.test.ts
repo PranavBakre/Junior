@@ -270,6 +270,31 @@ describe("Slack archive MCP authorization", () => {
     expect(await searchWith({ ...adminDm, isAdmin: undefined })).toContain("denied");
   });
 
+  test("keeps admin-DM results scoped to public/approved channels", async () => {
+    store.upsertMessage({
+      channelId: "G_PRIVATE",
+      ts: "1700000300.000001",
+      actorId: "U_SECRET",
+      actorKind: "human",
+      text: "private acquisition plan",
+    });
+    const captured = captureTools();
+    registerSlackArchiveTools(captured.server, {
+      ...SIGNED_PUBLIC_CHANNEL,
+      isAdmin: async (userId) => userId === "U_ADMIN",
+      getSession: async () => ({ channel: "D_ADMIN", humanParticipants: ["U_ADMIN"] }),
+      isAllowedChannel: async (channelId) => channelId === "C_ENG",
+    });
+    const search = captured.tools.get("slack_archive_search")!;
+    expect((await search({ query: "plan" })).content[0]!.text).not.toContain("private acquisition plan");
+    expect((await search({ query: "plan", channel: "G_PRIVATE" })).content[0]!.text)
+      .not.toContain("private acquisition plan");
+    expect((await captured.tools.get("slack_archive_thread")!({
+      channel: "G_PRIVATE",
+      thread_ts: "1700000300.000001",
+    })).content[0]!.text).toContain("denied");
+  });
+
   test("does not let a public-channel turn read an unapproved private target", async () => {
     store.upsertMessage({
       channelId: "G_PRIVATE",
