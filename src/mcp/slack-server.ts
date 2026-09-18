@@ -342,6 +342,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
   });
   registerSlackArchiveTools(server, {
     runContext,
+    isAdmin: (userId) => sessionManager?.isExplicitAdmin(userId) ?? Promise.resolve(false),
     isAllowedChannel: async (channelId) => {
       if (slackArchiveApprovedChannelIds.has(channelId)) return true;
       try {
@@ -353,7 +354,9 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
     },
     getSession: async (threadId) => {
       const session = await sessionStore?.get(threadId);
-      return session ? { channel: session.channel } : null;
+      return session
+        ? { channel: session.channel, humanParticipants: session.humanParticipants }
+        : null;
     },
   }, {
     getEmbedder: getEmbeddingProvider,
