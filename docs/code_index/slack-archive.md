@@ -9,7 +9,7 @@
 | `SlackArchiveSync` | `src/slack/archive-sync.ts` | Public/approved Slack API gap repair with history checkpoints and old-thread reply reconciliation |
 | `runSlackArchiveMaintenance` | `src/slack/archive-maintenance.ts` | Native weekly Slack sync, pending embedding, and atomic ANN publication |
 | archive CLI | `src/slack/archive-cli.ts` | Dry-run-by-default import, embed, and index commands |
-| `registerSlackArchiveTools` | `src/mcp/slack-archive-tools.ts` | Signed-turn `slack_archive_search` and `slack_archive_thread`, scoped per result to public/approved channels |
+| `registerSlackArchiveTools` | `src/mcp/slack-archive-tools.ts` | Signed-turn `slack_archive_search` and `slack_archive_thread` from a public/approved channel or an admin-only DM, scoped per result to public/approved channels |
 | runtime wiring | `src/index.ts` | Store lifecycle, MCP handle, live event capture |
 | weekly workflow | `workflows/slack-archive-maintenance.workflow.md` | Explicit native-handler schedule and concurrency policy |
 

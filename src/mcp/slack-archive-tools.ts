@@ -23,16 +23,18 @@ export interface SlackArchiveToolAuth {
   runContext: SlackMcpRunContext | null;
   /** Server-side Slack visibility/config decision for the stored session channel. */
   isAllowedChannel: (channelId: string) => Promise<boolean>;
+  /** Explicit (non open-mode) admin check; admin-only DMs may open the archive. */
+  isAdmin?: (userId: string) => Promise<boolean>;
   /** Resolve the stored channel at call time; never trust the query context channel. */
   getSession: (
     threadId: string,
-  ) => Promise<{ channel: string } | null>;
+  ) => Promise<{ channel: string; humanParticipants?: string[] } | null>;
 }
 
 const NOT_ENABLED =
   "Slack archive is not enabled (the archive store has not been initialized).";
 const NOT_AUTHORIZED =
-  "Slack archive access denied: use a signed Junior turn in a public Slack channel or an explicitly approved channel.";
+  "Slack archive access denied: use a signed Junior turn in a public Slack channel, an explicitly approved channel, or an admin-only DM.";
 
 const MAX_MESSAGE_CHARS = 1_500;
 const MAX_RESPONSE_CHARS = 60_000;
@@ -45,7 +47,17 @@ const MAX_BODY_CHARS = MAX_RESPONSE_CHARS - UNTRUSTED_PREFIX.length - UNTRUSTED_
 async function isAuthorized(auth: SlackArchiveToolAuth): Promise<boolean> {
   if (!auth.runContext?.signed) return false;
   const session = await auth.getSession(auth.runContext.threadId);
-  return session ? auth.isAllowedChannel(session.channel) : false;
+  if (!session) return false;
+  if (session.channel.startsWith("D")) return isAdminOnlyDm(auth, session.humanParticipants ?? []);
+  return auth.isAllowedChannel(session.channel);
+}
+
+async function isAdminOnlyDm(auth: SlackArchiveToolAuth, users: string[]): Promise<boolean> {
+  if (!auth.isAdmin || users.length === 0) return false;
+  for (const user of users) {
+    if (!(await auth.isAdmin(user))) return false;
+  }
+  return true;
 }
 
 async function allowedArchiveChannels(

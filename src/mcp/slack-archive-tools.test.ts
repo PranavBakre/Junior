@@ -252,6 +252,24 @@ describe("Slack archive MCP authorization", () => {
     })).toContain("denied");
   });
 
+  test("allows a DM only when every human participant is an admin", async () => {
+    const adminDm: SlackArchiveToolAuth = {
+      ...SIGNED_PUBLIC_CHANNEL,
+      isAdmin: async (userId) => userId === "U_ADMIN",
+      getSession: async () => ({ channel: "D_ADMIN", humanParticipants: ["U_ADMIN"] }),
+    };
+    expect(await searchWith(adminDm)).toContain("deploy payments safely");
+    expect(await searchWith({
+      ...adminDm,
+      getSession: async () => ({ channel: "D_ADMIN", humanParticipants: ["U_ADMIN", "U_OTHER"] }),
+    })).toContain("denied");
+    expect(await searchWith({
+      ...adminDm,
+      getSession: async () => ({ channel: "D_ADMIN", humanParticipants: [] }),
+    })).toContain("denied");
+    expect(await searchWith({ ...adminDm, isAdmin: undefined })).toContain("denied");
+  });
+
   test("does not let a public-channel turn read an unapproved private target", async () => {
     store.upsertMessage({
       channelId: "G_PRIVATE",
