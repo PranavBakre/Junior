@@ -58,6 +58,7 @@ import { parseSlackMcpRunContext, type SlackMcpRunContext } from "./context.ts";
 import { registerTool } from "./register-tool.ts";
 import { registerWhatsAppTools } from "./whatsapp-tools.ts";
 import { registerSlackArchiveTools } from "./slack-archive-tools.ts";
+import { createPublicChannelDirectory } from "../slack/public-channels.ts";
 import { registerTaskRouteTools } from "../routes/tools.ts";
 import { handleMongoMcpRequest } from "./mongodb-proxy.ts";
 import { handleMixpanelMcpRequest } from "./mixpanel-proxy.ts";
@@ -166,6 +167,7 @@ let slackActionStore: SlackActionStore | undefined;
 let pipelineRuntime: PipelineToolRuntime | undefined;
 let catalogStore: CatalogStore | undefined;
 let slackArchiveApprovedChannelIds = new Set<string>();
+const publicChannels = createPublicChannelDirectory(() => slack);
 
 const pipelineOutcomeSchema = z.object({
   assignmentId: z.string().min(1).describe("Exact signed assignment id being settled"),
@@ -345,12 +347,7 @@ export function registerTools(server: McpServer, runContext: SlackMcpRunContext 
     isAdmin: (userId) => sessionManager?.isExplicitAdmin(userId) ?? Promise.resolve(false),
     isAllowedChannel: async (channelId) => {
       if (slackArchiveApprovedChannelIds.has(channelId)) return true;
-      try {
-        const result = await slack.conversations.info({ channel: channelId });
-        return result.channel?.is_channel === true && result.channel.is_private !== true;
-      } catch {
-        return false;
-      }
+      return publicChannels.isPublic(channelId);
     },
     getSession: async (threadId) => {
       const session = await sessionStore?.get(threadId);
